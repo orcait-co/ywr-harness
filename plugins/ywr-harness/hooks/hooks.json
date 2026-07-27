@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "ConfigChange": [
+      {
+        "matcher": "user_settings|project_settings|local_settings|policy_settings",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/config-change-audit.ps1"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "DirectoryAdded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/directory-added-guard.ps1"],
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/subagent-telemetry.ps1"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

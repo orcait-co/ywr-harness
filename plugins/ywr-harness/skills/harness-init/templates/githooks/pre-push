@@ -1,0 +1,120 @@
+#!/bin/sh
+# pre-push — scan the commits being pushed for secrets, at the last point where history is still
+# cheap to rewrite (org guide: "Never commit secrets").
+#
+# TOOLCHAIN (ywr-harness ADR 0010/0015): placed by /ywr-harness:harness-init and OVERWRITTEN on
+# every re-run. Do not hand-edit — fix it in the canon and re-run the scaffold.
+#
+# Scope, and why each bound is here:
+#   * ADDED lines only. A secret already in history is a rotation problem, not a push to block, and
+#     flagging it on every push trains people to use --no-verify.
+#   * Only commits not already on a remote. Pushing a new branch must not re-scan all of history.
+#   * A line carrying the marker `harness:allow-secret` is exempt. Regex scanning is wrong sometimes,
+#     and the alternative to a per-line exemption is --no-verify on the entire push.
+#
+# git feeds this hook on stdin, one line per ref:  <local ref> <local oid> <remote ref> <remote oid>
+#
+# Failure is a blocked push. `git push --no-verify` is the escape hatch; a rejected push means the
+# secret is still local, which is the entire point.
+#
+# Copyright (c) 2026 YWR Labs Inc. All rights reserved.
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+
+# Patterns are deliberately written so none of them matches THIS FILE's own source — a hook that
+# flags its own addition is a hook nobody can install. The plugin's selftest asserts exactly that
+# (case: "does not flag its own source"), so the property is measured rather than assumed.
+#
+# Each entry: <label>|<extended regex>
+PATTERNS='aws-access-key-id|AKIA[0-9A-Z]{16}
+private-key-block|-----BEGIN [A-Z ]*PRIVATE KEY-----
+github-token|gh[pousr]_[A-Za-z0-9]{36}
+github-fine-grained-pat|github_pat_[A-Za-z0-9_]{22,}
+anthropic-api-key|sk-ant-[A-Za-z0-9_-]{24,}
+openai-api-key|sk-proj-[A-Za-z0-9_-]{24,}
+slack-token|xox[baprs]-[A-Za-z0-9-]{10,}
+google-api-key|AIza[A-Za-z0-9_-]{35}
+stripe-secret-key|sk_live_[A-Za-z0-9]{16,}
+npm-token|npm_[A-Za-z0-9]{36}
+generic-assigned-secret|(secret|token|passwd|password|api_?key|access_?key)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'[:space:]]{12,}["'"'"']'
+
+# --- resolve the commit set ---------------------------------------------------------------------
+COMMITS=''
+while read -r _local_ref local_oid _remote_ref remote_oid; do
+    # Strip CR. git itself feeds LF-terminated lines, but anything that hands this hook CRLF (a
+    # wrapper, a test harness, a Windows tool in the chain) would otherwise leave \r inside the
+    # trailing field — and `git rev-list <sha>\r..<sha>` matches NOTHING, so the scan would report
+    # a clean push having examined nothing at all. Silent-empty is the worst failure mode a secret
+    # scanner has; two subshells per ref is a cheap price for not having it.
+    local_oid=$(printf '%s' "$local_oid" | tr -d '\r')
+    remote_oid=$(printf '%s' "$remote_oid" | tr -d '\r')
+    [ -n "$local_oid" ] || continue
+    # All-zero local oid = branch deletion. Nothing is being added, so nothing to scan.
+    case "$local_oid" in *[!0]*) ;; *) continue ;; esac
+
+    case "$remote_oid" in
+        *[!0]*)
+            # Existing remote branch: exactly what this push adds.
+            found=$(git rev-list "$remote_oid..$local_oid" 2>/dev/null)
+            ;;
+        *)
+            # New branch: everything not already reachable from some remote-tracking ref. Without
+            # `--not --remotes` this is the whole history of the branch on its first push.
+            found=$(git rev-list "$local_oid" --not --remotes 2>/dev/null)
+            ;;
+    esac
+    [ -n "$found" ] && COMMITS="$COMMITS$found
+"
+done
+
+COMMITS=$(printf '%s' "$COMMITS" | sed '/^$/d' | sort -u)
+[ -n "$COMMITS" ] || exit 0
+
+N_COMMITS=$(printf '%s\n' "$COMMITS" | sed '/^$/d' | wc -l | tr -d ' ')
+
+# --- scan added lines ----------------------------------------------------------------------------
+# `git show -U0 --format=` prints the diff alone. A merge commit prints nothing by default, which is
+# correct: a merge introduces no new content of its own.
+HITS=''
+OLD_IFS=$IFS
+IFS='
+'
+for sha in $COMMITS; do
+    [ -n "$sha" ] || continue
+    added=$(git show --format= -U0 --no-color "$sha" 2>/dev/null | grep '^+' | grep -v '^+++')
+    [ -n "$added" ] || continue
+    # Exempt lines carrying the marker BEFORE matching, so an allowed line cannot trip a pattern.
+    added=$(printf '%s\n' "$added" | grep -v 'harness:allow-secret')
+    [ -n "$added" ] || continue
+    for entry in $PATTERNS; do
+        label=${entry%%|*}
+        rx=${entry#*|}
+        # `-e` is load-bearing, not style. `private-key-block`'s regex begins with `-----`, so
+        # without it grep parses the pattern as an option bundle, prints "unknown option", and
+        # returns NOTHING — the pattern is silently skipped while the hook still reports a clean
+        # scan. A scanner that reports clean because it never ran is the worst failure mode it has.
+        # Measured 2026-07-27 on a real push; the selftest now covers a leading-dash pattern.
+        hit=$(printf '%s\n' "$added" | grep -E -m 3 -e "$rx")
+        if [ -n "$hit" ]; then
+            short=$(git rev-parse --short "$sha" 2>/dev/null)
+            HITS="$HITS  [$label] in $short
+$(printf '%s\n' "$hit" | sed 's/^/      /' | cut -c1-160)
+"
+        fi
+    done
+done
+IFS=$OLD_IFS
+
+if [ -n "$HITS" ]; then
+    echo "[harness] pre-push BLOCKED — possible secret in added lines across $N_COMMITS commit(s):"
+    printf '%s' "$HITS"
+    echo "[harness]"
+    echo "[harness] If a hit is a false positive, append the marker  harness:allow-secret  to that line"
+    echo "[harness]   and amend the commit. Push with --no-verify only if you have checked every hit."
+    echo "[harness] If it is real: the secret has NOT left this machine. Rewrite the commit AND rotate"
+    echo "[harness]   the credential — a rewritten local commit does not un-leak a key you already used."
+    exit 1
+fi
+
+echo "[harness] pre-push: no secret pattern in added lines ($N_COMMITS commit(s) scanned)."
+exit 0

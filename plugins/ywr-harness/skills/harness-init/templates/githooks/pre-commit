@@ -1,0 +1,124 @@
+#!/bin/sh
+# pre-commit — run the harness's deterministic gates on the staged files, before any LLM review
+# sees them (org guide: "mechanical defects stay out of the LLM pipeline").
+#
+# TOOLCHAIN (ywr-harness ADR 0010/0015): placed by /ywr-harness:harness-init and OVERWRITTEN on
+# every re-run. Do not hand-edit — fix it in the canon and re-run the scaffold.
+#
+# What it does: asks scripts/harness/harness_gates.py which gates the staged files earn, then runs
+# them. The emitter only prints; this is where the printing turns into enforcement.
+#
+# WHAT IT DELIBERATELY DOES NOT DO:
+#
+#   * Whole-program gates (pytest, tsc, vitest, cargo-test, go-vet) are SKIPPED and reported. A
+#     pre-commit hook that runs the test suite is a pre-commit hook people turn off, and CI
+#     (.github/workflows/harness-gates.yml) already runs them on the committed content.
+#   * It gates the staged file LIST but runs the commands against the WORKING TREE. Gating staged
+#     *content* would mean stashing unstaged changes, and a hook that stashes is a hook that can
+#     lose work (ADR 0015). If those differ for you, the CI run is the authority.
+#
+# Failure is a blocked commit. `git commit --no-verify` is the documented escape hatch; a missing
+# interpreter is a REPORTED skip, never a silent pass.
+#
+# Copyright (c) 2026 YWR Labs Inc. All rights reserved.
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+EMITTER="$ROOT/scripts/harness/harness_gates.py"
+
+if [ ! -f "$EMITTER" ]; then
+    echo "[harness] SKIP pre-commit gates — scripts/harness/harness_gates.py not found."
+    echo "[harness]   Run /ywr-harness:harness-init to place it (reported, not silent)."
+    exit 0
+fi
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$STAGED" ] || exit 0
+
+PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || command -v py 2>/dev/null)
+if [ -z "$PY" ]; then
+    echo "[harness] SKIP pre-commit gates — no python on PATH (reported, not silent). CI still gates this commit."
+    exit 0
+fi
+
+# awk parses the emitter's output below. Without this check a missing awk yields an EMPTY command
+# list, which this hook would otherwise report as "no gate matched" — a silent false pass, and the
+# hardest kind of gate failure to notice because it looks exactly like success.
+if ! command -v awk >/dev/null 2>&1; then
+    echo "[harness] SKIP pre-commit gates — no awk on PATH, so the emitter's output cannot be parsed"
+    echo "[harness]   (reported, not silent — an unparsed emitter would look like 'no gates matched'). CI still gates this commit."
+    exit 0
+fi
+
+# The emitter takes explicit files, which is what keeps this scoped to the slice rather than the
+# tree. NUL-delimited via `xargs -0` (portable; `xargs -d` is GNU-only) so a path with spaces
+# survives. Its warnings go to stderr and are shown; only stdout is parsed.
+OUT=$(printf '%s\n' "$STAGED" | tr '\n' '\0' | xargs -0 "$PY" "$EMITTER" --repo "$ROOT")
+EMIT_RC=$?
+if [ $EMIT_RC -ne 0 ]; then
+    echo "[harness] pre-commit: the gate emitter failed (exit $EMIT_RC) — not blocking the commit, but NO GATE RAN."
+    exit 0
+fi
+
+# Gate command lines are indented exactly four spaces under `gates:`. Two things are excluded:
+#   ( ... )          the "(no gate declared for this group)" note — a parenthetical, not a command.
+#                    Running it would be a shell syntax error blamed on the hook.
+#   # whole-program  the emitter's own marker for unscoped gates; deferred to CI, see the header.
+CMDS=$(printf '%s\n' "$OUT" | awk '
+    /^gates:/         { g = 1; next }
+    /^ungrouped \(/   { g = 0 }
+    /^review tier:/   { g = 0 }
+    g && /^    [^ (]/ {
+        if ($0 ~ /# whole-program/) { next }
+        sub(/[ \t]*#.*$/, "")
+        sub(/^[ \t]+/, "")
+        if (length($0)) print
+    }
+')
+# `grep -c` always prints a count and exits 1 when that count is zero, so a `|| echo 0` fallback
+# would append a second line and make the variable non-numeric. Let the exit status go unused.
+DEFERRED=$(printf '%s\n' "$OUT" | grep -c '# whole-program')
+[ -n "$DEFERRED" ] || DEFERRED=0
+STAGED_N=$(printf '%s\n' "$STAGED" | wc -l | tr -d ' ')
+
+if [ -z "$CMDS" ]; then
+    echo "[harness] pre-commit: no file-scoped gate matched the $STAGED_N staged file(s)."
+    if [ "$DEFERRED" -gt 0 ]; then
+        echo "[harness]   $DEFERRED whole-program gate(s) deferred to CI (reported, not silent)."
+    fi
+    exit 0
+fi
+
+echo "[harness] pre-commit gates on $STAGED_N staged file(s):"
+
+# Newline-delimited iteration. `set -f` disables globbing for the loop: a gate command carrying a
+# `*` would otherwise be expanded against the hook's working directory before it ever runs.
+FAILED=0
+OLD_IFS=$IFS
+set -f
+IFS='
+'
+for c in $CMDS; do
+    [ -n "$c" ] || continue
+    echo "[harness]   \$ $c"
+    ( cd "$ROOT" && sh -c "$c" )
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        echo "[harness]   FAIL ($rc): $c"
+        FAILED=1
+    fi
+done
+IFS=$OLD_IFS
+set +f
+
+if [ "$DEFERRED" -gt 0 ]; then
+    echo "[harness]   $DEFERRED whole-program gate(s) NOT run here — deferred to CI (reported, not silent)."
+fi
+
+if [ $FAILED -ne 0 ]; then
+    echo "[harness] pre-commit: deterministic gates FAILED. Fix them, or commit with --no-verify if"
+    echo "[harness]   you have a reason CI will accept."
+    exit 1
+fi
+
+echo "[harness] pre-commit: deterministic gates passed."
+exit 0

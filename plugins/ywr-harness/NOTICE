@@ -1,0 +1,13 @@
+ywr-harness — Copyright (c) 2026 YWR Labs Inc. All rights reserved.
+Author: Hyungjun Kim (John Kim) <johnkim@ywrlabs.com>, YWR Labs Inc.
+
+Proprietary. Use is limited to INTERNAL USE WITHIN orcait-co, under the
+governing agreement between YWR Labs Inc. and the client. Redistribution
+outside orcait-co, public publication, or use to provide services to a third
+party requires prior written permission: johnkim@ywrlabs.com
+
+This notice travels with the plugin: it applies to any copy of these files,
+wherever they are placed.
+
+The canonical source is private and held by YWR Labs Inc. Defects are fixed in
+the canon and consumed by version — never patched in a consuming repo.

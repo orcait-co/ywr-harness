@@ -1,0 +1,33 @@
+Copyright (c) 2026 YWR Labs Inc. All rights reserved.
+
+Author: Hyungjun Kim (John Kim) <johnkim@ywrlabs.com>, YWR Labs Inc.
+        (github.com/ywrlabs)
+
+This repository is a GENERATED DISTRIBUTION of the `ywr-harness` Claude Code
+plugin. The canonical source — its history, decision records, and engineering
+documents — is held privately by YWR Labs Inc. and is not part of this
+repository.
+
+
+GRANT OF USE — INTERNAL USE WITHIN orcait-co ONLY
+
+YWR Labs Inc. permits members of the orcait-co organization to install and use
+this plugin on machines they use for orcait-co work, for the duration of the
+governing agreement between YWR Labs Inc. and the client, and for no other
+purpose.
+
+Except as granted above, no part of this repository may be copied, modified,
+distributed, sublicensed, or published without prior written permission from
+YWR Labs Inc. In particular, it may not be redistributed outside orcait-co,
+published publicly, incorporated into a product, or used to provide services
+to any third party.
+
+
+HOSTING
+
+Hosting of this repository within the client's GitHub organization is for the
+purpose of that engagement only. It does not transfer copyright ownership, does
+not grant any license beyond the terms above, and does not make the contents
+the client's work product.
+
+Contact: johnkim@ywrlabs.com

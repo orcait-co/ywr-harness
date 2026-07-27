@@ -1,0 +1,222 @@
+# YWR Labs Harness (plugin)
+
+Portable Claude Code platform guards plus the adversarial code-review standard. Everything here
+is coupled to Claude Code's own hook payloads and runtime behavior — not to any repo's tech
+stack, directory layout, or conventions. That is why it ships as a plugin: the knowledge is
+identical in every repo, so it should be maintained in one place and consumed, not re-derived.
+
+Defects in anything here are fixed **in this repo**, never patched in a consuming repo — see
+`docs/adr/0010-harness-defects-fixed-in-canon.md`. The sanctioned escape hatch for urgency is
+`claude plugin disable`, which is reversible and visible; a local fork is neither.
+
+## Everything here is namespaced
+
+Plugin components resolve as `ywr-harness:<name>`. A bare name does not resolve:
+
+```
+/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init
+Workflow({name: 'ywr-harness:adversarial-review', args: {...}})
+```
+
+This is enforced — `manifest-gate.ps1` fails on a shipped instruction that names a component
+bare, in either the `Workflow({name: ...})` or the backticked-slash form. The gate exists because
+a live session found exactly that defect in shipped text while every selftest passed: the suite
+calls the scripts directly and never goes through the host's component registry.
+
+## Platform guards (hooks)
+
+| Hook | Event | Contract |
+|---|---|---|
+| `config-change-audit.ps1` | `ConfigChange` | Visibility only. Surfaces mid-session permission/hook self-modification. Never blocks. |
+| `directory-added-guard.ps1` | `DirectoryAdded` | Visibility only by construction — the event carries no decision control and fires after the permission refresh. Speaks only when the added directory actually contributes loadable surfaces (`.claude/skills`, `.claude/agents`) or parses one of the two settings keys it can contribute; silence on a bare directory is correct behavior, not a missed hook. |
+| `subagent-telemetry.ps1` | `SubagentStop` | Appends a per-agent JSONL ledger to `<project>/.claude/telemetry/`. Fail-open. |
+
+## Adversarial review (workflow)
+
+`workflows/adversarial-review.js` — lens finders → semantic dedupe → severity-gated skeptic
+verification. Invoke it as a workflow, or by name from the skill listing (a workflow's
+`meta.whenToUse` is what surfaces there; there is no separate skill file).
+
+```
+Workflow({ name: 'ywr-harness:adversarial-review', args: { scope: '<files + house invariants + passed gates>' } })
+```
+
+Lens defaults are deliberately repo-agnostic. Two knobs keep them that way:
+
+| arg | Effect |
+|---|---|
+| `lensExtra` | A house-specific angle appended to **every** lens prompt. Use this for repo vocabulary — how tenancy isolation is implemented, naming rules, a particular determinism boundary. |
+| `lenses` | Full override, `[{key, prompt}]`. An array with no valid entry throws: zero lenses is not a review. |
+
+Prefer `lensExtra`. Redefining the lens set to add one angle means later improvements to the
+canonical defaults never reach that repo — the same outcome as a local fork.
+
+`root` is optional. When omitted the "repo root" line is dropped from the prompts entirely and
+agents use the session's working directory; baking one repo's absolute path in as a default
+would be knowledge that is false everywhere else.
+
+`REVIEW.md` ships alongside it as the review-invariants canon the scope block should cite.
+
+## Local execution layer (git hooks)
+
+`/ywr-harness:harness-init` places two hooks into a consuming repo and wires `core.hooksPath`
+**conditionally** — set when unset, left alone when already `.githooks`, refused when it points
+anywhere else (ADR 0015).
+
+| Hook | Scope | Contract |
+|---|---|---|
+| `.githooks/pre-commit` | staged files | Runs the emitter's **file-scoped** gates. Whole-program gates (tests, typecheck) are deferred to CI and the deferral is reported. A failing gate blocks the commit. |
+| `.githooks/pre-push` | added lines of the pushed range | Regex secret scan. Pre-existing secrets outside the range are not re-flagged; a false positive is exempted per line with `harness:allow-secret`. |
+| `.githooks/post-commit` | the commit just made | Slice retro gate (ADR 0017) — seven deterministic docs-drift checks, zero tokens, silent when clean. Advisory: it never blocks. |
+
+`post-commit` is placed under a third mode, **GUARDED**: written when absent, refreshed when the
+existing file carries the `ywr-harness:post-commit` marker, **refused** otherwise. It is the one
+hook filename repos commonly already use — this repo's own `post-commit` republishes the docs
+artifact — so TOOLCHAIN would destroy working automation while SEED would silently deny the retro
+to every repo that has one.
+
+The retro's checks (DEP · MIGRATION · SPEC · BUILD · FEAT · UNMAPPED · DEADMAP) read their scope
+from the `retro` block in `.harness.json`. **An empty list disables the checks it drives, and
+`--coverage` says so** — silence must mean clean, never "not configured".
+
+```
+python scripts/harness/harness_retro.py main~3..HEAD   # whole slice — absorbs mid-slice splits
+python scripts/harness/harness_retro.py --coverage     # unowned files + dead implements_in
+SLICE_RETRO=0 git commit ...                           # skip once
+```
+
+`core.hooksPath` lives in `.git/config`, which is per-clone and never committed — so the scaffold
+wires exactly the machine it ran on. That gap is closed by reporting, not by wiring harder:
+`harness_gates.py` prints a `hooks:` line on every `/ywr-harness:slice-close` and CI run, so an
+unwired clone can never look identical to a wired one.
+
+Both hooks degrade the way everything else here does. A missing `python`, `awk`, or emitter is a
+**reported skip, never a silent pass** — an unparsed emitter would otherwise read as "no gates
+matched", which is the hardest kind of gate failure to notice.
+
+## Status line (user scope)
+
+```
+pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/statusline/install.ps1"     # add -DryRun to preview
+```
+
+Renders `location · model · effort · ctx N%/SIZE · 5h N% · 7d N% · orcait-guide vX.Y`, dropping the
+model's `(1M context)` suffix — a session constant costing width on every render — in favour of how
+much of that window is actually gone.
+
+The trailing segment is the version of the org guide **this session actually has**, read from
+Claude Code's local cache of server-managed settings (`~/.claude/remote-settings.json`). It is
+deliberately the *delivered* value, never a repo clone's: pasting the payload into the console is a
+manual step, so repo and console routinely disagree, and showing the repo version would report
+success for a deploy that never happened. That makes the segment a live drift detector for
+spec 0003 §7.
+
+`orcait-guide` is only the printed label. The settings key carrying the guide is **`claudeMd`**,
+fixed by Claude Code and honored in managed/policy settings only — an org cannot rename it, and
+managed settings parse *tolerantly*, so a renamed key would be stripped with a warning and the
+guide would silently stop being delivered.
+
+**A plugin cannot contribute the main status line**: a plugin's `settings.json` supports only
+`agent` and `subagentStatusLine`. So this ships as canon plus an installer that writes the user's
+own `~/.claude/` (ADR 0016). Run it once per machine; it is not applied automatically, and nothing
+detects a machine that never ran it.
+
+The installer separates its two effects because they carry different risk. The script is TOOLCHAIN,
+overwritten on every run. The `statusLine` setting follows ADR 0015's rule — written when absent,
+left alone when already ours, **refused** when it points anywhere else. `settings.json` is parsed
+and re-emitted so unrelated keys survive; a file that does not parse is a hard refusal that prints
+the snippet to add by hand.
+
+A key the payload does not carry **removes its segment** — never `0%`. Unmeasured and zero are
+different states, and rate-limit keys are legitimately absent on a session's first render, before
+the first API response. Context and quota use different threshold curves: 50% context is ordinary
+working state, 50% of a rate limit is already worth watching.
+
+## CI-invoked assets
+
+`scripts/workflow-gates.mjs` (parse + behavioral gate over a workflow corpus; `--dir` selects
+the corpus, default `.claude/workflows`) and `scripts/resolve-base.sh` (CI diff-range base
+resolution). `lib/selftest-lib.ps1` is the shared assertion core the selftests dot-source —
+dot-source it, do not run it.
+
+## Prerequisites
+
+- `pwsh` (PowerShell 7+) on `PATH` — every hook is a `.ps1`, invoked in exec form.
+- `node` — for `scripts/workflow-gates.mjs` and the workflow corpus gate. Absent `node` is a
+  reported skip locally and a hard failure on CI, where the gate must actually run.
+
+Hooks run wherever the session runs; the gates and selftests are also exercised on Linux pwsh,
+so nothing here may assume Windows.
+
+## Gates
+
+`selftest.ps1` is the single entry point — the manifest/wiring gate, the workflow corpus gate,
+then every shipped PowerShell selftest:
+
+```
+pwsh -NoProfile -File ./selftest.ps1
+```
+
+`manifest-gate.ps1` is deterministic and CLI-free. It fails on the three defects with
+distribution blast radius: `version` missing (omitted `version` falls back to the git commit
+SHA, so every commit ships as a new version to every consumer), a hook path that does not
+resolve, and a regression from exec form to shell form where a path placeholder is used.
+`manifest-gate.selftest.ps1` proves it can fail — thirteen mutations plus an unmutated control,
+because a suite that only ever passes and a gate that fails on everything score identically
+without the control. The control has earned its place: it caught a broken identity gate while
+the negative suite was reporting every mutation caught.
+
+`claude plugin validate --strict` is the richer manifest check but needs the CLI installed, so
+it stays a local pre-commit habit rather than a CI step.
+
+Fixtures live under the OS temp directory with exception-safe teardown — the runner never
+writes into the host repository, and it runs unchanged against a read-only mount. An empty
+discovery set exits 1, and a skipped gate is reported as skipped rather than folded into the
+pass count: both would otherwise be a gate judged from the wrong observable.
+
+CI (`.github/workflows/plugin.yml`) runs the same entry point on `ubuntu-latest` and
+`windows-latest` for any change under `plugins/**`. Both matter: hooks run on member machines
+(Windows) while a consuming repo's gates run on Linux, and the same `.ps1` serves both.
+
+A consuming repo's CI cannot reach these scripts through the plugin — `${CLAUDE_PLUGIN_ROOT}`
+is substituted when Claude Code spawns a hook, not in an arbitrary CI step. So the scaffold
+**vendors** them instead (ADR 0014): `/ywr-harness:harness-init` copies `scripts/harness/*.py`
+and `.github/workflows/harness-gates.yml` into the consumer, and `manifest-gate.ps1` enforces
+byte identity between the two copies so a fix here cannot silently fail to reach them. A
+reusable workflow (`on: workflow_call`) was rejected — it needs cross-repo Actions access
+widened from `none` to `organization`, which opens every workflow in this repo to the whole org.
+
+### Declared coverage debt
+
+The gate prints `coverage: shipped=N with-selftest=N uncovered=N` on every run and names the
+uncovered files. Nothing is excluded from that count but the selftests themselves — excluding
+the runner, the gate, or the shared lib would narrow the population without saying so, which
+is how a partial count comes to read as full coverage.
+
+Currently uncovered: `selftest-lib.ps1` and `resolve-base.sh` (selftests for both exist in
+`ywr-platform` and have not been ported), `harness_config.py` (exercised only through its two
+consumers), plus `selftest.ps1` itself, the runner.
+
+The count reads `template-payload-excluded=N` separately for files under `templates/` — payload
+this plugin copies rather than runs, which cannot have a selftest here. Two of them are the
+exception: `.githooks/pre-commit` and `.githooks/pre-push` are the only shipped artifacts that
+can block a commit or a push, so `githooks.selftest.ps1` runs them for real, in throwaway git
+repositories, against real staged changes and real commit ranges. They stay in the excluded
+count — it is a placement-based rule, not a claim that nothing tests them.
+
+## Installing this alongside an existing harness
+
+Hook deduplication is by command string (`hooks.md`), and a plugin's path placeholder is
+`${CLAUDE_PLUGIN_ROOT}` while a repo's is `${CLAUDE_PROJECT_DIR}` — the strings can never
+match, so **nothing is deduplicated**. A repo that already registers these hooks in
+`.claude/settings.json` will fire both copies. Consequences are not uniform:
+
+- Visibility hooks emit duplicate banners (noise).
+- `subagent-telemetry` appends **two ledger lines per event**, silently doubling every count
+  derived from it.
+- Permission-decision hooks are safe by precedence (`deny > defer > ask > allow`), so a
+  duplicated guard cannot be weakened.
+
+This plugin **replaces** those registrations. Remove the repo's own hook block when installing.
+Hooks registered for *other* events, or for the same event with a different purpose, coexist
+correctly — all matching hooks run in parallel.

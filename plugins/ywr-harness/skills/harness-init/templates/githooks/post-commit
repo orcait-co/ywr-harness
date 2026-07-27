@@ -1,0 +1,35 @@
+#!/bin/sh
+# ywr-harness:post-commit
+# ^ that marker line is load-bearing. `harness-init` refuses to overwrite a post-commit that does
+#   not carry it, because unlike pre-commit and pre-push this filename is one repos commonly
+#   already use. Do not delete it, or the next scaffold run will treat this file as yours and
+#   stop refreshing it.
+#
+# Slice retro gate (ADR 0017) — a zero-token deterministic retrospective, run after each commit.
+#
+# ADVISORY, ALWAYS. Post-commit rather than pre-commit is the whole design: the retro must never
+# stand between an author and their own history. A finding prompts a follow-up docs commit, which
+# then passes the gate silently.
+#
+# Skip once:        SLICE_RETRO=0 git commit ...
+# Whole slice:      python scripts/harness/harness_retro.py main~3..HEAD
+# Coverage audit:   python scripts/harness/harness_retro.py --coverage
+#
+# Copyright (c) 2026 YWR Labs Inc. All rights reserved.
+
+[ "$SLICE_RETRO" = "0" ] && exit 0
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+RETRO="$ROOT/scripts/harness/harness_retro.py"
+[ -f "$RETRO" ] || exit 0
+
+PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || command -v py 2>/dev/null)
+if [ -z "$PY" ]; then
+    echo "[slice-retro] SKIP — no python on PATH (reported, not silent)."
+    exit 0
+fi
+
+# `|| true` and the unconditional exit 0 are both deliberate: a crash in the retro must not look
+# like a problem with the commit, which has already happened and cannot be unmade here.
+"$PY" "$RETRO" --repo "$ROOT" || true
+exit 0

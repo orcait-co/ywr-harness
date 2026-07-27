@@ -1,0 +1,66 @@
+{
+  "//": "ywr-harness declaration. Repo-specific values live HERE so the plugin's scripts stay identical in every repo (ADR 0010). Placed once by /harness-init and never overwritten — edit it freely. Every command-shaped field is a SELECTOR from a closed set defined in the plugin, never a command string: this file is in the working tree, and the scripts print commands that get run (ADR 0012).",
+
+  "docs": {
+    "index": "docs/index.json"
+  },
+
+  "handoff": "",
+
+  "review": {
+    "//": "Regexes. They select and report — they cannot name an executable, so free strings are safe here.",
+    "canon": "REVIEW.md",
+
+    "//docs_only": "Surfaces that carry no executable meaning. When EVERY changed file matches, the review tier is 'skip' and deterministic gates suffice.",
+    "docs_only": ["^docs/", "^[^/]*\\.md$"],
+
+    "//harness_layer": "Code-bearing surfaces that are tooling rather than product. When every code-bearing file is confined here, the tier is 'small'.",
+    "harness_layer": [],
+
+    "//critical": "Surfaces where a weaker review is worst. ANY match forces tier 'full' — size never overrides criticality. Typical: migrations, authn/authz, tenant isolation, a deterministic numeric core, CI and guard semantics.",
+    "critical": []
+  },
+
+  "retro": {
+    "//": "Slice retro gate (ADR 0017). Regexes, like 'review' — they select and report, so free strings are safe. An EMPTY list DISABLES the checks it drives; the disablement is reported by `harness_retro.py --coverage` rather than passing quietly.",
+
+    "//source_scope": "Product source that must be owned by a spec's implements_in. Drives UNMAPPED, which fires on NEWLY ADDED files only — new code is owned from day one and the legacy baseline does not spam every commit.",
+    "source_scope": [],
+
+    "//dep_manifests": "Dependency manifests. Drives DEP: changed with no new ADR in scope. List the manifest, NOT the lockfile — a lockfile bump is a version change, not a decision.",
+    "dep_manifests": [],
+
+    "//migrations": "Schema migration files. Drives MIGRATION: added with no living spec touched.",
+    "migrations": [],
+
+    "//ignore_file": "The UNMAPPED exemption list, which doubles as the visible spec-debt register.",
+    "ignore_file": ".githooks/slice-retro-ignore"
+  },
+
+  "groups": [
+    {
+      "//": "One entry per file family that has its own gates. 'match' is a regex anchored at the repo root; 'cwd' is where the command runs; 'strip_prefix' is removed from file paths before they are passed. 'gates' are SELECTORS: ruff | ruff-format | pytest | pytest-nondb | eslint | prettier | tsc | vitest | cargo-clippy | cargo-test | go-vet | go-test | actionlint. A gate outside the set is dropped with the set named. Need one that is missing? Add it to the plugin's closed set, where it is reviewed once and reaches every repo.",
+      "name": "example-python",
+      "match": "^src/.*\\.py$",
+      "cwd": "",
+      "strip_prefix": "",
+      "gates": []
+    }
+  ],
+
+  "verify": {
+    "//runner": "SELECTOR: python-uv | python | poetry | node | pwsh.",
+    "runner": "python",
+    "cwd": "",
+    "strip_prefix": "",
+
+    "//script_pattern": "Regex identifying a verify script inside a spec's implements_in.",
+    "script_pattern": "^.*/verify_.*\\.py$",
+
+    "//product_scope": "Regex for files that SHOULD have a spec owner. Matches with no owner are reported as unmapped. Empty disables the check.",
+    "product_scope": "",
+
+    "//ui_prefix": "Path prefix whose changes the registered scripts do not cover. Empty disables the note.",
+    "ui_prefix": ""
+  }
+}

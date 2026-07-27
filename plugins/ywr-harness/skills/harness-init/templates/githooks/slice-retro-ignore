@@ -1,0 +1,29 @@
+# slice-retro ignore (ywr-harness ADR 0017) — files exempt from the UNMAPPED check.
+#
+# One POSIX ERE per line, matched against the full repo-relative path (anchored at both ends).
+# Blank lines and `#` comments are skipped.
+#
+# THIS FILE IS THE VISIBLE SPEC-DEBT REGISTER, and that is its more important job. A group marked
+# "spec candidate" has ADR coverage but no living spec yet — writing the spec deletes the group.
+# A permanently exempt group (generated code, plumbing with no behavior of its own) says so.
+#
+# Keep the comments. An ignore list without reasons becomes a list nobody dares delete from.
+#
+# SEED: placed once by /ywr-harness:harness-init and never overwritten. It is yours to edit.
+
+# ---------------------------------------------------------------------------------------------
+# Examples — delete these and write your own. They are shaped from a real register so the
+# intended granularity is visible: exempt a named file or a tight group, never a whole subtree.
+# ---------------------------------------------------------------------------------------------
+
+# generated — no human writes these, so no spec can describe them
+# src/lib/api-types\.ts
+
+# app wiring / plumbing — no spec-worthy behavior of its own
+# src/.*/__init__\.py
+# src/main\.py
+# src/config\.py
+
+# spec candidate: admin console (ADR 00NN) — has a decision record, no living spec yet.
+# Delete this group when the spec lands.
+# src/admin/.*\.py

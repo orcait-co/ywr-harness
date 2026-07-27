@@ -1,0 +1,144 @@
+# 하네스 게이트 — ywr-harness 플러그인이 스캐폴드로 배치한 CI. 이 파일과 scripts/harness/*.py 는
+# TOOLCHAIN 이므로 손으로 고치지 말 것: /ywr-harness:harness-init 재실행이 정본에서 덮어쓴다
+# (ywr-harness ADR 0010 — 하네스 결함은 정본에서 고친다).
+#
+# 왜 reusable workflow(`on: workflow_call`)가 아니고 벤더링인가:
+#   정본 레포는 private 이고 조직 간 Actions 접근이 access_level=none 이다. reusable workflow 로
+#   가려면 그 설정을 조직 전체로 넓혀야 하는데, 그건 이 레포의 워크플로와 액션을 조직 내 어느
+#   레포에서나 호출할 수 있게 만드는 권한 확대다. 빌더에 대해 이미 "복사 + 갱신 경로"를 택했으므로
+#   (ADR 0011) 같은 방식으로 통일한다. 전파는 harness-init 재실행이고, 정본 사본과의 바이트
+#   동일성은 플러그인의 manifest-gate 가 강제한다.
+#
+# 이 워크플로가 하는 일은 결정론 게이트를 **출력**하고 그중 실행 가능한 것을 돌리는 것이다.
+# emitter 는 아무것도 실행하지 않으므로, 실제 린트/테스트는 아래 run 스텝이 emitter 의 출력을
+# 받아 수행한다 — 무엇이 돌았고 무엇이 안 돌았는지가 로그에 남는 게 요점이다.
+
+name: harness-gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 0 = 전체 히스토리. emitter 가 --range 로 슬라이스 범위를 계산할 수 있어야 한다.
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve the diff range
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "range=origin/${{ github.base_ref }}...HEAD" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Emit deterministic gates and the review tier
+        id: emit
+        run: |
+          set -o pipefail
+          if [ -n "${{ steps.range.outputs.range }}" ]; then
+            python scripts/harness/harness_gates.py --range "${{ steps.range.outputs.range }}" | tee "$RUNNER_TEMP/gates.txt"
+          else
+            python scripts/harness/harness_gates.py | tee "$RUNNER_TEMP/gates.txt"
+          fi
+
+      # gates.txt lives in RUNNER_TEMP, NOT the working tree. The emitter's scope includes
+      # untracked files, and `tee` creates its output file before the emitter enumerates them —
+      # so an in-tree gates.txt makes this job report its OWN output as an ungrouped file and
+      # fail. Every scaffolded repo would hit it on the first CI run. Measured 2026-07-27 on
+      # this workflow's first execution.
+      - name: Fail on ungrouped files
+        run: |
+          # 그룹이 청구하지 않은 파일은 어떤 결정론 게이트도 덮지 않는다. 조용히 넘기면 커버리지가
+          # 있는 것처럼 읽히므로, 선언을 고치거나 의도적으로 예외 처리하도록 CI 에서 막는다.
+          if grep -q '^ungrouped (' "$RUNNER_TEMP/gates.txt"; then
+            echo "::error::선언된 그룹이 청구하지 않은 파일이 있습니다 — .harness.json 의 groups 를 보완하세요."
+            sed -n '/^ungrouped (/,$p' "$RUNNER_TEMP/gates.txt"
+            exit 1
+          fi
+          echo "OK — 모든 변경 파일이 선언된 그룹에 속합니다."
+
+      - name: Run the emitted gate commands
+        run: |
+          # emitter 는 출력만 한다. 여기서 실제로 돌린다 — 한 줄이라도 실패하면 잡을 수 있게
+          # 순차 실행하고, 무엇을 돌렸는지 로그에 남긴다.
+          set -euo pipefail
+          # `[^ (]` 가 중요하다: emitter 는 매치된 파일이 있는데 gates 가 비어 있는 그룹에 대해
+          # "    (no gate declared for this group — ...)" 를 같은 4칸 들여쓰기로 출력한다. 이건
+          # 명령이 아니라 주석문이라 sh 로 넘기면 서브셸이 되어 "no: command not found" 로 죽는다.
+          # 스캐폴드가 배치하는 기본 .harness.json 의 example 그룹이 정확히 그 모양이므로,
+          # 괄호로 시작하는 줄은 명령 목록에서 제외한다.
+          cmds=$(sed -n '/^gates:/,/^\(ungrouped\|review tier\)/p' "$RUNNER_TEMP/gates.txt" \
+                 | grep -E '^ {4}[^ (]' | sed 's/[[:space:]]*#.*$//' | sed 's/^[[:space:]]*//' || true)
+          # `|| true` is load-bearing under `set -euo pipefail`. When no group declares a gate — or
+          # no changed file matches a gate-bearing group — grep matches nothing and exits 1,
+          # pipefail propagates it, and `set -e` kills this step BEFORE the branch below can report
+          # cleanly. That branch was unreachable for exactly the repos it was written for. Measured
+          # 2026-07-27: this canon declares `gates: []` everywhere and CI failed on it.
+          if [ -z "$cmds" ]; then
+            echo "실행할 결정론 게이트가 없습니다(선언된 그룹이 매치되지 않았거나 gates 가 비어 있음)."
+            exit 0
+          fi
+          echo "$cmds" | while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            echo "::group::$c"
+            sh -c "$c"
+            echo "::endgroup::"
+          done
+
+      - name: Slice retro over the PR range (advisory, report-only)
+        run: |
+          # ADR 0017. 로컬 post-commit 훅과 같은 스크립트를 PR 범위 전체에 돌린다 — 범위 모드는
+          # "코드 커밋 먼저, 문서 커밋 나중" 같은 슬라이스 중간 오탐을 흡수하므로 여기서 남는
+          # 발견은 실제로 슬라이스가 닫히지 않았다는 뜻이다. 리포트 전용: 실패시키지 않는다.
+          if [ -f scripts/harness/harness_retro.py ]; then
+            if [ -n "${{ steps.range.outputs.range }}" ]; then
+              python scripts/harness/harness_retro.py "${{ steps.range.outputs.range }}" || true
+            else
+              python scripts/harness/harness_retro.py --coverage || true
+            fi
+          else
+            echo "harness_retro.py 없음 — /ywr-harness:harness-init 재실행으로 배치(보고됨, 무음 아님)."
+          fi
+
+      - name: Map changed files to spec-owned verify scripts (advisory)
+        run: |
+          if [ -n "${{ steps.range.outputs.range }}" ]; then
+            python scripts/harness/verify_map.py --range "${{ steps.range.outputs.range }}"
+          else
+            python scripts/harness/verify_map.py
+          fi
+
+      - name: Docs index drift (only when docs sources changed)
+        run: |
+          if [ -f docs/build_docs.py ] && git diff --name-only ${{ steps.range.outputs.range || 'HEAD~1..HEAD' }} -- docs/ | grep -q .; then
+            python docs/build_docs.py >/dev/null
+            if [ -n "$(git status --porcelain docs/index.json docs/INDEX.md)" ]; then
+              echo "::error::docs/index.json 또는 docs/INDEX.md 가 소스와 어긋났습니다(드리프트). 로컬에서 pwsh docs/build.ps1 후 커밋하세요."
+              git --no-pager diff -- docs/index.json docs/INDEX.md
+              exit 1
+            fi
+            echo "OK — 커밋된 index 가 소스와 일치합니다."
+          else
+            echo "docs 소스 변경 없음 — 드리프트 검사 생략(보고됨, 무음 아님)."
+          fi

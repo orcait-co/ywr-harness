@@ -1,0 +1,6 @@
+# Placed by /ywr-harness:harness-init. Nested on purpose: the consuming repo's root .gitignore is
+# its own file and the scaffold never edits it, but the bytecode these scripts generate on import
+# must not reach the diff — the CI gate treats a file no declared group claims as ungated and
+# fails, so an untracked .pyc would fail every run. Measured on the first end-to-end scaffold.
+__pycache__/
+*.pyc
