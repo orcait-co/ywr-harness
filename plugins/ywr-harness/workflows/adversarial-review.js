@@ -12,11 +12,11 @@
 // 2026-07-13 — xhigh/max 딥워크 누수 차단). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
 export const meta = {
   name: 'adversarial-review',
-  description: '적대 코드리뷰 표준(ADR #50/#104) — 렌즈 티어(풀3·small2)·시맨틱 dedupe·심각도 게이트(h/m=2·low=1·nit=0 skeptic)',
-  whenToUse: '슬라이스 마감 게이트 리뷰. args.scope 에 대상 파일 목록 + 하우스 불변식 + 이미 통과한 게이트를 넣는다(diff 슬라이스는 git diff 주입). 소형 비크리티컬 diff 는 args.tier:"small"(ADR #104). 레포의 결정론 린트 게이트를 먼저 돌리고 통과 결과를 게이트 블록에 포함할 것. 하우스 고유 렌즈 앵글은 args.lensExtra 로 주입한다.',
+  description: '적대 코드리뷰 표준 — 렌즈 티어(풀3·small2)·시맨틱 dedupe·심각도 게이트(h/m=2·low=1·nit=0 skeptic)',
+  whenToUse: '슬라이스 마감 게이트 리뷰. args.scope 에 대상 파일 목록 + 하우스 불변식 + 이미 통과한 게이트를 넣는다(diff 슬라이스는 git diff 주입). 소형 비크리티컬 diff 는 args.tier:"small". 레포의 결정론 린트 게이트를 먼저 돌리고 통과 결과를 게이트 블록에 포함할 것. 하우스 고유 렌즈 앵글은 args.lensExtra 로 주입한다.',
   phases: [
     { title: 'Canary', detail: '한도/게이트웨이 확인 1개 (sonnet)', model: 'sonnet' },
-    { title: 'Find', detail: '렌즈 병렬 — 풀 3 · small 2 (sonnet·effort medium, ADR 0129)', model: 'sonnet' },
+    { title: 'Find', detail: '렌즈 병렬 — 풀 3 · small 2 (sonnet·effort medium)', model: 'sonnet' },
     { title: 'Dedupe', detail: 'file:line 키 + >12건이면 haiku 그룹핑(effort low)', model: 'haiku' },
     { title: 'Verify', detail: 'high/med=2 · low=1 skeptic(effort low) · nit=생략', model: 'sonnet' },
   ],
@@ -38,7 +38,7 @@ const _args = (() => {
     return { scope: args }
   }
 })()
-if (!_args.scope) throw new Error("args.scope 필요 — 리뷰 대상 파일 목록 + 하우스 컨텍스트 블록(ADR #50)")
+if (!_args.scope) throw new Error("args.scope 필요 — 리뷰 대상 파일 목록 + 하우스 컨텍스트 블록")
 // 스코프는 문자열 블록 또는 구조화 객체({files, invariants, ...}) — 객체는 직렬화해 프롬프트에 주입.
 // (2026-07-02 회고: 객체를 템플릿에 그대로 넣으면 "[object Object]" 로 스코프가 증발 → 파인더 드리프트 근원)
 const SCOPE = typeof _args.scope === 'string' ? _args.scope : JSON.stringify(_args.scope, null, 2)
@@ -151,7 +151,7 @@ const FIND_CAP = TIER === 'small' ? 6 : 8
 
 phase('Canary')
 const canary = await work('아래 단어로만 답하라: ok', { label: 'canary', phase: 'Canary', effort: 'low' })
-if (canary === null) throw new Error('카나리아 실패(한도/게이트웨이) — 팬아웃 중단(ADR #50 §4)')
+if (canary === null) throw new Error('카나리아 실패(한도/게이트웨이) — 팬아웃 중단')
 countAgents('canary', 1)
 lap('canary')
 
@@ -197,7 +197,7 @@ if (deadIdx.length) {
 }
 const deadLenses = LENSES.filter((_, i) => !found[i]).map(l => l.key)
 if (deadLenses.length === LENSES.length) {
-  throw new Error(`모든 파인더 실패(${deadLenses.join(', ')}) — 리뷰 무효, 게이트 통과로 읽지 말 것(ADR 0050 §4)`)
+  throw new Error(`모든 파인더 실패(${deadLenses.join(', ')}) — 리뷰 무효, 게이트 통과로 읽지 말 것`)
 }
 if (deadLenses.length) {
   log(`[경고] 재시도 후에도 파인더 실패: ${deadLenses.join(', ')} — 렌즈 커버리지 축소 상태로 진행(stats.dead_lenses 로 반환)`)
@@ -296,6 +296,6 @@ return {
     output_tokens_upper_bound: outTokens,
     agents_per_phase: agentsPerPhase,
     main_loop_bleed_estimate: bleed,
-    telemetry_basis: 'budget.spent() is shared with the main loop, so every output_tokens_upper_bound figure is an UPPER BOUND, not this workflow\'s spend. SubagentStop cannot replace it — that event carries no token or duration fields (ADR 0112 decision 2, doc-verified). agents_per_phase is exact. main_loop_bleed_estimate is a FLOOR measured in the canary window ONLY (the canary answers with one word, so its lap\'s excess came from the main loop): a large value invalidates this run\'s token figures, but a zero does NOT prove the find/dedupe/verify laps are clean.',
+    telemetry_basis: 'budget.spent() is shared with the main loop, so every output_tokens_upper_bound figure is an UPPER BOUND, not this workflow\'s spend. SubagentStop cannot replace it — that event carries no token or duration fields (doc-verified). agents_per_phase is exact. main_loop_bleed_estimate is a FLOOR measured in the canary window ONLY (the canary answers with one word, so its lap\'s excess came from the main loop): a large value invalidates this run\'s token figures, but a zero does NOT prove the find/dedupe/verify laps are clean.',
   },
 }
