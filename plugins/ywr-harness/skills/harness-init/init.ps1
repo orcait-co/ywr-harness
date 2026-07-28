@@ -160,18 +160,66 @@ foreach ($k in $TOOLCHAIN.Keys) { Place $k $TOOLCHAIN[$k] $true; $considered++ }
 foreach ($k in $GUARDED.Keys) { Place-Guarded $k $GUARDED[$k]; $considered++ }
 foreach ($k in $SEED.Keys) { Place $k $SEED[$k] $false; $considered++ }
 
-# `0000-template.md` is not a record — its frontmatter sits behind an HTML comment so the builder
-# does not index it. That is why a templates-only corpus still counts as empty here.
+# "Empty" means NO existing decision records, whatever they are named and wherever they live.
+# The first shipped version matched only `^\d{4}-` names inside docs/adr/ — so a repo whose log
+# used another convention (ADR-001-*, 001-*, dated names) or another conventional home (doc/adr,
+# docs/decisions, ...) was seeded with a second 0001, forking its decision history. Two scopes,
+# ONE record predicate:
+#   - docs/adr/: any .md record counts. The scaffold's own placements (0000-template.md,
+#     README.md) are non-records under the predicate, so the check reads the same whether this
+#     run placed them, a previous run did, or — under -DryRun, where nothing is written — nobody
+#     has yet: exclusion is by name, never by provenance.
+#   - conventional homes elsewhere: named locations, not a tree-wide glob — a heuristic sweep
+#     would false-positive on unrelated notes.
+# A readme or a template is not a record, wherever it lives and whatever its case (deliberately
+# case-insensitive — checkout filesystems differ, and a lowercase readme.md is still a readme).
+# The template exclusion is anchored to the FILENAME SUFFIX: a real record about templating
+# ('0007-template-engine-selection.md') counts; 'decision-template.md' / '0000-template.md' do
+# not. The residual edge ('...-html-template.md') errs toward suppressing the seed, which is
+# loud, over placing it, which forks a repo's history.
+function Test-IsDecisionRecord([string]$Name) {
+    return -not ($Name -match '^readme\.md$' -or $Name -match 'template\.md$')
+}
 $adrDir = Join-Path $root 'docs/adr'
 $existingRecords = @()
 if (Test-Path -LiteralPath $adrDir -PathType Container) {
     $existingRecords = @(Get-ChildItem -LiteralPath $adrDir -File -Filter '*.md' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^\d{4}-' -and $_.Name -ne '0000-template.md' })
+        Where-Object { Test-IsDecisionRecord $_.Name })
 }
-if ($existingRecords.Count -eq 0) {
+$FOREIGN_ADR_DIRS = @('doc/adr', 'adr', 'docs/decisions', 'doc/architecture/decisions', 'docs/architecture/decisions')
+$foreignRecords = @()
+foreach ($rel in $FOREIGN_ADR_DIRS) {
+    $p = Join-Path $root $rel
+    if (Test-Path -LiteralPath $p -PathType Container) {
+        $found = @(Get-ChildItem -LiteralPath $p -File -Filter '*.md' -ErrorAction SilentlyContinue |
+            Where-Object { Test-IsDecisionRecord $_.Name })
+        if ($found.Count -gt 0) { $foreignRecords += "$rel ($($found.Count))" }
+    }
+}
+if ($existingRecords.Count -eq 0 -and $foreignRecords.Count -eq 0) {
     foreach ($k in $SEED_CORPUS.Keys) { Place $k $SEED_CORPUS[$k] $false; $considered++ }
 } else {
-    $skippedSeed += "corpus seed not placed — docs/adr/ already holds $($existingRecords.Count) record(s)"
+    # Independent reports: a transitional repo can hold records in BOTH places, and the operator
+    # needs to hear about the foreign ones even when docs/adr/ is populated.
+    if ($existingRecords.Count -gt 0) {
+        $msg = "corpus seed not placed — docs/adr/ already holds $($existingRecords.Count) record(s)"
+        # The builder indexes only `NNNN-*.md` (build_docs.py FILE_RE). Suppressing the seed over
+        # records the builder cannot see leaves the corpus unbuildable — the report must carry
+        # the cause, or the later 'SKIP build' line states a failure with no explanation.
+        $indexable = @($existingRecords | Where-Object { $_.Name -match '^\d{4}-' })
+        if ($indexable.Count -eq 0) {
+            $msg += (". NONE match the builder's NNNN-<slug>.md pattern, so the docs build will " +
+                "refuse the corpus as empty — rename the records to NNNN-<slug>.md and give each " +
+                "frontmatter (see docs/adr/0000-template.md)")
+        }
+        $skippedSeed += $msg
+    }
+    if ($foreignRecords.Count -gt 0) {
+        $skippedSeed += ("corpus seed not placed — existing decision records found outside docs/adr/: " +
+            "$($foreignRecords -join '; '). The builder indexes docs/ only: migrate them into docs/adr/ " +
+            "(keep numbering, add frontmatter per docs/adr/0000-template.md), or the docs build will " +
+            "refuse the empty corpus.")
+    }
 }
 
 $mode = if ($DryRun) { ' (dry run — nothing written)' } else { '' }

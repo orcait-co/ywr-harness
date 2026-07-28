@@ -146,6 +146,70 @@ $ok = (Assert-True 'I suppression is reported' ($rI.Out -match 'corpus seed not 
 $ok = (Assert-True 'I existing record untouched' ((Get-Content -LiteralPath $mine0001 -Raw) -match 'mine') 'existing 0001 changed') -and $ok
 $ok = (Assert-True 'I run exits 0' ($rI.Code -eq 0) "exit=$($rI.Code)") -and $ok
 
+# --- I2: records that do not match ^\d{4}- still suppress the seed ----------------------------
+# The shipped v0.12.1 defect: detection matched only `^\d{4}-` names, so a repo whose log used
+# another convention (ADR-001-*, 001-*, dated names) was seeded with a second decision log.
+$i2 = New-Target 'has-records-other-naming'
+New-Item -ItemType Directory -Force -Path (Join-Path $i2 'docs/adr') | Out-Null
+Set-Content -LiteralPath (Join-Path $i2 'docs/adr/ADR-007-choose-database.md') -Value "# ADR-007`n" -NoNewline
+$rI2 = Invoke-Init @('-Target', $i2)
+$seedLanded2 = Test-Path -LiteralPath (Join-Path $i2 'docs/adr/0001-adopt-docs-as-code.md') -PathType Leaf
+$ok = (Assert-True 'I2 non-standard-named record suppresses the seed' (-not $seedLanded2) 'seed placed next to ADR-007-*') -and $ok
+$ok = (Assert-True 'I2 suppression is reported' ($rI2.Out -match 'corpus seed not placed') $rI2.Out) -and $ok
+# ADR-007-* is invisible to the builder (FILE_RE wants NNNN-*.md), so this repo's corpus is
+# unbuildable after suppression — the report must carry that cause, not just the suppression.
+$ok = (Assert-True 'I2 unbuildable corpus is explained with the rename path' ($rI2.Out -match 'docs build will refuse' -and $rI2.Out -match 'rename') $rI2.Out) -and $ok
+$ok = (Assert-True 'I2 run exits 0' ($rI2.Code -eq 0) "exit=$($rI2.Code)") -and $ok
+
+# --- I3: records in a conventional home OUTSIDE docs/adr/ suppress the seed and name it -------
+# Seeding 0001 next to a foreign log (doc/adr, docs/decisions, ...) forks the repo's decision
+# history; the operator must migrate, and the report must say where the records are and what to do.
+$i3 = New-Target 'has-records-elsewhere'
+New-Item -ItemType Directory -Force -Path (Join-Path $i3 'doc/adr') | Out-Null
+Set-Content -LiteralPath (Join-Path $i3 'doc/adr/0001-use-postgres.md') -Value "# 0001`n" -NoNewline
+$rI3 = Invoke-Init @('-Target', $i3)
+$seedLanded3 = Test-Path -LiteralPath (Join-Path $i3 'docs/adr/0001-adopt-docs-as-code.md') -PathType Leaf
+$ok = (Assert-True 'I3 foreign-location record suppresses the seed' (-not $seedLanded3) 'seed placed while doc/adr/ holds records') -and $ok
+$ok = (Assert-True 'I3 the location is named' ($rI3.Out -match 'doc/adr') $rI3.Out) -and $ok
+$ok = (Assert-True 'I3 the migration path is stated' ($rI3.Out -match 'migrate them into docs/adr/') $rI3.Out) -and $ok
+$ok = (Assert-True 'I3 run exits 0' ($rI3.Code -eq 0) "exit=$($rI3.Code)") -and $ok
+
+# --- I4: README/template files are NOT records — no over-suppression --------------------------
+# The negative half of I2/I3: a doc/adr/ holding only a README must still count as empty, or the
+# broadened detection would deny the seed (and with it a buildable corpus) to repos it should serve.
+$i4 = New-Target 'readme-only-elsewhere'
+New-Item -ItemType Directory -Force -Path (Join-Path $i4 'doc/adr') | Out-Null
+Set-Content -LiteralPath (Join-Path $i4 'doc/adr/README.md') -Value "# about ADRs`n" -NoNewline
+Set-Content -LiteralPath (Join-Path $i4 'doc/adr/decision-template.md') -Value "# template`n" -NoNewline
+$rI4 = Invoke-Init @('-Target', $i4)
+$seedLanded4 = Test-Path -LiteralPath (Join-Path $i4 'docs/adr/0001-adopt-docs-as-code.md') -PathType Leaf
+$ok = (Assert-True 'I4 README/template alone do not suppress' $seedLanded4 "seed not placed; out=$($rI4.Out)") -and $ok
+$ok = (Assert-True 'I4 run exits 0' ($rI4.Code -eq 0) "exit=$($rI4.Code)") -and $ok
+
+# --- I5: 'template' inside a record's TITLE does not exclude it (anchored suffix match) --------
+# The review-caught regression: an unanchored -notmatch 'template' excluded a real record about
+# templating, reproducing the seeded-second-log bug via filename content instead of convention.
+$i5 = New-Target 'record-about-templating'
+New-Item -ItemType Directory -Force -Path (Join-Path $i5 'doc/adr') | Out-Null
+Set-Content -LiteralPath (Join-Path $i5 'doc/adr/0007-template-engine-selection.md') -Value "# 0007`n" -NoNewline
+$rI5 = Invoke-Init @('-Target', $i5)
+$seedLanded5 = Test-Path -LiteralPath (Join-Path $i5 'docs/adr/0001-adopt-docs-as-code.md') -PathType Leaf
+$ok = (Assert-True 'I5 a record about templating still suppresses the seed' (-not $seedLanded5) "seed placed despite 0007-template-engine-selection.md; out=$($rI5.Out)") -and $ok
+$ok = (Assert-True 'I5 run exits 0' ($rI5.Code -eq 0) "exit=$($rI5.Code)") -and $ok
+
+# --- I6: records in BOTH docs/adr/ and a foreign home -> both reported ------------------------
+# A transitional repo (standard log started, old log not yet migrated) must hear about the
+# foreign location too; an if/elseif that stops at the docs/adr/ count hides it.
+$i6 = New-Target 'records-both-places'
+New-Item -ItemType Directory -Force -Path (Join-Path $i6 'docs/adr') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $i6 'doc/adr') | Out-Null
+Set-Content -LiteralPath (Join-Path $i6 'docs/adr/0001-first.md') -Value "# 0001`n" -NoNewline
+Set-Content -LiteralPath (Join-Path $i6 'doc/adr/0009-legacy.md') -Value "# 0009`n" -NoNewline
+$rI6 = Invoke-Init @('-Target', $i6)
+$ok = (Assert-True 'I6 docs/adr records reported' ($rI6.Out -match 'docs/adr/ already holds 1 record') $rI6.Out) -and $ok
+$ok = (Assert-True 'I6 foreign location reported in the same run' ($rI6.Out -match 'outside docs/adr/.*doc/adr') $rI6.Out) -and $ok
+$ok = (Assert-True 'I6 run exits 0' ($rI6.Code -eq 0) "exit=$($rI6.Code)") -and $ok
+
 # --- J: a hostile console encoding must not break the build ------------------------------------
 # The windows-latest failure this case pins: Python encodes stdout with the console codepage, so a
 # non-UTF-8 codepage makes the builder's OWN output raise UnicodeEncodeError and exit 1 — after

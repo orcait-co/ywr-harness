@@ -1,0 +1,11 @@
+# Line-ending normalization — store LF in the repo and absorb per-OS checkout differences.
+# Ships to the PUBLIC dist repo since v0.12.2 (fact 34): without it a Windows member's
+# autocrlf=true converts the checkout to CRLF and the Workflow tool rejects the CR-bearing
+# workflow script — by-name invocation dead on every Windows install.
+* text=auto eol=lf
+
+# Shell scripts are always LF (bash chokes on \r in CRLF).
+*.sh text eol=lf
+
+# PowerShell stays CRLF by convention (LF works too, but this matches Windows tooling).
+*.ps1 text eol=crlf
