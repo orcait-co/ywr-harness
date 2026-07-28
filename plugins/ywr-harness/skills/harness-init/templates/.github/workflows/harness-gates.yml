@@ -78,6 +78,49 @@ jobs:
           fi
           echo "OK — 모든 변경 파일이 선언된 그룹에 속합니다."
 
+      # ADR 0022(0021 대체). enabledPlugins 가 커밋되면 이 레포를 클론하는 전원에게 플러그인이 강제
+      # 활성화된다 — 관리 설정 페이로드에서 끝까지 쓰지 않은 바로 그 키다(ADR 0010/0012). 트리에
+      # 쓰는 스코프는 둘 다 막는다: --scope project 는 .claude/settings.json, --scope local 은
+      # .claude/settings.local.json 에 쓴다(측정값. 0021 은 전자만 막고 후자를 해법으로 안내했다).
+      # 파일 자체는 공유 설정의 정당한 자리이므로 금지하지 않고, 키만 값과 무관하게 막는다 —
+      # 언인스톨이 `{"enabledPlugins": {}}` 를 남기므로 빈 값도 커밋 대상이 아니다.
+      #
+      # 훅과 달리 여기서는 JSON 으로 파싱한다. `"enabledPlugins"` 는 RFC 8259 상 동일한 키이고
+      # 호스트도 그렇게 읽지만 리터럴 grep 은 놓친다. 훅은 인터프리터 없이 도는 바닥이고(ADR 0015)
+      # 실효 백스톱은 core.hooksPath 에 의존하지 않는 이 스텝이다.
+      - name: Fail on a committed enabledPlugins
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+
+          TARGETS = [".claude/settings.json", ".claude/settings.local.json"]
+          tracked = [p for p in subprocess.run(
+              ["git", "ls-files", "-z", "--"] + TARGETS,
+              capture_output=True, text=True, check=True).stdout.split("\0") if p]
+
+          bad = []
+          for path in tracked:
+              with open(path, encoding="utf-8") as fh:
+                  raw = fh.read()
+              try:
+                  data = json.loads(raw)
+              except json.JSONDecodeError as exc:
+                  # 파싱 실패를 통과로 처리하지 않는다 — 검사하지 못한 것과 위반이 없는 것은 다르다.
+                  print(f"::error::{path} 를 파싱할 수 없어 enabledPlugins 여부를 확인하지 못했습니다: {exc}")
+                  sys.exit(1)
+              if isinstance(data, dict) and "enabledPlugins" in data:
+                  bad.append(path)
+
+          if bad:
+              for path in bad:
+                  print(f"::error::{path} 이 enabledPlugins 를 선언합니다 — 클론하는 전원에게 플러그인이 강제됩니다(ADR 0010/0022).")
+              print("고치는 법: git rm --cached <파일> 후 git 에서 제외하거나, 플러그인을 언인스톨하고 설치를 각 구성원의 선택으로 두세요.")
+              print("--scope project 와 --scope local 모두 이 키를 트리에 쓰므로 다른 스코프로 재설치하는 것은 해결이 아닙니다.")
+              sys.exit(1)
+
+          print(f"OK — 커밋된 enabledPlugins 없음(추적 중인 대상 {len(tracked)}개 검사).")
+          PY
+
       - name: Run the emitted gate commands
         run: |
           # emitter 는 출력만 한다. 여기서 실제로 돌린다 — 한 줄이라도 실패하면 잡을 수 있게

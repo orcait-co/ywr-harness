@@ -45,6 +45,14 @@
       "cwd": "",
       "strip_prefix": "",
       "gates": []
+    },
+    {
+      "//": "The Claude Code host's own project settings. Claimed because `claude plugin install --scope project` writes .claude/settings.json into the tree, and an unclaimed file fails CI (and reads as missing coverage locally). Claiming it is NOT permission to commit `enabledPlugins`: that key forces the plugin on every clone, and CI and pre-commit refuse it in both settings files regardless of its value (ADR 0010, ADR 0022).",
+      "name": "claude-host",
+      "match": "^\\.claude/settings(\\.local)?\\.json$",
+      "cwd": "",
+      "strip_prefix": "",
+      "gates": []
     }
   ],
 

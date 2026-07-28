@@ -23,6 +23,44 @@
 # Copyright (c) 2026 YWR Labs Inc. All rights reserved.
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+
+# ADR 0022 (supersedes 0021) — a committed `enabledPlugins` enables the plugin for everyone who
+# clones this repo, and that forcing is exactly what ADR 0010/0012 kept out of the managed-settings
+# payload. BOTH scopes that write into the tree are covered: `--scope project` writes
+# .claude/settings.json and `--scope local` writes .claude/settings.local.json. ADR 0021 gated only
+# the first and its refusal message recommended the second — measured, not assumed.
+#
+# The KEY is refused regardless of its value. `enabledPlugins` is host install state and does not
+# belong in a shared settings file even when empty: an uninstall leaves `{ "enabledPlugins": {} }`
+# behind, and every member's install rewrites it. The FILE stays legitimate; only the key does not.
+#
+# Three deliberate properties:
+#   * It reads STAGED content, not the working tree. What lands in the commit is the whole question.
+#   * It runs BEFORE the emitter and interpreter checks below, so a repo with no harness scripts and
+#     no python on PATH is still protected. This gate must not be skippable by environment.
+#   * That is also its limit: a literal match cannot see a `\uXXXX`-escaped spelling of the key,
+#     which is valid JSON the host still honors. CI parses the file and catches that; this hook is
+#     the floor, not the authority (same split as ADR 0015).
+#
+# `grep -Fqx -e` : -F literal (the paths carry regex metacharacters), -x whole line, -e because a
+# value in command position must never be read as an option (the leading-dash defect, case I2).
+# --diff-filter=AM only: without -M/-C git reports no R or C, so listing them read as rename
+# handling this check does not do.
+for _cfg in .claude/settings.json .claude/settings.local.json; do
+    git diff --cached --name-only --diff-filter=AM 2>/dev/null | grep -Fqx -e "$_cfg" || continue
+    if git show ":$_cfg" 2>/dev/null | grep -q '"enabledPlugins"'; then
+        echo "[harness] pre-commit REFUSED: $_cfg declares enabledPlugins."
+        echo "[harness]   Committing it forces the plugin on everyone who clones this repo, with no"
+        echo "[harness]   choice and no 'plugin disable' that survives the next pull (ADR 0010/0022)."
+        echo "[harness]   Both --scope project and --scope local write this key INTO the tree, so"
+        echo "[harness]   reinstalling at another scope is not a fix."
+        echo "[harness]   Fix: git restore --staged $_cfg and keep it out of git, or uninstall the"
+        echo "[harness]   plugin and leave installation to each member. An uninstall can leave an"
+        echo "[harness]   empty \"enabledPlugins\": {} behind — remove the key, not just the entry."
+        exit 1
+    fi
+done
+
 EMITTER="$ROOT/scripts/harness/harness_gates.py"
 
 if [ ! -f "$EMITTER" ]; then

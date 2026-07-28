@@ -144,6 +144,9 @@ dot-source it, do not run it.
 - `pwsh` (PowerShell 7+) on `PATH` — every hook is a `.ps1`, invoked in exec form.
 - `node` — for `scripts/workflow-gates.mjs` and the workflow corpus gate. Absent `node` is a
   reported skip locally and a hard failure on CI, where the gate must actually run.
+- `python` 3.9+ (stdlib only) — every gate script under `scripts/` requires it:
+  `harness_gates.py` (invoked by the `pre-commit` hook), `harness_retro.py` (by the
+  `post-commit` hook), and `verify_map.py` (by `ywr-harness:verify`).
 
 Hooks run wherever the session runs; the gates and selftests are also exercised on Linux pwsh,
 so nothing here may assume Windows.

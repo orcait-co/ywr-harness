@@ -150,6 +150,65 @@ $b = New-Repo 'pc-nothing-staged'
 $rB = Invoke-Hook $b $preCommit $null
 $ok = (Assert-True 'B nothing staged exits 0' ($rB.Code -eq 0) "exit=$($rB.Code) out=$($rB.Out)") -and $ok
 
+# --- B2..B6: a committed enabledPlugins is refused (ADR 0022, supersedes 0021) ------------------
+# Deliberately OUTSIDE the $pyAvail block below. The gate protects ADR 0010's non-forcing invariant,
+# so it must fire in a repo with no emitter and no python — these fixtures have neither, which is
+# what proves the check runs ahead of both skip paths.
+$b2 = New-Repo 'pc-enabled-plugins'
+Write-File $b2 '.claude/settings.json' "{`n  `"enabledPlugins`": { `"ywr-harness@ywrlabs`": true }`n}`n"
+& git -C $b2 add -A 2>$null
+$rB2 = Invoke-Hook $b2 $preCommit $null
+$ok = (Assert-True 'B2 a staged enabledPlugins BLOCKS the commit' ($rB2.Code -eq 1) "exit=$($rB2.Code) out=$($rB2.Out)") -and $ok
+$ok = (Assert-True 'B2 the forcing consequence is stated, not just the rule' ($rB2.Out -match 'forces the plugin on everyone') $rB2.Out) -and $ok
+$ok = (Assert-True 'B2 the governing ADRs are named' ($rB2.Out -match 'ADR 0010/0022') $rB2.Out) -and $ok
+
+# B3 is the control for B2/B4/B5. Without it, a check that refused .claude/settings.json
+# unconditionally — or one that refused every commit — would score identically to the one we want
+# (the unmutated-control lesson, ADR 0013). The file is staged; only the forbidden KEY is absent.
+$b3 = New-Repo 'pc-settings-no-key'
+Write-File $b3 '.claude/settings.json' "{`n  `"permissions`": { `"allow`": [] }`n}`n"
+& git -C $b3 add -A 2>$null
+$rB3 = Invoke-Hook $b3 $preCommit $null
+$ok = (Assert-True 'B3 the same file WITHOUT the key is not blocked' ($rB3.Code -eq 0) "exit=$($rB3.Code) out=$($rB3.Out)") -and $ok
+$ok = (Assert-True 'B3 and it is not reported as refused' ($rB3.Out -notmatch 'REFUSED') $rB3.Out) -and $ok
+
+# B4: the file ADR 0021 missed. `--scope local` writes the SAME key into settings.local.json, in
+# the tree — measured, and 0021's own refusal message recommended that scope as the fix. A gate
+# that names one filename and recommends the other is worse than no gate.
+$b4 = New-Repo 'pc-enabled-plugins-local'
+Write-File $b4 '.claude/settings.local.json' "{`n  `"enabledPlugins`": { `"ywr-harness@ywrlabs`": true }`n}`n"
+# `add -f`, and the reason IS the defect: this author's machine carries a GLOBAL gitignore entry for
+# .claude/settings.local.json, so `add -A` silently stages nothing here and the case would pass
+# vacuously. No teammate inherits that global file — on their machine the path is perfectly
+# trackable, which is exactly how ADR 0021 came to believe the file "is ignored by convention".
+& git -C $b4 add -f .claude/settings.local.json 2>$null
+$rB4 = Invoke-Hook $b4 $preCommit $null
+$ok = (Assert-True 'B4 settings.local.json is gated too' ($rB4.Code -eq 1) "exit=$($rB4.Code) out=$($rB4.Out)") -and $ok
+$ok = (Assert-True 'B4 the refusal names the local file' ($rB4.Out -match 'settings\.local\.json declares') $rB4.Out) -and $ok
+$ok = (Assert-True 'B4 rescoping is explicitly not a fix' ($rB4.Out -match 'not a fix') $rB4.Out) -and $ok
+
+# B5: an uninstall leaves `{ "enabledPlugins": {} }` behind. ADR 0022 refuses the KEY regardless of
+# value, so the inert form is refused too — a deliberate false positive, not an oversight.
+$b5 = New-Repo 'pc-enabled-plugins-empty'
+Write-File $b5 '.claude/settings.json' "{`n  `"enabledPlugins`": {}`n}`n"
+& git -C $b5 add -A 2>$null
+$rB5 = Invoke-Hook $b5 $preCommit $null
+$ok = (Assert-True 'B5 an inert empty enabledPlugins is refused too' ($rB5.Code -eq 1) "exit=$($rB5.Code) out=$($rB5.Out)") -and $ok
+$ok = (Assert-True 'B5 the uninstall residue is explained' ($rB5.Out -match 'remove the key, not just the entry') $rB5.Out) -and $ok
+
+# B6: the hook's KNOWN limit, asserted so it stays known. A \uXXXX-escaped key is the same key to
+# any JSON parser and to the host, but a literal grep cannot see it. CI parses and catches this;
+# this case exists so the gap is a recorded property rather than a surprise (ADR 0022 Consequences).
+$b6 = New-Repo 'pc-enabled-plugins-escaped'
+# The escape is ASSEMBLED, not typed: a literal backslash-u in source is the kind of thing an editor
+# or a copy-paste normalises away, and a fixture that silently degrades to the plain spelling would
+# invert this case's meaning without failing.
+$escKey = [char]0x5C + 'u0065' + 'nabledPlugins'   # -> enabledPlugins, i.e. "enabledPlugins"
+Write-File $b6 '.claude/settings.json' "{`n  `"$escKey`": { `"p@m`": true }`n}`n"
+& git -C $b6 add -A 2>$null
+$rB6 = Invoke-Hook $b6 $preCommit $null
+$ok = (Assert-True 'B6 the hook does NOT catch an escaped key (known limit, CI does)' ($rB6.Code -eq 0) "exit=$($rB6.Code) out=$($rB6.Out)") -and $ok
+
 # --- C-F: STUB emitter — the hook's parse + execute contract, independent of any linter ---------
 # The stub prints an emitter-shaped block whose commands are shell builtins, so what is measured is
 # the hook's behaviour and nothing else.
