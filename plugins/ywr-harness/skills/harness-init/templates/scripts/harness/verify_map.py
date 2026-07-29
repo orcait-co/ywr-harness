@@ -67,6 +67,10 @@ def main() -> int:
     for w in late:
         print(f"warn: {w}", file=sys.stderr)
 
+    # Collected during composition below and printed at the END of the run. NOT appended to
+    # `late`: that list is already drained above, so anything added afterwards would be swallowed
+    # — and a swallowed warning about a refused value looks exactly like a good configuration.
+    refused: list[str] = []
     hits: dict[str, dict] = {}
     owned: set[str] = set()
     for spec in specs:
@@ -88,7 +92,15 @@ def main() -> int:
             print(f"  changed: {f}")
         if h["verify"]:
             for v in h["verify"]:
-                print(f"  run:     {hc.verify_command(cfg, v)}")
+                cmd = hc.verify_command(cfg, v, refused)
+                # A refusal must NOT occupy the `run:` slot. This output's only consumer is the
+                # /verify skill — an LLM told to run the printed commands — and unlike the two
+                # shell parsers it has no `(`-prefix convention to fall back on. So a refused
+                # path gets a differently-labelled line that reads as a finding, not a command.
+                print(f"  run:     {cmd}" if not cmd.startswith("(")
+                      else "  REFUSED: this spec's registered verify script path is not a safe "
+                           "command argument — see the warning below. NOTHING was run for it, and "
+                           "that is a coverage gap, not a pass.")
         else:
             print("  (no verify script registered in implements_in for this spec)")
         if cfg["ui_prefix"] and any(f.startswith(cfg["ui_prefix"]) for f in h["matched"]):
@@ -98,6 +110,8 @@ def main() -> int:
         print("unmapped product files (no spec owner — a slice-retro UNMAPPED finding in the making):")
         for f in unmapped:
             print(f"  {f}")
+    for w in refused:
+        print(f"warn: {w}", file=sys.stderr)
     return 0
 
 

@@ -11,7 +11,10 @@ Usage:
 
 Both the gate commands and the tier come from `.harness.json` via harness_config, so a repo
 declares WHICH stack and WHICH surfaces it has, never what command runs. Adding a stack is a
-change to the closed `GATES` set in the canon — reviewed once, available to every repo.
+change to the closed `GATES` set in the canon — reviewed once, available to every repo. A gate
+that is the repo's own script (a path no repo-independent selector could name) is declared as a
+script gate — closed-set runner + validated repo-relative path, ADR 0024 — so the executable is
+still never a repo-supplied string.
 
 ## Why the tier is computed here and not judged in prose
 
@@ -128,6 +131,7 @@ def main() -> int:
 
     print("gates:")
     emitted = 0
+    seen: set[str] = set()
     for g in cfg["groups"]:
         fs = grouped[g["name"]]
         if not fs:
@@ -135,9 +139,34 @@ def main() -> int:
         print(f"  [{g['name']}] {len(fs)} file(s)")
         if not g["gates"]:
             print("    (no gate declared for this group — nothing deterministic runs on it)")
+        # A filename is repo-supplied text: one containing a space, quote or '#' cannot be passed
+        # through `sh -c` (or past either output parser) as one argument, so it is left OUT of the
+        # gate's argument list. Never silent — an excluded file is an ungated file.
+        unsafe = hc.unsafe_files(g, fs)
+        if unsafe and any(hc.gate_is_scoped(gate) for gate in g["gates"]):
+            print(f"    ({len(unsafe)} file(s) EXCLUDED from this group's gate arguments — unsafe "
+                  "characters for a command argument, so no deterministic gate covers them)")
+            for f in unsafe:
+                print(f"    (excluded: {f})")
+            late.append(f"groups[{g['name']}]: {len(unsafe)} changed file(s) could not be passed "
+                        "to a gate command and are UNGATED — rename them or gate them by hand")
         for gate in g["gates"]:
-            whole = "" if hc.GATES[gate]["files"] else "   # whole-program: gate on slice files or newly introduced only"
-            print(f"    {hc.gate_command(gate, g, fs)}{whole}")
+            cmd = hc.gate_command(gate, g, fs, late)
+            if cmd.startswith("("):
+                # gate_command refused or skipped this one. It is already a parenthetical, so it
+                # prints as-is (both parsers skip it) and must NOT count toward `emitted` — a
+                # refusal that inflated the count would read as a gate that ran.
+                print(f"    {cmd}")
+                continue
+            if cmd in seen:
+                # A whole-program gate declared on several groups composes to the same command,
+                # and running it once per group is waste, not coverage. The '(' prefix keeps this
+                # line out of both output parsers (CI extraction and pre-commit exclude it).
+                print(f"    (already emitted above — deduplicated: {cmd})")
+                continue
+            seen.add(cmd)
+            whole = "" if hc.gate_is_scoped(gate) else "   # whole-program: gate on slice files or newly introduced only"
+            print(f"    {cmd}{whole}")
             emitted += 1
     if emitted == 0:
         print("  (none — no declared group matched, or matched groups declare no gates)")

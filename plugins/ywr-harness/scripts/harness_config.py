@@ -11,15 +11,25 @@ working tree, so a cloned repository could otherwise supply the command that end
 Claude Code closed the same hole in its own surface: project-scope `pluginConfigs` entries are
 ignored because those values "would flow into plugin hook commands" (plugins-reference). So:
 
-- `runner` and every `gates` entry are SELECTORS from closed sets defined below. A value outside
-  the set is refused, the set is named in the warning, and the default is substituted.
-- Path values are refused if they contain a shell metacharacter or `..`.
+- `runner` is a SELECTOR from the closed set below. A `gates` entry is either a selector from the
+  closed `GATES` set, or a script gate `{runner, script, files}` (ADR 0024) whose runner is a
+  selector from `RUNNERS` and whose script is a validated repo-relative path — the repo points at
+  code it already carries; it never authors argv. A value outside a set is refused, the set is
+  named in the warning, and the entry is dropped (for `verify.runner`, the default substituted).
+- Path values are refused if they contain a shell metacharacter or `..`. Every token that reaches
+  a command position — script paths from here AND from the docs index, plus the changed-file
+  arguments of a file-scoped gate — additionally passes `token_ok()` in the form it will actually
+  be composed (post `strip_prefix`), and `as_arg()` neutralizes a leading dash.
 - A refused value IS echoed in the warning — the reader has to see what was refused — but never
   reaches a printed command. Those are separate properties, asserted separately.
+- A file that cannot be an argument is EXCLUDED from the gate's arguments and reported as ungated:
+  a filename is repo-supplied text too, and silence there would read as coverage.
 - Regexes are accepted as free strings: they select and report, and cannot name an executable.
 
 Adding a stack means adding a template HERE, reviewed once, available to every consuming repo.
-That is the whole mechanism by which this harness is stack-agnostic and still able to grow.
+That is the whole mechanism by which this harness is stack-agnostic and still able to grow. A
+repo-specific entry point — a path no repo-independent selector could ever name — is a script
+gate instead (ADR 0024).
 """
 
 from __future__ import annotations
@@ -102,6 +112,102 @@ def safe_path(value: str, field: str, warns: list[str]) -> str:
     return v
 
 
+# ---------------------------------------------------------------------------------------------
+# The ONE gate every repo-supplied token passes before it can reach a printed command: script
+# paths (from `.harness.json` AND from the docs index), and the changed-file arguments appended
+# to a file-scoped gate. Composed commands are run by `sh -c` (the vendored CI and pre-commit
+# both do), so a token must survive re-splitting byte-for-byte.
+#
+# An ALLOWLIST, not a blocklist. It excludes whitespace (sh re-splits the token), '#' (BOTH
+# output parsers strip a trailing comment), glob characters (the CI runs `sh -c` without
+# `set -f`), ':' (drive-absolute), and every shell metacharacter — including the ones nobody
+# thought to list.
+#
+# WHERE the check happens is the load-bearing part, and getting it wrong is a measured defect,
+# not a hypothetical: validating the DECLARED string while composing the STRIPPED one let
+# `{"strip_prefix": "src/", "script": "src/-c"}` pass validation and reach argv as the bare flag
+# `-c` — with `files: true`, the next token is a changed FILENAME, so `python -c <name>` executes
+# that name as source. Found by adversarial review 2026-07-29, three independent lenses, before
+# release. So: every token is validated in the form that ACTUALLY reaches argv, and `as_arg()`
+# neutralizes a leading dash on top of that (the case-I2 lesson — a value in command position
+# whose FIRST character is hostile).
+# ---------------------------------------------------------------------------------------------
+SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def token_ok(tok: str) -> bool:
+    """True when `tok` can be spliced into a printed command as one inert argument.
+
+    `..` is refused as a path SEGMENT, which is what traversal is — not as a substring, so a file
+    honestly named `a..b.py` stays gated. (`safe_path`'s coarser substring rule is left as it is:
+    it guards declaration-time path values and predates this gate.)"""
+    return (bool(tok) and bool(SAFE_TOKEN.match(tok))
+            and ".." not in tok.split("/") and not tok.startswith("/"))
+
+
+def as_arg(tok: str) -> str:
+    """Render an allowlist-clean token for a command position. A leading '-' is neutralized with
+    the POSIX-canonical `./` rather than accepted bare: `python -c` treats its next token as
+    source, and no path token may ever arrive as an option."""
+    return f"./{tok}" if tok.startswith("-") else tok
+
+
+def strip_group_prefix(path: str, strip_prefix: str) -> str:
+    return path[len(strip_prefix):] if strip_prefix and path.startswith(strip_prefix) else path
+
+
+def safe_cwd(value: str, field: str, warns: list[str]) -> str:
+    """A `cwd` is composed as `cd <cwd> && …`, so it is a command-position token and needs the same
+    allowlist as a path argument — `safe_path` alone permits a space, `#` or `*`. Refused values
+    degrade to the repo root, reported: the command then fails on its stripped paths instead of
+    running in a directory nobody named."""
+    v = safe_path(value, field, warns)
+    if v and not token_ok(v):
+        warns.append(f"{field}: '{v}' refused as a working directory (must be a repo-relative path "
+                     "of [A-Za-z0-9._/-], no '..') — commands will be printed WITHOUT a `cd`, so "
+                     "they run from the repo root")
+        return ""
+    return v
+
+
+def script_gate(raw: dict, group: str, strip_prefix: str, root: Path,
+                warns: list[str]) -> dict | None:
+    """Validate a script gate `{runner, script, files}` (ADR 0024). The runner stays a closed-set
+    choice; the script is a repo-relative path. BOTH forms are validated — as declared, and as it
+    will actually be composed after the group's `strip_prefix` — because the second is the one
+    that becomes argv. Returns None (and warns) when it cannot be composed safely; a refused
+    value is echoed in the warning and never composed."""
+    field = f"groups[{group}].gates"
+    runner = str(raw.get("runner") or "")
+    if runner not in RUNNERS:
+        warns.append(
+            f"{field}: script-gate runner '{runner}' is not in the closed set "
+            f"({', '.join(sorted(RUNNERS))}) — dropped"
+        )
+        return None
+    script = norm(str(raw.get("script") or ""))
+    effective = strip_group_prefix(script, strip_prefix)
+    if not token_ok(script) or script.startswith("-"):
+        warns.append(
+            f"{field}: script-gate path '{script}' refused (a repo-relative path of "
+            "[A-Za-z0-9._/-] only, no '..', no leading '/' or '-') — dropped"
+        )
+        return None
+    if not token_ok(effective) or effective.startswith("-"):
+        warns.append(
+            f"{field}: script-gate path '{script}' refused — under strip_prefix "
+            f"'{strip_prefix}' it composes to '{effective}', which is not a usable path in a "
+            "command position (a leading '-' would be read as an option to the runner) — dropped"
+        )
+        return None
+    if not (root / script).is_file():
+        # Kept, not dropped: dropping would let a typo read as coverage, while the emitted
+        # command fails loudly at run time and this warning names the path at emit time.
+        warns.append(f"{field}: script-gate path '{script}' does not exist — kept; the emitted "
+                     "command will fail until it does")
+    return {"runner": runner, "script": script, "files": bool(raw.get("files", False))}
+
+
 def compile_re(pattern: str, field: str, warns: list[str]) -> re.Pattern | None:
     if not pattern:
         return None
@@ -158,7 +264,9 @@ def load(root: Path) -> tuple[dict, list[str]]:
         )
         runner = DEFAULTS["runner"]
     cfg["runner"] = runner
-    for field in ("cwd", "strip_prefix", "ui_prefix"):
+    if ver.get("cwd"):
+        cfg["cwd"] = safe_cwd(ver["cwd"], "verify.cwd", warns)
+    for field in ("strip_prefix", "ui_prefix"):
         if ver.get(field):
             cfg[field] = safe_path(ver[field], f"verify.{field}", warns)
     for field in ("script_pattern", "product_scope"):
@@ -194,8 +302,16 @@ def load(root: Path) -> tuple[dict, list[str]]:
         if not isinstance(g, dict) or not g.get("name") or not g.get("match"):
             warns.append(f"groups[{i}]: needs 'name' and 'match' — ignored")
             continue
-        gates: list[str] = []
+        # Resolved BEFORE the gates: a script gate is validated against the form it composes to
+        # under this prefix, so the prefix has to be known (and itself validated) first.
+        g_strip = safe_path(g.get("strip_prefix", ""), f"groups[{g['name']}].strip_prefix", warns)
+        gates: list = []
         for gate in g.get("gates") or []:
+            if isinstance(gate, dict):
+                sg = script_gate(gate, str(g["name"]), g_strip, root, warns)
+                if sg:
+                    gates.append(sg)
+                continue
             gate = str(gate)
             if gate in GATES:
                 gates.append(gate)
@@ -207,8 +323,8 @@ def load(root: Path) -> tuple[dict, list[str]]:
         cfg["groups"].append({
             "name": str(g["name"]),
             "match": str(g["match"]),
-            "cwd": safe_path(g.get("cwd", ""), f"groups[{g['name']}].cwd", warns),
-            "strip_prefix": safe_path(g.get("strip_prefix", ""), f"groups[{g['name']}].strip_prefix", warns),
+            "cwd": safe_cwd(g.get("cwd", ""), f"groups[{g['name']}].cwd", warns),
+            "strip_prefix": g_strip,
             "gates": gates,
         })
     if raw.get("groups") and not cfg["groups"]:
@@ -276,26 +392,81 @@ def print_scope(files: list[str], prov: dict) -> None:
 
 
 def compose(parts: list[str], cwd: str) -> str:
+    """`cd <cwd> && <cmd>`, or the command alone. `cwd` reaches a command position too, so it is
+    held to the same token gate here — `safe_path` alone permits a space, `#` or `*`, each of
+    which `sh -c` or an output parser would reinterpret. A refused cwd degrades to running from
+    the repo root, which fails loudly on the stripped paths rather than running something else."""
     cmd = " ".join(parts)
-    return f"cd {cwd} && {cmd}" if cwd else cmd
+    return f"cd {as_arg(cwd)} && {cmd}" if cwd and token_ok(cwd) else cmd
 
 
-def verify_command(cfg: dict, script: str) -> str:
-    rel = script
-    if cfg["strip_prefix"] and rel.startswith(cfg["strip_prefix"]):
-        rel = rel[len(cfg["strip_prefix"]):]
-    return compose([*RUNNERS[cfg["runner"]], rel], cfg["cwd"])
+def verify_command(cfg: dict, script: str, warns: list[str] | None = None) -> str:
+    """Compose the command that runs one spec-registered verify script.
+
+    The script path comes from the docs index — generated from spec frontmatter, so it is
+    repo-supplied text in the working tree, exactly like a `.harness.json` value. It therefore
+    passes the same token gate, checked on the POST-strip_prefix form that actually becomes argv.
+    A refused path yields a parenthetical that is not a command and does NOT repeat the value:
+    the value belongs in the warning, never in a command position (ADR 0012)."""
+    rel = strip_group_prefix(norm(script), cfg["strip_prefix"])
+    if not token_ok(rel):
+        if warns is not None:
+            warns.append(f"verify script path '{script}' refused — under strip_prefix "
+                         f"'{cfg['strip_prefix']}' it composes to '{rel}', which is not a safe "
+                         "command argument; no run line was composed for it")
+        return "(refused — unsafe verify script path; see warning)"
+    return compose([*RUNNERS[cfg["runner"]], as_arg(rel)], cfg["cwd"])
 
 
-def gate_command(gate: str, group: dict, files: list[str]) -> str:
-    spec = GATES[gate]
-    parts = list(spec["cmd"])
-    if spec["files"]:
-        rel = []
-        for f in files:
-            r = f
-            if group["strip_prefix"] and r.startswith(group["strip_prefix"]):
-                r = r[len(group["strip_prefix"]):]
-            rel.append(r)
-        parts.extend(sorted(rel))
+def gate_is_scoped(gate) -> bool:
+    """True when the gate takes the changed-file list; False for whole-program. One reader for
+    both gate forms so the emitter never branches on shape itself."""
+    return bool(GATES[gate]["files"] if isinstance(gate, str) else gate["files"])
+
+
+def unsafe_files(group: dict, files: list[str]) -> list[str]:
+    """Changed files that cannot be passed to a gate command as arguments, in their post-strip
+    form. Reported by the caller so the coverage loss is stated rather than silent: a filename is
+    repo-supplied text too — `sh -c` would re-split one containing a space, and both output
+    parsers truncate one containing '#'."""
+    return sorted(f for f in files if not token_ok(strip_group_prefix(f, group["strip_prefix"])))
+
+
+def gate_command(gate, group: dict, files: list[str], warns: list[str] | None = None) -> str:
+    """Compose one gate command. `gate` is a closed-set selector string or a validated script-gate
+    dict from `script_gate()` — a raw dict from JSON must never reach here.
+
+    Every path token is re-checked here even though the declaration was validated at load time.
+    That is deliberate duplication: a validator only some call sites apply is not a validator, and
+    this is the last point before a string becomes a command.
+
+    `warns` is threaded for the same reason `verify_command` threads one. Today the refusal below
+    is unreachable through `load()` (it derives `strip_prefix` from the same group dict), so this
+    is the channel that keeps the SECOND layer honest if a future caller ever makes it fire: a
+    branch whose message says "see warning" while writing to no warning list is a silent drop
+    waiting for a refactor."""
+    if isinstance(gate, str):
+        parts = list(GATES[gate]["cmd"])
+    else:
+        # Mirrors verify_command: strip_prefix applies to the script path too, so a group that
+        # runs from `cwd` addresses its script the same way it addresses its files.
+        script = strip_group_prefix(gate["script"], group["strip_prefix"])
+        if not token_ok(script):
+            if warns is not None:
+                warns.append(
+                    f"groups[{group['name']}].gates: script-gate path '{gate['script']}' refused "
+                    f"at composition — under strip_prefix '{group['strip_prefix']}' it becomes "
+                    f"'{script}', which is not a safe command argument; NO command was composed"
+                )
+            return "(refused — unsafe script-gate path; see warning)"
+        parts = [*RUNNERS[gate["runner"]], as_arg(script)]
+    if gate_is_scoped(gate):
+        rel = sorted(r for r in (strip_group_prefix(f, group["strip_prefix"]) for f in files)
+                     if token_ok(r))
+        if not rel:
+            # Emitting the bare command here would be worse than emitting nothing: a file-scoped
+            # gate with no file list is a WHOLE-TREE run (`ruff check` lints everything), so a
+            # group whose every filename was excluded would silently escalate its own scope.
+            return "(skipped — none of this group's changed files can be a command argument)"
+        parts.extend(as_arg(r) for r in rel)
     return compose(parts, group["cwd"])

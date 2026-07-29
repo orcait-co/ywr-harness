@@ -76,4 +76,7 @@ hooks: .githooks/ present but core.hooksPath is UNSET — NO git hook runs in th
 
 Stack-specific lint tooling. The gates are **selectors** from a closed set (`ruff`, `eslint`, `tsc`,
 …) declared in `.harness.json`; installing the tools they name is the repo's job. A gate whose tool
-is missing fails loudly rather than passing quietly.
+is missing fails loudly rather than passing quietly. A repo whose gate is its own script (a test
+entry point no selector could name) declares a **script gate** — a closed-set runner plus a
+validated repo-relative path, never a command string (ADR 0024); what that script does is the
+repo's code to review, like any code.

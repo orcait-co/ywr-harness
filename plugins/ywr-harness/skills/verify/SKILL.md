@@ -60,6 +60,11 @@ Two rules regardless of repo:
 
 ## 3. Run the printed commands
 
+Run what appears after `run:`, and **only** that. A line labelled `REFUSED:` instead of `run:` is
+not a command and must never be executed — the mapper could not compose a safe command for that
+script's registered path. Report it as a coverage gap and quote the accompanying warning; a refused
+script reported as a failing script blames the code for a declaration problem.
+
 Judge from script output only — registered scripts self-report pass/fail counts. Report per-script
 results verbatim. A partial run is a partial run.
 

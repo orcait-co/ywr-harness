@@ -168,6 +168,27 @@ finally {
 $ok = (Assert-True 'J middle dot survives an inherited cp1252 encoding' ($rJ.Out -match '·') $rJ.Out) -and $ok
 $ok = (Assert-True 'J em dash survives, so name assertions still match' ($rJ.Out -match 'spec 0001 — Pipeline') $rJ.Out) -and $ok
 
+# --- K: a registered path that cannot be a command argument (ADR 0024 choke point) ---------------
+# The docs index is generated from spec frontmatter, so `implements_in` is repo-supplied text that
+# reaches a command position — the same class as a `.harness.json` value. Two properties, asserted
+# separately: the value never lands in a runnable position, and the refusal is not mistaken for a
+# command by this output's only consumer (the /verify skill, an LLM told to run what follows `run:`).
+$K_INDEX = @'
+{ "spec": [ { "id": "0003", "title": "Hostile", "implements_in": [
+  "apps/api/app/pipeline.py", "apps/api/scripts/verify_a b.py" ] } ] }
+'@
+$k = New-Repo 'refused-verify-path' ($GOOD_CFG.Replace('^apps/api/scripts/verify_.*\\.py$', '^apps/api/scripts/verify_.*$')) $K_INDEX
+New-Item -ItemType Directory -Force -Path (Join-Path $k 'apps/api/app') | Out-Null
+Set-Content -LiteralPath (Join-Path $k 'apps/api/app/pipeline.py') -Value '# changed' -NoNewline
+$rK = Invoke-Map $k @()
+$runLinesK = @(($rK.Out -split "`n") | Where-Object { $_ -match '^\s*run:' })
+$ok = (Assert-True 'K a path that cannot be an argument yields NO run: line' (-not ($runLinesK -match 'verify_a b')) "run lines: $($runLinesK -join ' | ')") -and $ok
+$ok = (Assert-True 'K the refusal is labelled REFUSED, not run:' ($rK.Out -match 'REFUSED: this spec''s registered verify script path') $rK.Out) -and $ok
+$ok = (Assert-True 'K the refusal states it is a coverage gap, not a pass' ($rK.Out -match 'coverage gap, not a pass') $rK.Out) -and $ok
+$ok = (Assert-True 'K the value IS echoed in a warning (the reader must see what was refused)' ($rK.Out -match 'verify script path .*verify_a b') $rK.Out) -and $ok
+$ok = (Assert-True 'K the warning survives to the end of the run (not swallowed by the drained list)' ($rK.Out -match 'no run line was composed for it') $rK.Out) -and $ok
+$ok = (Assert-True 'K still exits 0 (advisory)' ($rK.Code -eq 0) "exit=$($rK.Code)") -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'verify_map selftest: FAILED' -ForegroundColor Red; exit 1 }
