@@ -28,10 +28,10 @@ $fxBase = New-FixtureRoot 'statusline-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 $ok = $true
 
-# A HOME with no managed-settings cache, so the org-guide segment cannot appear. Without this the
-# suite reads the developer's real ~/.claude and every exact-line assertion passes or fails
-# depending on whether that machine happens to have a guide delivered — which it did, and which is
-# how this was found.
+# A HOME with no plugin install registry, so the plugin-version segment cannot appear. Without
+# this the suite reads the developer's real ~/.claude and every exact-line assertion passes or
+# fails depending on what that machine happens to have installed — the org-guide era of this
+# suite hit exactly that, and this hermetic HOME is how it was found.
 $hermeticHome = Join-Path $fxBase 'hermetic-home'
 New-Item -ItemType Directory -Force -Path (Join-Path $hermeticHome '.claude') | Out-Null
 
@@ -117,14 +117,14 @@ $ok = (Assert-True 'G unparseable stdin still renders something' ($g -match '\?'
 $gEmpty = Invoke-Line ''
 $ok = (Assert-True 'G empty stdin does not crash' ($null -ne $gEmpty) 'no output') -and $ok
 
-# --- H: the org-guide version segment ------------------------------------------------------------
-# Read from Claude Code's cache of the DELIVERED managed settings, never from a repo clone. The
-# console paste is a manual step, so repo and console routinely disagree — showing the repo version
-# would report success for a deploy that never happened.
-function Invoke-Guide([string]$HomeDir) {
+# --- H: the installed-plugin-version segment ------------------------------------------------------
+# Read from Claude Code's install registry — the ON-DISK value. With marketplace auto-update on,
+# disk moves ahead of a live session; that mismatch is the "restart to apply" signal, so the
+# segment must show what this machine HAS, never what a repo or the marketplace published.
+function Invoke-Ver([string]$HomeDir) {
     $js = @"
 const m = require($(($mod -replace '\\','/') | ConvertTo-Json));
-process.stdout.write(m.guideVersion($($HomeDir | ConvertTo-Json)) || '<empty>');
+process.stdout.write(m.pluginVersion($($HomeDir | ConvertTo-Json)) || '<empty>');
 "@
     $f = Join-Path $fxBase ('g-' + [Guid]::NewGuid().ToString('N') + '.js')
     [IO.File]::WriteAllText($f, $js)
@@ -132,27 +132,46 @@ process.stdout.write(m.guideVersion($($HomeDir | ConvertTo-Json)) || '<empty>');
 }
 function New-Home([string]$Name, [string]$Json) {
     $h = Join-Path $fxBase $Name
-    New-Item -ItemType Directory -Force -Path (Join-Path $h '.claude') | Out-Null
-    if ($null -ne $Json) { [IO.File]::WriteAllText((Join-Path $h '.claude/remote-settings.json'), $Json) }
+    New-Item -ItemType Directory -Force -Path (Join-Path $h '.claude/plugins') | Out-Null
+    if ($null -ne $Json) { [IO.File]::WriteAllText((Join-Path $h '.claude/plugins/installed_plugins.json'), $Json) }
     return $h
 }
 
-$h1 = New-Home 'delivered' '{"claudeMd":"# Org Engineering Guide\n<!-- v1.3 · 2026-07-27 · source of truth: x -->\n\n## rules\n"}'
-$ok = (Assert-True 'H the delivered marker is extracted' ((Invoke-Guide $h1) -eq 'v1.3') "got: $(Invoke-Guide $h1)") -and $ok
+$h1 = New-Home 'installed' '{"version":2,"plugins":{"ywr-harness@ywrlabs":[{"scope":"user","version":"0.14.0"}]}}'
+$ok = (Assert-True 'H the installed version is extracted, v-prefixed' ((Invoke-Ver $h1) -eq 'v0.14.0') "got: $(Invoke-Ver $h1)") -and $ok
 
-$h2 = New-Home 'no-cache' $null
-$ok = (Assert-True 'H no cache -> empty, segment disappears' ((Invoke-Guide $h2) -eq '<empty>') "got: $(Invoke-Guide $h2)") -and $ok
+$h2 = New-Home 'no-registry' $null
+$ok = (Assert-True 'H no registry -> empty, segment disappears' ((Invoke-Ver $h2) -eq '<empty>') "got: $(Invoke-Ver $h2)") -and $ok
 
 $h3 = New-Home 'garbage' '{ not json'
-$ok = (Assert-True 'H unparseable cache does not crash the line' ((Invoke-Guide $h3) -eq '<empty>') "got: $(Invoke-Guide $h3)") -and $ok
+$ok = (Assert-True 'H an unparseable registry does not crash the line' ((Invoke-Ver $h3) -eq '<empty>') "got: $(Invoke-Ver $h3)") -and $ok
 
-$h4 = New-Home 'no-marker' '{"claudeMd":"# A guide with no version comment\n"}'
-$ok = (Assert-True 'H a payload without a marker yields nothing' ((Invoke-Guide $h4) -eq '<empty>') "got: $(Invoke-Guide $h4)") -and $ok
+$h4 = New-Home 'not-installed' '{"version":2,"plugins":{"other-plugin@somewhere":[{"version":"1.0.0"}]}}'
+$ok = (Assert-True 'H a machine without the plugin yields nothing' ((Invoke-Ver $h4) -eq '<empty>') "got: $(Invoke-Ver $h4)") -and $ok
 
-# The whole point of reading the cache: it must report the DELIVERED version even when it is older
-# than whatever a repo clone holds. This case pins that the function has no repo awareness at all.
-$h5 = New-Home 'stale-delivery' '{"claudeMd":"<!-- v1.2 · 2026-07-26 · older than repo main -->"}'
-$ok = (Assert-True 'H a stale delivery reports v1.2, not the repo version' ((Invoke-Guide $h5) -eq 'v1.2') "got: $(Invoke-Guide $h5)") -and $ok
+# "unknown" is a real registry state (observed live on an official-marketplace plugin): it is not
+# a version and must not render as one.
+$h5 = New-Home 'unknown-version' '{"version":2,"plugins":{"ywr-harness@ywrlabs":[{"version":"unknown"}]}}'
+$ok = (Assert-True 'H an "unknown" version renders no segment' ((Invoke-Ver $h5) -eq '<empty>') "got: $(Invoke-Ver $h5)") -and $ok
+
+# Only the plugin name is pinned. A consuming org may register the marketplace under another
+# name, and the segment must survive that.
+$h6 = New-Home 'other-marketplace' '{"version":2,"plugins":{"ywr-harness@client-mkt":[{"version":"0.15.0"}]}}'
+$ok = (Assert-True 'H the marketplace half of the key is not hardcoded' ((Invoke-Ver $h6) -eq 'v0.15.0') "got: $(Invoke-Ver $h6)") -and $ok
+
+# Entries are not guaranteed array-wrapped. The [].concat defense must be pinned, or a future
+# refactor to a plain array assumption passes green today and crashes live on a bare object.
+$h7 = New-Home 'bare-object-entry' '{"version":2,"plugins":{"ywr-harness@ywrlabs":{"scope":"user","version":"0.9.9"}}}'
+$ok = (Assert-True 'H a bare-object (non-array) entry still works' ((Invoke-Ver $h7) -eq 'v0.9.9') "got: $(Invoke-Ver $h7)") -and $ok
+
+# Scope shadow: a stale project-scope entry listed FIRST must not shadow the user-scope install.
+# The statusline is placed machine-wide, so user scope wins, then recency — never registry order.
+$h8 = New-Home 'scope-shadow' '{"version":2,"plugins":{"ywr-harness@ywrlabs":[{"scope":"project","version":"0.10.0","lastUpdated":"2026-07-01T00:00:00.000Z"},{"scope":"user","version":"0.14.0","lastUpdated":"2026-07-29T00:00:00.000Z"}]}}'
+$ok = (Assert-True 'H user scope wins over an earlier project-scope entry' ((Invoke-Ver $h8) -eq 'v0.14.0') "got: $(Invoke-Ver $h8)") -and $ok
+
+# A "version" with no digit — "v", whitespace: corrupted-write shapes — must not render as one.
+$h9 = New-Home 'digitless-version' '{"version":2,"plugins":{"ywr-harness@ywrlabs":[{"version":"v"}]}}'
+$ok = (Assert-True 'H a digit-less version renders no segment' ((Invoke-Ver $h9) -eq '<empty>') "got: $(Invoke-Ver $h9)") -and $ok
 
 # Placement, asserted by INJECTING the value rather than reading the machine's real cache. The
 # first version of this case asserted the segment was absent and failed on any machine that has a
@@ -167,10 +186,12 @@ process.stdout.write(r.line.replace(/\x1b\[[0-9;]*m/g, ''));
     [IO.File]::WriteAllText($f, $js)
     return ((& node $f 2>&1) | Out-String).Trim()
 }
-$withGuide = Invoke-Render $FULL 'v1.3'
-$ok = (Assert-True 'H the segment renders last, after the quota segments' ($withGuide -match '7d 1% · orcait-guide v1\.3$') "got: $withGuide") -and $ok
-$noGuide = Invoke-Render $FULL ''
-$ok = (Assert-True 'H an empty version renders no segment at all' ($noGuide -notmatch 'orcait-guide') "got: $noGuide") -and $ok
+$withVer = Invoke-Render $FULL 'v0.14.0'
+$ok = (Assert-True 'H the segment renders last, after the quota segments' ($withVer -match '7d 1% · ywr-harness v0\.14\.0$') "got: $withVer") -and $ok
+# The location segment of $FULL also contains the string "ywr-harness", so the absence assertion
+# targets the label-plus-version form, not the bare name.
+$noVer = Invoke-Render $FULL ''
+$ok = (Assert-True 'H an empty version renders no segment at all' ($noVer -notmatch 'ywr-harness v') "got: $noVer") -and $ok
 
 Remove-FixtureRoot $fxBase
 

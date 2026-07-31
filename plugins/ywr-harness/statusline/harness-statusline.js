@@ -1,5 +1,5 @@
-// ywr-harness statusline — location · model · effort · context% · rate-limit%, plus terminal
-// tab-title sync.
+// ywr-harness statusline — location · model · effort · context% · rate-limit% · installed
+// plugin version, plus terminal tab-title sync.
 //
 // TOOLCHAIN (ADR 0010/0016): this is the canon. `install.ps1` copies it to the user scope and it
 // is OVERWRITTEN on every re-run. Do not hand-edit the installed copy — fix it here.
@@ -35,11 +35,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-// Display label for the org guide segment. The settings KEY that carries the guide is `claudeMd`
-// and is fixed by Claude Code (managed-settings only) — an org cannot rename it, and managed
-// settings parse tolerantly, so a renamed key would be stripped with a warning and the guide would
-// silently stop being delivered. This label is only what the status line PRINTS.
-const GUIDE_LABEL = "orcait-guide";
+// Display label for the plugin-version segment: the plugin's own manifest name, equally true on
+// every machine this file reaches. (This segment replaced the retired org-guide one — the canon
+// repo's ADR 0027; guide drift detection belongs to spec 0003 §7, not to a glance surface.)
+const PLUGIN_LABEL = "ywr-harness";
 
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
@@ -79,30 +78,53 @@ function stripContextSuffix(name) {
   return String(name).replace(/\s*\([^()]*\bcontext\b[^()]*\)\s*$/i, "").trim() || String(name);
 }
 
-function guideVersion(home) {
-    // The version marker of the org guide THIS SESSION ACTUALLY HAS, read from Claude Code's local
-    // cache of server-managed settings.
+function pluginVersion(home) {
+    // The version of this plugin actually INSTALLED on this machine, read from Claude Code's
+    // install registry (`~/.claude/plugins/installed_plugins.json`).
     //
-    // Deliberately the DELIVERED value and not the repo's. Reading `claude/org-guide.md` from a
-    // clone would show what has been merged, which is exactly the wrong number: the console paste
-    // is a manual step (spec 0003 §5), so repo and console routinely disagree, and a status line
-    // showing the repo version would report success for a deploy that never happened. Measured
-    // 2026-07-27: repo main on v1.3 while every live session was still carrying v1.2.
+    // Deliberately the ON-DISK value, not the running session's: with marketplace auto-update on,
+    // disk moves ahead of a live session — and that visible mismatch is exactly the "restart to
+    // apply" signal worth surfacing. Same honesty rule the retired org-guide segment followed,
+    // one link further down the chain: show what this machine HAS, never what a repo or the
+    // marketplace published.
     //
-    // Absent cache, unparseable JSON, or no marker -> empty, and the segment disappears. Same rule
-    // as every other segment here: unmeasured is not the same as a value.
+    // Only the plugin name is pinned; the `@marketplace` half of the key is not, because a
+    // consuming org may register the marketplace under another name. Absent file, unparseable
+    // JSON, no entry, or a version the registry records as "unknown" -> empty, and the segment
+    // disappears. Same rule as every other segment here: unmeasured is not the same as a value.
     try {
-        const p = path.join(home || os.homedir(), ".claude", "remote-settings.json");
+        const p = path.join(home || os.homedir(), ".claude", "plugins", "installed_plugins.json");
         const j = JSON.parse(fs.readFileSync(p, "utf8"));
-        const m = /<!--\s*(v[0-9][0-9.]*)/.exec(String(j.claudeMd || ""));
-        return m ? m[1] : "";
+        // A usable version carries at least one digit. That one shape test subsumes the
+        // registry's literal "unknown" sentinel AND the corrupted-write shapes ("v", whitespace)
+        // — none of which may render as a confident-looking version.
+        const usable = (v) => v != null && /\d/.test(String(v));
+        // Several installs can coexist (a project-scope entry alongside the user-scope one).
+        // This file is placed machine-wide, so the user-scope entry is the relevant one: prefer
+        // it, then break remaining ties by most-recent lastUpdated — never by registry order,
+        // which would let a stale project-scope entry listed first shadow the real install.
+        let best = null;
+        for (const key of Object.keys((j && j.plugins) || {})) {
+            if (!key.startsWith("ywr-harness@")) continue;
+            for (const inst of [].concat(j.plugins[key] || [])) {
+                if (!inst || !usable(inst.version)) continue;
+                const instUser = inst.scope === "user";
+                const bestUser = best && best.scope === "user";
+                if (!best
+                    || (instUser && !bestUser)
+                    || (instUser === bestUser
+                        && String(inst.lastUpdated || "") > String(best.lastUpdated || ""))) {
+                    best = inst;
+                }
+            }
+        }
+        return best ? "v" + String(best.version).replace(/^v/, "") : "";
     } catch {
         return "";
     }
 }
 
-function render(j, guide) {
-    if (guide === undefined) guide = guideVersion();
+function render(j, ver = pluginVersion()) {
   const cwd =
     (j.workspace && (j.workspace.current_dir || j.workspace.project_dir)) || j.cwd || "";
   const parts = String(cwd).replace(/\\/g, "/").split("/").filter(Boolean);
@@ -133,14 +155,14 @@ function render(j, guide) {
       // without shouting, and deliberately outside the green/yellow/red family so it is never
       // mistaken for a threshold. Dim-on-dim was the first attempt and was simply too faint to
       // read against a dark terminal.
-      (guide ? ` ${DIM}·${RESET} ${DIM}${GUIDE_LABEL}${RESET} ${MAGENTA}${guide}${RESET}` : ""),
+      (ver ? ` ${DIM}·${RESET} ${DIM}${PLUGIN_LABEL}${RESET} ${MAGENTA}${ver}${RESET}` : ""),
   };
 }
 
 // Exported for the selftest, which asserts on render() directly rather than on a spawned process:
 // a status line is a pure function of its payload, and testing it through stdio would measure the
 // harness more than the renderer.
-module.exports = { render, stripContextSuffix, windowSize, seg, guideVersion, GUIDE_LABEL };
+module.exports = { render, stripContextSuffix, windowSize, seg, pluginVersion, PLUGIN_LABEL };
 
 if (require.main === module) {
   let raw = "";

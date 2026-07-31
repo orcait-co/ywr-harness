@@ -100,21 +100,17 @@ matched", which is the hardest kind of gate failure to notice.
 pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/statusline/install.ps1"     # add -DryRun to preview
 ```
 
-Renders `location · model · effort · ctx N%/SIZE · 5h N% · 7d N% · orcait-guide vX.Y`, dropping the
-model's `(1M context)` suffix — a session constant costing width on every render — in favour of how
-much of that window is actually gone.
+Renders `location · model · effort · ctx N%/SIZE · 5h N% · 7d N% · ywr-harness vX.Y.Z`, dropping
+the model's `(1M context)` suffix — a session constant costing width on every render — in favour
+of how much of that window is actually gone.
 
-The trailing segment is the version of the org guide **this session actually has**, read from
-Claude Code's local cache of server-managed settings (`~/.claude/remote-settings.json`). It is
-deliberately the *delivered* value, never a repo clone's: pasting the payload into the console is a
-manual step, so repo and console routinely disagree, and showing the repo version would report
-success for a deploy that never happened. That makes the segment a live drift detector for
-spec 0003 §7.
-
-`orcait-guide` is only the printed label. The settings key carrying the guide is **`claudeMd`**,
-fixed by Claude Code and honored in managed/policy settings only — an org cannot rename it, and
-managed settings parse *tolerantly*, so a renamed key would be stripped with a warning and the
-guide would silently stop being delivered.
+The trailing segment is the plugin version **installed on this machine**, read from Claude Code's
+install registry (`~/.claude/plugins/installed_plugins.json`). It is deliberately the *on-disk*
+value, never the repo's or the marketplace's: with marketplace auto-update on (ADR 0026), disk
+moves ahead of a live session, and that visible mismatch is the "restart to apply" signal. A
+machine without the plugin installed renders no segment. The org-guide version segment this
+replaces is retired (ADR 0027) — guide drift detection is spec 0003 §7's job, where it always
+really lived.
 
 **A plugin cannot contribute the main status line**: a plugin's `settings.json` supports only
 `agent` and `subagentStatusLine`. So this ships as canon plus an installer that writes the user's
