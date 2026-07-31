@@ -2,16 +2,18 @@
 name: verify
 description: Single entry over a repo's spec-owned verify scripts. Maps changed files to owning specs via the generated docs index (implements_in) and runs only the registered scripts — never a hardcoded list, which drifts. Use to verify a change end-to-end, or as the verify step of a slice close.
 context: fork
-agent: worker
+agent: verifier
 background: false
 ---
 
 > **Runs as a forked subagent**: the verify tool-call log stays out of the main context and only
 > the report returns. Both companion keys are load-bearing, not decoration:
-> - `agent: worker` — omitting `agent` defaults to `general-purpose`, which carries no
->   `model`/`effort` pins and would inherit a deep-work session's model and effort. `worker` is
->   pinned sonnet · high. Not `mech`: precondition triage is judgment, and mech's contract is to
->   stop rather than judge.
+> - `agent: verifier` — omitting `agent` defaults to `general-purpose`, which carries no
+>   `model`/`effort` pins and would inherit a deep-work session's model and effort. `verifier` is
+>   pinned sonnet · medium — measured on this skill's own trap cases (normal-with-failure,
+>   refused, empty range, broken ref): medium matched high on every checklist because the
+>   procedure below is fully clause-specified. Not `worker` (high buys nothing here) and not
+>   `mech`: precondition triage is judgment, and mech's contract is to stop rather than judge.
 > - `background: false` — a slice close consumes this result in the same turn, and a backgrounded
 >   fork would additionally run with the narrower background-subagent tool set.
 >
