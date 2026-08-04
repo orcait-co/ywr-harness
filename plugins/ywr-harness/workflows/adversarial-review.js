@@ -10,10 +10,12 @@
 // 마이그레이션/훅·CI 제외) = 병합 2렌즈·렌즈당 6건. 그 외 = 풀 3렌즈. skeptic 게이트는 동일.
 // 워커 모델은 전역 CLAUDE.md 규칙대로 sonnet 고정 · effort 는 상한 high(세션 effort 상속 금지,
 // 2026-07-13 — xhigh/max 딥워크 누수 차단). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
+// 슬라이스당 1회가 기본(ywr-harness ADR 0028): 확정 지적의 수정 diff 는 재호출 대상이 아니다 —
+// 게이트 재실행 + 지적별 수정 대조로 닫는다. 새 메커니즘급 수정만 1회 한정 재리뷰(마감에 기준 명기).
 export const meta = {
   name: 'adversarial-review',
   description: '적대 코드리뷰 표준 — 렌즈 티어(풀3·small2)·시맨틱 dedupe·심각도 게이트(h/m=2·low=1·nit=0 skeptic)',
-  whenToUse: '슬라이스 마감 게이트 리뷰. args.scope 에 대상 파일 목록 + 하우스 불변식 + 이미 통과한 게이트를 넣는다(diff 슬라이스는 git diff 주입). 소형 비크리티컬 diff 는 args.tier:"small". 레포의 결정론 린트 게이트를 먼저 돌리고 통과 결과를 게이트 블록에 포함할 것. 하우스 고유 렌즈 앵글은 args.lensExtra 로 주입한다.',
+  whenToUse: '슬라이스 마감 게이트 리뷰 — 슬라이스당 1회. args.scope 에 대상 파일 목록 + 하우스 불변식 + 이미 통과한 게이트를 넣는다(diff 슬라이스는 git diff 주입). 소형 비크리티컬 diff 는 args.tier:"small". 레포의 결정론 린트 게이트를 먼저 돌리고 통과 결과를 게이트 블록에 포함할 것. 하우스 고유 렌즈 앵글은 args.lensExtra 로 주입한다. 이 리뷰의 확정 지적을 고친 수정 diff 는 재호출 대상이 아니다 — 게이트 재실행 + 지적별 수정 대조로 닫고, 수정이 패치가 아니라 새 메커니즘일 때만 1회 한정 재리뷰.',
   phases: [
     { title: 'Canary', detail: '한도/게이트웨이 확인 1개 (sonnet)', model: 'sonnet' },
     { title: 'Find', detail: '렌즈 병렬 — 풀 3 · small 2 (sonnet·effort medium)', model: 'sonnet' },

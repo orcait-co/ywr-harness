@@ -30,7 +30,7 @@ The emitter prints four things, all of which belong in the close:
   absorbing them into this slice.
 - **`ungrouped:`** — files no declared group claims, so **no deterministic gate covers them**.
   Either add a group to `.harness.json` or say plainly that those files went ungated.
-- **`review tier:`** with its reason — used by stage 3.
+- **`review tier:`** with its reason — used by stage 2.
 
 **Run every emitted command and fix failures now.** Record the exact commands and their results
 verbatim; they go into the review scope's passed-gates block. Mechanical defects must never reach
@@ -39,7 +39,10 @@ an LLM reviewer — that is what makes the review affordable.
 ## 2. Adversarial review, proportional to the tier
 
 The emitter already decided the tier from mechanical inputs. Do not re-litigate it in prose; if it
-looks wrong, the fix is `.harness.json`, not a judgment call here.
+looks wrong, the fix is `.harness.json`, not a judgment call here. **This table consumes the slice
+scope's tier exactly once per slice.** A tier the emitter prints for a later *fix diff* of this
+review's own findings is not an input to this table — that run's gate and `ungrouped:` output
+still apply (fix disposition below), but its tier line triggers nothing.
 
 | tier | action |
 |---|---|
@@ -74,6 +77,26 @@ fixed. Then judge each one *instance vs class*: a class finding belongs in the
 deterministic-rule backlog, because the same defect will otherwise be re-found by an LLM every
 slice.
 
+**The fix diff does not re-enter the review.** The review runs once per slice, over the slice
+scope. Close each fix by:
+
+1. **Gates**: re-run the emitter over the fix diff and run every emitted command. Its gate and
+   `ungrouped:` output are consumed exactly as in stage 1 — a fix that adds or touches a file no
+   group claims is called out, never silently passed. Its `review tier:` line is **not** an input
+   to the table above; a fix diff never earns a review by tier.
+2. **Per-finding fix check**: read the fix against the finding's own claim and failure scenario.
+   For a **high or medium** finding, spawn ONE skeptic leg on the plugin's pinned worker agent
+   (`ywr-harness:worker`), given the finding (severity · title · claim · evidence) plus the files
+   the fix touched, prompted to refute that the fix closes the claimed scenario without opening
+   an adjacent one, and answering exactly `fixed: true|false` plus a reason. Quote each verdict
+   into the close. A low finding closes on the closer's own reading; a nit needs none.
+
+Do **not** start a second review over the fix diff. One bounded exception: when a fix is a new
+mechanism rather than a patch — it adds a surface or rewrites control/data flow beyond the
+finding's own lines, or touches a `critical` group the original scope did not — run at most ONE
+re-review over the fix diff and name that criterion in the close. That re-review's findings are
+dispositioned under this same rule; there is never a third pass.
+
 ## 3. Verify
 
 Invoke `/ywr-harness:verify` (it forks, so only the report returns). Its verdict is quoted into the
@@ -91,8 +114,9 @@ Product files the mapper flags as having no spec owner are spec debt. Register t
 - Regenerate doc surfaces if any ADR/spec source changed: `pwsh docs/build.ps1`, and commit
   `index.json` + `INDEX.md` with the change.
 - Commit. State in the close: the scope line, the gates that passed, the tier **and its reason**,
-  the review outcome (confirmed / rejected counts), the verify verdict, and anything left ungated
-  or unverified.
+  the review outcome (confirmed / rejected counts), the fix disposition (gate re-runs + per-finding
+  fix checks; the triggering criterion, if a re-review ran), the verify verdict, and anything left
+  ungated or unverified.
 
 The last item is the point of the whole ritual: a close that does not say what it did *not* cover
 reads as complete coverage.

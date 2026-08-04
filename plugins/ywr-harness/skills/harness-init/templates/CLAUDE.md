@@ -31,6 +31,9 @@
   Put house-specific review angles in `args.lensExtra` rather than redefining the lens set —
   redefining means later improvements to the canonical lenses never reach this repo.
   The review invariants canon is `REVIEW.md` (shipped by the ywr-harness plugin).
+- The review runs once per slice: a fix diff for its confirmed findings closes with re-run gates
+  + per-finding fix checks, never a second full review — one bounded re-review only when the fix
+  is a new mechanism rather than a patch, with the criterion named in the close.
 - Run the deterministic gates (lint, format, typecheck) on the slice scope BEFORE any LLM
   review, and state which gates passed in the review scope. Mechanical defects should never
   cost review tokens.
