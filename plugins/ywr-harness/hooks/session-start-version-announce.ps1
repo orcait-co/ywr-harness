@@ -24,15 +24,19 @@
 # English wrapper around Korean bullets serves no reader. additionalContext stays English; its
 # reader is the model.
 #
-# Decision table (ADR 0030): own manifest unreadable -> reported (a plugin that cannot read its
-# own manifest is broken — visible, never silent). No resolvable home -> silent (announce-once
-# needs state; a per-session fallback is the rejected nag; the statusline still shows the
-# version). State absent / garbage / newer-than-current -> (re)seed silently — fresh install and
-# feature-first-run are indistinguishable, garbage is not a version to announce from, and a
-# downgrade is the member's own act. State == current -> silent. State < current -> announce,
-# then write; a failed write announces anyway with a visible may-repeat note. Non-speaking paths
-# are BYTE-silent because plain stdout on exit 0 becomes session context. Exit 0 always —
-# SessionStart cannot block anything and this hook does not try.
+# Decision table (ADR 0030, absent-state row amended by ADR 0031): own manifest unreadable ->
+# reported (a plugin that cannot read its own manifest is broken — visible, never silent). No
+# resolvable home -> silent (announce-once needs state; a per-session fallback is the rejected
+# nag; the statusline still shows the version). State path truly ABSENT -> first run: seed, and
+# when the seed actually recorded, a LINK-ONLY welcome (no bullets, no version arrow, never
+# "업데이트됨" — the message must be true for a fresh install AND the mechanism's first arrival,
+# which is the whole 0031 point); a failed seed stays byte-silent — a welcome that cannot be
+# recorded would repeat every session (the 0029 nag class) while carrying no news the dist
+# README lacks. State exists-but-unreadable / newer-than-current -> (re)seed silently ("first
+# run" would be a guess; a downgrade is the member's own act). State == current -> silent.
+# State < current -> announce, then write; a failed write announces anyway with a visible
+# may-repeat note. Non-speaking paths are BYTE-silent because plain stdout on exit 0 becomes
+# session context. Exit 0 always — SessionStart cannot block anything and this hook does not try.
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 try { $payload = [Console]::In.ReadToEnd().TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { exit 0 }
@@ -74,14 +78,40 @@ function Write-State([string]$Value) {
     catch { return $false }
 }
 
+# ABSENT is a first run; anything else keeps its ADR 0030 behavior (0031 amends only that row).
+# Test-Path without -PathType on purpose: a DIRECTORY squatting on the path counts as "exists" —
+# welcoming a squatted path would guess "first run" about a machine that already ran. A probe
+# error also counts as "exists": when in doubt, do not welcome. Per-call -ErrorAction, NOT a
+# $ErrorActionPreference assignment: at script scope try/catch does not confine a preference
+# variable, so the first draft silently promoted the REST of the hook to Stop semantics —
+# any later unguarded non-terminating error would have aborted past "exit 0 always"
+# (review 2026-08-05, medium; Write-State survives the same pattern only because a function
+# body scopes it).
+$stateExists = $true
+try { $stateExists = [bool](Test-Path -LiteralPath $stateFile -ErrorAction Stop) } catch { $stateExists = $true }
 $storedRaw = ''
 try { $storedRaw = ([string](Get-Content -LiteralPath $stateFile -Raw -ErrorAction Stop)).Trim() } catch { }
 $stored = $null
 if ($storedRaw -match '^v?(\d+)\.(\d+)\.(\d+)') { $stored = [version]($Matches[0] -replace '^v', '') }
 
+if (-not $stored -and -not $stateExists) {
+    # First run on this machine — fresh install, or the first version carrying this mechanism;
+    # indistinguishable, and the message below is TRUE in both states (ADR 0031). Write-then-
+    # speak, inverted from the update path on purpose: the update announcement protects news,
+    # this protects nothing the dist README does not already carry, so a failed seed is silent.
+    if (Write-State $currentRaw) {
+        $sys = "[hook:version-announce] ywr-harness v$currentRaw 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 전체 변경 이력: $rnUrl (claude.ai Team 좌석 로그인 필요)"
+        $ctx = "The ywr-harness plugin v$currentRaw is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first) and the artifact release-notes tab at $rnUrl. This welcome appears once per machine; do not repeat it unprompted."
+        @{
+            systemMessage      = $sys
+            hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = $ctx }
+        } | ConvertTo-Json -Compress
+    }
+    exit 0
+}
 if (-not $stored -or $stored -gt $current) {
-    # Absent, garbage, or a downgrade: (re)seed and say nothing. Failure to seed is silent too —
-    # there is no announcement to protect, and the next session simply retries.
+    # Exists-but-unreadable state, or a downgrade: (re)seed and say nothing (ADR 0030 rows,
+    # unchanged) — the next session simply retries.
     Write-State $currentRaw | Out-Null
     exit 0
 }

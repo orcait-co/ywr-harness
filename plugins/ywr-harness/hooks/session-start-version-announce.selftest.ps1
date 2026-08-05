@@ -120,10 +120,24 @@ $hookRc = New-FixturePlugin 'plug-rc' '{"name":"ywr-harness","version":"2.5.0rc1
 $env:USERPROFILE = $fxHome
 $env:HOME = $fxHome
 try {
-    # 1. no state file (fresh install / feature first run) -> byte-silent, state SEEDED with the
-    #    current version. Announcing here would claim an update that did not happen (ADR 0030).
+    # 0. first run whose SEED CANNOT RECORD (a file squats on the state DIRECTORY path) ->
+    #    byte-silent: a welcome that cannot be recorded would repeat every session — the 0029
+    #    nag class — and it protects no news (ADR 0031's write-then-speak order, asserted).
+    New-Item -ItemType Directory -Force -Path (Join-Path $fxHome '.claude') | Out-Null
+    Set-Content -LiteralPath (Split-Path $stateFile -Parent) -Value 'squatter' -NoNewline -Encoding utf8
     $out = Invoke-Hook (New-Payload) $hook
-    $ok = (Assert-EmptyStdout 'fresh: silent' $out) -and $ok
+    $ok = (Assert-EmptyStdout 'unseedable first run: silent' $out) -and $ok
+    Remove-Item -LiteralPath (Split-Path $stateFile -Parent) -Force
+
+    # 1. no state file (fresh install / feature first run) -> the LINK-ONLY WELCOME (ADR 0031):
+    #    true in both indistinguishable states, so no version arrow, no "업데이트됨", no bullets
+    #    — and the state seeds, so the machine hears it exactly once.
+    $out = Invoke-Hook (New-Payload) $hook
+    $ok = (Assert-Announce 'fresh: link-only welcome' $out `
+            @('\[hook:version-announce\]', 'v2\.5\.0 적용 중', '첫 버전 안내',
+            'artifact/fec5c994-af2f-4e71-9e33-b03acc8cc1f7#rn', 'Team 좌석 로그인',
+            'once per machine') `
+            @('업데이트됨', '→', '첫 번째 변경', '외 \d+건', '주요 변경')) -and $ok
     $ok = (Assert-True 'fresh: state seeded to current' ((Get-State) -eq '2.5.0') `
             "state reads [$(Get-State)] (want 2.5.0)") -and $ok
 
@@ -144,7 +158,8 @@ try {
             '두 번째 변경이 여러 줄로 이어집니다', '세 번째 변경',
             '외 1건', 'artifact/fec5c994-af2f-4e71-9e33-b03acc8cc1f7#rn', 'Team 좌석 로그인',
             'once-per-version', 'CHANGELOG') `
-            @('네 번째', '\*\*', '`', '기록 실패', 'could not be read')) -and $ok
+            @('네 번째', '\*\*', '`', '기록 실패', 'could not be read',
+            '첫 버전 안내', '적용 중', 'once per machine')) -and $ok
     $ok = (Assert-True 'older state: state advanced' ((Get-State) -eq '2.5.0') `
             "state reads [$(Get-State)] (want 2.5.0)") -and $ok
 
@@ -154,7 +169,7 @@ try {
     $out = Invoke-Hook (New-Payload) $hookRc
     $ok = (Assert-Announce 'suffixed version finds its entry' $out `
             @('v2\.4\.0 → v2\.5\.0rc1', '접미사 버전 항목이 조회됩니다') `
-            @('외 \d+건', '기록 실패')) -and $ok
+            @('외 \d+건', '기록 실패', '첫 버전 안내', '적용 중')) -and $ok
 
     # 4. BOM-prefixed stdin -> still parses (the config-change-audit 07-23 incident class)
     Set-State '2.4.0'
@@ -177,12 +192,15 @@ try {
             "state reads [$(Get-State)] (want 2.5.0)") -and $ok
 
     # 7. CHANGELOG missing entirely -> announce DEGRADED: link only, no bullets, no cap line.
-    #    The gate that enforces the entry runs in the canon, not on the member machine.
+    #    The gate that enforces the entry runs in the canon, not on the member machine. This is
+    #    the update message whose SHAPE is closest to the welcome (both link-only), so the
+    #    distinguishability pin matters most here: it must still read as an UPDATE, never as a
+    #    first-run welcome (review 2026-08-05, medium — the pin was one-directional).
     Set-State '2.4.0'
     $out = Invoke-Hook (New-Payload) $hookNoNotes
     $ok = (Assert-Announce 'missing CHANGELOG: link-only announcement' $out `
-            @('v2\.4\.0 → v2\.5\.0', 'artifact/fec5c994-af2f-4e71-9e33-b03acc8cc1f7#rn') `
-            @('주요 변경', '외 \d+건', '첫 번째 변경')) -and $ok
+            @('v2\.4\.0 → v2\.5\.0', '업데이트됨', 'artifact/fec5c994-af2f-4e71-9e33-b03acc8cc1f7#rn') `
+            @('주요 변경', '외 \d+건', '첫 번째 변경', '첫 버전 안내', '적용 중', 'once per machine')) -and $ok
 
     # 8. state write blocked -> announce ANYWAY with the visible may-repeat note (never a lost
     #    announcement, never a silent repeat). Read-only file: pwsh Set-Content refuses it on
