@@ -15,6 +15,9 @@
 #   3. Shell form where a path placeholder is used — exec form (`args` present) is the shipped
 #      decision because a marketplace install path contains a version string. A regression to
 #      shell form reintroduces the quoting surface without any visible symptom.
+#   4. A release-notes canon that lies (ADR 0030) — the top CHANGELOG entry disagreeing with
+#      plugin.json, or the artifact link diverging between the CHANGELOG and the announce hook.
+#      The hook degrades gracefully on member machines, so only this gate makes the defect loud.
 #
 # Exit 0 = all checks passed. Exit 1 = at least one failed.
 
@@ -83,6 +86,45 @@ if (-not (Test-Path -LiteralPath $hkPath)) {
             }
         }
     }
+}
+
+# --- release-notes canon (ADR 0030) ----------------------------------------------------------
+# The version-announce hook renders CHANGELOG.md at session start on member machines; these are
+# the two agreements that make that rendering true. Both are canon-side checks on purpose — the
+# hook itself degrades gracefully when the canon is wrong, so a defect here would otherwise ship
+# silently and surface only as a bullet-less announcement on every member machine.
+#   1. The top CHANGELOG entry's version must equal plugin.json's — a release cannot ship
+#      without its notes, and stale notes must not masquerade as current ones.
+#   2. The artifact release-notes-tab URL appears in BOTH the hook and the CHANGELOG header;
+#      they must agree — one link, two shipped surfaces, zero drift.
+$clPath = Join-Path $root 'CHANGELOG.md'
+$vaPath = Join-Path $root 'hooks/session-start-version-announce.ps1'
+if (-not (Test-Path -LiteralPath $clPath)) {
+    Bad 'CHANGELOG.md missing — the version-announce hook would ship without its release-notes canon (ADR 0030)'
+} else {
+    $clTopVer = ''
+    foreach ($ln in (Get-Content -LiteralPath $clPath)) {
+        if ($ln -match '^##\s+v(\d+\.\d+\.\d+\S*)') { $clTopVer = $Matches[1]; break }
+    }
+    # `-not $mf` gets its own branch, BEFORE the comparison: with plugin.json unreadable the
+    # comparison never ran, and the first draft's `elseif ($mf -and ...) else Good` printed
+    # "(matches plugin.json)" for a check it never performed — a skipped check reading as a pass
+    # (review 2026-08-05, medium; the exit code was already 1 from the manifest Bad, so only the
+    # MESSAGE lied, which is exactly why the selftest pins the message, not the exit code).
+    if (-not $clTopVer) { Bad 'CHANGELOG.md has no "## vX.Y.Z" entry — nothing for the announce hook to render' }
+    elseif (-not $mf) { Bad "CHANGELOG top entry = v$clTopVer, but plugin.json is unreadable (see the manifest failure above) — version agreement NOT CHECKED, not passed" }
+    elseif ($clTopVer -ne [string]$mf.version) { Bad "CHANGELOG top entry is v$clTopVer but plugin.json says $($mf.version) — a release cannot ship without its notes (ADR 0030)" }
+    else { Good "CHANGELOG top entry = v$clTopVer (matches plugin.json)" }
+
+    # Case-insensitive hex on purpose: an uppercase artifact id would otherwise make BOTH sides
+    # read empty and fail as "link missing" even when byte-identical (review 2026-08-05, low —
+    # an over-strict gate blocking a legitimate release, not a leak).
+    $urlRx = 'https://claude\.ai/code/artifact/[0-9A-Fa-f-]+#rn'
+    $clUrl = ([regex]::Match((Get-Content -LiteralPath $clPath -Raw), $urlRx)).Value
+    $hkUrl = if (Test-Path -LiteralPath $vaPath) { ([regex]::Match((Get-Content -LiteralPath $vaPath -Raw), $urlRx)).Value } else { '' }
+    if (-not $clUrl -or -not $hkUrl) { Bad "release-notes link missing (want the artifact #rn URL in both surfaces): CHANGELOG='$clUrl' hook='$hkUrl'" }
+    elseif ($clUrl -ne $hkUrl) { Bad "release-notes link DIVERGED: CHANGELOG '$clUrl' vs hook '$hkUrl' — one link, two surfaces (ADR 0030)" }
+    else { Good 'release-notes link agrees across CHANGELOG.md and the announce hook' }
 }
 
 # --- component namespacing ------------------------------------------------------------------

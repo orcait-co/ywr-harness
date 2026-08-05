@@ -136,6 +136,44 @@ Try-Case 'unparseable-manifest' {
     '{ this is not json' | Set-Content -LiteralPath $p -NoNewline
 }
 
+# The release-notes canon (ADR 0030): a release shipping without notes, with stale notes, or
+# with a link that no longer matches the hook's would each surface only on member machines —
+# as a bullet-less or wrong-tab announcement — which is why the gate owns them canon-side.
+Try-Case 'changelog-missing' {
+    param($d)
+    Remove-Item -LiteralPath (Join-Path $d 'CHANGELOG.md') -Force
+}
+
+Try-Case 'changelog-version-stale' {
+    param($d)
+    $p = Join-Path $d 'CHANGELOG.md'
+    $j = Get-Content -LiteralPath (Join-Path $d '.claude-plugin/plugin.json') -Raw | ConvertFrom-Json
+    (Get-Content -LiteralPath $p -Raw).Replace("## v$($j.version)", '## v0.0.1') |
+        Set-Content -LiteralPath $p -NoNewline
+}
+
+Try-Case 'rn-url-diverged' {
+    param($d)
+    $p = Join-Path $d 'CHANGELOG.md'
+    (Get-Content -LiteralPath $p -Raw) -replace 'artifact/[0-9a-f-]+#rn', 'artifact/00000000-0000-0000-0000-000000000000#rn' |
+        Set-Content -LiteralPath $p -NoNewline
+}
+
+# Class-4 honesty, asserted on the MESSAGE not the exit code: with plugin.json corrupt and the
+# CHANGELOG intact, the gate already exits 1 from the manifest Bad — so an exit-code-only case
+# can never catch the defect this pins, which was the CHANGELOG check printing a false
+# "(matches plugin.json)" PASS for a comparison it never ran (review 2026-08-05, medium). The
+# skipped comparison must say NOT CHECKED.
+$dir = Join-Path $base 'changelog-check-broken-manifest'
+Copy-Item -LiteralPath $src -Destination $dir -Recurse -Force
+'{ this is not json' | Set-Content -LiteralPath (Join-Path $dir '.claude-plugin/plugin.json') -NoNewline
+$out = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'manifest-gate.ps1') 2>&1 | Out-String
+$rc = $LASTEXITCODE
+$honest = ($rc -eq 1) -and ($out -notmatch '\(matches plugin\.json\)') -and ($out -match 'NOT CHECKED')
+if ($honest) { Write-Host 'PASS [changelog-check-broken-manifest] no false "(matches plugin.json)"; NOT CHECKED reported' -ForegroundColor Green }
+else { Write-Host "FAIL [changelog-check-broken-manifest] exit=$rc falseMatchClaim=$([bool]($out -match '\(matches plugin\.json\)')) notCheckedReported=$([bool]($out -match 'NOT CHECKED'))" -ForegroundColor Red }
+$results += [pscustomobject]@{ case = 'changelog-check-broken-manifest'; exit = $(if ($honest) { 1 } else { 0 }) }
+
 # A POSITIVE control: the unmutated copy must still pass. Without it a gate that fails on
 # everything (a broken gate) would score a perfect negative suite.
 $ok = Join-Path $base 'unmutated-control'

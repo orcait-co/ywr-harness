@@ -30,6 +30,7 @@ calls the scripts directly and never goes through the host's component registry.
 | `config-change-audit.ps1` | `ConfigChange` | Visibility only. Surfaces mid-session permission/hook self-modification. Never blocks. |
 | `directory-added-guard.ps1` | `DirectoryAdded` | Visibility only by construction — the event carries no decision control and fires after the permission refresh. Speaks only when the added directory actually contributes loadable surfaces (`.claude/skills`, `.claude/agents`) or parses one of the two settings keys it can contribute; silence on a bare directory is correct behavior, not a missed hook. |
 | `session-start-githooks-nudge.ps1` | `SessionStart` | Suggest-only (ADR 0029). Speaks exactly when the work tree carries `.githooks/` and this clone's `core.hooksPath` is unset — the state where no git hook runs and nothing else says so until slice close or CI. Names the one-line fix; never sets it. A wired clone, a repo without `.githooks/`, and a deliberate foreign `hooksPath` are all silent. |
+| `session-start-version-announce.ps1` | `SessionStart` | Announce-once-per-version (ADR 0030). At the first session that loads a new plugin version it says so once — old → new, up to three bullets from `CHANGELOG.md` (the member release-notes canon, Korean), and the onboarding artifact's release-notes tab — then records the version in `~/.claude/ywr-harness/announced-version`, the plugin's only user-scope write. Steady state, fresh installs, and downgrades are silent; `manifest-gate.ps1` refuses a release whose top CHANGELOG entry does not match `plugin.json`. |
 | `subagent-telemetry.ps1` | `SubagentStop` | Appends a per-agent JSONL ledger to `<project>/.claude/telemetry/`. Fail-open. |
 
 ## Adversarial review (workflow)
@@ -157,11 +158,13 @@ then every shipped PowerShell selftest:
 pwsh -NoProfile -File ./selftest.ps1
 ```
 
-`manifest-gate.ps1` is deterministic and CLI-free. It fails on the three defects with
-distribution blast radius: `version` missing (omitted `version` falls back to the git commit
-SHA, so every commit ships as a new version to every consumer), a hook path that does not
-resolve, and a regression from exec form to shell form where a path placeholder is used.
-`manifest-gate.selftest.ps1` proves it can fail — thirteen mutations plus an unmutated control,
+`manifest-gate.ps1` is deterministic and CLI-free. It fails on the defects with distribution
+blast radius: `version` missing (omitted `version` falls back to the git commit SHA, so every
+commit ships as a new version to every consumer), a hook path that does not resolve, a
+regression from exec form to shell form where a path placeholder is used, and a release-notes
+canon that lies (top `CHANGELOG.md` entry ≠ `plugin.json` version, or the artifact link
+diverging between the CHANGELOG and the announce hook — ADR 0030).
+`manifest-gate.selftest.ps1` proves it can fail — seventeen mutations plus an unmutated control,
 because a suite that only ever passes and a gate that fails on everything score identically
 without the control. The control has earned its place: it caught a broken identity gate while
 the negative suite was reporting every mutation caught.

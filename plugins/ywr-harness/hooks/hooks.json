@@ -33,6 +33,12 @@
             "command": "pwsh",
             "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start-githooks-nudge.ps1"],
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "pwsh",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start-version-announce.ps1"],
+            "timeout": 10
           }
         ]
       }
