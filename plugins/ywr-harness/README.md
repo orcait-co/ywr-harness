@@ -29,6 +29,7 @@ calls the scripts directly and never goes through the host's component registry.
 |---|---|---|
 | `config-change-audit.ps1` | `ConfigChange` | Visibility only. Surfaces mid-session permission/hook self-modification. Never blocks. |
 | `directory-added-guard.ps1` | `DirectoryAdded` | Visibility only by construction — the event carries no decision control and fires after the permission refresh. Speaks only when the added directory actually contributes loadable surfaces (`.claude/skills`, `.claude/agents`) or parses one of the two settings keys it can contribute; silence on a bare directory is correct behavior, not a missed hook. |
+| `session-start-githooks-nudge.ps1` | `SessionStart` | Suggest-only (ADR 0029). Speaks exactly when the work tree carries `.githooks/` and this clone's `core.hooksPath` is unset — the state where no git hook runs and nothing else says so until slice close or CI. Names the one-line fix; never sets it. A wired clone, a repo without `.githooks/`, and a deliberate foreign `hooksPath` are all silent. |
 | `subagent-telemetry.ps1` | `SubagentStop` | Appends a per-agent JSONL ledger to `<project>/.claude/telemetry/`. Fail-open. |
 
 ## Adversarial review (workflow)
