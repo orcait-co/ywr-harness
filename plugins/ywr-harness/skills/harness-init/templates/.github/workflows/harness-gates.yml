@@ -78,6 +78,18 @@ jobs:
           fi
           echo "OK — 모든 변경 파일이 선언된 그룹에 속합니다."
 
+      # ADR 0032. .harness.json 이 아티팩트를 선언하면 README 는 그 링크를 실어야 하고, 선언된
+      # 제목은 레포 이름으로 시작해야 한다(<repo> · <purpose>). emitter 는 보고만 하므로 여기가
+      # 시행 지점이다. 미선언이면 emitter 가 "none declared" 로 보고하고 이 스텝은 통과한다.
+      - name: Fail on a declared-artifact violation
+        run: |
+          if grep -q '^artifact: VIOLATION' "$RUNNER_TEMP/gates.txt"; then
+            echo "::error::선언된 아티팩트 규칙 위반 — .harness.json 의 artifacts 선언과 README 를 맞추세요 (ywr-harness ADR 0032)."
+            grep '^artifact:' "$RUNNER_TEMP/gates.txt"
+            exit 1
+          fi
+          echo "OK — 아티팩트 위반 없음(선언 여부는 emitter 의 artifact: 라인이 보고)."
+
       # ADR 0022(0021 대체). enabledPlugins 가 커밋되면 이 레포를 클론하는 전원에게 플러그인이 강제
       # 활성화된다 — 관리 설정 페이로드에서 끝까지 쓰지 않은 바로 그 키다(ADR 0010/0012). 트리에
       # 쓰는 스코프는 둘 다 막는다: --scope project 는 .claude/settings.json, --scope local 은

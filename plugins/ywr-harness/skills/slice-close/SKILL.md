@@ -20,10 +20,13 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py" --range <a>..<b>      # 
 or `git diff --stat <range>` succeeds). On failure, confirm the scope with the user rather than
 proceeding on a broken range.
 
-The emitter prints four things, all of which belong in the close:
+The emitter prints five things, all of which belong in the close:
 
 - **`scope:`** — where the file list came from. An empty commit range is called out by name;
   quote that line. A range that matched nothing means everything below rests on the working tree.
+- **`artifact:`** — the declared-Artifact check (ADR 0032). An `artifact: VIOLATION` line is a
+  defect to fix **before** the close (CI fails on it): make the README carry the declared link,
+  or correct the declaration. `none declared` is a report, not a failure.
 - **`gates:`** — the deterministic commands, per declared group, from `.harness.json`. Commands
   marked *whole-program* have no per-file scoping: gate on failures in slice files or newly
   introduced by the slice, and record pre-existing failures elsewhere as debt rather than

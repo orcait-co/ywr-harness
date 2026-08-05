@@ -92,6 +92,13 @@ wires exactly the machine it ran on. That gap is closed by reporting, not by wir
 `harness_gates.py` prints a `hooks:` line on every `/ywr-harness:slice-close` and CI run, so an
 unwired clone can never look identical to a wired one.
 
+The emitter also checks any **declared claude.ai Artifact** (ADR 0032): the `artifacts` section
+of `.harness.json` names each url and title, and the emitter verifies the README carries the
+link and the title starts with the repo name (convention `<repo> · <purpose>`). The emitter only
+reports (`artifact: ok | VIOLATION | none declared`); the vendored CI is the enforcement point —
+it fails on `artifact: VIOLATION`. The gate cannot see claude.ai, so an undeclared Artifact is
+unchecked, and that state is reported rather than silent.
+
 Both hooks degrade the way everything else here does. A missing `python`, `awk`, or emitter is a
 **reported skip, never a silent pass** — an unparsed emitter would otherwise read as "no gates
 matched", which is the hardest kind of gate failure to notice.

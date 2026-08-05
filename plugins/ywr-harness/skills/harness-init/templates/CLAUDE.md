@@ -25,6 +25,9 @@
 - Before adding a dependency or pattern, check `docs/adr` for an existing decision.
   A new decision → write the ADR first.
 - Never commit secrets. `.env` is gitignored; commit `.env.example` only.
+- A claude.ai Artifact this repo publishes is titled **`<repo-name> · <purpose>`** and declared
+  under `artifacts` in `.harness.json` — the harness then enforces that the README carries the
+  link (CI fails on drift; ywr-harness ADR 0032).
 - `docs/adr/` is append-only; `docs/spec/` is living. Detail in `docs/README.md`.
 - Adversarial code review before closing a slice:
   `Workflow({name: 'ywr-harness:adversarial-review', args: {scope: '<files + invariants + passed gates>'}})`.

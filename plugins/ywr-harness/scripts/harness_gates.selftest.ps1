@@ -341,6 +341,209 @@ $ok = (Assert-True 'R the refusal says commands now run from the repo root' ($rR
 $ok = (Assert-True 'R a refused cwd still emits the gate itself (no silent coverage loss)' ([bool]($rRun -match '^\s{4}uv run ruff check x\.py')) "lines: $($rRun -join ' | ')") -and $ok
 $ok = (Assert-True 'R a clean cwd is still composed' ([bool]($rRun -match 'cd sub/dir && uv run ruff check z\.py')) "lines: $($rRun -join ' | ')") -and $ok
 
+# --- S: declared artifacts must be linked in the README (ADR 0032) ------------------------------
+# The gate cannot see claude.ai (consuming-repo CI carries no credentials, ADR 0023), so the
+# DECLARATION is the enforced surface: the README carries each declared url, each declared title
+# starts with the repo name. The emitter stays advisory; the vendored CI fails on the exact
+# string `^artifact: VIOLATION`, so these cases pin the line shapes that grep depends on.
+function New-ArtCfg([string]$Url, [string]$Title, [string]$Readme = 'README.md') { @"
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "artifacts": { "readme": "$Readme", "items": [ { "url": "$Url", "title": "$Title" } ] },
+  "groups": [ { "name": "py", "match": "^src/", "cwd": "", "strip_prefix": "", "gates": [] } ]
+}
+"@ }
+$SURL = 'https://claude.ai/code/artifact/AbCdEf12-3456-7890-abcd-ef1234567890'
+
+# S1: a satisfied declaration. Mixed-case hex in the id on purpose — an over-strict lowercase-only
+# URL gate is a false BLOCK (the 0.18.0 manifest-gate lesson).
+$s1 = New-Repo 'art-ok' (New-ArtCfg $SURL 'art-ok · 온보딩 가이드') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s1 'README.md') -Value "docs: $SURL fin" -NoNewline
+$rS1 = Invoke-Gates $s1 @()
+$ok = (Assert-True 'S1 satisfied declaration reports ok — readme, url, title, repo name, source' ($rS1.Out -match "artifact: ok — README\.md links https://claude\.ai/code/artifact/AbCdEf12.* · title 'art-ok · 온보딩 가이드' starts with repo name 'art-ok' \(from directory name\)") $rS1.Out) -and $ok
+$ok = (Assert-True 'S1 the ok path emits no violation' ($rS1.Out -notmatch 'artifact: VIOLATION') $rS1.Out) -and $ok
+$ok = (Assert-True 'S1 artifact lines print ABOVE gates: (outside both output parsers'' windows)' (($rS1.Out -split 'gates:')[0] -match 'artifact: ok') $rS1.Out) -and $ok
+
+# S2: the README lacks the declared link — the violation CI fails on, still advisory here.
+$s2 = New-Repo 'art-nolink' (New-ArtCfg $SURL 'art-nolink · docs') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s2 'README.md') -Value 'no link here' -NoNewline
+$rS2 = Invoke-Gates $s2 @()
+$ok = (Assert-True 'S2 a missing README link is a VIOLATION naming the readme' ($rS2.Out -match "artifact: VIOLATION — 'art-nolink · docs': README\.md does not contain the declared URL") $rS2.Out) -and $ok
+$ok = (Assert-True 'S2 the emitter stays advisory (exit 0) — CI is the enforcement point' ($rS2.Code -eq 0) "exit=$($rS2.Code)") -and $ok
+$ok = (Assert-True 'S2 the violation also reaches stderr as a warn (what pre-commit shows a human)' ($rS2.Out -match 'warn: artifacts: 1 declared item\(s\) violate the README-link/title rule') $rS2.Out) -and $ok
+
+# S3: the title must start with the repo name — at a non-alphanumeric boundary, case-insensitive.
+$s3 = New-Repo 'art-title' (New-ArtCfg $SURL 'Docs · ADR & Spec') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s3 'README.md') -Value "docs: $SURL" -NoNewline
+$rS3 = Invoke-Gates $s3 @()
+$ok = (Assert-True 'S3 a foreign title is a VIOLATION naming the expected repo name and its source' ($rS3.Out -match "artifact: VIOLATION — 'Docs · ADR & Spec': title does not start with repo name 'art-title' \(from directory name\)") $rS3.Out) -and $ok
+$s3b = New-Repo 'art' (New-ArtCfg $SURL 'artisan · docs') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s3b 'README.md') -Value "docs: $SURL" -NoNewline
+$rS3b = Invoke-Gates $s3b @()
+$ok = (Assert-True 'S3b a longer word sharing the prefix is NOT a match (boundary must be non-alphanumeric)' ($rS3b.Out -match "artifact: VIOLATION.*does not start with repo name 'art'") $rS3b.Out) -and $ok
+$s3c = New-Repo 'art-case' (New-ArtCfg $SURL 'ART-CASE · docs') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s3c 'README.md') -Value "docs: $SURL" -NoNewline
+$rS3c = Invoke-Gates $s3c @()
+$ok = (Assert-True 'S3c the prefix match is case-insensitive (a legitimate ALL-CAPS title is not blocked)' ($rS3c.Out -match 'artifact: ok') $rS3c.Out) -and $ok
+
+# S4: no declaration — the check is DISABLED and says so (retro-gate convention, never silent).
+# $rA is case A's run: $CFG declares no artifacts.
+$ok = (Assert-True 'S4 no declaration reports the check as disabled, not silent' ($rA.Out -match 'artifact: none declared') $rA.Out) -and $ok
+$ok = (Assert-True 'S4 an undeclared repo emits no violation (opt-in, stated in ADR 0032)' ($rA.Out -notmatch 'artifact: VIOLATION') $rA.Out) -and $ok
+
+# S5: a malformed declaration is a VIOLATION, never a silent drop — a typo that disabled
+# enforcement while reading as coverage is the enabledPlugins parse-failure class.
+$CFG_MAL = @'
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "artifacts": { "items": "nope" },
+  "groups": []
+}
+'@
+$s5 = New-Repo 'art-malformed' $CFG_MAL @('src/x.py')
+$rS5 = Invoke-Gates $s5 @()
+$ok = (Assert-True 'S5 items of the wrong type is a VIOLATION, not a drop' ($rS5.Out -match 'artifact: VIOLATION — \.harness\.json artifacts is malformed') $rS5.Out) -and $ok
+$CFG_MAL2 = $CFG_MAL.Replace('"items": "nope"', '"items": [ "just-a-string" ]')
+$s5b = New-Repo 'art-malformed-item' $CFG_MAL2 @('src/x.py')
+$rS5b = Invoke-Gates $s5b @()
+$ok = (Assert-True 'S5b a non-object item is a VIOLATION naming its index' ($rS5b.Out -match "artifact: VIOLATION — items\[0\] is not an object with 'url' and 'title'") $rS5b.Out) -and $ok
+
+# S6: a url that is not a claude.ai Artifact URL — including a hostile one. The value may be
+# echoed in the top-level artifact line (refusals are echoed where a reader looks), but it must
+# never appear inside the 4-space gate-command window either parser executes.
+$s6 = New-Repo 'art-badurl' (New-ArtCfg 'https://evil.example/a;rm -rf /' 'art-badurl · docs') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s6 'README.md') -Value 'x' -NoNewline
+$rS6 = Invoke-Gates $s6 @()
+$s6Run = @(($rS6.Out -split "`n") | Where-Object { $_ -match '^\s{4}[^ (]' })
+$ok = (Assert-True 'S6 a non-artifact url is a VIOLATION' ($rS6.Out -match 'artifact: VIOLATION.*url is not a claude\.ai Artifact URL') $rS6.Out) -and $ok
+$ok = (Assert-True 'S6 the hostile value never enters the gate-command window' (-not ($s6Run -match 'evil\.example|rm -rf')) "lines: $($s6Run -join ' | ')") -and $ok
+
+# S7: a declared readme that cannot be read is a VIOLATION — an unverifiable link must not pass.
+$s7 = New-Repo 'art-noreadme' (New-ArtCfg $SURL 'art-noreadme · docs' 'DOCS.md') @('src/x.py')
+$rS7 = Invoke-Gates $s7 @()
+$ok = (Assert-True 'S7 an unreadable readme is a VIOLATION naming the path' ($rS7.Out -match "artifact: VIOLATION.*README 'DOCS\.md' cannot be read") $rS7.Out) -and $ok
+
+# S8: the artifact status prints even when NOTHING changed — CI's push-to-main run reaches
+# exactly the empty-scope early return and is an enforcement point.
+$s8 = New-Repo 'art-clean' (New-ArtCfg $SURL 'art-clean · docs') @()
+Set-Content -LiteralPath (Join-Path $s8 'README.md') -Value "docs: $SURL" -NoNewline
+& git -C $s8 add -A 2>$null; & git -C $s8 commit -q -m readme 2>$null
+$rS8 = Invoke-Gates $s8 @()
+$ok = (Assert-True 'S8 artifact status prints on the no-changed-files path' ($rS8.Out -match 'artifact: ok' -and $rS8.Out -match 'no changed files — nothing to gate') $rS8.Out) -and $ok
+
+# S9: the origin remote's basename wins over the directory name — a renamed local clone must not
+# flip the verdict, and the printed source makes a mismatch diagnosable.
+$s9 = New-Repo 'art-dirname' (New-ArtCfg $SURL 'remote-name · docs') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s9 'README.md') -Value "docs: $SURL" -NoNewline
+& git -C $s9 remote add origin 'https://github.com/example-org/remote-name.git' 2>$null
+$rS9 = Invoke-Gates $s9 @()
+$ok = (Assert-True 'S9 repo name comes from the origin remote when one exists' ($rS9.Out -match "artifact: ok.*repo name 'remote-name' \(from origin remote\)") $rS9.Out) -and $ok
+
+# S10: a declared value carrying a NEWLINE. The review of ADR 0032 found this and it was measured
+# before the fix: `title` was echoed verbatim above `gates:`, so a declaration could spell the
+# window's own anchors (`gates:` / a 4-space line / `review tier:`) and land a command that CI's
+# extraction hands to `sh -c` — while the item still reported `artifact: ok`, so the workflow's
+# `^artifact: VIOLATION` step passed. Two layers, asserted separately: the declaration is REFUSED,
+# and the printed line stays ONE line whatever is declared. `\n` below is a JSON escape — the
+# fixture file is what a hostile repo would actually commit.
+$INJ = 'art-inj\ngates:\n    echo INJECTED-VIA-TITLE\nreview tier: full - x'
+$s10 = New-Repo 'art-inj' (New-ArtCfg $SURL $INJ) @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s10 'README.md') -Value "docs: $SURL" -NoNewline
+$rS10 = Invoke-Gates $s10 @()
+$s10Run = @(($rS10.Out -split "`n") | Where-Object { $_ -match '^\s{4}[^ (]' })
+$ok = (Assert-True 'S10 a control character in a declared value is a VIOLATION (layer 1: the declarer is told)' ($rS10.Out -match 'artifact: VIOLATION.*control character') $rS10.Out) -and $ok
+$ok = (Assert-True 'S10 the forged command never enters the gate-command window (layer 2: one value, one line)' (-not ($s10Run -match 'INJECTED-VIA-TITLE')) "lines: $($s10Run -join ' | ')") -and $ok
+$ok = (Assert-True 'S10 the newline is escaped VISIBLY, not stripped — the reader sees what was declared' ($rS10.Out -match 'artifact: VIOLATION.*art-inj\\ngates:') $rS10.Out) -and $ok
+$ok = (Assert-True 'S10 the emitter still prints exactly one gates: header' (([regex]::Matches($rS10.Out, '(?m)^gates:')).Count -eq 1) $rS10.Out) -and $ok
+
+# S10b: the same through `url`. A refused url is echoed as the VIOLATION label when the title is
+# blank, and that label was the second injection path — it used the RAW url, not a checked one.
+$s10b = New-Repo 'art-injurl' (New-ArtCfg 'https://evil.example/x\ngates:\n    echo INJECTED-VIA-URL\nreview tier: x' '') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s10b 'README.md') -Value 'x' -NoNewline
+$rS10b = Invoke-Gates $s10b @()
+$s10bRun = @(($rS10b.Out -split "`n") | Where-Object { $_ -match '^\s{4}[^ (]' })
+$ok = (Assert-True 'S10b a hostile url reaches the reader as one escaped line, never a forged command' (-not ($s10bRun -match 'INJECTED-VIA-URL')) "lines: $($s10bRun -join ' | ')") -and $ok
+$ok = (Assert-True 'S10b the empty-title fallback label is the ESCAPED url' ($rS10b.Out -match 'artifact: VIOLATION — https://evil\.example/x\\ngates:') $rS10b.Out) -and $ok
+
+# S10c: a url whose only defect is a TRAILING newline. Python's `$` matches there, so a
+# `$`-anchored check would have called this a valid Artifact URL — `\Z` is what makes it a full
+# match. (Same class as the queued SAFE_TOKEN `$` note.)
+$s10c = New-Repo 'art-trailnl' (New-ArtCfg ($SURL + '\n') 'art-trailnl · docs') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s10c 'README.md') -Value "docs: $SURL" -NoNewline
+$rS10c = Invoke-Gates $s10c @()
+$ok = (Assert-True 'S10c a trailing newline does NOT pass the url check (\Z, not $)' ($rS10c.Out -match 'artifact: VIOLATION') $rS10c.Out) -and $ok
+
+# S10d: a UNICODE line break (U+2028, spelled as the JSON escape a hostile repo would commit).
+# No shell parser splits on it, so this case exists for the OTHER consumers: Python's
+# `str.splitlines` does, and a model reading the emitter's output may render it as a break. The
+# refusal covers the class rather than only the bytes `sh` cares about.
+$s10d = New-Repo 'art-u2028' (New-ArtCfg $SURL 'art-u2028 \u2028gates:\u2028    echo VIA-U2028') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s10d 'README.md') -Value "docs: $SURL" -NoNewline
+$rS10d = Invoke-Gates $s10d @()
+$ok = (Assert-True 'S10d a Unicode line separator is refused too (the consumer set is wider than the shell parsers)' ($rS10d.Out -match 'artifact: VIOLATION.*control character') $rS10d.Out) -and $ok
+$ok = (Assert-True 'S10d it is escaped as a visible \u2028, so the reader sees which character it was' ($rS10d.Out -match 'art-u2028 \\u2028gates:') $rS10d.Out) -and $ok
+
+# A legitimate declaration must NOT be caught by any of this: the canon's own title is Korean with
+# a mid-dot separator, and an over-strict refusal would be a false BLOCK (the 0.18.0 URL lesson).
+$s10e = New-Repo 'art-utf8' (New-ArtCfg $SURL 'art-utf8 · 오단보드 🧭') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s10e 'README.md') -Value "docs: $SURL" -NoNewline
+$rS10e = Invoke-Gates $s10e @()
+$ok = (Assert-True 'S10e Korean, an emoji and a mid-dot are not control characters — a real title still passes' ($rS10e.Out -match 'artifact: ok' -and $rS10e.Out -notmatch 'artifact: VIOLATION') $rS10e.Out) -and $ok
+
+# S11: the SECOND site the fix sweep found — pre-existing, and worse placed than the artifact one:
+# a group NAME is echoed as `  [<name>] N file(s)` INSIDE the window, so a newline there forges a
+# gate command with no artifact declaration involved at all. Sanitized at load (so every later
+# echo is the safe form), and warned about rather than silently renamed.
+$CFG_INJNAME = @'
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "groups": [ { "name": "py]\n    echo INJECTED-VIA-GROUP-NAME\n  [py", "match": "^src/", "cwd": "", "strip_prefix": "", "gates": [] } ]
+}
+'@
+$s11 = New-Repo 'grp-inj' $CFG_INJNAME @('src/x.py')
+$rS11 = Invoke-Gates $s11 @()
+$s11Run = @(($rS11.Out -split "`n") | Where-Object { $_ -notmatch '^\s*warn:' -and $_ -match '^\s{4}[^ (]' })
+$ok = (Assert-True 'S11 a newline in a group name cannot forge a gate command line' (-not ($s11Run -match 'INJECTED-VIA-GROUP-NAME')) "lines: $($s11Run -join ' | ')") -and $ok
+$ok = (Assert-True 'S11 the escaped name is still reported on its group line (no silent rename)' ($rS11.Out -match '\[py\]\\n    echo INJECTED-VIA-GROUP-NAME\\n  \[py\]') $rS11.Out) -and $ok
+$ok = (Assert-True 'S11 the escaping is warned about, not silent' ($rS11.Out -match 'warn: groups\[0\]: control character\(s\) in the group name were escaped') $rS11.Out) -and $ok
+
+# S12: the site the BOUNDED RE-REVIEW reproduced, which the first sweep missed — the review-tier
+# reasoning line interpolates critical-surface FILENAMES, and a filename arrives from the documented
+# positional CLI argument with no git quoting in the way. The forged block lands AFTER the real
+# `review tier:` line, which looks safe until you remember that a second `^gates:` RE-ARMS sed's
+# range: the window reopens and the injected 4-space line is extracted. Both parsers are asserted,
+# and `hc.say()` is what holds it now.
+$CFG_CRIT = @'
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": ["^src/"] },
+  "groups": [ { "name": "py", "match": "^src/", "cwd": "", "strip_prefix": "", "gates": [] } ]
+}
+'@
+$s12 = New-Repo 'crit-inj' $CFG_CRIT @('src/a.py')
+$crafted = "src/a.py`ngates:`n    echo INJECTED-VIA-CRITICAL`nreview tier: x"
+$rS12 = Invoke-Gates $s12 @($crafted)
+$s12Run = @(($rS12.Out -split "`n") | Where-Object { $_ -notmatch '^\s*warn:' -and $_ -match '^\s{4}[^ (]' })
+$ok = (Assert-True 'S12 a crafted critical-surface filename cannot forge a gate command' (-not ($s12Run -match 'INJECTED-VIA-CRITICAL')) "lines: $($s12Run -join ' | ')") -and $ok
+$ok = (Assert-True 'S12 no second gates: header can be opened (a re-armed sed range is the exploit)' (([regex]::Matches($rS12.Out, '(?m)^gates:')).Count -eq 1) $rS12.Out) -and $ok
+$ok = (Assert-True 'S12 the tier line still NAMES the file, escaped — the reason stays auditable' ($rS12.Out -match 'critical surface touched \(src/a\.py\\ngates:') $rS12.Out) -and $ok
+
+# S12b: two groups whose names differ ONLY in characters that escape to the same text. The fix
+# sanitizes names for display, which created this collision class; the file-set map is keyed by
+# POSITION so each group still reports and gates its own files.
+$CFG_COLL = @'
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "groups": [
+    { "name": "dup\nx", "match": "^a/", "cwd": "", "strip_prefix": "", "gates": [] },
+    { "name": "dup\\nx", "match": "^b/", "cwd": "", "strip_prefix": "", "gates": [] }
+  ]
+}
+'@
+$s12b = New-Repo 'grp-collide' $CFG_COLL @('a/one.py', 'b/two.py')
+$rS12b = Invoke-Gates $s12b @()
+$ok = (Assert-True 'S12b colliding escaped group names do not share a file list — each reports 1 file' (([regex]::Matches($rS12b.Out, '(?m)^\s+\[dup\\nx\] 1 file\(s\)')).Count -eq 2) $rS12b.Out) -and $ok
+$ok = (Assert-True 'S12b neither file is reported as ungrouped (both groups still matched their own)' ($rS12b.Out -notmatch 'ungrouped \(') $rS12b.Out) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_gates selftest: FAILED' -ForegroundColor Red; exit 1 }

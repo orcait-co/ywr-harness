@@ -7,6 +7,12 @@
 
   "handoff": "",
 
+  "//artifacts": "Declared claude.ai Artifacts (ADR 0032). When this repo publishes an Artifact (onboarding guide, docs page from docs/docs.artifact.html, …), declare it here: the gate emitter checks that 'readme' carries each declared url and each declared title starts with the repo name (naming convention: <repo> · <purpose>), and CI fails on a violation. The gate cannot see claude.ai, so an undeclared Artifact is invisible to it — the emitter reports the check as disabled until something is declared.",
+  "artifacts": {
+    "readme": "README.md",
+    "items": []
+  },
+
   "review": {
     "//": "Regexes. They select and report — they cannot name an executable, so free strings are safe here.",
     "canon": "REVIEW.md",

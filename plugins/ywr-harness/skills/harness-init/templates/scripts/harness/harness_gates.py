@@ -1,7 +1,9 @@
 """Changed files -> deterministic gate commands + a review-tier verdict. Backend for /slice-close.
 
 Advisory only — always exits 0; nothing is executed. It prints the commands a slice close should
-run BEFORE any LLM review, and the review tier those files earn.
+run BEFORE any LLM review, and the review tier those files earn. It also checks any declared
+claude.ai Artifact against the README — link present, title starts with the repo name (ADR
+0032); the emitter only reports, and the vendored CI fails on `artifact: VIOLATION`.
 
 Usage:
   python harness_gates.py                       # working tree vs HEAD + untracked
@@ -28,6 +30,7 @@ audit is a tier nobody can correct.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -84,8 +87,121 @@ def hooks_status(root: Path) -> str | None:
                 "       run: git config core.hooksPath .githooks")
     if cur == ".githooks":
         return ".githooks/ wired (core.hooksPath)"
-    return (f".githooks/ present but core.hooksPath points at '{cur}' — the harness hooks "
-            "do not run in this clone")
+    # `cur` comes from the clone's own `.git/config`, and the UNSET branch above returns a
+    # deliberately TWO-line string — so this is the one status line that cannot go through
+    # `hc.say()`. The repo-supplied part is sanitized here instead, which is the documented
+    # awkward path for intentional multi-line output.
+    return (f".githooks/ present but core.hooksPath points at '{hc.one_line(cur)}' — the harness "
+            "hooks do not run in this clone")
+
+
+# Case-insensitive hex on purpose — an uppercase artifact id must not fail as "not an artifact
+# URL" (the 0.18.0 lesson: an over-strict URL gate is a false BLOCK, not a leak).
+# `\Z`, not `$`: Python's `$` ALSO matches just before a trailing newline, so `<url>\n` would pass
+# a `$`-anchored full-match check while carrying the one character that can split an output line
+# (the same class as the queued SAFE_TOKEN `$` note, 2026-07-29 — an anchor that admits a newline
+# is not a full-match anchor).
+ARTIFACT_URL = re.compile(r"^https://claude\.ai/code/artifact/[0-9A-Fa-f-]+\Z")
+
+
+def repo_name(root: Path) -> tuple[str, str]:
+    """(name, source). The origin remote's basename when one exists — a local clone can be
+    renamed freely, the remote survives it — falling back to the work-tree directory name. The
+    source is always reported: a title judged against a name the reader did not expect must be
+    diagnosable from the output alone."""
+    try:
+        out = subprocess.run(["git", "remote", "get-url", "origin"],
+                             cwd=root, capture_output=True, text=True)
+        if out.returncode == 0:
+            tail = re.split(r"[/:]", out.stdout.strip().replace("\\", "/").rstrip("/"))[-1]
+            tail = tail[:-4] if tail.endswith(".git") else tail
+            if tail:
+                return tail, "origin remote"
+    except OSError:
+        pass
+    return root.name, "directory name"
+
+
+def title_has_prefix(title: str, name: str) -> bool:
+    """True when `title` starts with `name` at a non-alphanumeric boundary, case-insensitively.
+    The convention is `<repo> · <purpose>`: a bare startswith would bless 'awsome docs' for a
+    repo named 'aws', and a case-sensitive one would block a legitimate 'AWS · …'."""
+    t = title.strip()
+    if not t.lower().startswith(name.lower()):
+        return False
+    rest = t[len(name):]
+    return not rest[:1].isalnum()
+
+
+def artifact_status(root: Path, cfg: dict, warns: list[str]) -> list[str]:
+    """One `artifact:` line per declared item (ADR 0032) — `ok` or `VIOLATION` — or the
+    `none declared` report. The vendored CI fails on `^artifact: VIOLATION`; the emitter itself
+    stays advisory. Violations are ALSO appended to `warns`: stdout is where CI's fail step
+    reads, stderr is what the pre-commit hook shows a human. A malformed declaration is a
+    VIOLATION, never a drop — a typo that silently disabled enforcement would read as coverage
+    (the same posture as CI failing on an unparseable settings file).
+
+    The lines are returned, not printed: `hc.say()` is the single stdout exit that guarantees one
+    line per line, so nothing here needs to remember to escape. That guarantee is load-bearing —
+    the values echoed below are repo-supplied, and one carrying a newline would otherwise forge the
+    `gates:` … `review tier:` window both output parsers execute from (measured; see `say`)."""
+    arts = cfg["artifacts"]
+    if arts.get("malformed"):
+        warns.append("artifacts: declaration malformed — CI fails on this (ADR 0032)")
+        return [f"artifact: VIOLATION — .harness.json artifacts is malformed ({arts['malformed']})"]
+    items = arts["items"]
+    if not items:
+        return ["artifact: none declared — README link check disabled (a repo with a claude.ai "
+                'Artifact declares it under "artifacts" in .harness.json)']
+    name, source = repo_name(root)
+    readme = arts["readme"]
+    try:
+        text = (root / readme).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = None
+    lines: list[str] = []
+    bad = 0
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            lines.append(f"artifact: VIOLATION — items[{i}] is not an object with 'url' and 'title'")
+            bad += 1
+            continue
+        for key in it:
+            if key not in ("url", "title") and not str(key).startswith("//"):
+                warns.append(f"artifacts.items[{i}]: unknown key '{key}' ignored (known: url, title)")
+        url = str(it.get("url") or "")
+        title = str(it.get("title") or "")
+        problems = []
+        # A control character is refused at the DECLARATION layer too, not only escaped for
+        # display: `one_line()` keeps the output honest whatever is declared, but a declaration
+        # carrying a newline is either a typo or an attempt to forge an output line, and both
+        # deserve to be told rather than quietly rendered as `\n`.
+        if hc.has_control(url) or hc.has_control(title):
+            problems.append("url/title contains a control character (newline, tab, …) — remove it; "
+                            "a declared value is echoed on ONE status line")
+        if not ARTIFACT_URL.match(url):
+            problems.append("url is not a claude.ai Artifact URL "
+                            "(want https://claude.ai/code/artifact/<id>)")
+        if not title.strip():
+            problems.append("title missing")
+        elif not title_has_prefix(title, name):
+            problems.append(f"title does not start with repo name '{name}' (from {source}) — "
+                            "convention: <repo> · <purpose>")
+        if text is None:
+            problems.append(f"README '{readme}' cannot be read, so the link cannot be verified")
+        elif ARTIFACT_URL.match(url) and url not in text:
+            problems.append(f"{readme} does not contain the declared URL — add the link")
+        if problems:
+            label = f"'{title}'" if title.strip() else (url or f"items[{i}]")
+            lines.append(f"artifact: VIOLATION — {label}: " + "; ".join(problems))
+            bad += 1
+        else:
+            lines.append(f"artifact: ok — {readme} links {url} · title '{title}' starts with "
+                         f"repo name '{name}' (from {source})")
+    if bad:
+        warns.append(f"artifacts: {bad} declared item(s) violate the README-link/title rule — "
+                     "CI fails on these (ADR 0032)")
+    return lines
 
 
 def match_any(patterns: list[str], path: str, warns: list[str], field: str) -> bool:
@@ -114,40 +230,54 @@ def main() -> int:
 
     late: list[str] = []
     hc.print_scope(files, prov)
+    # Above `gates:` on purpose — outside the window both output parsers consume — and BEFORE the
+    # empty-scope return: CI's push-to-main run has no changed files and is an enforcement point.
+    for line in artifact_status(root, cfg, late):
+        hc.say(line)
     if not files:
-        for w in warns:
-            print(f"warn: {w}", file=sys.stderr)
-        print("no changed files — nothing to gate")
+        for w in warns + late:
+            hc.warn(w)
+        hc.say("no changed files — nothing to gate")
         return 0
 
     # --- groups -> gate commands ---------------------------------------------------------------
-    grouped: dict[str, list[str]] = {}
-    for g in cfg["groups"]:
+    # Keyed by POSITION, not by name. A name is a label — two groups can legitimately share one, and
+    # since names are sanitized for display two DIFFERENT declared names can also collapse to the
+    # same escaped string. Either way a name-keyed map silently hands one group the other's file
+    # list, so each group's own gates would run against files it never claimed. The index is the
+    # only key that is unique by construction.
+    grouped: dict[int, list[str]] = {}
+    for i, g in enumerate(cfg["groups"]):
         rx = hc.compile_re(g["match"], f"groups[{g['name']}].match", late)
-        grouped[g["name"]] = sorted(f for f in files if rx and rx.match(f)) if rx else []
+        grouped[i] = sorted(f for f in files if rx and rx.match(f)) if rx else []
 
     claimed = {f for fs in grouped.values() for f in fs}
     ungrouped = sorted(set(files) - claimed)
 
-    print("gates:")
+    hc.say("gates:")
     emitted = 0
     seen: set[str] = set()
-    for g in cfg["groups"]:
-        fs = grouped[g["name"]]
+    for i, g in enumerate(cfg["groups"]):
+        fs = grouped[i]
         if not fs:
             continue
-        print(f"  [{g['name']}] {len(fs)} file(s)")
+        hc.say(f"  [{g['name']}] {len(fs)} file(s)")
         if not g["gates"]:
-            print("    (no gate declared for this group — nothing deterministic runs on it)")
+            hc.say("    (no gate declared for this group — nothing deterministic runs on it)")
         # A filename is repo-supplied text: one containing a space, quote or '#' cannot be passed
         # through `sh -c` (or past either output parser) as one argument, so it is left OUT of the
         # gate's argument list. Never silent — an excluded file is an ungated file.
         unsafe = hc.unsafe_files(g, fs)
         if unsafe and any(hc.gate_is_scoped(gate) for gate in g["gates"]):
-            print(f"    ({len(unsafe)} file(s) EXCLUDED from this group's gate arguments — unsafe "
-                  "characters for a command argument, so no deterministic gate covers them)")
+            hc.say(f"    ({len(unsafe)} file(s) EXCLUDED from this group's gate arguments — unsafe "
+                   "characters for a command argument, so no deterministic gate covers them)")
             for f in unsafe:
-                print(f"    (excluded: {f})")
+                # A filename is repo-supplied text, and this line sits INSIDE the gate-command
+                # window: the leading `(` keeps the first line out of both parsers, but a name
+                # carrying a newline would put its remainder on a line that starts with four
+                # spaces and no `(` — a forged command. git's default `core.quotePath` escapes such
+                # names, which is a mitigation living in someone else's config, not a guarantee.
+                hc.say(f"    (excluded: {f})")
             late.append(f"groups[{g['name']}]: {len(unsafe)} changed file(s) could not be passed "
                         "to a gate command and are UNGATED — rename them or gate them by hand")
         for gate in g["gates"]:
@@ -156,26 +286,26 @@ def main() -> int:
                 # gate_command refused or skipped this one. It is already a parenthetical, so it
                 # prints as-is (both parsers skip it) and must NOT count toward `emitted` — a
                 # refusal that inflated the count would read as a gate that ran.
-                print(f"    {cmd}")
+                hc.say(f"    {cmd}")
                 continue
             if cmd in seen:
                 # A whole-program gate declared on several groups composes to the same command,
                 # and running it once per group is waste, not coverage. The '(' prefix keeps this
                 # line out of both output parsers (CI extraction and pre-commit exclude it).
-                print(f"    (already emitted above — deduplicated: {cmd})")
+                hc.say(f"    (already emitted above — deduplicated: {cmd})")
                 continue
             seen.add(cmd)
             whole = "" if hc.gate_is_scoped(gate) else "   # whole-program: gate on slice files or newly introduced only"
-            print(f"    {cmd}{whole}")
+            hc.say(f"    {cmd}{whole}")
             emitted += 1
     if emitted == 0:
-        print("  (none — no declared group matched, or matched groups declare no gates)")
+        hc.say("  (none — no declared group matched, or matched groups declare no gates)")
 
     # Never silent: a file no group claims is a file no deterministic gate sees.
     if ungrouped:
-        print(f"ungrouped ({len(ungrouped)} file(s) — no declared group matched, so NO deterministic gate covers them):")
+        hc.say(f"ungrouped ({len(ungrouped)} file(s) — no declared group matched, so NO deterministic gate covers them):")
         for f in ungrouped:
-            print(f"  {f}")
+            hc.say(f"  {f}")
 
     # --- review tier ---------------------------------------------------------------------------
     rev = cfg["review"]
@@ -199,14 +329,14 @@ def main() -> int:
     else:
         tier, why = "full", f"{len(files)} file(s) / {lines if lines is not None else '?'} changed line(s)"
 
-    print(f"review tier: {tier} — {why}")
+    hc.say(f"review tier: {tier} — {why}")
     if not (rev["docs_only"] or rev["harness_layer"] or rev["critical"]):
         print("  warn: no review surfaces declared in .harness.json — the tier rests on size alone",
               file=sys.stderr)
-    print(f"review canon: {cfg['review_canon']}" + ("" if (root / cfg["review_canon"]).exists()
-          else "   (NOT FOUND — invariants must come from somewhere; the close cannot cite a missing file)"))
+    hc.say(f"review canon: {cfg['review_canon']}" + ("" if (root / cfg["review_canon"]).exists()
+           else "   (NOT FOUND — invariants must come from somewhere; the close cannot cite a missing file)"))
     if cfg["handoff"]:
-        print(f"handoff: {cfg['handoff']}")
+        hc.say(f"handoff: {cfg['handoff']}")
 
     # Printed AFTER the tier so the hook's output parser (which stops at `review tier:`) can never
     # mistake it for a gate command.
@@ -215,7 +345,7 @@ def main() -> int:
         print(f"hooks: {hooks}")
 
     for w in warns + late:
-        print(f"warn: {w}", file=sys.stderr)
+        hc.warn(w)
     return 0
 
 

@@ -152,6 +152,84 @@ def as_arg(tok: str) -> str:
     return f"./{tok}" if tok.startswith("-") else tok
 
 
+# ---------------------------------------------------------------------------------------------
+# The ONE gate every repo-supplied value passes before it becomes an output LINE. Deliberately
+# separate from `token_ok`: that one guards a value reaching a COMMAND position, this one guards a
+# value that is merely REPORTED — a status label, a refused value echoed so a reader can see it.
+# Reported text was treated as inert, and it is not. Both output parsers find the gate-command
+# window by matching LINE SHAPES in stdout (`^gates:`, `^ {4}[^ (]`, `^review tier:`), so a value
+# carrying a newline does not print as one line: it prints as several, and a declaration can spell
+# the window's own start and stop anchors and land a command inside it.
+#
+# Measured 2026-08-05, this repo, before the fix (adversarial review of ADR 0032 — three lenses
+# found it, six skeptics refuted none): a declared artifact title of
+# `inj\ngates:\n    echo INJECTED\nreview tier: full - x` printed `artifact: ok`, so CI's
+# `^artifact: VIOLATION` step passed, while the workflow's own extraction
+# (`sed -n '/^gates:/,/^\(ungrouped\|review tier\)/p' | grep -E '^ {4}[^ (]'`) returned
+# `echo INJECTED` for `sh -c`. Sweeping the boundary then found a SECOND site, pre-existing and
+# worse-placed: a group NAME, echoed as `  [<name>] N file(s)` INSIDE the window.
+#
+# Fact 36's rule one transformation later — validate the string that becomes the LINE, not the
+# value it was built from. Callers additionally REFUSE a control character at the declaration layer
+# where a declarer can be told (a typo deserves a message); this is the structural layer that holds
+# when they cannot.
+# ---------------------------------------------------------------------------------------------
+# U+0085 NEL and U+2028/U+2029 are in the class even though NEITHER shell parser splits on them
+# (sed/grep/awk split on 0x0A only — measured: an 8-byte-line output stayed 8 lines and extracted
+# nothing). They are here because the parser set is not the consumer set: Python's `str.splitlines`
+# DOES split all three (same output read as 12 lines), and a MODEL reading this output may render
+# them as breaks — and a model is exactly the consumer /verify's `run:` lines are printed for. One
+# value, one line, under every reader's notion of a line.
+CONTROL = re.compile(r"[\x00-\x1f\x7f\u0085\u2028\u2029]")
+
+_SHOWN = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _shown(ch: str) -> str:
+    return _SHOWN.get(ch) or (f"\\x{ord(ch):02x}" if ord(ch) < 0x100 else f"\\u{ord(ch):04x}")
+
+
+def has_control(value: str) -> bool:
+    """True when repo-supplied text carries a character some reader treats as a line break — C0,
+    DEL, or one of the three Unicode breaks named above."""
+    return bool(CONTROL.search(str(value)))
+
+
+def one_line(value: str) -> str:
+    """Render repo-supplied text so it can only ever occupy ONE output line. The characters become
+    VISIBLE escapes rather than being dropped: a reader diagnosing a refusal has to see what was
+    declared, and a silently stripped newline reads as a value nobody wrote."""
+    return CONTROL.sub(lambda m: _shown(m.group()), str(value))
+
+
+def say(line: str = "") -> None:
+    """The single stdout exit for the two consumers whose output has a LINE-SHAPE contract (the gate
+    emitter, read by the CI/pre-commit window parsers; the verify mapper, read by a model told to
+    run its `run:` lines).
+
+    Not a convenience wrapper. Per-call-site escaping was MEASURED to fail here: the first sweep of
+    this boundary wrapped the sites it could see, and the bounded re-review then found two more —
+    one of which (critical-surface filenames in the review-tier line) reproduced the injection end
+    to end, because a forged `gates:` line RE-ARMS `sed`'s range even after the real window closed.
+    A single exit makes forgetting a call site impossible instead of unlikely, which is the whole
+    difference between a rule and a habit.
+
+    Our own multi-line literals must call `print` directly and sanitize the repo-supplied part
+    themselves — deliberately the awkward path, so multi-line output is a decision, never a
+    default."""
+    print(one_line(line))
+
+
+def warn(msg: str) -> None:
+    """The single stderr exit. No machine parser reads this channel (CI captures stdout through
+    `tee`; the pre-commit hook captures stdout through command substitution) — but it is a human
+    DISPLAY, and a raw ESC sequence in a refused value would repaint the committer's terminal
+    during `git commit`, able to overwrite the hook's own preceding line. Escaped, a refused value
+    is still fully legible, which is the property that made echoing it correct in the first
+    place."""
+    print(f"warn: {one_line(msg)}", file=sys.stderr)
+
+
 def strip_group_prefix(path: str, strip_prefix: str) -> str:
     return path[len(strip_prefix):] if strip_prefix and path.startswith(strip_prefix) else path
 
@@ -240,6 +318,13 @@ def load(root: Path) -> tuple[dict, list[str]]:
     # Retro surfaces. Free-string regexes like `review`: they select and report, and cannot name
     # an executable, so the closed-set rule that governs `gates` does not apply here.
     cfg["retro"] = {"source_scope": [], "dep_manifests": [], "migrations": []}
+    # Declared claude.ai Artifacts (ADR 0032). Parsed here, CHECKED by the gate emitter: the
+    # README must carry each declared url, each declared title must start with the repo name.
+    # Items are kept raw — per-item validation happens at check time so a malformed entry can
+    # fail the check loudly instead of being dropped into silence at load time. `malformed`
+    # carries a section-level shape error for the same reason: a declaration that cannot be
+    # checked must never read as enforcement.
+    cfg["artifacts"] = {"readme": "README.md", "items": [], "malformed": ""}
 
     path = root / ".harness.json"
     if not path.exists():
@@ -298,17 +383,43 @@ def load(root: Path) -> tuple[dict, list[str]]:
         elif val:
             warns.append(f"retro.{key}: expected a list of regexes — ignored")
 
+    art = raw.get("artifacts")
+    if isinstance(art, dict):
+        if art.get("readme"):
+            cfg["artifacts"]["readme"] = (
+                safe_path(art["readme"], "artifacts.readme", warns) or "README.md")
+        items = art.get("items")
+        if isinstance(items, list):
+            cfg["artifacts"]["items"] = list(items)
+        elif items is not None:
+            cfg["artifacts"]["malformed"] = "'items' must be a list of {url, title} objects"
+        for key in art:
+            if key not in ("readme", "items") and not str(key).startswith("//"):
+                warns.append(f"artifacts: unknown key '{key}' ignored (known: readme, items)")
+    elif art is not None:
+        cfg["artifacts"]["malformed"] = "expected an object with 'readme' and 'items'"
+
     for i, g in enumerate(raw.get("groups") or []):
         if not isinstance(g, dict) or not g.get("name") or not g.get("match"):
             warns.append(f"groups[{i}]: needs 'name' and 'match' — ignored")
             continue
+        # The name is a LABEL, echoed by the emitter as `  [<name>] N file(s)` — a line inside the
+        # gate-command window both output parsers execute from. Sanitized HERE, once, so every
+        # downstream use (field labels, the grouping key, the printed label) is the safe form: a
+        # value that never exists in its raw shape after load cannot be echoed raw by a later
+        # caller. A control character is reported, never silently swallowed.
+        name = one_line(str(g["name"]))
+        if has_control(str(g["name"])):
+            warns.append(f"groups[{i}]: control character(s) in the group name were escaped for "
+                         f"display ('{name}') — a group name is echoed inside the gate-command "
+                         "window, so a raw newline there would forge a gate command")
         # Resolved BEFORE the gates: a script gate is validated against the form it composes to
         # under this prefix, so the prefix has to be known (and itself validated) first.
-        g_strip = safe_path(g.get("strip_prefix", ""), f"groups[{g['name']}].strip_prefix", warns)
+        g_strip = safe_path(g.get("strip_prefix", ""), f"groups[{name}].strip_prefix", warns)
         gates: list = []
         for gate in g.get("gates") or []:
             if isinstance(gate, dict):
-                sg = script_gate(gate, str(g["name"]), g_strip, root, warns)
+                sg = script_gate(gate, name, g_strip, root, warns)
                 if sg:
                     gates.append(sg)
                 continue
@@ -317,13 +428,13 @@ def load(root: Path) -> tuple[dict, list[str]]:
                 gates.append(gate)
             else:
                 warns.append(
-                    f"groups[{g['name']}].gates: '{gate}' is not in the closed set "
+                    f"groups[{name}].gates: '{gate}' is not in the closed set "
                     f"({', '.join(sorted(GATES))}) — dropped"
                 )
         cfg["groups"].append({
-            "name": str(g["name"]),
+            "name": name,
             "match": str(g["match"]),
-            "cwd": safe_cwd(g.get("cwd", ""), f"groups[{g['name']}].cwd", warns),
+            "cwd": safe_cwd(g.get("cwd", ""), f"groups[{name}].cwd", warns),
             "strip_prefix": g_strip,
             "gates": gates,
         })
@@ -375,20 +486,17 @@ def print_scope(files: list[str], prov: dict) -> None:
     if prov.get("source") == "explicit":
         if prov.get("range"):
             print("note: explicit files given — ignoring --range", file=sys.stderr)
-        print(f"scope: {prov['explicit']} explicit file(s)")
+        say(f"scope: {prov['explicit']} explicit file(s)")
         return
     parts = []
     if prov.get("range"):
         parts.append(f"range {prov['range']} -> {prov['range_files']}")
     parts.append(f"worktree {prov.get('worktree_files', 0)}")
     parts.append(f"untracked {prov.get('untracked_files', 0)}")
-    print(f"scope: {' · '.join(parts)} = {len(files)} unique file(s)")
+    say(f"scope: {' · '.join(parts)} = {len(files)} unique file(s)")
     if prov.get("range") and prov.get("range_files") == 0:
-        print(
-            f"warn: range {prov['range']} matched 0 file(s) — everything below rests on the "
-            "WORKING TREE, not the range you asked for (vacuous-pass guard)",
-            file=sys.stderr,
-        )
+        warn(f"range {prov['range']} matched 0 file(s) — everything below rests on the "
+             "WORKING TREE, not the range you asked for (vacuous-pass guard)")
 
 
 def compose(parts: list[str], cwd: str) -> str:

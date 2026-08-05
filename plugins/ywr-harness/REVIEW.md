@@ -72,6 +72,30 @@ invariants the change can actually violate (proportionality, ADR 0050).
   re-run the enumeration, and if a narrowing stays, quote it with the total.
   Prose-enforced only: the deterministic verifier is still an open ADR-candidate
   (BACKLOG §Harness).
+- **Repo-supplied text that is merely REPORTED is not inert when its reader is a
+  parser that finds its window by line shape** — the gate emitter's stdout is
+  parsed by the vendored CI (`sed -n '/^gates:/,/^\(ungrouped\|review tier\)/p'`
+  then `grep -E '^ {4}[^ (]'`) and by the pre-commit awk, and both then RUN what
+  they extracted. A value carrying a newline therefore does not print as one
+  line — it prints as several, and a declaration can spell the window's own
+  start and stop anchors. 2026-08-05 (ywr-harness ADR 0032, three lenses, six
+  skeptics, refuted none): a declared artifact `title` of
+  `<repo>\ngates:\n    <cmd>\nreview tier: x` reported `artifact: ok`, so the
+  CI step that greps `^artifact: VIOLATION` passed, while both parsers extracted
+  `<cmd>`; the same sweep found a SECOND site, pre-existing, in the group-name
+  label printed inside the window. **Ask of every echoed value: can it become
+  two lines?** Validate the string that becomes the LINE, exactly as `token_ok`
+  validates the string that becomes argv. **And put the escaping at the EXIT,
+  not at the call sites** — the same slice measured the difference: a sweep that
+  wrapped every echo site it could find still missed two, and the bounded
+  re-review reproduced the injection through one of them (critical-surface
+  filenames on the `review tier:` line, which sits after the window's closing
+  anchor — safe-looking until a forged `gates:` RE-ARMS `sed`'s range and
+  reopens it). A "choke point" that callers must remember to call is a habit;
+  one function every line leaves through is a rule. Corollary for the channels
+  a threat model skips: "no machine parses this stream" does not mean nobody
+  does — the pre-commit hook's stderr lands in a terminal, where a raw ESC
+  sequence repaints the hook's own output.
 
 ## Finding disposition — fix the class, not the instance (ADR 0098)
 

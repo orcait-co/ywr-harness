@@ -41,7 +41,7 @@ def main() -> int:
     root = Path(args.repo).resolve() if args.repo else hc.find_repo_root(Path.cwd())
     cfg, warns = hc.load(root)
     for w in warns:
-        print(f"warn: {w}", file=sys.stderr)
+        hc.warn(w)
 
     try:
         index = json.loads((root / cfg["index"]).read_text(encoding="utf-8"))
@@ -58,14 +58,14 @@ def main() -> int:
         return 0
     hc.print_scope(files, prov)
     if not files:
-        print("no changed files — nothing to verify")
+        hc.say("no changed files — nothing to verify")
         return 0
 
     late: list[str] = []
     verify_re = hc.compile_re(cfg["script_pattern"], "verify.script_pattern", late)
     scope_re = hc.compile_re(cfg["product_scope"], "verify.product_scope", late)
     for w in late:
-        print(f"warn: {w}", file=sys.stderr)
+        hc.warn(w)
 
     # Collected during composition below and printed at the END of the run. NOT appended to
     # `late`: that list is already drained above, so anything added afterwards would be swallowed
@@ -84,12 +84,16 @@ def main() -> int:
     unmapped = sorted(f for f in files if scope_re.match(f) and f not in owned) if scope_re else []
 
     if not hits:
-        print(f"{len(files)} changed file(s) map to no spec — no registered verify script.")
+        hc.say(f"{len(files)} changed file(s) map to no spec — no registered verify script.")
     for sid in sorted(hits):
         h = hits[sid]
-        print(f"spec {sid} — {h['title']}")
+        # Everything below is printed through `hc.say()`, the single stdout exit. It matters most
+        # here of all places: id, title and the filenames are repo-supplied, and this output's
+        # consumer is a MODEL told to run the `run:` lines — so a newline in any of them could spell
+        # a `run:` line nobody registered (ADR 0032's review; same rule, model instead of `sh`).
+        hc.say(f"spec {sid} — {h['title']}")
         for f in h["matched"]:
-            print(f"  changed: {f}")
+            hc.say(f"  changed: {f}")
         if h["verify"]:
             for v in h["verify"]:
                 cmd = hc.verify_command(cfg, v, refused)
@@ -97,21 +101,21 @@ def main() -> int:
                 # /verify skill — an LLM told to run the printed commands — and unlike the two
                 # shell parsers it has no `(`-prefix convention to fall back on. So a refused
                 # path gets a differently-labelled line that reads as a finding, not a command.
-                print(f"  run:     {cmd}" if not cmd.startswith("(")
-                      else "  REFUSED: this spec's registered verify script path is not a safe "
-                           "command argument — see the warning below. NOTHING was run for it, and "
-                           "that is a coverage gap, not a pass.")
+                hc.say(f"  run:     {cmd}" if not cmd.startswith("(")
+                       else "  REFUSED: this spec's registered verify script path is not a safe "
+                            "command argument — see the warning below. NOTHING was run for it, and "
+                            "that is a coverage gap, not a pass.")
         else:
-            print("  (no verify script registered in implements_in for this spec)")
+            hc.say("  (no verify script registered in implements_in for this spec)")
         if cfg["ui_prefix"] and any(f.startswith(cfg["ui_prefix"]) for f in h["matched"]):
-            print("  note:    UI surface changed — registered scripts do not cover component"
-                  " rendering; say so plainly or cover it with a browser-level test")
+            hc.say("  note:    UI surface changed — registered scripts do not cover component"
+                   " rendering; say so plainly or cover it with a browser-level test")
     if unmapped:
-        print("unmapped product files (no spec owner — a slice-retro UNMAPPED finding in the making):")
+        hc.say("unmapped product files (no spec owner — a slice-retro UNMAPPED finding in the making):")
         for f in unmapped:
-            print(f"  {f}")
+            hc.say(f"  {f}")
     for w in refused:
-        print(f"warn: {w}", file=sys.stderr)
+        hc.warn(w)
     return 0
 
 

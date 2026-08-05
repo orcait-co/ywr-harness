@@ -295,7 +295,7 @@ def coverage(root: Path, cfg: dict, warns: list[str]) -> int:
     print(f"-- ignore register: {cfg['retro_ignore_file']}"
           + ("" if (root / cfg["retro_ignore_file"]).is_file() else "   (absent — nothing is exempt)"))
     for w in warns:
-        print(f"warn: {w}", file=sys.stderr)
+        hc.warn(w)
     return 0
 
 
@@ -326,7 +326,7 @@ def main() -> int:
     # Warnings go to stderr even on a clean run: a malformed declaration silently narrowing the
     # checks would look identical to a repo that has nothing to report.
     for w in warns:
-        print(f"warn: {w}", file=sys.stderr)
+        hc.warn(w)
     return 0
 
 
