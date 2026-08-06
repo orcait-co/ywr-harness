@@ -544,6 +544,62 @@ $rS12b = Invoke-Gates $s12b @()
 $ok = (Assert-True 'S12b colliding escaped group names do not share a file list — each reports 1 file' (([regex]::Matches($rS12b.Out, '(?m)^\s+\[dup\\nx\] 1 file\(s\)')).Count -eq 2) $rS12b.Out) -and $ok
 $ok = (Assert-True 'S12b neither file is reported as ungrouped (both groups still matched their own)' ($rS12b.Out -notmatch 'ungrouped \(') $rS12b.Out) -and $ok
 
+# --- T: class-weighted tier (ADR 0035) — docs_only files stop counting toward size --------------
+# The SCOPE never narrows; only the size MEASURE does, and a non-empty exclusion must be stated
+# on the tier line. With no docs files in the diff the wording must stay byte-identical to the
+# unweighted form (T4 pins that on G2's output).
+
+# T1: FILE-count weighting. 9 files (7 docs + 2 code) breaches SMALL_MAX_FILES=5; the counted
+# set is 2 — small. The old total-based measure said full here, which is the regression class.
+$t1Files = @(1..7 | ForEach-Object { "docs/d$_.md" }) + @('api/x.py', 'api/y.py')
+$t1 = New-Repo 'tier-weighted-files' $CFG $t1Files
+$rT1 = Invoke-Gates $t1 @()
+$ok = (Assert-True 'T1 docs-heavy mixed diff earns small on the counted set' ($rT1.Out -match 'review tier: small — 2 counted file\(s\) / \d+ counted line\(s\), no critical surface') $rT1.Out) -and $ok
+$ok = (Assert-True 'T1 the exclusion is stated, never silent' ($rT1.Out -match '7 docs-only file\(s\) excluded from the size measure, still in review scope') $rT1.Out) -and $ok
+
+# T2: LINE weighting. Tracked changes: ~300 changed lines in a docs file, ~6 in a code file —
+# the total breaches SMALL_MAX_LINES=150, the counted sum does not.
+$t2 = New-Repo 'tier-weighted-lines' $CFG @('docs/huge.md', 'api/small.py')
+& git -C $t2 add -A 2>$null; & git -C $t2 commit -q -m base 2>$null
+Set-Content -LiteralPath (Join-Path $t2 'docs/huge.md') -Value ((1..300 | ForEach-Object { "doc line $_" }) -join "`n") -NoNewline
+Set-Content -LiteralPath (Join-Path $t2 'api/small.py') -Value ((1..5 | ForEach-Object { "code = $_" }) -join "`n") -NoNewline
+$rT2 = Invoke-Gates $t2 @()
+$ok = (Assert-True 'T2 docs lines do not count toward the line threshold' ($rT2.Out -match 'review tier: small — 1 counted file\(s\) / \d+ counted line\(s\), no critical surface') $rT2.Out) -and $ok
+$ok = (Assert-True 'T2 the one excluded docs file is stated' ($rT2.Out -match '1 docs-only file\(s\) excluded from the size measure') $rT2.Out) -and $ok
+
+# T2b: the weighting must not bless a big CODE change hiding among docs — counted lines over the
+# threshold stay full, with the weighted wording (the reason must match the measure it used).
+Set-Content -LiteralPath (Join-Path $t2 'api/small.py') -Value ((1..200 | ForEach-Object { "code = $_" }) -join "`n") -NoNewline
+$rT2b = Invoke-Gates $t2 @()
+$ok = (Assert-True 'T2b counted lines over the threshold still earn full' ($rT2b.Out -match 'review tier: full — 1 counted file\(s\) / \d+ counted line\(s\)') $rT2b.Out) -and $ok
+$ok = (Assert-True 'T2b the full reason states the exclusion too' ($rT2b.Out -match 'review tier: full — .*docs-only file\(s\) excluded from the size measure') $rT2b.Out) -and $ok
+
+# T3: weighting never bypasses criticality — a critical file among many docs is still full.
+$t3 = New-Repo 'tier-weighted-critical' $CFG (@(1..6 | ForEach-Object { "docs/c$_.md" }) + @('migrations/001.sql'))
+$rT3 = Invoke-Gates $t3 @()
+$ok = (Assert-True 'T3 critical wins over any weighted size' ($rT3.Out -match 'review tier: full — critical surface touched \(migrations/001\.sql') $rT3.Out) -and $ok
+
+# T4: no docs files in the diff → the unweighted wording, byte-identical (G2 is the fixture:
+# docs_only IS declared there, none of its 7 files match).
+$ok = (Assert-True 'T4 with no docs files in the diff the wording stays unweighted (G2 control)' ($rG2.Out -notmatch 'counted file|excluded from the size measure') $rG2.Out) -and $ok
+
+# T5: a docs→code RENAME must not smuggle its lines out of the measure. numstat prints the
+# rename as `docs/a.md => api/big.py`, whose START matches `^docs/` — matching the declared
+# patterns against that raw record exempted what is now a code file and earned `small` on a
+# hundreds-of-lines code change (review 2026-08-06, high; reproduced empirically). Exemption is
+# by membership in the name-only listing now, so an unlisted record COUNTS; this case is red
+# under the regex-on-raw-record form.
+$t5 = New-Repo 'tier-rename' $CFG @('docs/a.md')
+Set-Content -LiteralPath (Join-Path $t5 'docs/a.md') -Value ((1..200 | ForEach-Object { "doc line $_" }) -join "`n") -NoNewline
+& git -C $t5 add -A 2>$null; & git -C $t5 commit -q -m base 2>$null
+New-Item -ItemType Directory -Force -Path (Join-Path $t5 'api') | Out-Null
+& git -C $t5 mv docs/a.md api/big.py 2>$null
+Add-Content -LiteralPath (Join-Path $t5 'api/big.py') -Value ("`n" + ((1..160 | ForEach-Object { "code = $_" }) -join "`n")) -NoNewline
+& git -C $t5 add -A 2>$null
+$rT5 = Invoke-Gates $t5 @()
+$ok = (Assert-True 'T5 a docs-to-code rename cannot smuggle its lines out of the measure (tier full)' ($rT5.Out -match 'review tier: full') $rT5.Out) -and $ok
+$ok = (Assert-True 'T5 the renamed code file never earns small' ($rT5.Out -notmatch 'review tier: small') $rT5.Out) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_gates selftest: FAILED' -ForegroundColor Red; exit 1 }

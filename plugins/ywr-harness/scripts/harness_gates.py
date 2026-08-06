@@ -45,22 +45,36 @@ SMALL_MAX_FILES = 5
 SMALL_MAX_LINES = 150
 
 
-def changed_lines(root: Path, rev_range: str | None) -> int | None:
-    """Total added+deleted across the range and the working tree. None when it cannot be measured —
-    reported as unknown rather than assumed small, because an unknown treated as 0 would silently
-    downgrade every tier."""
-    total = 0
+def changed_lines(root: Path, rev_range: str | None, is_exempt=None) -> tuple[int, int] | None:
+    """(total, counted) added+deleted across the range and the working tree. `counted` excludes
+    paths `is_exempt` marks as declared docs-only surfaces (ADR 0035) — the size measure should
+    not be inflated by files the declaration already says carry no executable meaning.
+
+    The caller's `is_exempt` must decide by MEMBERSHIP in a set built from the same name-only
+    listing that classified the review scope, never by matching patterns against this function's
+    raw numstat text: a rename record prints as `old => new`, so a `^docs/`-anchored pattern
+    would match the OLD name's prefix and exempt what is now a code file — measured, review
+    2026-08-06, high: a docs→code rename carrying hundreds of changed lines earned `small`. A
+    numstat record that is not a listed clean path (a rename record, a quoted path) therefore
+    COUNTS: unknown is not weightless. None when the diff cannot be measured — reported as
+    unknown rather than assumed small, because an unknown treated as 0 would silently downgrade
+    every tier."""
+    total = counted = 0
     got = False
     for args in ([("diff", "--numstat", rev_range)] if rev_range else []) + [("diff", "--numstat", "HEAD")]:
         try:
             for line in hc.git_lines(root, *args):
                 parts = line.split("\t")
                 if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-                    total += int(parts[0]) + int(parts[1])
+                    n = int(parts[0]) + int(parts[1])
+                    total += n
+                    path = parts[2] if len(parts) >= 3 else ""
+                    if not (is_exempt and path and is_exempt(path)):
+                        counted += n
                     got = True
         except subprocess.CalledProcessError:
             return None
-    return total if got else 0
+    return (total, counted) if got else (0, 0)
 
 
 def hooks_status(root: Path) -> str | None:
@@ -309,12 +323,36 @@ def main() -> int:
 
     # --- review tier ---------------------------------------------------------------------------
     rev = cfg["review"]
-    lines = changed_lines(root, args.rev_range) if prov.get("source") != "explicit" else None
-    docs_only = bool(rev["docs_only"]) and all(match_any(rev["docs_only"], f, late, "review.docs_only") for f in files)
+    # docs_only is compiled ONCE: the same patterns are consulted per changed file AND per
+    # numstat path, and compile_re warns on every call for a bad pattern — once per pattern is
+    # the signal, N× is noise.
+    docs_rx = [rx for rx in (hc.compile_re(p, "review.docs_only", late) for p in rev["docs_only"]) if rx]
+
+    def docs_exempt(path: str) -> bool:
+        return any(rx.search(path) for rx in docs_rx)
+
+    # The exemption set is built from `files` — the SAME name-only listing that builds
+    # `code_files` below — and changed_lines gets a membership test, never the regexes: one
+    # classification, two measures, so the branch decision and the printed figures cannot
+    # disagree, and a numstat rename record (`old => new`) can never regex-match its OLD name
+    # into an exemption (review 2026-08-06, high — reproduced with a docs→code rename).
+    exempt_paths = {f for f in files if docs_exempt(f)}
+    sizes = changed_lines(root, args.rev_range, lambda p: p in exempt_paths) if prov.get("source") != "explicit" else None
+    docs_only = bool(rev["docs_only"]) and all(f in exempt_paths for f in files)
     critical = [f for f in files if rev["critical"] and match_any(rev["critical"], f, late, "review.critical")]
-    code_files = [f for f in files if not (rev["docs_only"] and match_any(rev["docs_only"], f, late, "review.docs_only"))]
+    code_files = [f for f in files if f not in exempt_paths]
     harness_only = bool(rev["harness_layer"]) and bool(code_files) and all(
         match_any(rev["harness_layer"], f, late, "review.harness_layer") for f in code_files)
+
+    # Size is measured over the NON-docs subset (ADR 0035): docs_only files riding along with a
+    # small behavioral change inflate the total without adding review surface. The SCOPE is not
+    # narrowed anywhere — only the measure — and a non-empty exclusion is stated on the tier
+    # line, never silent. With no docs_only declared (or none in the diff) the counted figures
+    # equal the totals and the wording below is byte-identical to the unweighted form.
+    excluded = len(files) - len(code_files)
+    lines, counted = sizes if sizes is not None else (None, None)
+    exempt_note = (f" — {excluded} docs-only file(s) excluded from the size measure, "
+                   "still in review scope") if excluded else ""
 
     if critical:
         tier, why = "full", f"critical surface touched ({', '.join(critical[:3])}) — size never overrides criticality"
@@ -322,12 +360,16 @@ def main() -> int:
         tier, why = "skip", "every changed file is a declared docs surface; deterministic gates suffice"
     elif harness_only:
         tier, why = "small", "code-bearing changes are confined to the declared harness layer"
-    elif lines is None:
+    elif sizes is None:
         tier, why = "full", "changed-line count could not be measured — unknown is not small"
-    elif len(files) <= SMALL_MAX_FILES and lines <= SMALL_MAX_LINES:
-        tier, why = "small", f"{len(files)} file(s) / {lines} changed line(s), no critical surface"
+    elif len(code_files) <= SMALL_MAX_FILES and counted <= SMALL_MAX_LINES:
+        tier, why = "small", (f"{len(code_files)} counted file(s) / {counted} counted line(s), no critical surface{exempt_note}"
+                              if excluded else
+                              f"{len(files)} file(s) / {lines} changed line(s), no critical surface")
     else:
-        tier, why = "full", f"{len(files)} file(s) / {lines if lines is not None else '?'} changed line(s)"
+        tier, why = "full", (f"{len(code_files)} counted file(s) / {counted} counted line(s){exempt_note}"
+                             if excluded else
+                             f"{len(files)} file(s) / {lines} changed line(s)")
 
     hc.say(f"review tier: {tier} — {why}")
     if not (rev["docs_only"] or rev["harness_layer"] or rev["critical"]):
