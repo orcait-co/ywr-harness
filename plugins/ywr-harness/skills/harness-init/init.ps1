@@ -117,11 +117,26 @@ function Place([string]$Rel, [string]$Dest, [bool]$Overwrite) {
 
     if ($exists -and -not $Overwrite) { $script:preserved += $Dest; return }
 
+    # Placement owns the line discipline: whatever it writes is LF. The installed plugin is
+    # materialized by the CONSUMER's git, where core.autocrlf stamps CRLF onto every template
+    # (measured: the v0.23.0 cache carried 162 CRLF pairs in githooks/pre-commit) — copying those
+    # bytes verbatim broke sh hooks on POSIX checkouts ("/bin/sh^M: bad interpreter") and showed
+    # as spurious modifications in an eol=lf repo. Latin1 maps bytes 1:1 to chars (byte-faithful
+    # both ways), so this is a byte transform, not a decode: the WRITE folds only CRLF -> LF
+    # (a lone 0x0D is content and stays); everything else — encoding, BOM — is exact.
+    $latin1 = [System.Text.Encoding]::Latin1
+    $text = $latin1.GetString([IO.File]::ReadAllBytes($src)).Replace("`r`n", "`n")
+
     if ($exists) {
         # Identical content is not a refresh — saying "refreshed" for a no-op inflates the report
-        # and hides which files the canon actually changed.
-        $a = [IO.File]::ReadAllBytes($src); $b = [IO.File]::ReadAllBytes($dst)
-        if ($a.Length -eq $b.Length -and -not (Compare-Object $a $b)) { return }
+        # and hides which files the canon actually changed. The COMPARE is ADR 0033's fold
+        # VERBATIM — drop every 0x0D, paired or not — so this surface and the refresh nudge can
+        # never disagree on what counts as a change (review 2026-08-06, medium: a CRLF-pair fold
+        # here counted a lone-CR delta as a refresh the nudge stays silent on). The seed
+        # .gitattributes pins `*.ps1 eol=crlf`, so a CRLF checkout of a byte-identical template
+        # is not a change — a raw compare would say "refreshed" on every run forever.
+        $existing = $latin1.GetString([IO.File]::ReadAllBytes($dst)).Replace("`r", '')
+        if ($existing -eq $text.Replace("`r", '')) { return }
     }
 
     if ($DryRun) {
@@ -131,7 +146,7 @@ function Place([string]$Rel, [string]$Dest, [bool]$Overwrite) {
     try {
         $parent = Split-Path -Parent $dst
         if ($parent -and -not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-        Copy-Item -LiteralPath $src -Destination $dst -Force
+        [IO.File]::WriteAllBytes($dst, $latin1.GetBytes($text))
         if ($exists) { $script:refreshed += $Dest } else { $script:created += $Dest }
     } catch { $script:failed += "$Dest — $($_.Exception.Message)" }
 }
@@ -253,8 +268,9 @@ $HOOKS_DIR = '.githooks'
 $hookFiles = @('.githooks/pre-commit', '.githooks/pre-push', '.githooks/post-commit')
 
 if (-not $DryRun -and -not $IsWindows) {
-    # Copy-Item does not carry the executable bit, and git will not run a non-executable hook on a
-    # POSIX checkout. No-op on Windows, where git invokes hooks through sh regardless of the bit.
+    # The placement write does not carry an executable bit, and git will not run a non-executable
+    # hook on a POSIX checkout. No-op on Windows, where git invokes hooks through sh regardless of
+    # the bit.
     if (Get-Command chmod -ErrorAction SilentlyContinue) {
         foreach ($h in $hookFiles) {
             $hp = Join-Path $root $h

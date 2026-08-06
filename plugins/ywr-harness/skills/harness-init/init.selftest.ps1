@@ -331,6 +331,48 @@ $afterQ2 = Get-Content -LiteralPath (Join-Path $q2 '.githooks/post-commit') -Raw
 $ok = (Assert-True 'Q2 a marked post-commit is refreshed from canon' ($afterQ2 -eq $canonPC) 'marked copy was not refreshed') -and $ok
 $ok = (Assert-True 'Q2 nothing is refused' ($rQ2.Out -match 'refused=0') $rQ2.Out) -and $ok
 
+# --- R: a CRLF-materialized plugin cache still places LF ---------------------------------------
+# The shipped v0.23.0 defect: the installed plugin is checked out by the CONSUMER's git, where
+# core.autocrlf stamps CRLF onto every template (measured: 162 CRLF pairs in the cached
+# githooks/pre-commit). Copy-Item placed those bytes verbatim, so an eol=lf repo saw ten spurious
+# modifications after every re-run, and a POSIX clone got sh hooks that die with
+# "/bin/sh^M: bad interpreter". Placement owns the line discipline now: LF out, whatever came in.
+# Runs a COPY of the skill with CRLF stamped onto every template; the real plugin is never modified.
+$crlfSkill = Join-Path $fxBase 'crlf-skill'
+Copy-Item -LiteralPath $PSScriptRoot -Destination $crlfSkill -Recurse -Force
+$latin1 = [System.Text.Encoding]::Latin1
+foreach ($t in Get-ChildItem -LiteralPath (Join-Path $crlfSkill 'templates') -Recurse -File) {
+    $stamped = $latin1.GetString([IO.File]::ReadAllBytes($t.FullName)).Replace("`r`n", "`n").Replace("`n", "`r`n")
+    [IO.File]::WriteAllBytes($t.FullName, $latin1.GetBytes($stamped))
+}
+$r = New-Target 'crlf-cache'
+$outR = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $crlfSkill 'init.ps1') -Target $r 2>&1 | Out-String
+$codeR = $LASTEXITCODE
+$ok = (Assert-True 'R run against a CRLF cache exits 0' ($codeR -eq 0) "exit=$codeR out=$outR") -and $ok
+$withCr = @($EXPECT | Where-Object {
+    (Test-Path -LiteralPath (Join-Path $r $_) -PathType Leaf) -and
+    ($latin1.GetString([IO.File]::ReadAllBytes((Join-Path $r $_))).Contains("`r"))
+})
+$ok = (Assert-True 'R no placed file carries a CR' ($withCr.Count -eq 0) "CR found in: $($withCr -join ', ')") -and $ok
+# Re-run against the same CRLF cache. What each assertion pins (review 2026-08-06, low — an
+# earlier comment implied this one covered the verbatim revert): the CR-absence assertion above
+# kills a revert to verbatim Copy-Item placement; THIS assertion kills the normalize-write-but-
+# raw-compare regression (ADR 0036's rejected Option C — LF on disk vs a CRLF template differs
+# raw, so every re-run would re-report every placement as refreshed). A full revert passes this
+# assertion alone: verbatim run 1 makes run 2's raw compare byte-identical.
+$outR2 = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $crlfSkill 'init.ps1') -Target $r 2>&1 | Out-String
+$ok = (Assert-True 'R re-run refreshes nothing (CR-only delta is not a change)' ($outR2 -match 'refreshed=0' -and $outR2 -match 'created=0') $outR2) -and $ok
+# A LONE CR (0x0D with no LF after it) is also not a change: the compare is ADR 0033's fold
+# verbatim — drop every 0x0D — NOT a CRLF-pair fold, so the scaffold and the refresh nudge agree
+# on lone-CR deltas too (review 2026-08-06, medium: a CRLF-pair fold counted this as a refresh
+# the nudge stays silent on). The byte itself is left as placed: the compare only decides whether
+# a re-run would change anything, and line endings belong to git's attributes.
+$loneTarget = Join-Path $r 'docs/build.ps1'
+[IO.File]::WriteAllBytes($loneTarget, [byte[]]([IO.File]::ReadAllBytes($loneTarget) + [byte]13))
+$outR3 = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $crlfSkill 'init.ps1') -Target $r 2>&1 | Out-String
+$ok = (Assert-True 'R lone-CR delta is not a change (0033 fold, not a CRLF-pair fold)' ($outR3 -match 'refreshed=0' -and $outR3 -match 'created=0') $outR3) -and $ok
+$ok = (Assert-True 'R the lone CR is left as placed, not rewritten' ($latin1.GetString([IO.File]::ReadAllBytes($loneTarget)).EndsWith("`r")) 'lone CR was rewritten away') -and $ok
+
 # --- P: a non-git target places the hooks and says they will not run ---------------------------
 # The fixture targets in A-J are plain directories, so this is the branch they all exercised
 # implicitly. Asserted explicitly so "placed but inert" can never become silent.

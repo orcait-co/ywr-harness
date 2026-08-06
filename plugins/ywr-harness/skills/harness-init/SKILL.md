@@ -29,6 +29,11 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
 - **Seeds are never overwritten** — an existing `CLAUDE.md` or `.gitattributes` is preserved
   byte-identical and reported as preserved.
 - **Nothing is ever deleted.** Accumulated ADRs and specs are untouched.
+- **Placement writes LF** — no matter how the installed plugin cache was checked out
+  (`core.autocrlf` can stamp CRLF onto it), CRLF in a template folds to LF on write (only the
+  pair — a lone 0x0D is content and survives), and a file that differs from its template only in
+  line endings is left alone rather than counted as a refresh (ADR 0036; same comparison contract
+  as the refresh nudge, ADR 0033).
 
 ## After running
 
