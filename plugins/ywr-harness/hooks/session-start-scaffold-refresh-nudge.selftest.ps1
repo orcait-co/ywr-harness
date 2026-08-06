@@ -1,0 +1,348 @@
+# Self-test for session-start-scaffold-refresh-nudge.ps1 (ADR 0033).
+# Usage: pwsh plugins/ywr-harness/hooks/session-start-scaffold-refresh-nudge.selftest.ps1
+#
+# Fixture provenance: the scaffolded fixtures are placed by the REAL init.ps1 (one run, then
+# tree copies) — a hand-copied placement would duplicate the map this hook exists not to
+# duplicate, and would test the copy. The fixture-prep assertion below is what fails if
+# init.ps1 stops placing what the hook reads, which is exactly the coupling ADR 0033 accepts.
+#
+# The hook's verdict is filesystem-only (unlike the githooks sibling, whose verdict is git
+# state), so almost every case runs on a git-less machine too: with git present the fixtures
+# are real repos and the root is resolved by rev-parse; with git absent the hook's documented
+# cwd-fallback carries the same verdicts. Only the subdirectory-resolution case needs git and
+# is a reported SKIP without it (the ADR 0122 container), never a silent pass.
+#
+# Every match-based case carries MustNotMatch as well as MustMatch (ADR 0116 class), enforced
+# by the shared assertion core (ADR 0125).
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core + fixture lifecycle
+$hook = Join-Path $PSScriptRoot 'session-start-scaffold-refresh-nudge.ps1'
+$init = Join-Path $PSScriptRoot '../skills/harness-init/init.ps1'
+$templates = Join-Path $PSScriptRoot '../skills/harness-init/templates'
+
+# Resolved BEFORE any case clears $env:PATH — `& pwsh` resolves at call time and would fail.
+$pwshExe = (Get-Command pwsh).Source
+
+function Invoke-Hook([string]$Stdin, [string]$HookPath = $hook) {
+    $o = ($Stdin | & $pwshExe -NoProfile -File $HookPath 2>&1 | Out-String)
+    $script:HookExit = $LASTEXITCODE
+    return $o
+}
+# Envelope adapter (file-specific, per the assertion-core contract): the nudge speaks through
+# systemMessage + optional additionalContext, so the matched text is both joined — a pattern
+# that lives only in the context half (the direction-blindness caveat) still gets asserted.
+# When additionalContext is present its hookEventName must be SessionStart, or the runtime
+# drops it.
+function Assert-Nudge([string]$Name, [string]$Out, [string[]]$MustMatch, [string[]]$MustNotMatch, [string]$NoNegative = '') {
+    $pre = @()
+    if ($script:HookExit -ne 0) { $pre += "exit $script:HookExit (want 0 — fail-open contract; SessionStart blocks nothing)" }
+    $sys = ''; $ctx = ''; $evName = ''
+    try {
+        $j = ConvertFrom-Json $Out.Trim()
+        $sys = [string]$j.systemMessage
+        try { $ctx = [string]$j.hookSpecificOutput.additionalContext; $evName = [string]$j.hookSpecificOutput.hookEventName } catch { }
+    }
+    catch { $pre += 'stdout is not valid JSON' }
+    if (-not $sys) { $pre += 'no systemMessage' }
+    if ($ctx -and $evName -ne 'SessionStart') { $pre += "hookSpecificOutput.hookEventName is '$evName' (want SessionStart — the runtime drops the context otherwise)" }
+    $script:LastFails = Get-AssertionFailure -Text "$sys`n$ctx" -MustMatch $MustMatch -MustNotMatch $MustNotMatch `
+        -NoNegative $NoNegative -PreFail $pre -Label 'output'
+    return (Write-CaseVerdict -Name $Name -Fail $script:LastFails -Detail $Out)
+}
+function Assert-EmptyStdout([string]$Name, [string]$Out) {
+    $fails = @()
+    if ($script:HookExit -ne 0) { $fails += "exit $script:HookExit (want 0 — fail-open contract)" }
+    # Plain stdout on exit 0 becomes session context for this event, so "silent" must mean
+    # BYTE-silent — a stray warning line would be injected into every session's context.
+    if ($Out.Trim()) { $fails += "expected empty stdout, got: $($Out.Trim())" }
+    if ($fails) { Write-Host "FAIL [$Name]: $($fails -join ' · ')" -ForegroundColor Red; return $false }
+    Write-Host "PASS [$Name]" -ForegroundColor Green
+    return $true
+}
+function New-Payload([hashtable]$Fields) {
+    $o = @{ hook_event_name = 'SessionStart'; session_id = 'selftest'; source = 'startup' } + $Fields
+    return ($o | ConvertTo-Json -Compress)
+}
+
+$ok = $true
+$savedPath = $env:PATH
+$gitOk = [bool](Get-Command git -ErrorAction SilentlyContinue)
+$fx = New-FixtureRoot 'ssrn-selftest'
+trap { $env:PATH = $savedPath; Remove-FixtureRoot $fx; break }
+
+# --- fixtures --------------------------------------------------------------------------------
+# ONE real scaffold run, then tree copies (with .git when present) — each variant then mutates
+# exactly the file family its case is about.
+$base = Join-Path $fx 'repo-base'
+New-Item -ItemType Directory -Force -Path $base | Out-Null
+if ($gitOk) { & git -c init.defaultBranch=main init -q $base 2>$null | Out-Null }
+& $pwshExe -NoProfile -ExecutionPolicy Bypass -File $init -Target $base *> $null
+$ok = (Assert-True 'fixture: real init.ps1 scaffolded the base repo' `
+        ((Test-Path -LiteralPath (Join-Path $base 'scripts/harness/harness_gates.py')) -and
+        (Test-Path -LiteralPath (Join-Path $base '.githooks/post-commit'))) `
+        'init.ps1 did not place the files this suite mutates — every later verdict would be about a broken fixture') -and $ok
+
+$fresh = Join-Path $fx 'repo-fresh'
+$stale = Join-Path $fx 'repo-stale'
+$seed = Join-Path $fx 'repo-seededit'
+$crlf = Join-Path $fx 'repo-crlf'
+$foreignpc = Join-Path $fx 'repo-foreignpc'
+$ourspc = Join-Path $fx 'repo-ourspc'
+$many = Join-Path $fx 'repo-manydrift'
+foreach ($v in @($fresh, $stale, $seed, $crlf, $foreignpc, $ourspc, $many)) {
+    Copy-Item -LiteralPath $base -Destination $v -Recurse -Force
+}
+# stale: one modified vendored script + one deleted CI workflow (differs AND missing in one verdict)
+Add-Content -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.py') -Value '# selftest drift'
+Remove-Item -LiteralPath (Join-Path $stale '.github/workflows/harness-gates.yml') -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $stale 'subA/subB') | Out-Null
+# seed edits only: every SEED family touched, no TOOLCHAIN file
+Add-Content -LiteralPath (Join-Path $seed 'CLAUDE.md') -Value 'repo decision'
+Add-Content -LiteralPath (Join-Path $seed '.harness.json') -Value ' '
+Add-Content -LiteralPath (Join-Path $seed '.gitattributes') -Value '*.bin binary'
+Add-Content -LiteralPath (Join-Path $seed '.githooks/slice-retro-ignore') -Value '# exempt'
+# crlf: same bytes modulo line endings (LF -> CRLF, byte-level so no decode can shift content)
+$pcPath = Join-Path $crlf '.githooks/pre-commit'
+$bytes = [IO.File]::ReadAllBytes($pcPath)
+$ms = [IO.MemoryStream]::new()
+foreach ($b in $bytes) { if ($b -eq 10) { $ms.WriteByte(13) }; $ms.WriteByte($b) }
+[IO.File]::WriteAllBytes($pcPath, $ms.ToArray())
+# foreign post-commit: no marker -> init.ps1 refuses it -> the hook must skip it the same way
+Set-Content -LiteralPath (Join-Path $foreignpc '.githooks/post-commit') -Value "#!/bin/sh`nexit 0"
+# ours post-commit: marker retained, content drifted
+Add-Content -LiteralPath (Join-Path $ourspc '.githooks/post-commit') -Value 'echo extra'
+# manydrift: seven TOOLCHAIN placements drifted -> the list caps at 5 and STATES the cap
+foreach ($rel in @('docs/README.md', 'docs/adr/README.md', 'docs/spec/README.md', 'docs/build.ps1',
+        'docs/build.sh', 'docs/build_docs.py', 'scripts/harness/harness_config.py')) {
+    Add-Content -LiteralPath (Join-Path $many $rel) -Value '# drift'
+}
+# not-ours: a scripts/harness/ directory that is NOT a scaffold (file-level sentinel must gate)
+$notours = Join-Path $fx 'repo-notours'
+New-Item -ItemType Directory -Force -Path (Join-Path $notours 'scripts/harness') | Out-Null
+Set-Content -LiteralPath (Join-Path $notours 'scripts/harness/own_tool.py') -Value 'pass'
+# bare: a repo with no scripts/harness at all
+$bare = Join-Path $fx 'repo-bare'
+New-Item -ItemType Directory -Force -Path $bare | Out-Null
+if ($gitOk) {
+    foreach ($r in @($notours, $bare)) { & git -c init.defaultBranch=main init -q $r 2>$null | Out-Null }
+}
+$plain = Join-Path $fx 'plain-dir'
+New-Item -ItemType Directory -Force -Path $plain | Out-Null
+# non-mutation baseline (asserted at the end): the hook must never write
+$freshHash = (Get-FileHash -LiteralPath (Join-Path $fresh 'docs/build_docs.py')).Hash
+$staleHash = (Get-FileHash -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.py')).Hash
+
+# 1. the drifted repo nudges: count, both file names (differ + missing), installed version,
+#    the namespaced refresh command, the re-run safety facts, the suggest-only contract, and
+#    the direction-blindness caveat in the context half
+$out = Invoke-Hook (New-Payload @{ cwd = $stale })
+$ok = (Assert-Nudge 'drifted scaffold nudges' $out `
+        @('\[hook:scaffold-refresh-nudge\]', 'repo-stale', '2 vendored toolchain file', 'v\d+\.\d+\.\d+',
+        'harness_gates\.py', 'harness-gates\.yml \(missing\)', '/ywr-harness:harness-init',
+        'once for this repo', 'seeds preserved', 'only suggests', 'direction-blind', 'REVERT',
+        'do not run it unasked') `
+        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more')) -and $ok
+
+# 2. freshly scaffolded repo -> byte-silent (the permanent steady state must cost nothing)
+$out = Invoke-Hook (New-Payload @{ cwd = $fresh })
+$ok = (Assert-EmptyStdout 'fresh scaffold silent' $out) -and $ok
+
+# 3. SEED-only edits -> silent: seeds are the repo's decisions, never compared (ADR 0033)
+$out = Invoke-Hook (New-Payload @{ cwd = $seed })
+$ok = (Assert-EmptyStdout 'seed edits silent' $out) -and $ok
+
+# 4. line-ending-only difference -> silent: the seed .gitattributes makes CRLF/LF checkout
+#    variance legitimate, so raw byte identity would nudge every clone forever
+$out = Invoke-Hook (New-Payload @{ cwd = $crlf })
+$ok = (Assert-EmptyStdout 'CRLF-only difference silent' $out) -and $ok
+
+# 5. marker-less post-commit -> silent: init.ps1 refuses a foreign file, so a re-run would
+#    change nothing — a nudge here would nag forever (the 0029 foreign-value shape)
+$out = Invoke-Hook (New-Payload @{ cwd = $foreignpc })
+$ok = (Assert-EmptyStdout 'foreign post-commit silent' $out) -and $ok
+
+# 6. marker-carrying post-commit drifted -> counted like any toolchain file
+$out = Invoke-Hook (New-Payload @{ cwd = $ourspc })
+$ok = (Assert-Nudge 'guarded post-commit with marker counts' $out `
+        @('1 vendored toolchain file', '\.githooks[\\/]post-commit') `
+        @('harness_gates\.py', 'SCHEMA DRIFT', '\(missing\)')) -and $ok
+
+# 7. seven drifts -> five named, cap STATED (a silent truncation reads as full coverage)
+$out = Invoke-Hook (New-Payload @{ cwd = $many })
+$ok = (Assert-Nudge 'file list caps at five and says so' $out `
+        @('7 vendored toolchain file', '\+2 more') `
+        @('SCHEMA DRIFT', 'harness_config\.py')) -and $ok
+
+# 8. scripts/harness/ that is not ours -> silent (file-level sentinel, not the directory gate:
+#    counting a stranger's tree as "all missing" would be a false nudge)
+$out = Invoke-Hook (New-Payload @{ cwd = $notours })
+$ok = (Assert-EmptyStdout 'foreign scripts/harness silent' $out) -and $ok
+
+# 9. repo without scripts/harness -> silent
+$out = Invoke-Hook (New-Payload @{ cwd = $bare })
+$ok = (Assert-EmptyStdout 'unscaffolded repo silent' $out) -and $ok
+
+# 10. subdirectory cwd -> the ROOT is resolved and named (needs git; reported SKIP without)
+if ($gitOk) {
+    $out = Invoke-Hook (New-Payload @{ cwd = (Join-Path $stale 'subA/subB') })
+    $ok = (Assert-Nudge 'subdirectory cwd resolves the root' $out `
+            @('repo-stale', '2 vendored toolchain file') `
+            @('subA', 'SCHEMA DRIFT')) -and $ok
+}
+else {
+    Write-Host 'SKIP — git not on PATH; subdirectory-resolution case not run (reported, not silent)' -ForegroundColor Yellow
+}
+
+# 11. BOM-prefixed stdin -> still parses (the config-change-audit 07-23 incident class)
+$out = Invoke-Hook ([char]0xFEFF + (New-Payload @{ cwd = $stale }))
+$ok = (Assert-Nudge 'BOM-prefixed stdin' $out @('repo-stale') @('SCHEMA DRIFT')) -and $ok
+
+# 12. EXTRACTION DRIFT, not silence, when the plugin's own init.ps1 stops carrying literal
+#     maps: a byte-identical copy of the hook runs from a fake plugin tree whose init.ps1
+#     parses but assigns $TOOLCHAIN non-literally. The copy IS the shipped code — what moves
+#     is $PSScriptRoot, which is the resolution path under test.
+$fakeBroken = Join-Path $fx 'fake-broken'
+New-Item -ItemType Directory -Force -Path (Join-Path $fakeBroken 'hooks') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $fakeBroken 'skills/harness-init/templates') | Out-Null
+Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Set-Content -LiteralPath (Join-Path $fakeBroken 'skills/harness-init/init.ps1') -Value @'
+$TOOLCHAIN = Get-ChildItem
+$GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
+$GUARD_MARKER = 'ywr-harness:post-commit'
+'@
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.ps1')
+$ok = (Assert-Nudge 'unreadable placement map reports EXTRACTION DRIFT, not silence' $out `
+        @('EXTRACTION DRIFT', 'UNKNOWN, not verified', 'placement map') `
+        @('differ from the installed', 'only suggests', 'SCHEMA DRIFT')) -and $ok
+
+# 12b. a PARTIAL literal — a hashtable whose value is computed but CONTAINS a string constant
+#      (`'docs/' + $x`) — must fail extraction WHOLE, never contribute the fragment to the map
+#      (review 2026-08-06, high: `.Find()` returned 'prefix/' for `'prefix/' + $suffix`). The
+#      exact reported shape is the fixture; a regression to Find()-style extraction turns this
+#      case red with a false nudge or false silence instead of the banner.
+$fakePartial = Join-Path $fx 'fake-partial'
+New-Item -ItemType Directory -Force -Path (Join-Path $fakePartial 'hooks') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $fakePartial 'skills/harness-init/templates') | Out-Null
+Copy-Item -LiteralPath $hook -Destination (Join-Path $fakePartial 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Set-Content -LiteralPath (Join-Path $fakePartial 'skills/harness-init/init.ps1') -Value @'
+$suffix = 'harness_gates.py'
+$TOOLCHAIN = [ordered]@{ 'scripts/harness/harness_gates.py' = 'scripts/harness/' + $suffix }
+$GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
+$GUARD_MARKER = 'ywr-harness:post-commit'
+'@
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakePartial 'hooks/session-start-scaffold-refresh-nudge.ps1')
+$ok = (Assert-Nudge 'partial literal fails extraction whole, never a fragment' $out `
+        @('EXTRACTION DRIFT', 'UNKNOWN, not verified', 'placement map') `
+        @('differ from the installed', '\(missing\)', 'SCHEMA DRIFT')) -and $ok
+
+# 12c. a fully literal map with NO scripts/harness/*.py destination -> the ownership sentinel
+#      is gone; an unchecked empty list would silently disable the hook on every repo forever
+#      (review 2026-08-06, medium). The banner, not silence, is the contract.
+$fakeNoSent = Join-Path $fx 'fake-nosentinel'
+New-Item -ItemType Directory -Force -Path (Join-Path $fakeNoSent 'hooks') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $fakeNoSent 'skills/harness-init/templates') | Out-Null
+Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeNoSent 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Set-Content -LiteralPath (Join-Path $fakeNoSent 'skills/harness-init/init.ps1') -Value @'
+$TOOLCHAIN = [ordered]@{ 'docs/README.md' = 'docs/README.md' }
+$GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
+$GUARD_MARKER = 'ywr-harness:post-commit'
+'@
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeNoSent 'hooks/session-start-scaffold-refresh-nudge.ps1')
+$ok = (Assert-Nudge 'sentinel-less map reports EXTRACTION DRIFT, not permanent silence' $out `
+        @('EXTRACTION DRIFT', 'sentinel', 'UNKNOWN, not verified') `
+        @('differ from the installed', 'SCHEMA DRIFT')) -and $ok
+
+# 13. a template missing from the plugin copy -> the same banner naming the file; freshness is
+#     never resolved into a nudge from an incomplete comparison set
+$fakeTmpl = Join-Path $fx 'fake-tmpl'
+New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmpl 'hooks') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmpl 'skills/harness-init') | Out-Null
+Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Copy-Item -LiteralPath $init -Destination (Join-Path $fakeTmpl 'skills/harness-init/init.ps1')
+Copy-Item -LiteralPath $templates -Destination (Join-Path $fakeTmpl 'skills/harness-init/templates') -Recurse
+Remove-Item -LiteralPath (Join-Path $fakeTmpl 'skills/harness-init/templates/docs/build_docs.py') -Force
+$out = Invoke-Hook (New-Payload @{ cwd = $fresh }) (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.ps1')
+$ok = (Assert-Nudge 'missing template reports EXTRACTION DRIFT naming the file' $out `
+        @('EXTRACTION DRIFT', 'template missing', 'templates/docs/build_docs\.py') `
+        @('differ from the installed', 'SCHEMA DRIFT')) -and $ok
+
+# 14. plain non-repo directory -> silent on BOTH branches (with git: rev-parse fails; without
+#     git: no scripts/harness at cwd), so this case runs unguarded
+$out = Invoke-Hook (New-Payload @{ cwd = $plain })
+$ok = (Assert-EmptyStdout 'non-repo dir silent' $out) -and $ok
+
+# 15. vanished cwd -> silent, and the stdout must be CLEAN (2>&1 is captured, so a stderr wall
+#     would fail the emptiness assertion — the 48c264c class)
+$out = Invoke-Hook (New-Payload @{ cwd = (Join-Path $fx 'no-such-dir') })
+$ok = (Assert-EmptyStdout 'vanished cwd silent and clean' $out) -and $ok
+
+# 16. a cwd whose ROOT does not exist on this platform -> same clean silence
+$bogusRoot = if ($IsWindows) {
+    $used = @([IO.DriveInfo]::GetDrives() | ForEach-Object { $_.Name.Substring(0, 1).ToUpper() })
+    $freeLetter = @((69..90 | ForEach-Object { [string][char]$_ }) | Where-Object { $used -notcontains $_ })[0]
+    "${freeLetter}:\no-such-root\x"
+}
+else { 'C:\no-such-root\x' }
+$out = Invoke-Hook (New-Payload @{ cwd = $bogusRoot })
+$ok = (Assert-EmptyStdout 'unresolvable root silent and clean' $out) -and $ok
+
+# 17. ANTI-VACUITY: no `cwd` in the payload -> the hook says so instead of falling silent
+$out = Invoke-Hook (New-Payload @{})
+$ok = (Assert-Nudge 'schema drift is reported, not swallowed' $out `
+        @('SCHEMA DRIFT', 'Keys received: hook_event_name, session_id, source') `
+        @('vendored toolchain file\(s\) differ', 'EXTRACTION DRIFT')) -and $ok
+
+# 18. wrong event name -> silent (defensive event guard, symmetric with siblings)
+$out = Invoke-Hook '{"hook_event_name":"SessionEnd","cwd":"C:\\x","source":"startup"}'
+$ok = (Assert-EmptyStdout 'wrong event silent' $out) -and $ok
+
+# 19. garbage stdin -> silent exit 0 (infra failure is not a finding)
+$out = Invoke-Hook 'not json at all {{{'
+$ok = (Assert-EmptyStdout 'garbage fail-open' $out) -and $ok
+
+# 20-21. the no-git branch, exercised by clearing PATH for the CHILD only: the verdict is
+#        filesystem-only, so a drifted scaffold still nudges with cwd as the root — this is
+#        the documented degradation, not an UNKNOWN. A plain dir stays silent. Runs on
+#        git-less machines too, where it is simply the ambient truth.
+try {
+    $env:PATH = ''
+    $out = Invoke-Hook (New-Payload @{ cwd = $stale })
+    $ok = (Assert-Nudge 'no git: filesystem verdict still nudges' $out `
+            @('repo-stale', '2 vendored toolchain file', 'only suggests') `
+            @('SCHEMA DRIFT', 'UNKNOWN')) -and $ok
+    $out = Invoke-Hook (New-Payload @{ cwd = $plain })
+    $ok = (Assert-EmptyStdout 'no git: plain dir stays silent' $out) -and $ok
+}
+finally { $env:PATH = $savedPath }
+
+# 22. NON-MUTATION, asserted not assumed: after every invocation above, the fixtures read
+#     byte-identical to their prepared state — the suggest-only contract (ADR 0033) becomes
+#     provable by the suite. Both directions matter: the hook must not "refresh" the drifted
+#     file and must not touch the clean one.
+$ok = (Assert-True 'non-mutation: clean placement untouched' `
+        ((Get-FileHash -LiteralPath (Join-Path $fresh 'docs/build_docs.py')).Hash -eq $freshHash) `
+        'repo-fresh/docs/build_docs.py changed — the hook wrote to the repo') -and $ok
+$ok = (Assert-True 'non-mutation: drifted placement not "refreshed"' `
+        ((Get-FileHash -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.py')).Hash -eq $staleHash) `
+        'repo-stale/scripts/harness/harness_gates.py changed — the hook reverted the drift it only reports') -and $ok
+
+Remove-FixtureRoot $fx
+
+# META — proves this file's WIRING to the shared ADR 0116 guard: a wrapper that dropped the
+# -MustNotMatch passthrough would leave the core intact and every case above unguarded.
+$script:HookExit = 0
+$metaOut = '{"systemMessage":"meta probe"}'
+$accepted = Assert-Nudge 'META probe' $metaOut @('meta probe') 6>$null
+if ($accepted -or $script:LastFails.Count -ne 1 -or ($script:LastFails[0] -notmatch 'no MustNotMatch')) {
+    Write-Host "FAIL [META]: guard did not fire — accepted=$accepted reason='$($script:LastFails -join '; ')'" -ForegroundColor Red
+    $ok = $false
+}
+else { Write-Host 'PASS [META]: negative-less case rejected, on the guard reason alone' -ForegroundColor Green }
+if (Assert-Nudge 'META exemption honored' $metaOut @('meta probe') @() 'META: exercises the visible-exemption path so the escape hatch cannot rot unnoticed') {
+    Write-Host 'PASS [META]: -NoNegative exemption honored' -ForegroundColor Green
+}
+else { Write-Host 'FAIL [META]: -NoNegative exemption rejected' -ForegroundColor Red; $ok = $false }
+
+if (-not $ok) { exit 1 }
+Write-Host "session-start-scaffold-refresh-nudge selftest: all cases green$(if (-not $gitOk) { ' (subdirectory case SKIPPED — no git)' })" -ForegroundColor Green
+exit 0
