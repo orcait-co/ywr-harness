@@ -138,6 +138,19 @@ different states, and rate-limit keys are legitimately absent on a session's fir
 the first API response. Context and quota use different threshold curves: 50% context is ordinary
 working state, 50% of a rate limit is already worth watching.
 
+## Apply-now update (skill)
+
+`/ywr-harness:update` — for the member who does not want to wait for the background auto-update
+(ADR 0026 converges every machine by its next session start). It reads the plugin's marketplace
+and version from `claude plugin list`, runs the two CLI commands (`claude plugin marketplace
+update`, then `claude plugin update`), reports the on-disk old → new, and hands off the two
+steps no skill can perform: `/reload-plugins` (a REPL built-in — the remedy for the update CLI's
+own "restart required to apply"), and `/ywr-harness:harness-init` *only when* the ADR 0033 nudge
+reports drifted toolchain files.
+It never runs the scaffold refresh itself — the nudge's comparison is direction-blind, and an
+automatic re-run could revert a working tree deliberately newer than the installed plugin
+(ADR 0034).
+
 ## CI-invoked assets
 
 `scripts/workflow-gates.mjs` (parse + behavioral gate over a workflow corpus; `--dir` selects
