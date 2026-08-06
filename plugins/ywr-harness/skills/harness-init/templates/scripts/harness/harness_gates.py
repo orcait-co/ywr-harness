@@ -113,8 +113,8 @@ def hooks_status(root: Path) -> str | None:
 # URL" (the 0.18.0 lesson: an over-strict URL gate is a false BLOCK, not a leak).
 # `\Z`, not `$`: Python's `$` ALSO matches just before a trailing newline, so `<url>\n` would pass
 # a `$`-anchored full-match check while carrying the one character that can split an output line
-# (the same class as the queued SAFE_TOKEN `$` note, 2026-07-29 — an anchor that admits a newline
-# is not a full-match anchor).
+# (the same class as SAFE_TOKEN, which uses `\Z` for the same reason — an anchor that admits a
+# newline is not a full-match anchor).
 ARTIFACT_URL = re.compile(r"^https://claude\.ai/code/artifact/[0-9A-Fa-f-]+\Z")
 
 
@@ -283,8 +283,18 @@ def main() -> int:
         # gate's argument list. Never silent — an excluded file is an ungated file.
         unsafe = hc.unsafe_files(g, fs)
         if unsafe and any(hc.gate_is_scoped(gate) for gate in g["gates"]):
-            hc.say(f"    ({len(unsafe)} file(s) EXCLUDED from this group's gate arguments — unsafe "
-                   "characters for a command argument, so no deterministic gate covers them)")
+            # "UNGATED" was an overstatement when the group ALSO declares a whole-program gate:
+            # that gate runs regardless of the argument list, so the excluded file is still
+            # covered by it — only the file-scoped coverage is lost (queued 2026-07-29). The
+            # coverage claim must match what actually runs, in both the note and the warning.
+            whole_covers = any(not hc.gate_is_scoped(gate) for gate in g["gates"])
+            if whole_covers:
+                hc.say(f"    ({len(unsafe)} file(s) EXCLUDED from this group's file-scoped gate "
+                       "arguments — unsafe characters for a command argument; the group's "
+                       "whole-program gate still covers them)")
+            else:
+                hc.say(f"    ({len(unsafe)} file(s) EXCLUDED from this group's gate arguments — unsafe "
+                       "characters for a command argument, so no deterministic gate covers them)")
             for f in unsafe:
                 # A filename is repo-supplied text, and this line sits INSIDE the gate-command
                 # window: the leading `(` keeps the first line out of both parsers, but a name
@@ -292,8 +302,13 @@ def main() -> int:
                 # spaces and no `(` — a forged command. git's default `core.quotePath` escapes such
                 # names, which is a mitigation living in someone else's config, not a guarantee.
                 hc.say(f"    (excluded: {f})")
-            late.append(f"groups[{g['name']}]: {len(unsafe)} changed file(s) could not be passed "
-                        "to a gate command and are UNGATED — rename them or gate them by hand")
+            if whole_covers:
+                late.append(f"groups[{g['name']}]: {len(unsafe)} changed file(s) could not be "
+                            "passed as file-scoped gate arguments — the group's whole-program "
+                            "gate still covers them; rename them to restore file-scoped coverage")
+            else:
+                late.append(f"groups[{g['name']}]: {len(unsafe)} changed file(s) could not be passed "
+                            "to a gate command and are UNGATED — rename them or gate them by hand")
         for gate in g["gates"]:
             cmd = hc.gate_command(gate, g, fs, late)
             if cmd.startswith("("):
@@ -313,7 +328,12 @@ def main() -> int:
             hc.say(f"    {cmd}{whole}")
             emitted += 1
     if emitted == 0:
-        hc.say("  (none — no declared group matched, or matched groups declare no gates)")
+        # Three causes share this line, and the third was unnamed until 2026-07-29's queue: a
+        # group can DECLARE gates and still emit none, because every one was refused at load or
+        # skipped/refused at composition (the parentheticals above). Cases O and Q anchor this
+        # exact string — change them together.
+        hc.say("  (none — no declared group matched, matched groups declare no gates, or every "
+               "declared gate was refused or skipped)")
 
     # Never silent: a file no group claims is a file no deterministic gate sees.
     if ungrouped:

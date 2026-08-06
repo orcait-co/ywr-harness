@@ -245,6 +245,24 @@ $ok = (Assert-True 'N the duplicate command emits exactly once' ($nEmit.Count -e
 $ok = (Assert-True 'N the dedupe is visible, not silent' ($rN.Out -match 'already emitted above — deduplicated') $rN.Out) -and $ok
 $ok = (Assert-True 'N the dedupe note is parenthesized so both output parsers skip it' ($rN.Out -match '\n    \(already emitted above') $rN.Out) -and $ok
 
+# N2: the SAME dedupe through a closed-set SELECTOR gate. Same code path as N (`cmd in seen`
+# keys on the composed string), but N proved it for script gates only — an untested twin was the
+# 2026-07-29 queue's third nit, and a shared code path is an assumption until a case pins it.
+$CFG_DUP2 = @'
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "groups": [
+    { "name": "a", "match": "^a/", "cwd": "", "strip_prefix": "", "gates": ["pytest"] },
+    { "name": "b", "match": "^b/", "cwd": "", "strip_prefix": "", "gates": ["pytest"] }
+  ]
+}
+'@
+$n2 = New-Repo 'selector-gate-dup' $CFG_DUP2 @('a/x.txt', 'b/y.txt')
+$rN2 = Invoke-Gates $n2 @()
+$n2Emit = @(($rN2.Out -split "`n") | Where-Object { $_ -match '^\s{4}[^ (]' -and $_ -match 'uv run pytest -q' })
+$ok = (Assert-True 'N2 an identical selector-gate command emits exactly once' ($n2Emit.Count -eq 1) "emitted $($n2Emit.Count)x: $($n2Emit -join ' | ')") -and $ok
+$ok = (Assert-True 'N2 the selector dedupe is visible, not silent' ($rN2.Out -match '\n    \(already emitted above — deduplicated: uv run pytest -q') $rN2.Out) -and $ok
+
 # --- O: THE strip_prefix ESCAPE — validation must run on the token that becomes argv -----------
 # Found by adversarial review 2026-07-29 (three independent lenses, 0 of 6 skeptics refuted), and
 # invisible to cases L and M: L strips a prefix off an ordinary filename, M refuses a leading dash
@@ -269,7 +287,7 @@ $ok = (Assert-True 'O a path that composes to a bare flag under strip_prefix is 
 $ok = (Assert-True 'O the refusal explains the option-injection reason' ($rO.Out -match "read as an option to the runner") $rO.Out) -and $ok
 $ok = (Assert-True 'O node -e is refused the same way' ($rO.Out -match "composes to '-e'") $rO.Out) -and $ok
 $ok = (Assert-True 'O NO emitted command contains a bare interpreter flag' (-not ($oRun -match '(python|node)\s+-[ce](\s|$)')) "lines: $($oRun -join ' | ')") -and $ok
-$ok = (Assert-True 'O the refused gates emit nothing at all' ($rO.Out -match 'no declared group matched, or matched groups declare no gates') $rO.Out) -and $ok
+$ok = (Assert-True 'O the refused gates emit nothing at all, and the none-line names the refusal cause' ($rO.Out -match 'no declared group matched, matched groups declare no gates, or every declared gate was refused or skipped') $rO.Out) -and $ok
 
 # --- P: a changed FILENAME is repo-supplied text too --------------------------------------------
 # A file whose name carries a leading dash is neutralized (./-name) rather than handed over as an
@@ -305,6 +323,27 @@ $p2Run = @(($rP2.Out -split "`n") | Where-Object { $_ -notmatch '^\s*warn:' -and
 $ok = (Assert-True 'P2 a dotted filename is not mistaken for traversal' ([bool]($p2Run -match 'a\.\.b\.py')) "lines: $($p2Run -join ' | ')") -and $ok
 $ok = (Assert-True 'P2 it is not reported as excluded either' ($rP2.Out -notmatch 'excluded: src/a\.\.b\.py') $rP2.Out) -and $ok
 
+# P3: the same exclusion in a group that ALSO declares a whole-program gate. "UNGATED" was an
+# overstatement there (2026-07-29 queue): the whole-program gate runs regardless of the argument
+# list, so only the FILE-SCOPED coverage is lost — the claim must match what actually runs.
+# Case P stays the control: its group is scoped-only, so the unqualified wording still holds.
+$CFG_MIXED = @'
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "groups": [
+    { "name": "py", "match": "^src/", "cwd": "", "strip_prefix": "src/", "gates": ["ruff", "pytest-nondb"] }
+  ]
+}
+'@
+$p3 = New-Repo 'excluded-but-whole-covered' $CFG_MIXED @('src/ok.py')
+Set-Content -LiteralPath (Join-Path $p3 'src/a b.py') -Value 'x' -NoNewline
+$rP3 = Invoke-Gates $p3 @()
+$ok = (Assert-True 'P3 with a whole-program gate present the exclusion is NOT called UNGATED' ($rP3.Out -notmatch 'are UNGATED') $rP3.Out) -and $ok
+$ok = (Assert-True 'P3 the note says the whole-program gate still covers the excluded file' ($rP3.Out -match "whole-program gate still covers them") $rP3.Out) -and $ok
+$ok = (Assert-True 'P3 the warn names the real loss — file-scoped coverage only' ($rP3.Out -match 'could not be\s+passed as file-scoped gate arguments' -and $rP3.Out -match 'rename them to restore file-scoped coverage') $rP3.Out) -and $ok
+$ok = (Assert-True 'P3 the excluded file is still named' ($rP3.Out -match 'excluded: src/a b\.py') $rP3.Out) -and $ok
+$ok = (Assert-True 'P3 the whole-program gate actually emits (the claim rests on it running)' ($rP3.Out -match 'uv run pytest -m not db -q') $rP3.Out) -and $ok
+
 # --- Q: excluding EVERY file must not escalate the gate to the whole tree -----------------------
 # A file-scoped gate with no file list is a whole-tree run (`ruff check` lints everything). So a
 # group whose every changed filename is unusable as an argument must SKIP its gate, not emit a bare
@@ -318,7 +357,7 @@ $qRun = @(($rQ.Out -split "`n") | Where-Object { $_ -notmatch '^\s*warn:' -and $
 $ok = (Assert-True 'Q no bare whole-tree command is emitted' (-not ($qRun -match 'ruff check\s*$')) "lines: $($qRun -join ' | ')") -and $ok
 $ok = (Assert-True 'Q the gate is reported as skipped, with the reason' ($rQ.Out -match 'skipped — none of this group''s changed files can be a command argument') $rQ.Out) -and $ok
 $ok = (Assert-True 'Q the skip is parenthesized so neither parser runs it' ($rQ.Out -match '\n    \(skipped — ') $rQ.Out) -and $ok
-$ok = (Assert-True 'Q a skipped gate does not count as emitted' ($rQ.Out -match 'none — no declared group matched, or matched groups declare no gates') $rQ.Out) -and $ok
+$ok = (Assert-True 'Q a skipped gate does not count as emitted' ($rQ.Out -match 'none — no declared group matched, matched groups declare no gates, or every declared gate was refused or skipped') $rQ.Out) -and $ok
 
 # --- R: cwd reaches a command position too (`cd <cwd> && …`) ------------------------------------
 # safe_path permits a space, '#' and '*'; none of those survives `sh -c` or the output parsers.
@@ -467,7 +506,7 @@ $ok = (Assert-True 'S10b the empty-title fallback label is the ESCAPED url' ($rS
 
 # S10c: a url whose only defect is a TRAILING newline. Python's `$` matches there, so a
 # `$`-anchored check would have called this a valid Artifact URL — `\Z` is what makes it a full
-# match. (Same class as the queued SAFE_TOKEN `$` note.)
+# match. (Same class as SAFE_TOKEN, which uses `\Z` for the same reason — case V pins it.)
 $s10c = New-Repo 'art-trailnl' (New-ArtCfg ($SURL + '\n') 'art-trailnl · docs') @('src/x.py')
 Set-Content -LiteralPath (Join-Path $s10c 'README.md') -Value "docs: $SURL" -NoNewline
 $rS10c = Invoke-Gates $s10c @()
@@ -599,6 +638,59 @@ Add-Content -LiteralPath (Join-Path $t5 'api/big.py') -Value ("`n" + ((1..160 | 
 $rT5 = Invoke-Gates $t5 @()
 $ok = (Assert-True 'T5 a docs-to-code rename cannot smuggle its lines out of the measure (tier full)' ($rT5.Out -match 'review tier: full') $rT5.Out) -and $ok
 $ok = (Assert-True 'T5 the renamed code file never earns small' ($rT5.Out -notmatch 'review tier: small') $rT5.Out) -and $ok
+
+# --- U: a script-gate declaration is checked key by key (2026-07-29 queue, #3) -------------------
+# An unknown key ("args": "--fast" — no argument field exists, ADR 0024 keeps flags inside the
+# script) must WARN, not vanish; a JSON-string "files" must not be truthy-coerced — bool("false")
+# is True, which would append the changed-file list to a script that declared the opposite.
+$CFG_KEYS = @'
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "groups": [
+    { "name": "t", "match": "^t/", "cwd": "", "strip_prefix": "",
+      "gates": [ { "runner": "pwsh", "script": "tools/ok.ps1", "files": "false", "args": "--fast", "//why": "comment keys stay silent" } ] }
+  ]
+}
+'@
+$u = New-Repo 'script-gate-keys' $CFG_KEYS @('t/x.py', 'tools/ok.ps1')
+$rU = Invoke-Gates $u @()
+$uRun = @(($rU.Out -split "`n") | Where-Object { $_ -notmatch '^\s*warn:' -and $_ -match '^\s{4}[^ (]' })
+$ok = (Assert-True 'U an unknown script-gate key warns, naming the known set' ($rU.Out -match "unknown script-gate key 'args' ignored \(known: runner, script, files\)") $rU.Out) -and $ok
+$ok = (Assert-True 'U a //-prefixed key is a comment, not a warning' ($rU.Out -notmatch "unknown script-gate key '//why'") $rU.Out) -and $ok
+$ok = (Assert-True 'U a string "files" warns and names the treatment' ($rU.Out -match "'files' must be a JSON boolean \(true/false\), got 'false' — treated as false \(whole-program\)") $rU.Out) -and $ok
+$ok = (Assert-True 'U the string "false" is NOT truthy-coerced — no file list is appended' ([bool]($uRun -match 'pwsh -NoProfile -File tools/ok\.ps1\s+#') -and -not ($uRun -match 'x\.py')) "lines: $($uRun -join ' | ')") -and $ok
+$ok = (Assert-True 'U the gate itself is kept (a key defect degrades the key, never the gate)' ($rU.Out -match 'whole-program: gate on slice files') $rU.Out) -and $ok
+
+# --- V: the two choke-point guarantees no CLI fixture can reach (2026-07-29 queue, #1 and #2) ----
+# Both are second-layer defenses behind load-time scrubbing: every call path into token_ok()
+# strips first (so a trailing newline never arrives via the emitter), and safe_cwd() scrubs every
+# cwd before compose() sees it. The queue's point is exactly that the guarantee must not DEPEND
+# on that — so this case imports the module directly (the ADR 0013 direct-selftest follow-up,
+# applied narrowly to the two queued guarantees).
+$vScript = Join-Path $fxBase 'direct_checks.py'
+Set-Content -LiteralPath $vScript -NoNewline -Value @'
+import sys
+sys.path.insert(0, sys.argv[1])
+import harness_config as hc
+fails = []
+if hc.token_ok("a.py\n"):
+    fails.append("token_ok accepted a trailing newline (the $-anchor admission)")
+if not hc.token_ok("a.py"):
+    fails.append("token_ok rejected a clean token")
+w = []
+if hc.compose(["echo", "x"], "bad dir", w) != "echo x":
+    fails.append("a refused cwd still composed a cd")
+if not any("refused at composition" in m for m in w):
+    fails.append("a refused cwd was dropped SILENTLY (no warn appended)")
+w2 = []
+if hc.compose(["echo", "x"], "sub/dir", w2) != "cd sub/dir && echo x" or w2:
+    fails.append("a clean cwd mis-composed or spuriously warned")
+if hc.compose(["echo", "x"], "bad dir") != "echo x":
+    fails.append("the warns-less call changed behavior")
+print("V-OK" if not fails else "V-FAIL: " + "; ".join(fails))
+'@
+$rV = (& $py.Source $vScript $PSScriptRoot 2>&1 | Out-String)
+$ok = (Assert-True 'V token_ok refuses a trailing newline; compose warns on a refused cwd (never silent)' ($rV -match 'V-OK') $rV) -and $ok
 
 Remove-FixtureRoot $fxBase
 

@@ -131,8 +131,14 @@ def safe_path(value: str, field: str, warns: list[str]) -> str:
 # release. So: every token is validated in the form that ACTUALLY reaches argv, and `as_arg()`
 # neutralizes a leading dash on top of that (the case-I2 lesson — a value in command position
 # whose FIRST character is hostile).
+#
+# `\Z`, not `$`: Python's `$` ALSO matches just before a trailing newline, so a `$`-anchored
+# full-match would accept `"a.py\n"` — the one character that can split an output line.
+# Unreachable today (every call path strips first: `norm()`, `safe_path` under `safe_cwd`), but
+# the choke point's guarantee must not depend on callers pre-stripping — fact 36's rule applied
+# to the validator itself (queued 2026-07-29, pre-merge re-review of PR #15).
 # ---------------------------------------------------------------------------------------------
-SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._/-]+$")
+SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._/-]+\Z")
 
 
 def token_ok(tok: str) -> bool:
@@ -256,6 +262,17 @@ def script_gate(raw: dict, group: str, strip_prefix: str, root: Path,
     that becomes argv. Returns None (and warns) when it cannot be composed safely; a refused
     value is echoed in the warning and never composed."""
     field = f"groups[{group}].gates"
+    # An unknown key is warned about, never silently dropped — a member declaring `"args":
+    # "--fast"` must get a signal that no argument field exists (that silence was the exact shape
+    # ADR 0024's follow-up trigger named; queued 2026-07-29). `//`-prefixed keys stay the comment
+    # convention, as everywhere else in the schema. The sweep runs BEFORE the runner/script
+    # checks on purpose: a gate dropped for a bad runner still reports its unknown keys, and the
+    # two warnings TOGETHER are what diagnose a typo'd key name (`"runer"` → unknown key 'runer'
+    # + runner '' not in the closed set).
+    for key in raw:
+        if key not in ("runner", "script", "files") and not str(key).startswith("//"):
+            warns.append(f"{field}: unknown script-gate key '{key}' ignored "
+                         "(known: runner, script, files)")
     runner = str(raw.get("runner") or "")
     if runner not in RUNNERS:
         warns.append(
@@ -283,7 +300,16 @@ def script_gate(raw: dict, group: str, strip_prefix: str, root: Path,
         # command fails loudly at run time and this warning names the path at emit time.
         warns.append(f"{field}: script-gate path '{script}' does not exist — kept; the emitted "
                      "command will fail until it does")
-    return {"runner": runner, "script": script, "files": bool(raw.get("files", False))}
+    files = raw.get("files", False)
+    if not isinstance(files, bool):
+        # `bool("false")` is True — a JSON string here would silently INVERT the declared intent
+        # and append the changed-file list to a script that never asked for one. The default
+        # (False, whole-program) is also the conservative direction: the script runs exactly as
+        # it would with the key absent.
+        warns.append(f"{field}: script-gate 'files' must be a JSON boolean (true/false), got "
+                     f"'{files}' — treated as false (whole-program)")
+        files = False
+    return {"runner": runner, "script": script, "files": files}
 
 
 def compile_re(pattern: str, field: str, warns: list[str]) -> re.Pattern | None:
@@ -499,13 +525,22 @@ def print_scope(files: list[str], prov: dict) -> None:
              "WORKING TREE, not the range you asked for (vacuous-pass guard)")
 
 
-def compose(parts: list[str], cwd: str) -> str:
+def compose(parts: list[str], cwd: str, warns: list[str] | None = None) -> str:
     """`cd <cwd> && <cmd>`, or the command alone. `cwd` reaches a command position too, so it is
     held to the same token gate here — `safe_path` alone permits a space, `#` or `*`, each of
     which `sh -c` or an output parser would reinterpret. A refused cwd degrades to running from
-    the repo root, which fails loudly on the stripped paths rather than running something else."""
+    the repo root, which fails loudly on the stripped paths rather than running something else.
+
+    `warns` is threaded for the same reason `gate_command` threads one: this second-layer refusal
+    is unreachable through `load()` today (`safe_cwd` already scrubbed the value), and a drop
+    with no warns channel is a silent drop waiting for a refactor (queued 2026-07-29)."""
     cmd = " ".join(parts)
-    return f"cd {as_arg(cwd)} && {cmd}" if cwd and token_ok(cwd) else cmd
+    if cwd and token_ok(cwd):
+        return f"cd {as_arg(cwd)} && {cmd}"
+    if cwd and warns is not None:
+        warns.append(f"cwd '{cwd}' refused at composition — the command was printed WITHOUT a "
+                     "`cd`, so it runs from the repo root")
+    return cmd
 
 
 def verify_command(cfg: dict, script: str, warns: list[str] | None = None) -> str:
@@ -523,7 +558,7 @@ def verify_command(cfg: dict, script: str, warns: list[str] | None = None) -> st
                          f"'{cfg['strip_prefix']}' it composes to '{rel}', which is not a safe "
                          "command argument; no run line was composed for it")
         return "(refused — unsafe verify script path; see warning)"
-    return compose([*RUNNERS[cfg["runner"]], as_arg(rel)], cfg["cwd"])
+    return compose([*RUNNERS[cfg["runner"]], as_arg(rel)], cfg["cwd"], warns)
 
 
 def gate_is_scoped(gate) -> bool:
@@ -577,4 +612,4 @@ def gate_command(gate, group: dict, files: list[str], warns: list[str] | None = 
             # group whose every filename was excluded would silently escalate its own scope.
             return "(skipped — none of this group's changed files can be a command argument)"
         parts.extend(as_arg(r) for r in rel)
-    return compose(parts, group["cwd"])
+    return compose(parts, group["cwd"], warns)
