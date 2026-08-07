@@ -141,7 +141,7 @@ $ok = (Assert-Nudge 'drifted scaffold nudges' $out `
         'harness_gates\.py', 'harness-gates\.yml \(missing\)', '/ywr-harness:harness-init',
         'once for this repo', 'seeds preserved', 'only suggests', 'direction-blind', 'REVERT',
         'do not run it unasked') `
-        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more')) -and $ok
+        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more', 'basis is STALE')) -and $ok
 
 # 2. freshly scaffolded repo -> byte-silent (the permanent steady state must cost nothing)
 $out = Invoke-Hook (New-Payload @{ cwd = $fresh })
@@ -265,6 +265,112 @@ $out = Invoke-Hook (New-Payload @{ cwd = $fresh }) (Join-Path $fakeTmpl 'hooks/s
 $ok = (Assert-Nudge 'missing template reports EXTRACTION DRIFT naming the file' $out `
         @('EXTRACTION DRIFT', 'template missing', 'templates/docs/build_docs\.py') `
         @('differ from the installed', 'SCHEMA DRIFT')) -and $ok
+
+# 13b-13f. STALE-BASIS PROBE (ADR 0039): a byte-identical hook copy runs from a fake VERSIONED
+#          CACHE layout (<plugins>/cache/<marketplace>/<name>/<version>) with the real init.ps1
+#          and templates beside it, so the drift verdict itself stays the real one (repo-stale's
+#          2 files). What varies per case is the sibling installed_plugins.json — the probe's
+#          only input. The running copy's plugin.json is pinned to 0.0.1 so assertions can tell
+#          RUNNING (v0.0.1) from REGISTERED (v9.9.9) apart. Every one of these cases must still
+#          produce a nudge — the probe may switch the advice, never silence the hook.
+$fakePlugins = Join-Path $fx 'fake-plugins'
+$staleCopy = Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/0.0.1'
+New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy 'hooks') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy '.claude-plugin') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy 'skills/harness-init') | Out-Null
+Copy-Item -LiteralPath $hook -Destination (Join-Path $staleCopy 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Copy-Item -LiteralPath $init -Destination (Join-Path $staleCopy 'skills/harness-init/init.ps1')
+Copy-Item -LiteralPath $templates -Destination (Join-Path $staleCopy 'skills/harness-init/templates') -Recurse
+Set-Content -LiteralPath (Join-Path $staleCopy '.claude-plugin/plugin.json') -Value '{"name":"ywr-harness","version":"0.0.1"}'
+$staleHook = Join-Path $staleCopy 'hooks/session-start-scaffold-refresh-nudge.ps1'
+$fakeRegPath = Join-Path $fakePlugins 'installed_plugins.json'
+# ConvertTo-Json owns the backslash escaping — hand-built JSON with Windows paths is how a
+# fixture silently tests nothing on one platform.
+function Set-FakeRegistry([object]$Entries) {
+    (@{ plugins = @{ 'ywr-harness@ywrlabs' = @($Entries) } } | ConvertTo-Json -Depth 6) |
+        Set-Content -LiteralPath $fakeRegPath
+}
+
+# 13b. registry lists this plugin but NOT this copy -> STALE advice: running vs registered
+#      version named, reload instructed, harness-init forbidden — and the file list stays.
+#      Two entries prove the pick order (user scope wins over a more-recent project entry).
+Set-FakeRegistry @(
+    @{ scope = 'project'; installPath = (Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/8.8.8'); version = '8.8.8'; lastUpdated = '2026-08-07T09:00:00Z' },
+    @{ scope = 'user'; installPath = (Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/9.9.9'); version = '9.9.9'; lastUpdated = '2026-08-07T01:00:00Z' }
+)
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge 'superseded cache copy reports STALE basis, reload not refresh' $out `
+        @('comparison basis is STALE', 'v0\.0\.1', 'v9\.9\.9', '/reload-plugins', 'do NOT run /ywr-harness:harness-init',
+        '2 vendored toolchain file', 'harness_gates\.py', 'REVERT', 'only suggests') `
+        @('v8\.8\.8', 'Refresh: run', 'seeds preserved', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 13c. registry entry IS this copy -> current install, the normal 0033 nudge unchanged
+Set-FakeRegistry @(@{ scope = 'user'; installPath = $staleCopy; version = '0.0.1'; lastUpdated = '2026-08-07T01:00:00Z' })
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge 'cache copy that IS the registered install nudges normally' $out `
+        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init', 'v0\.0\.1', 'seeds preserved') `
+        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 13d. no registry file -> probe yields nothing, normal nudge (fail toward 0033's behavior)
+Remove-Item -LiteralPath $fakeRegPath -Force
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge 'absent registry falls back to the normal nudge' $out `
+        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init') `
+        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 13e. unparseable registry -> same fallback, and the envelope must still be clean JSON
+#      (2>&1 is captured: a non-terminating ConvertFrom-Json error line would corrupt it)
+Set-Content -LiteralPath $fakeRegPath -Value 'not json at all {{{'
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge 'garbage registry falls back cleanly' $out `
+        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init') `
+        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 13f. registry carries only OTHER plugins (this one uninstalled mid-session) -> no registered
+#      install to reload into; the normal nudge is the conservative fallback
+(@{ plugins = @{ 'some-other-plugin@elsewhere' = @(@{ scope = 'user'; installPath = (Join-Path $fakePlugins 'cache/elsewhere/some-other-plugin/1.0.0'); version = '1.0.0' }) } } | ConvertTo-Json -Depth 6) |
+    Set-Content -LiteralPath $fakeRegPath
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge 'unlisted plugin falls back to the normal nudge' $out `
+        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init') `
+        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 13g. SAME version registered at a DIFFERENT path -> normal nudge, never a self-contradictory
+#      "runs v0.0.1 while the install is v0.0.1" (review 2026-08-07, medium): a same-version
+#      re-registration ships the same templates, so the refresh advice is not inverted
+Set-FakeRegistry @(@{ scope = 'user'; installPath = (Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/elsewhere-0.0.1'); version = '0.0.1'; lastUpdated = '2026-08-07T02:00:00Z' })
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge 'same-version re-registration keeps the normal nudge' $out `
+        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init', 'v0\.0\.1') `
+        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 13h. CROSS-MARKETPLACE union (the '@<marketplace>' half is deliberately unpinned — a consuming
+#      org may register the marketplace under another name): the original key is emptied
+#      (uninstalled there), a DIFFERENT marketplace key carries the registered install at
+#      another version -> STALE names THAT version. This is the union path no single-key
+#      fixture exercises (review 2026-08-07, low).
+(@{ plugins = [ordered]@{
+            'ywr-harness@ywrlabs'  = @()
+            'ywr-harness@otherorg' = @(@{ scope = 'user'; installPath = (Join-Path $fakePlugins 'cache/otherorg/ywr-harness/7.7.7'); version = '7.7.7'; lastUpdated = '2026-08-07T03:00:00Z' })
+        } } | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $fakeRegPath
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge 'cross-marketplace registration is unioned into the STALE verdict' $out `
+        @('comparison basis is STALE', 'v0\.0\.1', 'v7\.7\.7', '/reload-plugins') `
+        @('Refresh: run', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 13i. corrupted registered-version shapes are skipped, never rendered: an ARRAY version
+#      space-joins under [string] into a digit-bearing "1.0.0 2.0.0" that a bare digit test
+#      would accept (review 2026-08-07, low), and the literal 'unknown' sentinel fails the
+#      digit test — the one usable entry (project scope 6.6.6) must be the version named
+Set-FakeRegistry @(
+    @{ scope = 'user'; installPath = (Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/corrupt-a'); version = @('1.0.0', '2.0.0'); lastUpdated = '2026-08-07T09:00:00Z' },
+    @{ scope = 'user'; installPath = (Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/corrupt-b'); version = 'unknown'; lastUpdated = '2026-08-07T08:00:00Z' },
+    @{ scope = 'project'; installPath = (Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/6.6.6'); version = '6.6.6'; lastUpdated = '2026-08-07T01:00:00Z' }
+)
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge 'corrupted version shapes are skipped, the usable entry is named' $out `
+        @('comparison basis is STALE', 'v6\.6\.6', '/reload-plugins') `
+        @('1\.0\.0 2\.0\.0', 'version unknown', 'Refresh: run', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 14. plain non-repo directory -> silent on BOTH branches (with git: rev-parse fails; without
 #     git: no scripts/harness at cwd), so this case runs unguarded

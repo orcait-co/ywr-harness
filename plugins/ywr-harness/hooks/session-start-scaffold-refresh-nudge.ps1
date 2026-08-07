@@ -34,6 +34,21 @@
 # *differ*, never *outdated*, and additionalContext warns the model that a re-run would REVERT
 # deliberately newer copies.
 #
+# Stale-basis probe (ADR 0039): a running session keeps the plugin version it loaded — hooks
+# resolve to the OLD cache directory until /reload-plugins or a restart, and that directory
+# survives ~2 weeks after an update (doc-verified 2026-08-07). In that window this hook's
+# verdict basis is stale and its advice inverts: the repo may match the NEWER registered
+# install, and the harness-init THIS session would run is the old skill (measured live: a
+# v0.23.2 hook told a v0.25.0-refreshed repo to revert). So, only after drift is found, the
+# hook checks whether its own copy is still the registered install — self-located from
+# $PSScriptRoot (<plugins>/cache/<marketplace>/<name>/<version>, registry sibling at
+# <plugins>/installed_plugins.json — an UNDOCUMENTED file, read best-effort like the
+# statusline, ADR 0027). Stale -> same file list, but the advice becomes "reload, re-check,
+# do NOT run harness-init from this session". A registered version EQUAL to the running one
+# falls back to the normal nudge (same release, same templates — nothing to invert; and
+# "runs vX while the install is vX" would contradict itself). Any probe failure -> the normal
+# nudge: the probe can only improve the advice, never silence the hook.
+#
 # Payload and output contract: same as the sibling nudge (verified against the official hooks
 # reference 2026-08-05) — cwd per firing; systemMessage AND hookSpecificOutput.additionalContext
 # both consumed; plain stdout on exit 0 becomes context, so every non-speaking path exits with
@@ -234,6 +249,84 @@ try {
 $shown = @($drifted | Select-Object -First 5)
 $fileList = $shown -join ', '
 if ($drifted.Count -gt $shown.Count) { $fileList += ", +$($drifted.Count - $shown.Count) more" }
+
+# --- stale-basis probe (ADR 0039) — see the header block ---------------------------------------
+# Every step that can fail is terminating-and-caught (-ErrorAction Stop where a cmdlet's default
+# is non-terminating): a probe failure must yield $null AND a clean stderr — the selftest
+# captures 2>&1, and a stray error line would corrupt the JSON envelope. Path equality is
+# case-insensitive: paths here are Windows-first, and on Linux a false case-insensitive MATCH
+# merely degrades to the normal nudge (the pre-0039 behavior), which is the safe direction.
+$staleActive = $null
+try {
+    $rr = [IO.Path]::GetFullPath($pluginRoot).TrimEnd('\', '/')
+    $nameDir = Split-Path $rr -Parent                    # <plugins>/cache/<marketplace>/<name>
+    $mktDir = Split-Path $nameDir -Parent                # <plugins>/cache/<marketplace>
+    $cacheDir = Split-Path $mktDir -Parent               # <plugins>/cache
+    # Only a versioned cache copy can be stale-by-supersession. A --plugin-dir or repo-source
+    # copy has no `cache` great-grandparent and stays on the 0033 contract (direction-blind
+    # caveat), which is the correct reading for a deliberately loaded local copy.
+    if ($cacheDir -and (Split-Path $cacheDir -Leaf) -eq 'cache') {
+        $regPath = Join-Path (Split-Path $cacheDir -Parent) 'installed_plugins.json'
+        if (Test-File $regPath) {
+            $pluginName = Split-Path $nameDir -Leaf
+            $reg = Get-Content -LiteralPath $regPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            # Name from the path, not plugin.json: the path IS what the registry keys index,
+            # and it survives an unreadable manifest. The `@<marketplace>` half is not pinned
+            # (a consuming org may register the marketplace under another name — ADR 0027).
+            $entries = @()
+            foreach ($prop in @($reg.plugins.PSObject.Properties)) {
+                if ($prop.Name -notlike "$pluginName@*") { continue }
+                $entries += @($prop.Value)
+            }
+            if ($entries.Count) {
+                $current = $false
+                foreach ($e in $entries) {
+                    $ip = ''
+                    try { $ip = [IO.Path]::GetFullPath([string]$e.installPath).TrimEnd('\', '/') } catch { }
+                    if ($ip -and [string]::Equals($ip, $rr, [StringComparison]::OrdinalIgnoreCase)) { $current = $true; break }
+                }
+                if (-not $current) {
+                    # ≥1 entry, none of them this copy: the session outlived an update (or a
+                    # scope re-install). Registered version for the message, the statusline's
+                    # pick order as spec 0010 records it: user scope wins, then lastUpdated
+                    # recency — never registry order. A usable version is a SCALAR STRING
+                    # carrying a digit: ConvertFrom-Json can deliver an array here from a
+                    # corrupted write, and [string] would space-join it into a digit-bearing
+                    # "1.0.0 2.0.0" that renders malformed (review 2026-08-07, low); the
+                    # registry's "unknown" sentinel fails the digit test. Unmeasured is not a
+                    # value.
+                    $best = $null
+                    foreach ($e in $entries) {
+                        if ($e.version -isnot [string] -or $e.version -notmatch '\d') { continue }
+                        $eu = ([string]$e.scope -eq 'user')
+                        $bu = ($null -ne $best -and [string]$best.scope -eq 'user')
+                        if ($null -eq $best -or ($eu -and -not $bu) -or (($eu -eq $bu) -and ([string]$e.lastUpdated -gt [string]$best.lastUpdated))) { $best = $e }
+                    }
+                    $staleActive = if ($best) { 'v' + (([string]$best.version) -replace '^v', '') } else { 'version unknown' }
+                    # Same version string as the running copy -> NOT stale-for-advice: a
+                    # same-version re-registration (cross-marketplace key, cache re-seed)
+                    # ships the same templates, so the refresh advice is not inverted — and
+                    # "still runs $ver while the install is $ver" contradicts itself (review
+                    # 2026-08-07, medium). Fall back to the normal nudge; -eq is
+                    # case-insensitive, and the both-'version unknown' corner falls back too,
+                    # which is the honest reading (nothing provable to say).
+                    if ($staleActive -eq $ver) { $staleActive = $null }
+                }
+            }
+        }
+    }
+}
+catch { $staleActive = $null }
+
+if ($staleActive) {
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $($drifted.Count) vendored toolchain file(s) differ from this session's ywr-harness ($ver) templates — $fileList — but the comparison basis is STALE: this session still runs $ver while this machine's registered install is $staleActive. The verdict may be inverted (the repo may simply match the newer install). Run /reload-plugins (or restart the session) and let the next session start re-check; do NOT run /ywr-harness:harness-init from this session — it would place the $ver templates (ADR 0039). Nothing was changed; this hook only suggests (ADR 0033)."
+    $ctx = "The repo at $root shows scaffold-toolchain drift ($fileList), but the verdict basis is STALE: this session's ywr-harness hooks and skills still run $ver while the machine's registered install is $staleActive — a running session keeps the plugin version it loaded until /reload-plugins or a restart. The drift verdict may therefore be inverted: the repo may already match the newer install's templates. Do NOT run or suggest /ywr-harness:harness-init from this session — the loaded skill would place the $ver templates and could REVERT correctly refreshed files (ADR 0039). The remedy is /reload-plugins or a session restart, after which the next session start re-checks against the updated plugin. This surface is suggest-only (ADR 0033)."
+    @{
+        systemMessage      = $sys
+        hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = $ctx }
+    } | ConvertTo-Json -Compress
+    exit 0
+}
 
 $sys = "[hook:scaffold-refresh-nudge] ${root}: $($drifted.Count) vendored toolchain file(s) differ from the installed ywr-harness ($ver) templates — $fileList. Refresh: run /ywr-harness:harness-init once for this repo and commit (re-run is safe: toolchain refreshed, seeds preserved, nothing deleted — ADR 0010). Nothing was changed; this hook only suggests (ADR 0033)."
 $ctx = "The repo at $root carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates ($ver): $fileList. A /ywr-harness:harness-init re-run refreshes the toolchain from the canon and never touches seeds or accumulated ADRs. CAVEAT — this comparison is direction-blind: if this working tree deliberately carries NEWER copies than the installed plugin (e.g. the plugin canon mid-slice), a re-run would REVERT them to the older installed templates. Offer the re-run when the work touches gates, hooks, or CI; do not run it unasked — this surface is suggest-only (ADR 0033)."
