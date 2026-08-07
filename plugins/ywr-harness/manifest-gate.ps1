@@ -210,6 +210,107 @@ if (Test-Path -LiteralPath $vendorDir -PathType Container) {
     }
 }
 
+# --- dogfood placement identity (ADR 0037 follow-up) ------------------------------------------
+# The scaffold's placements (.githooks/, .github/workflows/, scripts/harness/, docs toolchain)
+# had NO standing drift gate — ADR 0037 recorded that residual when the derived-copy exemption
+# started pricing their identity. This sweep closes it where both sides exist: a repo carrying
+# this plugin IN-TREE at <repo>/plugins/ywr-harness (the ADR 0018 dogfood shape). A marketplace
+# cache has no scaffolded repo above it and the sweep says so instead of passing silently.
+#
+# The pair list is PARSED from init.ps1's own $TOOLCHAIN/$GUARDED maps — one list, one owner, so
+# this gate can never quietly disagree with what the scaffold actually places. A parse that
+# yields nothing FAILS: an empty sweep is not a pass. The compare is ADR 0033's fold VERBATIM
+# (drop every 0x0D on both sides) — the same contract the scaffold's refresh report and the
+# refresh-nudge hook use, so the three surfaces cannot disagree on what counts as drift (the
+# seed .gitattributes pins `*.ps1 eol=crlf`, so a raw byte compare would call every checkout
+# drifted forever). GUARDED placements without the scaffold marker are foreign files the
+# scaffold itself refuses to touch — reported and skipped, never compared, never failed.
+$initPath = Join-Path $root 'skills/harness-init/init.ps1'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $root)
+# The canon shape needs BOTH root markers, not just a `.harness.json`: a consuming repo that
+# vendors this plugin tree by hand is scaffolded (it has a declaration) but is NOT the canon —
+# sweeping its placements against whatever plugin version it happens to vendor would fail on
+# version skew, not drift (review 2026-08-07, low). The root marketplace manifest is the
+# publisher's marker: the dist copy carries it too but has no declaration, so each non-canon
+# shape misses exactly one of the two.
+$inTree = ((Split-Path $root -Leaf) -eq 'ywr-harness') -and
+          ((Split-Path (Split-Path $root -Parent) -Leaf) -eq 'plugins') -and
+          $repoRoot -and (Test-Path -LiteralPath (Join-Path $repoRoot '.harness.json') -PathType Leaf) -and
+          (Test-Path -LiteralPath (Join-Path $repoRoot '.claude-plugin/marketplace.json') -PathType Leaf)
+if (-not $inTree) {
+    Write-Host 'dogfood placements: skipped — not the canon dogfood shape (needs .harness.json AND .claude-plugin/marketplace.json at the repo root above this plugin; a marketplace cache and a hand-vendored copy each miss one)' -ForegroundColor Yellow
+} elseif (-not (Test-Path -LiteralPath $initPath -PathType Leaf)) {
+    Bad 'dogfood placements: init.ps1 missing — the placement map has no source to parse'
+} else {
+    function Get-PlacementMap([string]$Text, [string]$VarName) {
+        $m = [regex]::Match($Text, "(?s)\`$$VarName\s*=\s*\[ordered\]@\{(.*?)\r?\n\}")
+        if (-not $m.Success) { return $null }
+        $pairs = [ordered]@{}
+        foreach ($line in ($m.Groups[1].Value -split "`n")) {
+            if ($line -match "^\s*'([^']+)'\s*=\s*'([^']+)'") { $pairs[$Matches[1]] = $Matches[2] }
+            elseif ($line -match '^\s*#' -or $line -notmatch '\S') { }   # comments and blanks
+            else {
+                # ANYTHING else inside the block is an entry the parser cannot read — a bareword
+                # or interpolated key as much as a double-quoted one. Silently skipping it would
+                # drop a pair while the sweep still counts >0 — the partial-parse variant of the
+                # empty sweep, so it fails the same way (a count is only as wide as what it
+                # enumerates; the first cut flagged only quote-prefixed lines — review
+                # 2026-08-07, medium).
+                Bad "dogfood placements: unparsed entry line in `$$VarName of init.ps1 — $($line.Trim()) (single-quoted 'src' = 'dest' is the parsed form)"
+            }
+        }
+        return $pairs
+    }
+    $initText = Get-Content -LiteralPath $initPath -Raw
+    $tool = Get-PlacementMap $initText 'TOOLCHAIN'
+    $guard = Get-PlacementMap $initText 'GUARDED'
+    $markerM = [regex]::Match($initText, "\`$GUARD_MARKER\s*=\s*'([^']+)'")
+    # BOTH maps must be non-null AND non-empty: Get-PlacementMap returns a real empty dictionary
+    # when the block wrapper matches but no line inside parses, so a null-check alone lets a
+    # family's coverage vanish silently — the first cut checked only $tool's count (review
+    # 2026-08-07, high). If GUARDED is ever legitimately retired, this line changes in the same
+    # reviewed commit.
+    if (-not $tool -or $tool.Count -eq 0 -or -not $guard -or $guard.Count -eq 0 -or -not $markerM.Success) {
+        Bad "dogfood placements: could not parse `$TOOLCHAIN/`$GUARDED/`$GUARD_MARKER from init.ps1 — an empty sweep is not a pass (toolchain=$(if ($tool) { $tool.Count } else { 'none' }) guarded=$(if ($guard) { $guard.Count } else { 'none' }))"
+    } else {
+        $latin1 = [System.Text.Encoding]::Latin1
+        function Get-FoldedText([string]$Path) { $latin1.GetString([IO.File]::ReadAllBytes($Path)).Replace("`r", '') }
+        $pDrift = 0; $pChecked = 0; $pAbsent = @(); $pForeign = @()
+        $families = @(
+            @{ map = $tool;  guarded = $false },
+            @{ map = $guard; guarded = $true }
+        )
+        foreach ($fam in $families) {
+            foreach ($rel in $fam.map.Keys) {
+                $t = Join-Path $root "skills/harness-init/templates/$rel"
+                $d = Join-Path $repoRoot $fam.map[$rel]
+                if (-not (Test-Path -LiteralPath $t -PathType Leaf)) {
+                    Bad "dogfood placements: init.ps1 maps '$rel' but the template does not exist"
+                    $pDrift++
+                    continue
+                }
+                if (-not (Test-Path -LiteralPath $d -PathType Leaf)) { $pAbsent += $fam.map[$rel]; continue }
+                if ($fam.guarded -and ((Get-Content -LiteralPath $d -Raw) -notmatch [regex]::Escape($markerM.Groups[1].Value))) {
+                    # Foreign file at a guarded destination — the scaffold refuses it, so does this gate.
+                    $pForeign += $fam.map[$rel]
+                    continue
+                }
+                $pChecked++
+                if ((Get-FoldedText $t) -ne (Get-FoldedText $d)) {
+                    Bad "dogfood placement DIVERGED: $($fam.map[$rel]) — re-run the scaffold refresh (/ywr-harness:harness-init) or fix the template; drift here ships a different gate than the canon reviews"
+                    $pDrift++
+                }
+            }
+        }
+        if ($pDrift -eq 0) {
+            $notes = @()
+            if ($pAbsent.Count) { $notes += "$($pAbsent.Count) not placed here: $($pAbsent -join ', ')" }
+            if ($pForeign.Count) { $notes += "$($pForeign.Count) foreign (no scaffold marker), skipped as the scaffold does: $($pForeign -join ', ')" }
+            Good ("dogfood placements identical to templates ($pChecked checked, CR-fold compare per ADR 0033" + $(if ($notes) { ' · ' + ($notes -join ' · ') } else { '' }) + ')')
+        }
+    }
+}
+
 # --- coverage report (visible every run, never a silent cap) --------------------------------
 # Nothing is excluded but the selftests themselves. Excluding the runner, the gate, or the
 # shared lib would be the ADR 0125 miscount: a coverage number narrowed by an undeclared

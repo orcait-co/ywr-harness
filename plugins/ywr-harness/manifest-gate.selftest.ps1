@@ -174,14 +174,128 @@ if ($honest) { Write-Host 'PASS [changelog-check-broken-manifest] no false "(mat
 else { Write-Host "FAIL [changelog-check-broken-manifest] exit=$rc falseMatchClaim=$([bool]($out -match '\(matches plugin\.json\)')) notCheckedReported=$([bool]($out -match 'NOT CHECKED'))" -ForegroundColor Red }
 $results += [pscustomobject]@{ case = 'changelog-check-broken-manifest'; exit = $(if ($honest) { 1 } else { 0 }) }
 
+# --- dogfood placement sweep (ADR 0037 follow-up) ----------------------------------------------
+# Canon-shape fixtures: repo/.harness.json + repo/plugins/ywr-harness/<plugin copy>. Placements
+# are laid per case — an absent destination is "not placed", never a failure, so a minimal
+# fixture exercises exactly the branch under test without running the scaffold (which would drag
+# python/git into a suite that needs neither). Positive cases assert the MESSAGE as well as the
+# exit code, the changelog-check-broken-manifest precedent.
+function New-CanonShape([string]$tag) {
+    $repo = Join-Path $base "$tag/repo"
+    New-Item -ItemType Directory -Force -Path (Join-Path $repo 'plugins') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $repo '.claude-plugin') | Out-Null
+    Copy-Item -LiteralPath $src -Destination (Join-Path $repo 'plugins/ywr-harness') -Recurse -Force
+    Set-Content -LiteralPath (Join-Path $repo '.harness.json') -Value '{}' -NoNewline
+    Set-Content -LiteralPath (Join-Path $repo '.claude-plugin/marketplace.json') -Value '{}' -NoNewline
+    return $repo
+}
+function Run-GateAt([string]$repo) {
+    $out = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'plugins/ywr-harness/manifest-gate.ps1') 2>&1 | Out-String
+    return @{ out = $out; rc = $LASTEXITCODE }
+}
+function Record([string]$tag, [bool]$asRequired, [string]$detail) {
+    if ($asRequired) { Write-Host "PASS [$tag] $detail" -ForegroundColor Green }
+    else { Write-Host "FAIL [$tag] $detail" -ForegroundColor Red }
+    $script:results += [pscustomobject]@{ case = $tag; exit = $(if ($asRequired) { 1 } else { 0 }) }
+}
+
+# A drifted TOOLCHAIN placement must fail — this is the exact class ADR 0037 recorded as ungated.
+$r = New-CanonShape 'placement-drifted'
+New-Item -ItemType Directory -Force -Path (Join-Path $r '.githooks') | Out-Null
+Set-Content -LiteralPath (Join-Path $r '.githooks/pre-commit') -Value '#!/bin/sh
+echo drifted' -NoNewline
+$g = Run-GateAt $r
+Record 'placement-drifted' ($g.rc -eq 1 -and $g.out -match 'dogfood placement DIVERGED: \.githooks/pre-commit') "exit=$($g.rc) diverged-named=$([bool]($g.out -match 'DIVERGED'))"
+
+# A CR-only difference is NOT drift — ADR 0033's fold contract, shared with the scaffold report
+# and the refresh nudge (the seed .gitattributes pins *.ps1 eol=crlf, so raw bytes MUST not decide).
+$r = New-CanonShape 'placement-cr-only'
+$tpl = [IO.File]::ReadAllBytes((Join-Path $r 'plugins/ywr-harness/skills/harness-init/templates/scripts/harness/harness_config.py'))
+$crlf = [System.Text.Encoding]::Latin1.GetString($tpl).Replace("`r`n", "`n").Replace("`n", "`r`n")
+New-Item -ItemType Directory -Force -Path (Join-Path $r 'scripts/harness') | Out-Null
+[IO.File]::WriteAllBytes((Join-Path $r 'scripts/harness/harness_config.py'), [System.Text.Encoding]::Latin1.GetBytes($crlf))
+$g = Run-GateAt $r
+Record 'placement-cr-only-not-drift' ($g.rc -eq 0 -and $g.out -match 'dogfood placements identical .*1 checked') "exit=$($g.rc) identical-1-checked=$([bool]($g.out -match '1 checked'))"
+
+# A GUARDED destination without the marker is a foreign file: skipped and NAMED, exactly as the
+# scaffold refuses it — never compared, never failed.
+$r = New-CanonShape 'placement-foreign-guarded'
+New-Item -ItemType Directory -Force -Path (Join-Path $r '.githooks') | Out-Null
+Set-Content -LiteralPath (Join-Path $r '.githooks/post-commit') -Value '#!/bin/sh
+# my own automation, not the scaffold''s' -NoNewline
+$g = Run-GateAt $r
+Record 'placement-foreign-guarded-skipped' ($g.rc -eq 0 -and $g.out -match 'foreign \(no scaffold marker\), skipped .*post-commit') "exit=$($g.rc) foreign-named=$([bool]($g.out -match 'foreign'))"
+
+# A GUARDED file that DOES carry the marker is ours — drift in it must fail like any placement.
+$r = New-CanonShape 'placement-guarded-marked-drift'
+New-Item -ItemType Directory -Force -Path (Join-Path $r '.githooks') | Out-Null
+Set-Content -LiteralPath (Join-Path $r '.githooks/post-commit') -Value '#!/bin/sh
+# ywr-harness:post-commit
+echo drifted' -NoNewline
+$g = Run-GateAt $r
+Record 'placement-guarded-marked-drift' ($g.rc -eq 1 -and $g.out -match 'dogfood placement DIVERGED: \.githooks/post-commit') "exit=$($g.rc)"
+
+# The pair list is parsed from init.ps1 — a parse that yields nothing must FAIL, not sweep zero
+# pairs and read as coverage.
+$r = New-CanonShape 'placement-map-unparseable'
+$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/init.ps1'
+(Get-Content -LiteralPath $ip -Raw).Replace('$TOOLCHAIN = [ordered]@{', '$RENAMED_MAP = [ordered]@{') | Set-Content -LiteralPath $ip -NoNewline
+$g = Run-GateAt $r
+Record 'placement-map-unparseable' ($g.rc -eq 1 -and $g.out -match 'an empty sweep is not a pass') "exit=$($g.rc)"
+
+# A PARTIALLY unparseable map is the silent-narrowing variant: one entry rewritten in a form the
+# parser does not read must FAIL loudly, not drop that one pair while the sweep still counts >0.
+$r = New-CanonShape 'placement-map-partial-parse'
+$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/init.ps1'
+(Get-Content -LiteralPath $ip -Raw).Replace("'githooks/pre-commit'                    = '.githooks/pre-commit'", '"githooks/pre-commit"                    = ".githooks/pre-commit"') | Set-Content -LiteralPath $ip -NoNewline
+$g = Run-GateAt $r
+Record 'placement-map-partial-parse' ($g.rc -eq 1 -and $g.out -match 'unparsed entry line') "exit=$($g.rc) unparsed-named=$([bool]($g.out -match 'unparsed entry line'))"
+
+# Same class, non-quote-prefixed: a bareword key does not LOOK like a quoted entry, and the
+# first cut's quote-prefixed guard let exactly that vanish (review 2026-08-07, medium).
+$r = New-CanonShape 'placement-map-bareword-key'
+$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/init.ps1'
+(Get-Content -LiteralPath $ip -Raw).Replace("'githooks/pre-commit'                    = '.githooks/pre-commit'", "githooks_precommit                    = '.githooks/pre-commit'") | Set-Content -LiteralPath $ip -NoNewline
+$g = Run-GateAt $r
+Record 'placement-map-bareword-key' ($g.rc -eq 1 -and $g.out -match 'unparsed entry line') "exit=$($g.rc)"
+
+# GUARDED emptiness must fail SYMMETRICALLY with TOOLCHAIN: Get-PlacementMap returns a real
+# empty dictionary when the wrapper matches but nothing inside parses, so a null-check alone
+# lets one family's coverage vanish while the sweep still reports green (review 2026-08-07,
+# high). Commenting out the single entry is exactly the merge-accident shape.
+$r = New-CanonShape 'placement-map-guarded-emptied'
+$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/init.ps1'
+(Get-Content -LiteralPath $ip -Raw).Replace("    'githooks/post-commit' = '.githooks/post-commit'", "    # 'githooks/post-commit' = '.githooks/post-commit'") | Set-Content -LiteralPath $ip -NoNewline
+$g = Run-GateAt $r
+Record 'placement-map-guarded-emptied' ($g.rc -eq 1 -and $g.out -match 'an empty sweep is not a pass' -and $g.out -match 'guarded=0') "exit=$($g.rc) guarded0-named=$([bool]($g.out -match 'guarded=0'))"
+
+# A consuming repo that hand-vendors the plugin tree has a declaration but NOT the publisher's
+# root marketplace manifest — sweeping its placements against a vendored plugin version would
+# fail on version skew, not drift, so the shape must skip and say so (review 2026-08-07, low).
+$r = Join-Path $base 'placement-skip-vendored-consumer/repo'
+New-Item -ItemType Directory -Force -Path (Join-Path $r 'plugins') | Out-Null
+Copy-Item -LiteralPath $src -Destination (Join-Path $r 'plugins/ywr-harness') -Recurse -Force
+Set-Content -LiteralPath (Join-Path $r '.harness.json') -Value '{}' -NoNewline
+$out = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $r 'plugins/ywr-harness/manifest-gate.ps1') 2>&1 | Out-String
+Record 'placement-skip-vendored-consumer' ($LASTEXITCODE -eq 0 -and $out -match 'dogfood placements: skipped') "exit=$LASTEXITCODE skip-said=$([bool]($out -match 'skipped'))"
+
+# The plugins/ parent WITHOUT a .harness.json above (the dist/marketplace-cache shape) is not a
+# scaffolded repo: the sweep must say it skipped, not pass silently and not fail.
+$r = Join-Path $base 'placement-skip-cache-shape/plugins'
+New-Item -ItemType Directory -Force -Path $r | Out-Null
+Copy-Item -LiteralPath $src -Destination (Join-Path $r 'ywr-harness') -Recurse -Force
+$out = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $r 'ywr-harness/manifest-gate.ps1') 2>&1 | Out-String
+Record 'placement-skip-cache-shape' ($LASTEXITCODE -eq 0 -and $out -match 'dogfood placements: skipped') "exit=$LASTEXITCODE skip-said=$([bool]($out -match 'skipped'))"
+
 # A POSITIVE control: the unmutated copy must still pass. Without it a gate that fails on
-# everything (a broken gate) would score a perfect negative suite.
+# everything (a broken gate) would score a perfect negative suite. The copy sits with no repo
+# above it, so the placement sweep must also SAY it skipped (never a silent no-op).
 $ok = Join-Path $base 'unmutated-control'
 Copy-Item -LiteralPath $src -Destination $ok -Recurse -Force
-& pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ok 'manifest-gate.ps1') *> $null
+$ctlOut = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ok 'manifest-gate.ps1') 2>&1 | Out-String
 $ctl = $LASTEXITCODE
-if ($ctl -eq 0) { Write-Host 'PASS [unmutated-control] gate exited 0' -ForegroundColor Green }
-else { Write-Host "FAIL [unmutated-control] gate exited $ctl on an unmodified copy" -ForegroundColor Red }
+if ($ctl -eq 0 -and $ctlOut -match 'dogfood placements: skipped') { Write-Host 'PASS [unmutated-control] gate exited 0, placement sweep reported its skip' -ForegroundColor Green }
+else { Write-Host "FAIL [unmutated-control] exit=$ctl skip-said=$([bool]($ctlOut -match 'dogfood placements: skipped'))" -ForegroundColor Red; $ctl = 1 }
 
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 
