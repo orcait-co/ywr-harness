@@ -30,6 +30,7 @@ audit is a tier nobody can correct.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -43,6 +44,49 @@ hc.pin_utf8()
 # it touches a declared critical surface — size never overrides criticality.
 SMALL_MAX_FILES = 5
 SMALL_MAX_LINES = 150
+
+# The one file whose schema the canon itself owns (ADR 0038). The safe keys feed REPORTING only;
+# every other key reaches command composition, tier, or gate coverage, so a change to one is
+# critical in every repo, declared or not — the declaration cannot opt itself out.
+DECL_FILE = ".harness.json"
+DECL_SAFE_KEYS = {"docs", "handoff", "artifacts"}
+
+
+def _drop_comment_keys(v):
+    """Recursively remove '//'-prefixed keys — the schema's comment convention everywhere. A
+    comment edit is prose, not a declaration change, and must compare equal."""
+    if isinstance(v, dict):
+        return {k: _drop_comment_keys(x) for k, x in v.items() if not str(k).startswith("//")}
+    if isinstance(v, list):
+        return [_drop_comment_keys(x) for x in v]
+    return v
+
+
+def decl_changed_keys(root: Path, rev_range: str | None) -> list[str] | None:
+    """Top-level declaration keys whose comment-stripped values differ between the diff base and
+    the working tree, or None when that cannot be determined — the caller treats unknown as
+    critical, never as safe (a newly added declaration and an unparseable side both land here).
+    Base = the left side of --range when given, else HEAD; a three-dot range uses the left rev
+    as-is, which for A...B can only over-approximate the change set — erring toward critical.
+    Decoded as UTF-8 explicitly: text=True would use the console codepage on Windows and a
+    declaration carrying non-ASCII (artifact titles do) would fail or silently mis-compare."""
+    base = "HEAD"
+    if rev_range:
+        left = re.split(r"\.\.\.?", rev_range, maxsplit=1)[0].strip()
+        if left:
+            base = left
+    try:
+        out = subprocess.run(["git", "show", f"{base}:{DECL_FILE}"],
+                             cwd=root, capture_output=True, check=True)
+        old = json.loads(out.stdout.decode("utf-8"))
+        new = json.loads((root / DECL_FILE).read_text(encoding="utf-8"))
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        # ValueError covers json.JSONDecodeError and UnicodeDecodeError — both are subclasses.
+        return None
+    old, new = _drop_comment_keys(old), _drop_comment_keys(new)
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return None
+    return sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
 
 
 def changed_lines(root: Path, rev_range: str | None, is_exempt=None) -> tuple[int, int] | None:
@@ -351,28 +395,96 @@ def main() -> int:
     def docs_exempt(path: str) -> bool:
         return any(rx.search(path) for rx in docs_rx)
 
-    # The exemption set is built from `files` — the SAME name-only listing that builds
+    # The exemption sets are built from `files` — the SAME name-only listing that builds
     # `code_files` below — and changed_lines gets a membership test, never the regexes: one
     # classification, two measures, so the branch decision and the printed figures cannot
     # disagree, and a numstat rename record (`old => new`) can never regex-match its OLD name
     # into an exemption (review 2026-08-06, high — reproduced with a docs→code rename).
-    exempt_paths = {f for f in files if docs_exempt(f)}
+    docs_paths = {f for f in files if docs_exempt(f)}
+
+    # Derived-copy exemption (ADR 0037): a changed file under a declared copies prefix whose
+    # CURRENT bytes equal its mapped source's adds no review surface — the deterministic
+    # identity gate owns that relationship. Identity is a tree property, so BOTH sides are read
+    # from the worktree: a drifted or deleted copy counts fully (and the identity gate fails the
+    # build anyway). Chains are not resolved — every copies prefix maps directly to its
+    # canonical source.
+    def derived_source(path: str) -> str | None:
+        for d in rev["derived"]:
+            for c in d["copies"]:
+                if path.startswith(c):
+                    return d["source"] + path[len(c):]
+        return None
+
+    def identical_to_source(path: str) -> bool:
+        src = derived_source(path)
+        if not src or src == path:
+            return False
+        try:
+            a, b = root / path, root / src
+            # A symlink's DIFF is its target string, but a content read follows it — a link
+            # retargeted at the source itself would compare "identical" while the reviewed
+            # change is a redirection. Refused in the conservative direction: a link is never
+            # an exempt copy, on either side (review 2026-08-07, medium).
+            if a.is_symlink() or b.is_symlink():
+                return False
+            return a.read_bytes() == b.read_bytes()
+        except OSError:
+            return False
+
+    derived_paths = {f for f in files if f not in docs_paths and identical_to_source(f)}
+    exempt_paths = docs_paths | derived_paths
     sizes = changed_lines(root, args.rev_range, lambda p: p in exempt_paths) if prov.get("source") != "explicit" else None
-    docs_only = bool(rev["docs_only"]) and all(f in exempt_paths for f in files)
-    critical = [f for f in files if rev["critical"] and match_any(rev["critical"], f, late, "review.critical")]
+    # `skip` stays a docs-only decision (ADR 0037): derived files never contribute to the
+    # all-docs test, so a pure propagation diff earns `small` via an empty counted set, not
+    # `skip` — the exemption narrows the measure and the criticality attribution, never the
+    # trust class.
+    docs_only = bool(rev["docs_only"]) and all(f in docs_paths for f in files)
+    critical_all = [f for f in files if rev["critical"] and match_any(rev["critical"], f, late, "review.critical")]
+    # A byte-identical copy cannot force `critical` — the source's own classification decides
+    # (ADR 0037). Suppression is stated on the tier line below, never silent.
+    critical = [f for f in critical_all if f not in derived_paths]
+    crit_suppressed = [f for f in critical_all if f in derived_paths]
     code_files = [f for f in files if f not in exempt_paths]
     harness_only = bool(rev["harness_layer"]) and bool(code_files) and all(
         match_any(rev["harness_layer"], f, late, "review.harness_layer") for f in code_files)
 
-    # Size is measured over the NON-docs subset (ADR 0035): docs_only files riding along with a
-    # small behavioral change inflate the total without adding review surface. The SCOPE is not
-    # narrowed anywhere — only the measure — and a non-empty exclusion is stated on the tier
-    # line, never silent. With no docs_only declared (or none in the diff) the counted figures
-    # equal the totals and the wording below is byte-identical to the unweighted form.
-    excluded = len(files) - len(code_files)
+    # The declaration's criticality is COMPUTED from which keys changed (ADR 0038): the safe
+    # keys feed reporting only; anything else — or a diff that cannot be determined — is
+    # critical in every repo, declared or not. Either way the verdict is stated with its input.
+    decl_note = ""
+    if DECL_FILE in files:
+        # Explicit-files mode ignores --range everywhere else (print_scope says so on stderr),
+        # so the base must not come from it here either — HEAD is the honest base for a
+        # worktree question (review 2026-08-07, medium).
+        keys = decl_changed_keys(root, args.rev_range if prov.get("source") != "explicit" else None)
+        if keys is not None and all(k in DECL_SAFE_KEYS for k in keys):
+            if DECL_FILE in critical:
+                critical.remove(DECL_FILE)
+            decl_note = ((f"declaration change confined to metadata keys ({', '.join(keys)})"
+                          if keys else "declaration change is comment-only")
+                         + " — not counted as critical")
+        else:
+            if DECL_FILE not in critical:
+                critical.insert(0, DECL_FILE)
+            shown = ", ".join(keys) if keys else "undetermined"
+            decl_note = (f"declaration keys changed ({shown}) — the declaration decides what "
+                         "runs and what gets reviewed, so it is critical in every repo")
+
+    # Size is measured over the non-exempt subset (ADR 0035, extended by 0037): docs_only files
+    # and byte-identical derived copies riding along with a small behavioral change inflate the
+    # total without adding review surface. The SCOPE is not narrowed anywhere — only the measure
+    # — and a non-empty exclusion is stated on the tier line, never silent. With neither class
+    # in the diff the counted figures equal the totals and the wording below is byte-identical
+    # to the unweighted form.
     lines, counted = sizes if sizes is not None else (None, None)
-    exempt_note = (f" — {excluded} docs-only file(s) excluded from the size measure, "
-                   "still in review scope") if excluded else ""
+    ex_parts = []
+    if docs_paths:
+        ex_parts.append(f"{len(docs_paths)} docs-only file(s)")
+    if derived_paths:
+        ex_parts.append(f"{len(derived_paths)} byte-identical derived "
+                        + ("copy" if len(derived_paths) == 1 else "copies"))
+    exempt_note = (f" — {' and '.join(ex_parts)} excluded from the size measure, "
+                   "still in review scope") if ex_parts else ""
 
     if critical:
         tier, why = "full", f"critical surface touched ({', '.join(critical[:3])}) — size never overrides criticality"
@@ -384,12 +496,25 @@ def main() -> int:
         tier, why = "full", "changed-line count could not be measured — unknown is not small"
     elif len(code_files) <= SMALL_MAX_FILES and counted <= SMALL_MAX_LINES:
         tier, why = "small", (f"{len(code_files)} counted file(s) / {counted} counted line(s), no critical surface{exempt_note}"
-                              if excluded else
+                              if exempt_note else
                               f"{len(files)} file(s) / {lines} changed line(s), no critical surface")
     else:
         tier, why = "full", (f"{len(code_files)} counted file(s) / {counted} counted line(s){exempt_note}"
-                             if excluded else
+                             if exempt_note else
                              f"{len(files)} file(s) / {lines} changed line(s)")
+
+    # Narrowings that changed WHAT could escalate — as opposed to the size measure, which the
+    # exempt_note above covers — are appended to the reason itself, whatever branch won: a
+    # suppressed critical match or a refined declaration must be visible on the one line every
+    # consumer reads (org guide: no silent caps).
+    tier_notes = []
+    if crit_suppressed:
+        tier_notes.append(f"{len(crit_suppressed)} critical match(es) on byte-identical derived "
+                          "copies not counted — criticality follows the source")
+    if decl_note:
+        tier_notes.append(decl_note)
+    if tier_notes:
+        why += " [" + "; ".join(tier_notes) + "]"
 
     hc.say(f"review tier: {tier} — {why}")
     if not (rev["docs_only"] or rev["harness_layer"] or rev["critical"]):

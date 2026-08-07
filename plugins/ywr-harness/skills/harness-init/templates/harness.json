@@ -23,8 +23,11 @@
     "//harness_layer": "Code-bearing surfaces that are tooling rather than product. When every code-bearing file is confined here, the tier is 'small'.",
     "harness_layer": [],
 
-    "//critical": "Surfaces where a weaker review is worst. ANY match forces tier 'full' — size never overrides criticality. Typical: migrations, authn/authz, tenant isolation, a deterministic numeric core, CI and guard semantics.",
-    "critical": []
+    "//critical": "Surfaces where a weaker review is worst. ANY match forces tier 'full' — size never overrides criticality. Typical: migrations, authn/authz, tenant isolation, a deterministic numeric core, CI and guard semantics. The declaration file itself needs no entry: its criticality is computed from which keys changed (ADR 0038 — metadata keys docs/handoff/artifacts and comments never force it; every other key always does).",
+    "critical": [],
+
+    "//derived": "Byte-identical placements of a canonical source — generated or vendored copies a deterministic gate holds identical (ADR 0037). A changed copy whose CURRENT bytes equal its mapped source's stops counting toward the size measure and cannot force 'critical'; a drifted copy counts fully. Path PREFIXES ending in '/' ([A-Za-z0-9._/-] only), each copy mapping directly to its canonical source — chains are not resolved. Empty disables the exemption.",
+    "derived": []
   },
 
   "retro": {

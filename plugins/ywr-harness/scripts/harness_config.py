@@ -340,7 +340,7 @@ def load(root: Path) -> tuple[dict, list[str]]:
     warns: list[str] = []
     cfg = dict(DEFAULTS)
     cfg["groups"] = []
-    cfg["review"] = {"docs_only": [], "harness_layer": [], "critical": []}
+    cfg["review"] = {"docs_only": [], "harness_layer": [], "critical": [], "derived": []}
     # Retro surfaces. Free-string regexes like `review`: they select and report, and cannot name
     # an executable, so the closed-set rule that governs `gates` does not apply here.
     cfg["retro"] = {"source_scope": [], "dep_manifests": [], "migrations": []}
@@ -396,6 +396,34 @@ def load(root: Path) -> tuple[dict, list[str]]:
             cfg["review"][key] = [str(p) for p in val]
         elif val:
             warns.append(f"review.{key}: expected a list of regexes — ignored")
+
+    # Derived-copy mappings (ADR 0037). PATH PREFIXES, not regexes: the copy→source mapping is
+    # computed by prefix swap, so each prefix must end with '/' (a bare prefix could match a
+    # sibling directory mid-segment) and pass the same token allowlist as any path value. These
+    # never reach a command position — the emitter only reads bytes at the mapped paths — but a
+    # traversal segment must still be refused: the mapped path is opened relative to the root.
+    der = rev.get("derived")
+    if isinstance(der, list):
+        for i, d in enumerate(der):
+            if not isinstance(d, dict):
+                warns.append(f"review.derived[{i}]: expected an object with 'source' and 'copies' — ignored")
+                continue
+            for key in d:
+                if key not in ("source", "copies") and not str(key).startswith("//"):
+                    warns.append(f"review.derived[{i}]: unknown key '{key}' ignored (known: source, copies)")
+            src = norm(str(d.get("source") or ""))
+            raw_copies = d.get("copies")
+            copies = [norm(str(c)) for c in raw_copies] if isinstance(raw_copies, list) else []
+            bad = [p for p in [src, *copies] if p and not (token_ok(p) and p.endswith("/"))]
+            if not src or not copies or any(not c for c in copies) or bad:
+                shown = f" — refused: {', '.join(one_line(b) for b in bad)}" if bad else ""
+                warns.append(f"review.derived[{i}]: 'source' and 'copies' must be path PREFIXES "
+                             "ending in '/' ([A-Za-z0-9._/-] only, no '..', no leading '/')"
+                             f"{shown} — entry ignored")
+                continue
+            cfg["review"]["derived"].append({"source": src, "copies": copies})
+    elif der:
+        warns.append("review.derived: expected a list of {source, copies} mappings — ignored")
 
     ret = raw.get("retro") or {}
     if ret.get("ignore_file"):

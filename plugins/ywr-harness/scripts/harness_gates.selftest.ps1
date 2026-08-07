@@ -692,6 +692,113 @@ print("V-OK" if not fails else "V-FAIL: " + "; ".join(fails))
 $rV = (& $py.Source $vScript $PSScriptRoot 2>&1 | Out-String)
 $ok = (Assert-True 'V token_ok refuses a trailing newline; compose warns on a refused cwd (never silent)' ($rV -match 'V-OK') $rV) -and $ok
 
+# --- W: derived-copy exemption (ADR 0037) — byte-identical placements stop counting -------------
+# The exemption is exactly as wide as verified identity: an identical copy leaves the size
+# measure and cannot force critical (the source's classification decides); a DRIFTED copy counts
+# fully. Both narrowings must be stated on the tier line.
+$CFG_DER = @'
+{
+  "review": {
+    "canon": "REVIEW.md",
+    "docs_only": ["^docs/"],
+    "harness_layer": [],
+    "critical": ["^placed/"],
+    "derived": [ { "source": "src/", "copies": ["placed/"] } ]
+  },
+  "groups": []
+}
+'@
+# W1: identical copy — critical suppressed, size counts the source only.
+$w1 = New-Repo 'derived-identical' $CFG_DER @('src/tool.py', 'placed/tool.py')
+$rW1 = Invoke-Gates $w1 @()
+$ok = (Assert-True 'W1 identical derived copy cannot force critical (tier small)' ($rW1.Out -match 'review tier: small') $rW1.Out) -and $ok
+$ok = (Assert-True 'W1 the suppression is stated on the tier line' ($rW1.Out -match '1 critical match\(es\) on byte-identical derived copies not counted — criticality follows the source') $rW1.Out) -and $ok
+$ok = (Assert-True 'W1 the copy leaves the size measure, stated' ($rW1.Out -match '1 byte-identical derived copy excluded from the size measure, still in review scope') $rW1.Out) -and $ok
+
+# W2: drift — identity is verified, never assumed: a diverged copy keeps its critical match.
+$w2 = New-Repo 'derived-drift' $CFG_DER @('src/tool.py', 'placed/tool.py')
+Set-Content -LiteralPath (Join-Path $w2 'placed/tool.py') -Value 'DRIFTED' -NoNewline
+$rW2 = Invoke-Gates $w2 @()
+$ok = (Assert-True 'W2 a drifted copy keeps its critical match (tier full)' ($rW2.Out -match 'review tier: full — critical surface touched \(placed/tool\.py') $rW2.Out) -and $ok
+$ok = (Assert-True 'W2 no suppression is claimed' ($rW2.Out -notmatch 'criticality follows the source') $rW2.Out) -and $ok
+
+# W3: propagation-only diff — the source landed earlier; the copy alone changes, identical to
+# the committed source. Counted set is empty -> small, never skip (ADR 0037: the exemption
+# narrows measure and attribution, not the trust class).
+$w3 = New-Repo 'derived-prop' $CFG_DER @()
+New-Item -ItemType Directory -Force -Path (Join-Path $w3 'src') | Out-Null
+Set-Content -LiteralPath (Join-Path $w3 'src/tool.py') -Value 'x' -NoNewline
+& git -C $w3 add -A 2>$null; & git -C $w3 commit -q -m src 2>$null
+New-Item -ItemType Directory -Force -Path (Join-Path $w3 'placed') | Out-Null
+Set-Content -LiteralPath (Join-Path $w3 'placed/tool.py') -Value 'x' -NoNewline
+$rW3 = Invoke-Gates $w3 @()
+$ok = (Assert-True 'W3 a propagation-only diff earns small on an empty counted set' ($rW3.Out -match 'review tier: small — 0 counted file\(s\) / 0 counted line\(s\), no critical surface') $rW3.Out) -and $ok
+$ok = (Assert-True 'W3 never skip' ($rW3.Out -notmatch 'review tier: skip') $rW3.Out) -and $ok
+
+# W4: an invalid mapping (prefix without the trailing '/') is dropped with a warning, so the
+# copy's critical match stands — a broken declaration must fail toward the stronger tier.
+$CFG_DER_BAD = $CFG_DER.Replace('"source": "src/"', '"source": "src"')
+$w4 = New-Repo 'derived-bad' $CFG_DER_BAD @('src/tool.py', 'placed/tool.py')
+$rW4 = Invoke-Gates $w4 @()
+$ok = (Assert-True 'W4 an invalid derived entry warns and is ignored' ($rW4.Out -match "review\.derived\[0\].*must be path PREFIXES ending in '/'" -and $rW4.Out -match 'refused: src') $rW4.Out) -and $ok
+$ok = (Assert-True 'W4 the dropped mapping buys no exemption (tier full via critical)' ($rW4.Out -match 'review tier: full — critical surface touched \(placed/tool\.py') $rW4.Out) -and $ok
+
+# --- X: declaration criticality computed from changed keys (ADR 0038) ---------------------------
+# {docs, handoff, artifacts} and comments feed reporting only; everything else is critical in
+# every repo, declared or not — the declaration cannot opt itself out.
+$CFG_X = @'
+{
+  "//note": "a",
+  "handoff": "",
+  "review": {
+    "canon": "REVIEW.md",
+    "docs_only": ["^docs/"],
+    "harness_layer": [],
+    "critical": ["^\\.harness\\.json$"]
+  },
+  "groups": []
+}
+'@
+# X1: metadata-only edit in a repo that DECLARED the file critical — refined to the size tier.
+$x1 = New-Repo 'decl-meta' $CFG_X @()
+$x1cfg = Join-Path $x1 '.harness.json'
+(Get-Content -Raw -LiteralPath $x1cfg).Replace('"handoff": ""', '"handoff": "HANDOFF.md"') | Set-Content -LiteralPath $x1cfg -NoNewline
+$rX1 = Invoke-Gates $x1 @()
+$ok = (Assert-True 'X1 a metadata-only declaration edit does not force critical' ($rX1.Out -match 'review tier: small' -and $rX1.Out -notmatch 'critical surface touched') $rX1.Out) -and $ok
+$ok = (Assert-True 'X1 the refinement names its keys' ($rX1.Out -match 'declaration change confined to metadata keys \(handoff\) — not counted as critical') $rX1.Out) -and $ok
+
+# X2: a non-metadata key changes in a repo that NEVER declared the file critical — forced full.
+$CFG_X2 = $CFG_X.Replace('"critical": ["^\\.harness\\.json$"]', '"critical": []')
+$x2 = New-Repo 'decl-groups' $CFG_X2 @()
+$x2cfg = Join-Path $x2 '.harness.json'
+(Get-Content -Raw -LiteralPath $x2cfg).Replace('"groups": []', '"groups": [ { "name": "g", "match": "^g/", "cwd": "", "strip_prefix": "", "gates": [] } ]') | Set-Content -LiteralPath $x2cfg -NoNewline
+$rX2 = Invoke-Gates $x2 @()
+$ok = (Assert-True 'X2 a groups change is critical even undeclared' ($rX2.Out -match 'review tier: full — critical surface touched \(\.harness\.json') $rX2.Out) -and $ok
+$ok = (Assert-True 'X2 the forcing names its keys' ($rX2.Out -match 'declaration keys changed \(groups\) — the declaration decides what runs and what gets reviewed, so it is critical in every repo') $rX2.Out) -and $ok
+
+# X3: a comment-only edit compares equal after comment stripping — never critical.
+$x3 = New-Repo 'decl-comment' $CFG_X @()
+$x3cfg = Join-Path $x3 '.harness.json'
+(Get-Content -Raw -LiteralPath $x3cfg).Replace('"//note": "a"', '"//note": "b"') | Set-Content -LiteralPath $x3cfg -NoNewline
+$rX3 = Invoke-Gates $x3 @()
+$ok = (Assert-True 'X3 a comment-only declaration edit is named and not critical' ($rX3.Out -match 'declaration change is comment-only — not counted as critical' -and $rX3.Out -notmatch 'critical surface touched') $rX3.Out) -and $ok
+
+# X5: explicit-files mode ignores --range for the declaration base too (the contract
+# print_scope announces): the base is HEAD, so a bogus range must not flip a metadata edit to
+# undetermined/critical (review 2026-08-07, medium — the guard changed_lines already had).
+$x5 = New-Repo 'decl-explicit' $CFG_X @()
+$x5cfg = Join-Path $x5 '.harness.json'
+(Get-Content -Raw -LiteralPath $x5cfg).Replace('"handoff": ""', '"handoff": "HANDOFF.md"') | Set-Content -LiteralPath $x5cfg -NoNewline
+$rX5 = Invoke-Gates $x5 @('--range', 'deadbeef..HEAD', '.harness.json')
+$ok = (Assert-True 'X5 explicit files ignore --range for the declaration base too' ($rX5.Out -match 'declaration change confined to metadata keys \(handoff\)' -and $rX5.Out -notmatch 'undetermined') $rX5.Out) -and $ok
+
+# X4: a NEWLY ADDED declaration has no base to diff against — undetermined is critical, never
+# safe (adopting the file that decides what runs deserves the strongest first review).
+$x4 = New-Repo 'decl-new' '' @()
+Set-Content -LiteralPath (Join-Path $x4 '.harness.json') -Value '{ "groups": [] }' -NoNewline
+$rX4 = Invoke-Gates $x4 @()
+$ok = (Assert-True 'X4 a newly added declaration is critical (undetermined base)' ($rX4.Out -match 'review tier: full — critical surface touched \(\.harness\.json' -and $rX4.Out -match 'declaration keys changed \(undetermined\)') $rX4.Out) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_gates selftest: FAILED' -ForegroundColor Red; exit 1 }
