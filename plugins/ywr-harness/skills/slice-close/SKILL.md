@@ -113,7 +113,13 @@ Product files the mapper flags as having no spec owner are spec debt. Register t
 
 ## 5. Close
 
-- Update the handoff file the emitter named, if this repo declares one.
+- Update the handoff the emitter named, if this repo declares one. A declaration ending in `/`
+  is a directory holding one resume file per work line (ADR 0040) — update, or create, the file
+  for the line this slice belongs to, named after the work line, never after a person.
+- A handoff is a resume point, not a ledger: when this close supersedes the previous
+  `## Current state`, move the superseded section (with its slice-close records) to
+  `docs/handoff-archive/<same filename>`, newest first. Keep in the handoff only what resuming
+  needs; a decision worth keeping belongs in an ADR or spec, not in accreted history.
 - Regenerate doc surfaces if any ADR/spec source changed: `pwsh docs/build.ps1`, and commit
   `index.json` + `INDEX.md` with the change.
 - Commit. State in the close: the scope line, the gates that passed, the tier **and its reason**,

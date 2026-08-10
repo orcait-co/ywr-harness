@@ -523,7 +523,10 @@ def main() -> int:
     hc.say(f"review canon: {cfg['review_canon']}" + ("" if (root / cfg["review_canon"]).exists()
            else "   (NOT FOUND — invariants must come from somewhere; the close cannot cite a missing file)"))
     if cfg["handoff"]:
-        hc.say(f"handoff: {cfg['handoff']}")
+        # A trailing '/' declares a per-work-line directory (ADR 0040); annotated here so the
+        # close instruction "update the handoff the emitter named" is unambiguous where it is read.
+        hint = " — directory: one resume file per work line" if cfg["handoff"].endswith("/") else ""
+        hc.say(f"handoff: {cfg['handoff']}{hint}")
 
     # Printed AFTER the tier so the hook's output parser (which stops at `review tier:`) can never
     # mistake it for a gate command.

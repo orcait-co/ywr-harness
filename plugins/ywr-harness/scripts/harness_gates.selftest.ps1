@@ -799,6 +799,25 @@ Set-Content -LiteralPath (Join-Path $x4 '.harness.json') -Value '{ "groups": [] 
 $rX4 = Invoke-Gates $x4 @()
 $ok = (Assert-True 'X4 a newly added declaration is critical (undetermined base)' ($rX4.Out -match 'review tier: full — critical surface touched \(\.harness\.json' -and $rX4.Out -match 'declaration keys changed \(undetermined\)') $rX4.Out) -and $ok
 
+# --- H: handoff declaration forms (ADR 0040) ----------------------------------------------------
+# A trailing '/' declares a per-work-line directory and the emitter must say so — the slice-close
+# instruction is "update the handoff the emitter named", so the form has to be visible where it
+# is read. The file form stays byte-stable: no annotation.
+$CFG_H = @'
+{
+  "handoff": "docs/handoff/",
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "groups": []
+}
+'@
+$h1 = New-Repo 'handoff-dir' $CFG_H @('src/tool.py')
+$rH1 = Invoke-Gates $h1 @()
+$ok = (Assert-True 'H1 a trailing-slash handoff is annotated as a per-work-line directory' ($rH1.Out -match 'handoff: docs/handoff/ — directory: one resume file per work line') $rH1.Out) -and $ok
+
+$h2 = New-Repo 'handoff-file' ($CFG_H.Replace('"handoff": "docs/handoff/"', '"handoff": "SESSION_HANDOFF.md"')) @('src/tool.py')
+$rH2 = Invoke-Gates $h2 @()
+$ok = (Assert-True 'H2 a file-form handoff line carries no directory annotation' ($rH2.Out -match 'handoff: SESSION_HANDOFF\.md' -and $rH2.Out -notmatch 'one resume file per work line') $rH2.Out) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_gates selftest: FAILED' -ForegroundColor Red; exit 1 }
