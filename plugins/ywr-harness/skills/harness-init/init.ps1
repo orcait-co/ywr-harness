@@ -22,7 +22,10 @@ param(
     # Repo root to scaffold. Defaults to the current directory.
     [string]$Target = '.',
     # Report what would change and write nothing.
-    [switch]$DryRun
+    [switch]$DryRun,
+    # Proceed even when this repo's .harness-version stamp is NEWER than this plugin copy — the
+    # deliberate-rollback path (ADR 0042). Without it, a blind downgrade is refused.
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +47,66 @@ catch { Write-Host "FAIL — target not found: $Target" -ForegroundColor Red; ex
 if (-not (Test-Path -LiteralPath $root -PathType Container)) {
     Write-Host "FAIL — target is not a directory: $root" -ForegroundColor Red
     exit 1
+}
+
+# --- downgrade guard (ADR 0042) ------------------------------------------------------------------
+# `.harness-version` records which plugin version last scaffolded this repo — written below on
+# every successful non-dry run, GENERATED and never a template (a templated stamp would change
+# every release and nag every repo, 0033's recorded reason for rejecting a stamp in the trigger
+# role). When the repo's stamp is NEWER than this copy, another writer refreshed the repo with a
+# newer plugin (the multi-writer everyday state), and proceeding would place older templates over
+# their refresh. Refused BEFORE anything is written; -Force is the deliberate-rollback path. A
+# missing or unparseable stamp proceeds: refusing on absence could never destroy newer work, but
+# it would strand every pre-0042 repo.
+$STAMP_FILE = '.harness-version'
+$stampPath = Join-Path $root $STAMP_FILE
+function ConvertTo-VersionOrNull([string]$s) {
+    if (-not $s) { return $null }
+    $t = $s.Trim() -replace '^v', ''
+    # [version] needs >=2 dotted components; anything else is not a stamp this scaffold wrote.
+    if ($t -notmatch '^\d+(\.\d+)+$') { return $null }
+    # [version] pads unspecified components with -1, so '0.28' would compare BELOW '0.28.0' and
+    # flip the downgrade verdict (review 2026-08-10, low). Normalize to four components before
+    # casting — the same rule as the refresh nudge's direction probe, cross-referenced there;
+    # more than four stays invalid.
+    $parts = @($t -split '\.')
+    if ($parts.Count -gt 4) { return $null }
+    while ($parts.Count -lt 4) { $parts += '0' }
+    try { return [version]($parts -join '.') } catch { return $null }
+}
+$ownVersionRaw = $null
+try {
+    $mfPath = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.claude-plugin/plugin.json'
+    $mf = Get-Content -LiteralPath $mfPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    if ($mf.version -is [string] -and $mf.version -match '\d') { $ownVersionRaw = ([string]$mf.version).Trim() }
+} catch { $ownVersionRaw = $null }
+$ownVersion = ConvertTo-VersionOrNull $ownVersionRaw
+$repoStamp = $null; $repoStampRaw = ''
+if (Test-Path -LiteralPath $stampPath -PathType Leaf) {
+    try {
+        # BOUNDED read — never Get-Content: a stamp with no newline before EOF is read WHOLE as
+        # "line 1", and a symlink at a device never returns (review 2026-08-10, medium — same
+        # fix as the refresh nudge's probe). 64 bytes is generous for a version token.
+        $fs = [IO.File]::OpenRead($stampPath)
+        try { $buf = [byte[]]::new(64); $n = $fs.Read($buf, 0, 64) } finally { $fs.Dispose() }
+        $off = if ($n -ge 3 -and $buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF) { 3 } else { 0 }
+        $line = [System.Text.Encoding]::ASCII.GetString($buf, $off, $n - $off)
+        $cut = $line.IndexOfAny(@([char]"`r", [char]"`n"))
+        if ($cut -ge 0) { $line = $line.Substring(0, $cut) }
+        $repoStampRaw = $line.Trim()
+        $repoStamp = ConvertTo-VersionOrNull $repoStampRaw
+    } catch { $repoStamp = $null; $repoStampRaw = '' }
+}
+if ($repoStamp -and $ownVersion -and $repoStamp -gt $ownVersion) {
+    if ($Force) {
+        Write-Host "DOWNGRADE FORCED — repo stamp v$repoStampRaw > this plugin v$ownVersionRaw; proceeding because -Force was given (ADR 0042)." -ForegroundColor Yellow
+    } else {
+        Write-Host "REFUSED — this repo's toolchain was last scaffolded by ywr-harness v$repoStampRaw, NEWER than this copy (v$ownVersionRaw)." -ForegroundColor Red
+        Write-Host "  Placing these templates would DOWNGRADE files another writer refreshed (ADR 0042). Nothing was written." -ForegroundColor Red
+        Write-Host "  Remedy: update the plugin first — /ywr-harness:update (or 'claude plugin update'), then restart or /reload-plugins." -ForegroundColor Red
+        Write-Host "  A deliberate rollback re-runs with -Force." -ForegroundColor Red
+        exit 1
+    }
 }
 
 # relative source under templates/  ->  relative destination under the target
@@ -254,6 +317,26 @@ foreach ($f in $skippedSeed) { Write-Host "  - $f" -ForegroundColor Yellow }
 if ($failed.Count) {
     foreach ($f in $failed) { Write-Host "  FAIL $f" -ForegroundColor Red }
     exit 1
+}
+
+# --- toolchain stamp (ADR 0042) ------------------------------------------------------------------
+# Stamped only on a run that placed successfully (the failed-exit above never reaches here). The
+# refresh nudge reads this AFTER byte drift is found, to orient its advice; it is never the
+# trigger. In no placement map on purpose: manifest-gate's map-driven sweep and the nudge's
+# template comparison must never see it, so it can never itself count as drift.
+if ($ownVersionRaw) {
+    if ($DryRun) {
+        Write-Host "  stamp: would write $STAMP_FILE = $ownVersionRaw (dry run)" -ForegroundColor Cyan
+    } else {
+        try {
+            [IO.File]::WriteAllBytes($stampPath, [System.Text.Encoding]::ASCII.GetBytes("$ownVersionRaw`n"))
+            Write-Host "  stamp: $STAMP_FILE = $ownVersionRaw (which plugin version last scaffolded this repo — ADR 0042; claim it in .harness.json groups)" -ForegroundColor Green
+        } catch {
+            Write-Host "  stamp: FAILED to write $STAMP_FILE — $($_.Exception.Message) (reported, not silent)" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "  stamp: SKIPPED — this plugin copy's own version is unreadable from .claude-plugin/plugin.json (reported, not silent)" -ForegroundColor Yellow
 }
 
 # --- git hooks: executable bit, then CONDITIONAL wiring (ADR 0015) ------------------------------

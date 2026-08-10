@@ -52,6 +52,53 @@ jobs:
             echo "range=" >> "$GITHUB_OUTPUT"
           fi
 
+      # ADR 0041. 시크릿 스캔의 CI 백스톱. .githooks/pre-push 가 패턴의 단일 소유자이므로 CI 는
+      # 같은 스크립트를 이 런의 범위로 구동한다 — 패턴을 복제하지 않는다(두 사본은 어긋나는 길이다).
+      # core.hooksPath 는 클론별 수동 배선이라(ADR 0015) 배선 안 된 클론의 푸시는 로컬 스캔이 0회다;
+      # 여기가 커버리지의 바닥이다. PR: base 를 해석 못 하면 이 스텝은 실패다 — 스캔이 돌지 않은
+      # 머지는 통과가 아니다. push: before 가 0(브랜치 생성)이거나 도달 불가(force push)면 훅의
+      # new-branch 분기로 떨어져 리모트에 없는 커밋을 스캔한다. 훅은 스캔한 커밋 수를 출력하고,
+      # 범위에 커밋이 0개면 조용히 exit 0 하므로 아래서 빈 출력을 보고로 바꾼다(무음 아님).
+      - name: Secret scan over this run's commits (backstop)
+        run: |
+          if [ ! -f .githooks/pre-push ]; then
+            echo "::warning::.githooks/pre-push 없음 — 시크릿 스캔 백스톱 생략(보고됨, 무음 아님). /ywr-harness:harness-init 재실행으로 배치하세요."
+            exit 0
+          fi
+          ZERO=0000000000000000000000000000000000000000
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE=$(git rev-parse "origin/${{ github.base_ref }}") || {
+              echo "::error::secret scan: origin/${{ github.base_ref }} 를 해석할 수 없습니다 — 스캔이 돌지 않은 머지는 통과가 아닙니다(ADR 0041)."
+              exit 1
+            }
+          else
+            BASE="${{ github.event.before }}"
+            case "$BASE" in
+              *[!0]* ) git cat-file -e "$BASE^{commit}" 2>/dev/null || BASE=$ZERO ;;
+              * ) BASE=$ZERO ;;
+            esac
+          fi
+          # HEAD 를 먼저, 실패는 실패로: 인라인 $(git rev-parse HEAD) 가 실패하면 빈 문자열이
+          # 끼어들어 stdin 이 3토큰이 되고, 훅은 4필드 계약이 깨진 채 조용히 0커밋을 스캔한다
+          # (리뷰 2026-08-10, low — 재현됨). 스캔이 돌지 않은 런은 통과가 아니다.
+          HEAD_SHA=$(git rev-parse HEAD) || {
+            echo "::error::secret scan: HEAD 를 해석할 수 없습니다 — 스캔이 돌지 않은 런은 통과가 아닙니다(ADR 0041)."
+            exit 1
+          }
+          RC=0
+          OUT=$(printf 'refs/ci %s refs/ci %s\n' "$HEAD_SHA" "$BASE" | sh .githooks/pre-push) || RC=$?
+          printf '%s\n' "$OUT"
+          [ -n "$OUT" ] || echo "secret scan: 이 범위에 새 커밋 0개 — 스캔할 내용이 없었습니다(보고됨, 무음 아님)."
+          exit $RC
+
+      # emitter 는 스코프 해석에 실패하면 exit 0 이 아니라 stdout 의 `scope: FAILED` 마커와 함께
+      # 비영으로 종료한다(ADR 0041) — pipefail 이 그 종료 코드를 이 스텝의 실패로 만든다. 침묵한
+      # 빈 출력은 아래 grep 스텝 전부를 초록으로 통과시키는, 가장 나쁜 형태의 공회전이었다.
+      #
+      # push/dispatch 는 --all(전체 트리 감사)로 돈다: 파티션(ungrouped)과 아티팩트 규칙은 diff 가
+      # 아니라 트리의 속성이고, 각각 green 인 두 PR 이 병합으로 만든 main 상태는 어떤 PR 런도 본
+      # 적이 없다(ADR 0041). 리뷰 티어 줄은 감사 모드 문구로 바뀌지만 `review tier:` 접두는
+      # 유지된다 — 아래 sed 의 윈도 종결 문장이다.
       - name: Emit deterministic gates and the review tier
         id: emit
         run: |
@@ -59,7 +106,7 @@ jobs:
           if [ -n "${{ steps.range.outputs.range }}" ]; then
             python scripts/harness/harness_gates.py --range "${{ steps.range.outputs.range }}" | tee "$RUNNER_TEMP/gates.txt"
           else
-            python scripts/harness/harness_gates.py | tee "$RUNNER_TEMP/gates.txt"
+            python scripts/harness/harness_gates.py --all | tee "$RUNNER_TEMP/gates.txt"
           fi
 
       # gates.txt lives in RUNNER_TEMP, NOT the working tree. The emitter's scope includes

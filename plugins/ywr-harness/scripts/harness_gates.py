@@ -1,14 +1,20 @@
 """Changed files -> deterministic gate commands + a review-tier verdict. Backend for /slice-close.
 
-Advisory only — always exits 0; nothing is executed. It prints the commands a slice close should
-run BEFORE any LLM review, and the review tier those files earn. It also checks any declared
-claude.ai Artifact against the README — link present, title starts with the repo name (ADR
-0032); the emitter only reports, and the vendored CI fails on `artifact: VIOLATION`.
+Advisory — nothing is executed, and it exits 0 with ONE exception: when the changed-file scope
+itself cannot be resolved (a git failure), it prints a stdout `scope: FAILED` marker and exits
+non-zero (ADR 0041). An empty advisory output reads as a pass to every consumer — CI greps this
+stdout, and no ungrouped marker + no artifact line + no gate commands is indistinguishable from
+"all clear" — so unknown must fail loudly, the same principle the tier logic already applies
+("unknown is not small"). It prints the commands a slice close should run BEFORE any LLM review,
+and the review tier those files earn. It also checks any declared claude.ai Artifact against the
+README — link present, title starts with the repo name (ADR 0032); the emitter only reports, and
+the vendored CI fails on `artifact: VIOLATION`.
 
 Usage:
   python harness_gates.py                       # working tree vs HEAD + untracked
   python harness_gates.py --range main~3..HEAD  # slice range UNIONED with the working tree
   python harness_gates.py path/to/file [...]    # explicit files
+  python harness_gates.py --all                 # full-tree audit: ls-files + untracked (ADR 0041)
   python harness_gates.py --repo <dir>
 
 Both the gate commands and the tier come from `.harness.json` via harness_config, so a repo
@@ -270,21 +276,56 @@ def match_any(patterns: list[str], path: str, warns: list[str], field: str) -> b
     return False
 
 
+def emit_tail(root: Path, cfg: dict, warns: list[str], late: list[str]) -> int:
+    """The common trailer after the tier line — review canon, handoff, hooks, queued warnings.
+    Shared by the per-slice path and the full-tree audit path (ADR 0041) so the two can never
+    disagree on what a run reports after its verdict."""
+    hc.say(f"review canon: {cfg['review_canon']}" + ("" if (root / cfg["review_canon"]).exists()
+           else "   (NOT FOUND — invariants must come from somewhere; the close cannot cite a missing file)"))
+    if cfg["handoff"]:
+        # A trailing '/' declares a per-work-line directory (ADR 0040); annotated here so the
+        # close instruction "update the handoff the emitter named" is unambiguous where it is read.
+        hint = " — directory: one resume file per work line" if cfg["handoff"].endswith("/") else ""
+        hc.say(f"handoff: {cfg['handoff']}{hint}")
+
+    # Printed AFTER the tier so the hook's output parser (which stops at `review tier:`) can never
+    # mistake it for a gate command.
+    hooks = hooks_status(root)
+    if hooks:
+        print(f"hooks: {hooks}")
+
+    for w in warns + late:
+        hc.warn(w)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Emit deterministic gate commands and a review tier.")
     ap.add_argument("--range", dest="rev_range", default=None)
     ap.add_argument("--repo", dest="repo", default=None)
+    ap.add_argument("--all", dest="all_files", action="store_true",
+                    help="full-tree audit scope: git ls-files + untracked (ADR 0041 — CI push runs)")
     ap.add_argument("files", nargs="*")
     args = ap.parse_args()
 
     root = Path(args.repo).resolve() if args.repo else hc.find_repo_root(Path.cwd())
     cfg, warns = hc.load(root)
 
+    if args.all_files and (args.rev_range or args.files):
+        print("note: --all given — ignoring --range and explicit files", file=sys.stderr)
+
     try:
-        files, prov = hc.changed_files(root, args.rev_range, args.files)
+        files, prov = hc.changed_files(root, args.rev_range, args.files, args.all_files)
     except subprocess.CalledProcessError as e:
+        # The one non-zero exit in this advisory script (ADR 0041). A silent return here passed
+        # every downstream consumer: stdout is what CI greps, and an empty stdout carries no
+        # ungrouped marker, no artifact line, and no gate commands — a job that ran nothing
+        # reads green. Reproduced with an unreachable ref; the ordinary multi-writer triggers
+        # are a force-pushed base branch and a stale fetch.
         print(f"git failed: {(e.stderr or '').strip()}", file=sys.stderr)
-        return 0
+        hc.say("scope: FAILED — git could not resolve the changed-file scope; NOTHING below was "
+               "computed. This run must not be read as a pass (ADR 0041).")
+        return 1
 
     late: list[str] = []
     hc.print_scope(files, prov)
@@ -293,6 +334,12 @@ def main() -> int:
     for line in artifact_status(root, cfg, late):
         hc.say(line)
     if not files:
+        if prov.get("source") == "all":
+            # A full-tree audit's trailer facts (review-canon existence, hooks wiring) are TREE
+            # facts, not diff facts — an empty tree still has answers, and hooks_status's own
+            # contract says it prints on every CI run (review 2026-08-10, low).
+            hc.say("no changed files — nothing to gate")
+            return emit_tail(root, cfg, warns, late)
         for w in warns + late:
             hc.warn(w)
         hc.say("no changed files — nothing to gate")
@@ -386,6 +433,16 @@ def main() -> int:
             hc.say(f"  {f}")
 
     # --- review tier ---------------------------------------------------------------------------
+    if prov.get("source") == "all":
+        # A tier is a slice property (ADR 0041): a whole tree earning "small" in a tiny repo
+        # would be a meaningless label, and the declaration-diff and line-count measures below
+        # answer questions no full-tree audit is asking. The line keeps the `review tier:`
+        # prefix, which both output parsers (CI sed, pre-commit awk) use as their window-close
+        # sentinel — an audit run that dropped it would hand the parsers an unterminated window.
+        hc.say("review tier: full-tree audit — a tier applies to a slice; this run checks "
+               "partition, artifact, and gate coverage over the whole tree (ADR 0041)")
+        return emit_tail(root, cfg, warns, late)
+
     rev = cfg["review"]
     # docs_only is compiled ONCE: the same patterns are consulted per changed file AND per
     # numstat path, and compile_re warns on every call for a bad pattern — once per pattern is
@@ -520,23 +577,7 @@ def main() -> int:
     if not (rev["docs_only"] or rev["harness_layer"] or rev["critical"]):
         print("  warn: no review surfaces declared in .harness.json — the tier rests on size alone",
               file=sys.stderr)
-    hc.say(f"review canon: {cfg['review_canon']}" + ("" if (root / cfg["review_canon"]).exists()
-           else "   (NOT FOUND — invariants must come from somewhere; the close cannot cite a missing file)"))
-    if cfg["handoff"]:
-        # A trailing '/' declares a per-work-line directory (ADR 0040); annotated here so the
-        # close instruction "update the handoff the emitter named" is unambiguous where it is read.
-        hint = " — directory: one resume file per work line" if cfg["handoff"].endswith("/") else ""
-        hc.say(f"handoff: {cfg['handoff']}{hint}")
-
-    # Printed AFTER the tier so the hook's output parser (which stops at `review tier:`) can never
-    # mistake it for a gate command.
-    hooks = hooks_status(root)
-    if hooks:
-        print(f"hooks: {hooks}")
-
-    for w in warns + late:
-        hc.warn(w)
-    return 0
+    return emit_tail(root, cfg, warns, late)
 
 
 if __name__ == "__main__":

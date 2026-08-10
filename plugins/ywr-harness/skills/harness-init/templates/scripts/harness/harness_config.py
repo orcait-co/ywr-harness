@@ -510,10 +510,22 @@ def git_lines(root: Path, *args: str) -> list[str]:
     return [norm(line) for line in out.splitlines() if line.strip()]
 
 
-def changed_files(root: Path, rev_range: str | None, explicit: list[str]) -> tuple[list[str], dict]:
+def changed_files(root: Path, rev_range: str | None, explicit: list[str],
+                  all_files: bool = False) -> tuple[list[str], dict]:
     """Return (files, provenance). Provenance is REPORTED by the caller, never dropped: a range
     that matches nothing while the working tree supplies the files is a vacuous pass — the run
-    looks like it covered the range and did not."""
+    looks like it covered the range and did not.
+
+    `all_files` is the full-tree audit scope (ADR 0041): git ls-files + untracked. It exists for
+    CI's push runs, where the worktree is a fresh checkout and every diff-shaped scope is empty
+    by construction — partition and gate coverage are TREE properties there, not diff properties."""
+    import subprocess
+    if all_files:
+        tracked = git_lines(root, "ls-files")
+        untracked = git_lines(root, "ls-files", "--others", "--exclude-standard")
+        files = sorted(set(tracked) | set(untracked))
+        return files, {"source": "all", "tracked_files": len(tracked),
+                       "untracked_files": len(untracked)}
     if explicit:
         files = [norm(p) for p in explicit]
         return files, {"source": "explicit", "explicit": len(files), "range": rev_range}
@@ -525,7 +537,22 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str]) -> tup
         files.update(ranged)
     # Current state always counts: staged+unstaged vs HEAD, plus untracked. `git diff` never lists
     # untracked files, and a new file must surface too.
-    worktree = git_lines(root, "diff", "--name-only", "HEAD")
+    try:
+        worktree = git_lines(root, "diff", "--name-only", "HEAD")
+    except subprocess.CalledProcessError:
+        # An unborn HEAD (no commit yet — a freshly scaffolded repo before its first commit) is a
+        # NORMAL state, not the ADR 0041 fail-loud class (force-pushed base, stale fetch): letting
+        # it escalate fired `scope: FAILED` on `git init && git add` (review 2026-08-10, high).
+        # Verify which failure this is: with HEAD genuinely absent, the honest worktree scope is
+        # staged (index vs the empty tree) plus unstaged (index vs worktree), both of which git
+        # answers without HEAD. Any other diff failure re-raises and stays loud.
+        probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "HEAD"],
+                               cwd=root, capture_output=True)
+        if probe.returncode == 0:
+            raise
+        worktree = sorted(set(git_lines(root, "diff", "--name-only", "--cached"))
+                          | set(git_lines(root, "diff", "--name-only")))
+        prov["unborn_head"] = True
     untracked = git_lines(root, "ls-files", "--others", "--exclude-standard")
     prov["worktree_files"] = len(worktree)
     prov["untracked_files"] = len(untracked)
@@ -537,6 +564,10 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str]) -> tup
 def print_scope(files: list[str], prov: dict) -> None:
     """One line naming where the file list came from — the only thing that makes an empty-range run
     distinguishable from a covered-range run."""
+    if prov.get("source") == "all":
+        say(f"scope: full tree — tracked {prov.get('tracked_files', 0)} · "
+            f"untracked {prov.get('untracked_files', 0)} = {len(files)} unique file(s) (--all)")
+        return
     if prov.get("source") == "explicit":
         if prov.get("range"):
             print("note: explicit files given — ignoring --range", file=sys.stderr)
@@ -548,6 +579,10 @@ def print_scope(files: list[str], prov: dict) -> None:
     parts.append(f"worktree {prov.get('worktree_files', 0)}")
     parts.append(f"untracked {prov.get('untracked_files', 0)}")
     say(f"scope: {' · '.join(parts)} = {len(files)} unique file(s)")
+    if prov.get("unborn_head"):
+        warn("no commit yet (unborn HEAD) — the worktree scope is staged+unstaged vs the "
+             "empty tree; this is a report, not a failure (ADR 0041's loud exit is for a "
+             "scope git could not answer at all)")
     if prov.get("range") and prov.get("range_files") == 0:
         warn(f"range {prov['range']} matched 0 file(s) — everything below rests on the "
              "WORKING TREE, not the range you asked for (vacuous-pass guard)")

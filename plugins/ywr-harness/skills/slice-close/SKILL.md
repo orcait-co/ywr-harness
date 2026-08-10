@@ -20,6 +20,11 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py" --range <a>..<b>      # 
 or `git diff --stat <range>` succeeds). On failure, confirm the scope with the user rather than
 proceeding on a broken range.
 
+One exit-code exception to know (ADR 0041): if git cannot resolve the changed-file scope at all
+(unreachable ref, stale fetch), the emitter prints `scope: FAILED` on stdout and exits
+**non-zero** — nothing below it was computed, and that run must never be quoted as a pass. Fix
+the scope and re-run; do not proceed to review on a FAILED scope.
+
 The emitter prints five things, all of which belong in the close:
 
 - **`scope:`** — where the file list came from. An empty commit range is called out by name;

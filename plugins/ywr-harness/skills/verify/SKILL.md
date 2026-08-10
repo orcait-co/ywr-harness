@@ -48,6 +48,10 @@ in HEAD) passes every check above and then maps only the working tree — the si
 different costume. The mapper prints a `scope:` line and warns when a range matched zero files;
 **quote that line** and call an empty range out by name.
 
+The converse exists too (ADR 0041): if git cannot resolve the scope at all, the mapper prints
+`scope: FAILED` on stdout and exits **non-zero** — NOTHING was verified. Report that as a broken
+scope and stop; never read it as "nothing to verify".
+
 ## 2. Check preconditions before running anything
 
 Preconditions are repo knowledge, not harness knowledge: read this repo's `CLAUDE.md` for the

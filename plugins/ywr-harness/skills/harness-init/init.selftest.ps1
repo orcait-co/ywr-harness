@@ -52,6 +52,15 @@ $ok = (Assert-True 'A exit 0 on an empty directory' ($rA.Code -eq 0) "exit=$($rA
 $ok = (Assert-True "A all $EXPECT_N files placed" ($missing.Count -eq 0) "missing: $($missing -join ', ')") -and $ok
 $ok = (Assert-True "A reports created=$EXPECT_N" ($rA.Out -match "created=$EXPECT_N\b") $rA.Out) -and $ok
 $ok = (Assert-True 'A reports the hook wiring outcome' ($rA.Out -match 'hooks: ') $rA.Out) -and $ok
+# ADR 0042: every successful run stamps which plugin version scaffolded the repo. Compared
+# against plugin.json directly — a stamp that drifted from the manifest would misdirect the
+# refresh nudge's direction verdict on every machine.
+$manifestVer = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../.claude-plugin/plugin.json') -Raw | ConvertFrom-Json).version
+$ok = (Assert-True 'A stamp written with the plugin version' `
+        ((Test-Path -LiteralPath (Join-Path $a '.harness-version') -PathType Leaf) -and
+        (((Get-Content -LiteralPath (Join-Path $a '.harness-version') -Raw).Trim()) -eq $manifestVer)) `
+        "stamp missing or wrong; manifest=$manifestVer out=$($rA.Out)") -and $ok
+$ok = (Assert-True 'A stamp is reported' ($rA.Out -match 'stamp: \.harness-version') $rA.Out) -and $ok
 # The point of the corpus seed: a scaffolded repo must BUILD. Without a record the builder exits 1
 # ("found no .md with frontmatter") and no tooling can query the repo's decisions — the defect the
 # first end-to-end run surfaced, which this case pins.
@@ -108,6 +117,7 @@ $ok = (Assert-True 'F dry run exits 0' ($rF.Code -eq 0) "exit=$($rF.Code)") -and
 $ok = (Assert-True 'F dry run says so' ($rF.Out -match 'dry run') $rF.Out) -and $ok
 $ok = (Assert-True "F dry run reports what it would create" ($rF.Out -match "created=$EXPECT_N\b") $rF.Out) -and $ok
 $ok = (Assert-True 'F dry run wrote no file' ($leftBehind.Count -eq 0) "wrote $($leftBehind.Count) file(s)") -and $ok
+$ok = (Assert-True 'F dry run reports the stamp it would write' ($rF.Out -match 'stamp: would write \.harness-version') $rF.Out) -and $ok
 
 # --- G: unusable targets fail loudly ----------------------------------------------------------
 $rG1 = Invoke-Init @('-Target', (Join-Path $fxBase 'does-not-exist'))
@@ -372,6 +382,40 @@ $loneTarget = Join-Path $r 'docs/build.ps1'
 $outR3 = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $crlfSkill 'init.ps1') -Target $r 2>&1 | Out-String
 $ok = (Assert-True 'R lone-CR delta is not a change (0033 fold, not a CRLF-pair fold)' ($outR3 -match 'refreshed=0' -and $outR3 -match 'created=0') $outR3) -and $ok
 $ok = (Assert-True 'R the lone CR is left as placed, not rewritten' ($latin1.GetString([IO.File]::ReadAllBytes($loneTarget)).EndsWith("`r")) 'lone CR was rewritten away') -and $ok
+
+# --- S: downgrade guard + stamp lifecycle (ADR 0042) --------------------------------------------
+# The multi-writer destructive path this section pins: writer A refreshes a repo at vN+1 and
+# merges; writer B (plugin vN) re-runs the scaffold — pre-0042 it silently placed the older
+# templates over A's refresh. Now it must REFUSE before writing anything, and -Force must remain
+# the deliberate-rollback path.
+$s = New-Target 'stamp-newer'
+$rS0 = Invoke-Init @('-Target', $s)
+$ok = (Assert-True 'S setup run exits 0' ($rS0.Code -eq 0) "exit=$($rS0.Code)") -and $ok
+# Drift one toolchain file AND raise the stamp: the refusal must leave the drift in place.
+$sBuilder = Join-Path $s 'docs/build_docs.py'
+Set-Content -LiteralPath $sBuilder -Value '# writer A newer copy' -NoNewline
+Set-Content -LiteralPath (Join-Path $s '.harness-version') -Value '99.0.0'
+$rS1 = Invoke-Init @('-Target', $s)
+$ok = (Assert-True 'S1 newer stamp refuses with exit 1' ($rS1.Code -eq 1) "exit=$($rS1.Code) out=$($rS1.Out)") -and $ok
+$ok = (Assert-True 'S1 both versions are named' ($rS1.Out -match 'v99\.0\.0' -and $rS1.Out -match 'NEWER') $rS1.Out) -and $ok
+$ok = (Assert-True 'S1 the update remedy is named' ($rS1.Out -match '/ywr-harness:update') $rS1.Out) -and $ok
+$ok = (Assert-True 'S1 nothing was placed over the newer copy' ((Get-Content -LiteralPath $sBuilder -Raw) -eq '# writer A newer copy') 'the refused run still overwrote a file') -and $ok
+$ok = (Assert-True 'S1 the stamp itself is untouched by a refusal' (((Get-Content -LiteralPath (Join-Path $s '.harness-version') -Raw).Trim()) -eq '99.0.0') 'refusal rewrote the stamp') -and $ok
+# S2: -Force is the deliberate-rollback path — proceeds, says so, reverts the file, re-stamps.
+$rS2 = Invoke-Init @('-Target', $s, '-Force')
+$ok = (Assert-True 'S2 -Force proceeds with exit 0' ($rS2.Code -eq 0) "exit=$($rS2.Code) out=$($rS2.Out)") -and $ok
+$ok = (Assert-True 'S2 the forced downgrade is announced' ($rS2.Out -match 'DOWNGRADE FORCED') $rS2.Out) -and $ok
+$ok = (Assert-True 'S2 the toolchain file is placed from canon' ((Get-Content -LiteralPath $sBuilder -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/build_docs.py') -Raw)) 'forced run did not place') -and $ok
+$ok = (Assert-True 'S2 the stamp is rewritten to this plugin version' (((Get-Content -LiteralPath (Join-Path $s '.harness-version') -Raw).Trim()) -eq $manifestVer) "stamp=$((Get-Content -LiteralPath (Join-Path $s '.harness-version') -Raw).Trim())") -and $ok
+# S3: an unparseable stamp must not strand the repo — proceed (fail-open direction: refusing on
+# garbage could never destroy newer work, but it would dead-end every corrupted stamp forever),
+# and the run rewrites it to a valid value.
+$s3 = New-Target 'stamp-garbage'
+$rS3a = Invoke-Init @('-Target', $s3)
+Set-Content -LiteralPath (Join-Path $s3 '.harness-version') -Value 'not a version'
+$rS3 = Invoke-Init @('-Target', $s3)
+$ok = (Assert-True 'S3 garbage stamp proceeds' ($rS3.Code -eq 0) "exit=$($rS3.Code) out=$($rS3.Out)") -and $ok
+$ok = (Assert-True 'S3 garbage stamp is rewritten to the plugin version' (((Get-Content -LiteralPath (Join-Path $s3 '.harness-version') -Raw).Trim()) -eq $manifestVer) 'stamp not repaired') -and $ok
 
 # --- P: a non-git target places the hooks and says they will not run ---------------------------
 # The fixture targets in A-J are plain directories, so this is the branch they all exercised

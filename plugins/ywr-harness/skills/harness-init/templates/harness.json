@@ -63,6 +63,14 @@
       "cwd": "",
       "strip_prefix": "",
       "gates": []
+    },
+    {
+      "//": "The ywr-harness toolchain stamp (ADR 0042) — /harness-init writes it on every successful run (which plugin version last scaffolded this repo), and the refresh nudge reads it to orient its advice. Claimed here so the partition rule covers it from day one; gates stay empty (one version line, no executable meaning).",
+      "name": "harness-meta",
+      "match": "^\\.harness-version$",
+      "cwd": "",
+      "strip_prefix": "",
+      "gates": []
     }
   ],
 

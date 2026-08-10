@@ -1,4 +1,6 @@
-# Selftest for harness_gates.py. It always exits 0 (advisory), so every case asserts on output.
+# Selftest for harness_gates.py. It exits 0 (advisory) with ONE exception — an unresolvable
+# changed-file scope exits non-zero with a stdout marker (ADR 0041, case Y) — so every other
+# case asserts on output.
 #
 # The tier cases are the ones that matter: a wrong tier is invisible at runtime and buys either a
 # wasted full review or — worse — a weaker review exactly where the diff is dangerous. So each tier
@@ -817,6 +819,73 @@ $ok = (Assert-True 'H1 a trailing-slash handoff is annotated as a per-work-line 
 $h2 = New-Repo 'handoff-file' ($CFG_H.Replace('"handoff": "docs/handoff/"', '"handoff": "SESSION_HANDOFF.md"')) @('src/tool.py')
 $rH2 = Invoke-Gates $h2 @()
 $ok = (Assert-True 'H2 a file-form handoff line carries no directory annotation' ($rH2.Out -match 'handoff: SESSION_HANDOFF\.md' -and $rH2.Out -notmatch 'one resume file per work line') $rH2.Out) -and $ok
+
+# --- Y: fail-loud scope + full-tree audit (ADR 0041) ---------------------------------------------
+# Y1: the pre-0041 defect this section exists to keep dead: a git failure inside scope
+# resolution printed one stderr line and exited 0 with EMPTY stdout — no ungrouped marker, no
+# artifact line, no gate commands — and every grep-shaped CI step read that silence as green.
+# The contract now: stdout marker + non-zero exit, and NOTHING below the marker is computed.
+# Reverting the except-branch to `return 0` turns both assertions red.
+$y1 = New-Repo 'scope-fail' $CFG @('api/app.py')
+$rY1 = Invoke-Gates $y1 @('--range', 'no-such-ref..HEAD')
+$ok = (Assert-True 'Y1 an unresolvable range exits non-zero (the one non-advisory exit)' ($rY1.Code -ne 0) "exit=$($rY1.Code) out=$($rY1.Out)") -and $ok
+$ok = (Assert-True 'Y1 the failure is a stdout marker, not only stderr' ($rY1.Out -match 'scope: FAILED — git could not resolve' -and $rY1.Out -match 'must not be read as a pass') $rY1.Out) -and $ok
+$ok = (Assert-True 'Y1 nothing below the marker is computed (no gates window, no tier)' ($rY1.Out -notmatch '(?m)^gates:' -and $rY1.Out -notmatch 'review tier:') $rY1.Out) -and $ok
+
+# Y2: verify_map shares the scope path and the same contract (its silence read as "nothing to
+# verify" to the /verify skill). It reads the docs index BEFORE resolving scope — that earlier
+# unreadable-index return is a REPORTED advisory degrade, not this class — so the fixture needs
+# a minimal index for the run to reach the scope path at all.
+New-Item -ItemType Directory -Force -Path (Join-Path $y1 'docs') | Out-Null
+Set-Content -LiteralPath (Join-Path $y1 'docs/index.json') -Value '{"spec": []}' -NoNewline
+$vmap = Join-Path $PSScriptRoot 'verify_map.py'
+$rY2out = & $py.Source @($vmap, '--repo', $y1, '--range', 'no-such-ref..HEAD') 2>&1 | Out-String
+$rY2code = $LASTEXITCODE
+$ok = (Assert-True 'Y2 verify_map fails loudly on an unresolvable range too' ($rY2code -ne 0 -and $rY2out -match 'scope: FAILED') "exit=$rY2code out=$rY2out") -and $ok
+
+# Y3: --all audits the FULL TREE — files nowhere near any diff are classified (the H2 defect:
+# two individually green PRs compose a main state no ranged run ever saw; partition is a tree
+# property). seed.txt is tracked, committed, unchanged — a ranged or worktree run never lists
+# it; --all must, and must report it ungrouped.
+$y3 = New-Repo 'all-audit' $CFG @('api/app.py')
+$rY3 = Invoke-Gates $y3 @('--all')
+$ok = (Assert-True 'Y3 --all exits 0' ($rY3.Code -eq 0) "exit=$($rY3.Code)") -and $ok
+$ok = (Assert-True 'Y3 the scope line names the full tree with both counts' ($rY3.Out -match 'scope: full tree — tracked \d+ · untracked \d+ = \d+ unique file\(s\) \(--all\)') $rY3.Out) -and $ok
+$ok = (Assert-True 'Y3 a committed unchanged file is in scope and reported ungrouped' ($rY3.Out -match 'ungrouped \(' -and $rY3.Out -match 'seed\.txt') $rY3.Out) -and $ok
+$ok = (Assert-True 'Y3 gates still compose over matching files' ($rY3.Out -match 'uv run ruff check app\.py') $rY3.Out) -and $ok
+$ok = (Assert-True 'Y3 the tier line is the audit form, keeping the parser sentinel prefix' ($rY3.Out -match '(?m)^review tier: full-tree audit — a tier applies to a slice') $rY3.Out) -and $ok
+$ok = (Assert-True 'Y3 no per-slice tier wording leaks into audit mode' ($rY3.Out -notmatch 'review tier: (skip|small|full) ') $rY3.Out) -and $ok
+
+# Y4: --all with --range or files — --all wins and says so on stderr (a mixed invocation must
+# not silently half-apply).
+$rY4 = Invoke-Gates $y3 @('--all', '--range', 'HEAD~1..HEAD')
+$ok = (Assert-True 'Y4 --all overrides --range with a stderr note' ($rY4.Out -match '--all given — ignoring --range' -and $rY4.Out -match 'scope: full tree') $rY4.Out) -and $ok
+
+# Y5: an unborn HEAD (git init && git add, no commit yet) is a NORMAL state, not the fail-loud
+# class — the ADR 0041 exception fired on exactly this before the fix (review 2026-08-10,
+# high). The honest scope is staged+unstaged vs the empty tree, reported not failed; a fresh
+# scaffold's very first emitter run is this state.
+$y5 = Join-Path $fxBase 'unborn-head'
+New-Item -ItemType Directory -Force -Path (Join-Path $y5 'api') | Out-Null
+Set-Content -LiteralPath (Join-Path $y5 '.harness.json') -Value $CFG -NoNewline
+Set-Content -LiteralPath (Join-Path $y5 'api/app.py') -Value 'x' -NoNewline
+Push-Location $y5
+try { & git init -q 2>$null; & git add -A 2>$null } finally { Pop-Location }
+$rY5 = Invoke-Gates $y5 @()
+$ok = (Assert-True 'Y5 unborn HEAD exits 0 — a fresh repo is not a scope failure' ($rY5.Code -eq 0) "exit=$($rY5.Code) out=$($rY5.Out)") -and $ok
+$ok = (Assert-True 'Y5 the staged file is in scope and gated' ($rY5.Out -match 'uv run ruff check app\.py') $rY5.Out) -and $ok
+$ok = (Assert-True 'Y5 the unborn state is reported, not silent' ($rY5.Out -match 'unborn HEAD') $rY5.Out) -and $ok
+$ok = (Assert-True 'Y5 no scope-FAILED marker fires' ($rY5.Out -notmatch 'scope: FAILED') $rY5.Out) -and $ok
+
+# Y6: --all on an empty tree still prints the trailer facts — review-canon existence (and hooks
+# wiring where .githooks/ exists) are TREE facts a full-tree audit exists to report; the
+# empty-scope early return skipped them before the fix (review 2026-08-10, low).
+$y6 = Join-Path $fxBase 'all-empty'
+New-Item -ItemType Directory -Force -Path $y6 | Out-Null
+Push-Location $y6
+try { & git init -q 2>$null } finally { Pop-Location }
+$rY6 = Invoke-Gates $y6 @('--all')
+$ok = (Assert-True 'Y6 --all on an empty tree exits 0 and still prints the trailer facts' ($rY6.Code -eq 0 -and $rY6.Out -match 'review canon:') "exit=$($rY6.Code) out=$($rY6.Out)") -and $ok
 
 Remove-FixtureRoot $fxBase
 

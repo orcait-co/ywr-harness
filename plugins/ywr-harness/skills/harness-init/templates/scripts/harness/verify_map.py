@@ -2,7 +2,9 @@
 
 Reads the generated docs index (single source of truth: spec frontmatter `implements_in`), maps
 changed files to owning specs, and prints the verify scripts registered under those specs.
-Advisory only — always exits 0; no LLM, no network, nothing executed.
+Advisory — no LLM, no network, nothing executed; exits 0 with ONE exception: a git failure
+resolving the changed-file scope prints a stdout `scope: FAILED` marker and exits non-zero
+(ADR 0041 — an empty advisory output reads as a pass to every consumer).
 
 Usage:
   python verify_map.py                       # working tree vs HEAD + untracked
@@ -54,8 +56,13 @@ def main() -> int:
     try:
         files, prov = hc.changed_files(root, args.rev_range, args.files)
     except subprocess.CalledProcessError as e:
+        # The one non-zero exit (ADR 0041) — same principle as the gate emitter's scope path:
+        # a silent empty output is indistinguishable from "nothing to verify", and the /verify
+        # skill would read exactly that.
         print(f"git diff failed: {(e.stderr or '').strip()}", file=sys.stderr)
-        return 0
+        hc.say("scope: FAILED — git could not resolve the changed-file scope; NOTHING was "
+               "verified. This run must not be read as a pass (ADR 0041).")
+        return 1
     hc.print_scope(files, prov)
     if not files:
         hc.say("no changed files — nothing to verify")

@@ -132,16 +132,89 @@ New-Item -ItemType Directory -Force -Path $plain | Out-Null
 $freshHash = (Get-FileHash -LiteralPath (Join-Path $fresh 'docs/build_docs.py')).Hash
 $staleHash = (Get-FileHash -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.py')).Hash
 
-# 1. the drifted repo nudges: count, both file names (differ + missing), installed version,
-#    the namespaced refresh command, the re-run safety facts, the suggest-only contract, and
-#    the direction-blindness caveat in the context half
+# 1. the drifted repo nudges — the fixture was scaffolded by THIS plugin and then hand-mutated,
+#    so its .harness-version stamp EQUALS the running version and the ADR 0042 verdict is the
+#    hand-edit reading: count, both file names (differ + missing), version, the
+#    REVERT-hand-edits warning, the suggest-only contract.
 $out = Invoke-Hook (New-Payload @{ cwd = $stale })
-$ok = (Assert-Nudge 'drifted scaffold nudges' $out `
+$ok = (Assert-Nudge 'drifted scaffold at the same version reads as a hand-edit' $out `
         @('\[hook:scaffold-refresh-nudge\]', 'repo-stale', '2 vendored toolchain file', 'v\d+\.\d+\.\d+',
-        'harness_gates\.py', 'harness-gates\.yml \(missing\)', '/ywr-harness:harness-init',
-        'once for this repo', 'seeds preserved', 'only suggests', 'direction-blind', 'REVERT',
-        'do not run it unasked') `
-        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more', 'basis is STALE')) -and $ok
+        'harness_gates\.py', 'harness-gates\.yml \(missing\)', 'EQUALS', 'hand-edit',
+        'REVERT hand-edits', 'only suggests') `
+        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more', 'basis is STALE', 'direction-blind',
+        'Refresh: run', 'NEWER than this session', 'OLDER than this session')) -and $ok
+
+# 1b. REPO-AHEAD (ADR 0042): stamp newer than the running plugin — the multi-writer everyday
+#     state (another writer refreshed this repo with a newer release). The advice must FLIP:
+#     update the plugin, do NOT init — and the refresh command must not appear as advice.
+$ahead = Join-Path $fx 'repo-ahead'
+Copy-Item -LiteralPath $stale -Destination $ahead -Recurse -Force
+Set-Content -LiteralPath (Join-Path $ahead '.harness-version') -Value '99.0.0'
+$out = Invoke-Hook (New-Payload @{ cwd = $ahead })
+$ok = (Assert-Nudge 'repo-ahead stamp flips the advice to update-the-plugin' $out `
+        @('v99\.0\.0', 'NEWER than this session', 'do NOT run /ywr-harness:harness-init',
+        '/ywr-harness:update', 'REVERT the newer refresh', 'only suggests') `
+        @('Refresh: run', 'seeds preserved', 'basis is STALE', 'direction-blind', 'SCHEMA DRIFT',
+        'EXTRACTION DRIFT')) -and $ok
+
+# 1c. REPO-BEHIND: stamp older than the running plugin — the one state where the refresh advice
+#     is measured, not guessed. The pre-0042 uncaveated human banner ('re-run is safe:' without
+#     'here') is a deliberate ANTI-anchor: its reappearance fails this case.
+$behind = Join-Path $fx 'repo-behind'
+Copy-Item -LiteralPath $stale -Destination $behind -Recurse -Force
+Set-Content -LiteralPath (Join-Path $behind '.harness-version') -Value '0.0.1'
+$out = Invoke-Hook (New-Payload @{ cwd = $behind })
+$ok = (Assert-Nudge 'repo-behind stamp keeps the refresh advice, direction measured' $out `
+        @('v0\.0\.1', 'OLDER than this session', 'measured, not guessed',
+        'Refresh: run /ywr-harness:harness-init', 'seeds preserved', 'only suggests') `
+        @('re-run is safe: toolchain', 'REVERT the newer refresh', 'direction-blind',
+        'basis is STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 1d. NO STAMP (every pre-0042 repo): direction-blind — and the caveat must now sit on the
+#     HUMAN surface too, not only in additionalContext: the 2026-08-10 audit's asymmetry
+#     (an uncaveated 're-run is safe' banner over a caveated context) is what this anchors.
+$nostamp = Join-Path $fx 'repo-nostamp'
+Copy-Item -LiteralPath $stale -Destination $nostamp -Recurse -Force
+Remove-Item -LiteralPath (Join-Path $nostamp '.harness-version') -Force
+$out = Invoke-Hook (New-Payload @{ cwd = $nostamp })
+$ok = (Assert-Nudge 'stampless repo gets the direction-blind caveat' $out `
+        @('direction-blind', 'no readable \.harness-version', 'REVERT', 'BEFORE running it',
+        '/ywr-harness:update', 'only suggests') `
+        @('re-run is safe: toolchain', 'NEWER than this session', 'OLDER than this session',
+        'basis is STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+$sysOnly = ''
+try { $sysOnly = [string]((ConvertFrom-Json $out.Trim()).systemMessage) } catch { }
+$ok = (Assert-True '1d the caveat is in the HUMAN banner, not only the context half' `
+        ($sysOnly -match 'direction-blind' -and $sysOnly -match 'REVERT') `
+        "systemMessage='$sysOnly'") -and $ok
+
+# 1e. a stamp with NO newline and megabytes of one-line content must degrade to the
+#     direction-blind branch via the BOUNDED read — never a whole-file read on the SessionStart
+#     hot path (review 2026-08-10, medium). The device-symlink hang leg is not portably
+#     testable; the bounded read retires the class by construction, and this case pins the
+#     parse-failure fallback and the clean envelope on the closest committable input.
+$hugestamp = Join-Path $fx 'repo-hugestamp'
+Copy-Item -LiteralPath $stale -Destination $hugestamp -Recurse -Force
+[IO.File]::WriteAllText((Join-Path $hugestamp '.harness-version'), ('1.2.3' + ('x' * 5MB)))
+$out = Invoke-Hook (New-Payload @{ cwd = $hugestamp })
+$ok = (Assert-Nudge 'huge one-line stamp degrades to direction-blind cleanly' $out `
+        @('direction-blind', 'no readable \.harness-version') `
+        @('NEWER than this session', 'OLDER than this session', 'EQUALS', 'basis is STALE',
+        'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 1f. component-count normalization (review 2026-08-10, low): a 4-component stamp X.0 names the
+#     SAME release as running X, but [version] pads missing components with -1, so without
+#     normalization it reads NEWER (revision 0 > -1) and flips the advice to update-the-plugin
+#     for a repo that is not ahead. Version-independent fixture: stamp = <manifest>.0.
+$mfVer = ((Get-Content -LiteralPath (Join-Path $PSScriptRoot '../.claude-plugin/plugin.json') -Raw | ConvertFrom-Json).version)
+$padstamp = Join-Path $fx 'repo-padstamp'
+Copy-Item -LiteralPath $stale -Destination $padstamp -Recurse -Force
+Set-Content -LiteralPath (Join-Path $padstamp '.harness-version') -Value "$mfVer.0"
+$out = Invoke-Hook (New-Payload @{ cwd = $padstamp })
+$ok = (Assert-Nudge 'a 4-component stamp naming the same release reads as EQUALS, not ahead' $out `
+        @('EQUALS', 'hand-edit') `
+        @('NEWER than this session', 'do NOT run /ywr-harness:harness-init', 'basis is STALE',
+        'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 2. freshly scaffolded repo -> byte-silent (the permanent steady state must cost nothing)
 $out = Invoke-Hook (New-Payload @{ cwd = $fresh })
@@ -303,6 +376,12 @@ $ok = (Assert-Nudge 'superseded cache copy reports STALE basis, reload not refre
         @('comparison basis is STALE', 'v0\.0\.1', 'v9\.9\.9', '/reload-plugins', 'do NOT run /ywr-harness:harness-init',
         '2 vendored toolchain file', 'harness_gates\.py', 'REVERT', 'only suggests') `
         @('v8\.8\.8', 'Refresh: run', 'seeds preserved', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 13c-13i run the NORMAL branch from a fake v0.0.1 cache copy, so pin the fixture's stamp BELOW
+# 0.0.1 first — the real-version stamp the scaffold wrote would otherwise flip these
+# registry-fallback cases into the ADR 0042 repo-ahead advice and test the wrong branch.
+# 0.0.0 < 0.0.1 -> the BEHIND wording ('Refresh: run …') is the expected normal nudge here.
+Set-Content -LiteralPath (Join-Path $stale '.harness-version') -Value '0.0.0'
 
 # 13c. registry entry IS this copy -> current install, the normal 0033 nudge unchanged
 Set-FakeRegistry @(@{ scope = 'user'; installPath = $staleCopy; version = '0.0.1'; lastUpdated = '2026-08-07T01:00:00Z' })

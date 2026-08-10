@@ -49,6 +49,17 @@
 # "runs vX while the install is vX" would contradict itself). Any probe failure -> the normal
 # nudge: the probe can only improve the advice, never silence the hook.
 #
+# Direction probe (ADR 0042): after drift, the NORMAL branch reads the repo's `.harness-version`
+# stamp (written by init.ps1 on every successful run — generated, never a template, never in the
+# placement map, so it can never itself count as drift). stamp > running -> repo AHEAD: the
+# advice flips to "update the plugin, do NOT init" (multi-writer: another writer refreshed this
+# repo with a newer plugin). stamp < running -> refresh advice with the direction stated as
+# measured. equal -> the drift is a hand-edit or partial placement, named as ADR 0010's intended
+# signal. missing/unparseable -> direction-blind caveat, now on BOTH output surfaces (the old
+# uncaveated "re-run is safe" human banner is retired — the 2026-08-10 audit's asymmetry). The
+# 0039 stale-basis banner takes precedence over all of this; probe failures fall through, never
+# silence.
+#
 # Payload and output contract: same as the sibling nudge (verified against the official hooks
 # reference 2026-08-05) — cwd per firing; systemMessage AND hookSpecificOutput.additionalContext
 # both consumed; plain stdout on exit 0 becomes context, so every non-speaking path exits with
@@ -328,8 +339,69 @@ if ($staleActive) {
     exit 0
 }
 
-$sys = "[hook:scaffold-refresh-nudge] ${root}: $($drifted.Count) vendored toolchain file(s) differ from the installed ywr-harness ($ver) templates — $fileList. Refresh: run /ywr-harness:harness-init once for this repo and commit (re-run is safe: toolchain refreshed, seeds preserved, nothing deleted — ADR 0010). Nothing was changed; this hook only suggests (ADR 0033)."
-$ctx = "The repo at $root carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates ($ver): $fileList. A /ywr-harness:harness-init re-run refreshes the toolchain from the canon and never touches seeds or accumulated ADRs. CAVEAT — this comparison is direction-blind: if this working tree deliberately carries NEWER copies than the installed plugin (e.g. the plugin canon mid-slice), a re-run would REVERT them to the older installed templates. Offer the re-run when the work touches gates, hooks, or CI; do not run it unasked — this surface is suggest-only (ADR 0033)."
+# --- direction probe (ADR 0042) — normal branch only ---------------------------------------------
+# The stale-basis banner above already forbids init and takes precedence. Here, drift is real and
+# the session is current on this machine; what byte comparison cannot say is WHICH SIDE is newer
+# — and under multi-writer "another writer refreshed this repo with a newer plugin" is the
+# everyday state, not the canon-mid-slice edge 0033 accepted. `.harness-version` (written by
+# init.ps1 on every successful run) orients the advice: repo-ahead flips it to "update the
+# plugin, do NOT init"; repo-behind states the direction as measured; same-version names a
+# hand-edit; unreadable/missing falls back to direction-blind — with the caveat now on the HUMAN
+# surface too, not only in additionalContext (the 2026-08-10 audit's asymmetry). Every probe
+# failure is terminating-and-caught: stderr must stay clean.
+$stampVer = $null; $stampDisp = ''
+try {
+    $ErrorActionPreference = 'Stop'
+    $sp = Join-Path $root '.harness-version'
+    if (Test-Path -LiteralPath $sp -PathType Leaf) {
+        # BOUNDED read — never Get-Content here: a stamp with no newline before EOF would be read
+        # WHOLE as "line 1", and a symlink at a device (git materializes symlinks) would never
+        # return — on the hot path of every SessionStart (review 2026-08-10, medium). 64 bytes is
+        # generous for a version token; anything longer becomes a clean parse failure. BOM
+        # skipped; the first line is cut by hand.
+        $fs = [IO.File]::OpenRead($sp)
+        try { $buf = [byte[]]::new(64); $n = $fs.Read($buf, 0, 64) } finally { $fs.Dispose() }
+        $off = if ($n -ge 3 -and $buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF) { 3 } else { 0 }
+        $t = [System.Text.Encoding]::ASCII.GetString($buf, $off, $n - $off)
+        $cut = $t.IndexOfAny(@([char]"`r", [char]"`n"))
+        if ($cut -ge 0) { $t = $t.Substring(0, $cut) }
+        $t = $t.Trim() -replace '^v', ''
+        if ($t -match '^\d+(\.\d+)+$') {
+            # [version] pads unspecified components with -1, so '0.28' would compare BELOW
+            # '0.28.0' and flip the direction verdict (review 2026-08-10, low). Normalize to four
+            # components before casting — the same rule as init.ps1's ConvertTo-VersionOrNull,
+            # cross-referenced there; more than four stays invalid. Display keeps the raw token.
+            $parts = @($t -split '\.')
+            if ($parts.Count -le 4) {
+                while ($parts.Count -lt 4) { $parts += '0' }
+                $stampVer = [version]($parts -join '.')
+                $stampDisp = "v$t"
+            }
+        }
+    }
+} catch { $stampVer = $null; $stampDisp = '' }
+$runVer = $null
+if ($ver -match '^v(\d+(\.\d+)+)$') {
+    try {
+        $parts = @($Matches[1] -split '\.')
+        if ($parts.Count -le 4) { while ($parts.Count -lt 4) { $parts += '0' }; $runVer = [version]($parts -join '.') }
+    } catch { $runVer = $null }
+}
+
+$fileClause = "$($drifted.Count) vendored toolchain file(s) differ from the installed ywr-harness ($ver) templates — $fileList"
+if ($stampVer -and $runVer -and $stampVer -gt $runVer) {
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause — and this repo's .harness-version stamp says it was last scaffolded by ywr-harness $stampDisp, NEWER than this session's $ver. The repo is AHEAD: do NOT run /ywr-harness:harness-init from this session — it would place the older $ver templates and REVERT the newer refresh (ADR 0042). Remedy: /ywr-harness:update (or 'claude plugin update'), then restart or /reload-plugins and re-check. Nothing was changed; this hook only suggests (ADR 0033)."
+    $ctx = "The repo at $root shows scaffold-toolchain drift ($fileList), and its .harness-version stamp ($stampDisp) is NEWER than this session's installed ywr-harness ($ver) — another writer refreshed this repo with a newer plugin (ADR 0042). Do NOT run or suggest /ywr-harness:harness-init from this session: the loaded skill would place the $ver templates and REVERT the newer refresh. The remedy is updating the plugin (/ywr-harness:update or 'claude plugin update') and reloading or restarting; the next session start re-checks. This surface is suggest-only (ADR 0033)."
+} elseif ($stampVer -and $runVer -and $stampVer -lt $runVer) {
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause. The repo's .harness-version stamp ($stampDisp) is OLDER than this session's $ver — the refresh direction is measured, not guessed (ADR 0042). Refresh: run /ywr-harness:harness-init once for this repo and commit (re-run is safe here: toolchain refreshed, seeds preserved, nothing deleted — ADR 0010). Nothing was changed; this hook only suggests (ADR 0033)."
+    $ctx = "The repo at $root carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates ($ver), and the repo's .harness-version stamp ($stampDisp) is OLDER than the installed plugin — the repo is genuinely behind (ADR 0042). A /ywr-harness:harness-init re-run refreshes the toolchain from the canon and never touches seeds or accumulated ADRs. Offer the re-run when the work touches gates, hooks, or CI; do not run it unasked — this surface is suggest-only (ADR 0033)."
+} elseif ($stampVer -and $runVer -and $stampVer -eq $runVer) {
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause — while the repo's .harness-version stamp EQUALS this session's $ver, so the difference is a hand-edit or an incomplete placement, not a version gap (ADR 0042). A /ywr-harness:harness-init re-run would REVERT hand-edits to the canon templates — ADR 0010's intended signal (harness defects are fixed in the canon, never patched in a consuming repo). Nothing was changed; this hook only suggests (ADR 0033)."
+    $ctx = "The repo at $root shows scaffold-toolchain drift ($fileList) at the SAME version as this session's installed plugin (stamp $stampDisp equals $ver): a hand-edit or partial placement, not staleness (ADR 0042). A harness-init re-run reverts hand-edits — the intended ADR 0010 signal, but confirm the edits are not deliberate local work in progress before suggesting it. This surface is suggest-only (ADR 0033)."
+} else {
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause. CAVEAT — this comparison is direction-blind (no readable .harness-version stamp): if another writer refreshed this repo with a NEWER plugin than this machine's, a /ywr-harness:harness-init re-run from here would REVERT their refresh (ADR 0042). Confirm the installed plugin is current (/ywr-harness:update) BEFORE running it; a refresh re-run is otherwise safe (toolchain refreshed, seeds preserved, nothing deleted — ADR 0010). Nothing was changed; this hook only suggests (ADR 0033)."
+    $ctx = "The repo at $root carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates ($ver): $fileList. No readable .harness-version stamp, so the comparison is DIRECTION-BLIND: if this working tree deliberately carries NEWER copies than the installed plugin (the canon mid-slice, or a multi-writer repo refreshed by a newer plugin), a re-run would REVERT them to the older installed templates (ADR 0042). Offer the re-run when the work touches gates, hooks, or CI, after confirming the installed plugin is current; do not run it unasked — this surface is suggest-only (ADR 0033)."
+}
 @{
     systemMessage      = $sys
     hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = $ctx }
