@@ -33,6 +33,7 @@ Copyright (c) 2026 YWR Labs Inc. All rights reserved.
 Author: Hyungjun Kim (John Kim) <johnkim@ywrlabs.com>
 """
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -61,30 +62,37 @@ STATUS_LABEL = {
 
 
 # ---------------------------------------------------------------- frontmatter
-def parse_frontmatter(text):
-    """파일 선두의 --- ... --- YAML 서브셋을 dict로. (meta, body) 반환.
+def split_frontmatter(text):
+    """frontmatter 블록 추출 — (block | None, rest) 반환.
 
-    템플릿 복사본이 frontmatter 앞에 설명용 <!-- ... --> 주석을 남겨도 동작하도록,
-    선두 HTML 주석 뒤에 frontmatter가 오면 주석을 건너뛴다(흔한 온보딩 함정 방지).
-    닫는 펜스는 '정확히 --- 인 줄'로 매칭한다(----  같은 오타에 끌려가지 않도록).
+    규칙(CRLF 정규화 · 선두 HTML 주석 스킵 · 여는 '---' 줄 · 닫는 줄은 strip() == '---')은
+    fm_digest() 와 scripts/harness/verify_map.py 의 재계산 사본이 공유하는 계약이다(ADR 0043):
+    여기를 바꾸면 그쪽도 함께 바꾸고, 페어링 셀프테스트(build-docs.selftest.ps1)로 고정할 것.
     """
     text = text.replace("\r\n", "\n")
-    # 선두 HTML 주석 + 그 뒤 frontmatter → 주석 스킵
+    # 선두 HTML 주석 + 그 뒤 frontmatter → 주석 스킵(흔한 온보딩 함정 방지)
     lead = re.match(r"\s*<!--.*?-->\s*", text, re.DOTALL)
     if lead and text[lead.end():].startswith("---\n"):
         text = text[lead.end():]
     if not text.startswith("---\n"):
-        return {}, text
+        return None, text
     lines = text.split("\n")
-    close = None
+    # 닫는 펜스는 '정확히 --- 인 줄'로 매칭한다(----  같은 오타에 끌려가지 않도록).
     for idx in range(1, len(lines)):
         if lines[idx].strip() == "---":
-            close = idx
-            break
-    if close is None:
-        return {}, text
-    block = "\n".join(lines[1:close])
-    rest = "\n".join(lines[close + 1:])
+            return "\n".join(lines[1:idx]), "\n".join(lines[idx + 1:])
+    return None, text
+
+
+def parse_frontmatter(text):
+    """파일 선두의 --- ... --- YAML 서브셋을 dict로. (meta, body) 반환.
+
+    템플릿 복사본이 frontmatter 앞에 설명용 <!-- ... --> 주석을 남겨도 동작하도록,
+    블록 추출 규칙은 split_frontmatter 가 단독 소유한다.
+    """
+    block, rest = split_frontmatter(text)
+    if block is None:
+        return {}, rest
     meta = {}
     for line in block.split("\n"):
         if not line.strip() or line.lstrip().startswith("#"):
@@ -260,14 +268,24 @@ def convert_body(lines):
 # --------------------------------------------------------------- collection
 def collect(directory):
     entries = []
+    # id -> filename. 중복은 같은 kind(디렉토리) 안에서만 충돌이다 — graph 키가 adr:/spec:
+    # 접두라 kind 간 같은 번호는 합법이고, collect 는 디렉토리 단위로 불리므로 여기 두면 된다.
+    seen = {}
     if not os.path.isdir(directory):
         return entries
     for fn in sorted(os.listdir(directory)):
         if not FILE_RE.match(fn) or fn.startswith("0000-"):
             continue
         path = os.path.join(directory, fn)
-        with open(path, "r", encoding="utf-8") as f:
-            meta, body = parse_frontmatter(f.read())
+        # 읽기 실패(권한·디렉토리가 문서명 형상·비 UTF-8)는 트레이스백이 아니라 결정론적 명명
+        # 거부다 — 중복 id 거부와 같은 원칙(리뷰 2026-08-10 low). 빌더는 깨진 코퍼스를 조용히
+        # 우회하지 않는다; fm_digest 쪽의 관용(replace·None)은 자문 재계산용이라 역할이 다르다.
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                meta, body = parse_frontmatter(f.read())
+        except (OSError, UnicodeDecodeError) as e:
+            sys.exit("[오류] 읽을 수 없는 문서: %s (%s) — 권한/인코딩/이름만 문서인 디렉토리를 "
+                     "확인하세요. 깨진 코퍼스로는 빌드하지 않습니다." % (fn, type(e).__name__))
         # id는 항상 문자열로 정규화한다. 따옴표 없이 0001로 적으면 int 1로 파싱되어
         # DOM id·딕셔너리 키 생성에서 깨지므로(숫자면 4자리 0 패딩).
         if isinstance(meta.get("id"), int):
@@ -277,6 +295,15 @@ def collect(directory):
         if not meta.get("id"):
             print("  [경고] frontmatter id 없음, 건너뜀: %s" % fn)
             continue
+        # 중복 id 는 결정론적 빌드 실패다(ADR 0043). 병렬 브랜치가 각자 '다음 번호'를 잡으면
+        # 양쪽 PR 은 각자의 드리프트 게이트를 통과하고, 병합된 코퍼스에서만 충돌이 드러난다 —
+        # 조용히 진행하면 graph 딕셔너리가 한쪽 링크를 덮어쓴 index 가 커밋된다.
+        if meta["id"] in seen:
+            sys.exit("[오류] id 중복: %s 와 %s 가 같은 id '%s' 를 선언합니다 — 병렬 브랜치가 "
+                     "각자 '다음 번호'를 잡은 병합의 전형입니다(ADR 0043). 한쪽을 다음 빈 번호로 "
+                     "옮기고 참조(related_*, based_on_adr, supersedes)를 갱신한 뒤 재빌드하세요."
+                     % (seen[meta["id"]], fn, meta["id"]))
+        seen[meta["id"]] = fn
         # audience 없으면 internal(기본, 안전한 쪽). customer 표면은 이 값이
         # 정확히 "customer" 인 문서만 화이트리스트로 골라간다(ADR 0005).
         if meta.get("audience") != "customer":
@@ -296,7 +323,35 @@ def collect(directory):
 
 
 # --------------------------------------------------------------- json + index
-def build_json(adrs, specs):
+def fm_digest():
+    """코퍼스 frontmatter 의 결정론적 다이제스트 — index.json 의 `fm_digest` 스탬프(ADR 0043).
+
+    파일 규칙은 collect() 와 동일(NNNN-*.md, 0000- 제외, 정렬 순회)하고 블록 규칙은
+    split_frontmatter 와 동일하다. 본문만의 수정은 다이제스트를 바꾸지 않는다 — append-only
+    ADR 부록이 index 재빌드를 요구하면 안 된다는, 리트로 BUILD 체크와 같은 원칙.
+    scripts/harness/verify_map.py 가 같은 규칙으로 재계산해 스테일 신호를 만든다: 두 구현은
+    페어링 셀프테스트(build-docs.selftest.ps1)로 고정된다 — 한쪽만 바꾸면 그 테스트가 깨진다.
+    위치 계약: adr/·spec/ 은 이 파일(그리고 이 파일이 쓰는 index.json)의 형제 디렉토리다 —
+    verify_map 은 선언된 index 경로의 부모에서 코퍼스를 유도한다(docs/ 하드코딩 금지,
+    리뷰 2026-08-10 high).
+    """
+    h = hashlib.sha256()
+    for kind, directory in (("adr", ADR_DIR), ("spec", SPEC_DIR)):
+        if not os.path.isdir(directory):
+            continue
+        for fn in sorted(os.listdir(directory)):
+            if not FILE_RE.match(fn) or fn.startswith("0000-"):
+                continue
+            try:
+                with open(os.path.join(directory, fn), "r", encoding="utf-8", errors="replace") as f:
+                    block, _ = split_frontmatter(f.read())
+            except OSError:
+                block = None
+            h.update(("%s/%s\0%s\0" % (kind, fn, block or "")).encode("utf-8"))
+    return h.hexdigest()
+
+
+def build_json(adrs, specs, digest=None):
     def strip(e):
         d = {k: v for k, v in e.items() if not k.startswith("_")}
         d["path"] = e.get("_relpath")
@@ -310,13 +365,17 @@ def build_json(adrs, specs):
         }
     for e in specs:
         graph["spec:" + e["id"]] = {"based_on_adr": e.get("based_on_adr") or []}
-    return {
+    out = {
         "schema": SCHEMA_VERSION,
         "counts": {"adr": len(adrs), "spec": len(specs)},
         "adr": [strip(e) for e in adrs],
         "spec": [strip(e) for e in specs],
         "graph": graph,
     }
+    # 스키마는 docs-as-code/1 그대로 — 추가 키이고 모든 소비자가 .get 으로 읽는다(ADR 0043).
+    if digest:
+        out["fm_digest"] = digest
+    return out
 
 
 def build_index_md(adrs, specs):
@@ -736,7 +795,7 @@ def main():
         return
 
     with open(OUT_JSON, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(build_json(adrs, specs), f, ensure_ascii=False, indent=2)
+        json.dump(build_json(adrs, specs, fm_digest()), f, ensure_ascii=False, indent=2)
     with open(OUT_INDEX_MD, "w", encoding="utf-8", newline="\n") as f:
         f.write(build_index_md(adrs, specs))
     with open(OUT_HTML, "w", encoding="utf-8", newline="\n") as f:

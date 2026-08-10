@@ -127,6 +127,8 @@ $TOOLCHAIN = [ordered]@{
     'scripts/harness/harness_gates.py'       = 'scripts/harness/harness_gates.py'
     'scripts/harness/harness_retro.py'       = 'scripts/harness/harness_retro.py'
     'scripts/harness/verify_map.py'          = 'scripts/harness/verify_map.py'
+    # CI 의 PR base 해석 단일 소스(ADR 0043) — 벤더링된 워크플로가 직접 sh 로 부른다.
+    'scripts/harness/resolve-base.sh'        = 'scripts/harness/resolve-base.sh'
     '.github/workflows/harness-gates.yml'    = '.github/workflows/harness-gates.yml'
     'scripts/harness/gitignore'              = 'scripts/harness/.gitignore'
     # The local execution layer (ADR 0015). TOOLCHAIN, not SEED: a hook a repo may edit freely is a

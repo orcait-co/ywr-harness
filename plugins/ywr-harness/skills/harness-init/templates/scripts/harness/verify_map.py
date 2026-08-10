@@ -16,13 +16,20 @@ Usage:
 "verify the slice" always includes the not-yet-committed state; after a clean commit the union
 degenerates to the range alone.
 
+The committed index carries a frontmatter digest (`fm_digest`, ADR 0043); this script recomputes
+it and prints an `index: STALE` advisory line when the docs sources have moved on — the local
+mid-slice complement to CI's on-merge drift gate. A missing stamp is reported, never silent.
+
 Repo-specific values come from `.harness.json` via harness_config — one reader, one validator.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +37,55 @@ from pathlib import Path
 import harness_config as hc
 
 hc.pin_utf8()
+
+
+# ---------------------------------------------------------------------------------------------
+# Staleness-stamp recomputation (ADR 0043). MUST mirror docs/build_docs.py exactly — the file
+# rule (fm_digest: sorted NNNN-*.md, 0000- excluded) and the block rule (split_frontmatter:
+# CRLF fold, lead-HTML-comment skip, opening '---' line, closing line strip() == '---'). The two
+# implementations are held together by the pairing selftest (build-docs.selftest.ps1): change
+# one side alone and that suite fails. A shared import was rejected because build_docs.py stays
+# a standalone stdlib file (spec 0001) — this is the deliberate, selftest-gated duplication.
+#
+# The corpus location is DERIVED, never assumed: the builder resolves adr/ and spec/ as siblings
+# of its own file, and it writes index.json into that same directory — so the corpus dirs are
+# always siblings of the index the declaration points at. Hardcoding `docs/` here instead was a
+# permanent false-STALE for any repo customizing docs.index (review 2026-08-10, high; the
+# alarm-fatigue failure mode this feature exists to prevent), pinned by the selftest's
+# relocated-corpus case.
+# ---------------------------------------------------------------------------------------------
+_FM_FILE_RE = re.compile(r"^\d{4}-.*\.md$")
+
+
+def _fm_block(text: str) -> str | None:
+    text = text.replace("\r\n", "\n")
+    lead = re.match(r"\s*<!--.*?-->\s*", text, re.DOTALL)
+    if lead and text[lead.end():].startswith("---\n"):
+        text = text[lead.end():]
+    if not text.startswith("---\n"):
+        return None
+    lines = text.split("\n")
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            return "\n".join(lines[1:idx])
+    return None
+
+
+def fm_digest(docs_dir: Path) -> str:
+    h = hashlib.sha256()
+    for kind in ("adr", "spec"):
+        directory = docs_dir / kind
+        if not directory.is_dir():
+            continue
+        for fn in sorted(os.listdir(directory)):
+            if not _FM_FILE_RE.match(fn) or fn.startswith("0000-"):
+                continue
+            try:
+                block = _fm_block((directory / fn).read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                block = None
+            h.update(("%s/%s\0%s\0" % (kind, fn, block or "")).encode("utf-8"))
+    return h.hexdigest()
 
 
 def main() -> int:
@@ -52,6 +108,20 @@ def main() -> int:
               file=sys.stderr)
         return 0
     specs = index.get("spec", [])
+
+    # Staleness signal (ADR 0043). The committed index carries a digest of the corpus
+    # frontmatter; recompute it and ADVISE when the sources have moved on — the local mid-slice
+    # run otherwise maps changed files against ownership someone forgot to rebuild, silently.
+    # Advisory only: CI's drift gate is the enforcement on merge. A missing stamp is reported
+    # too — silence has to mean "current", never "too old to know".
+    stamp = index.get("fm_digest")
+    if stamp is None:
+        hc.say("index: no staleness stamp (index predates ADR 0043) — rebuild once to enable: "
+               "pwsh docs/build.ps1")
+    elif fm_digest((root / cfg["index"]).parent) != stamp:
+        hc.say("index: STALE — the adr/spec frontmatter beside the index differs from the "
+               "committed index, so the spec ownership below may be out of date; rebuild: "
+               "pwsh docs/build.ps1 (advisory — CI's drift gate enforces this on merge)")
 
     try:
         files, prov = hc.changed_files(root, args.rev_range, args.files)

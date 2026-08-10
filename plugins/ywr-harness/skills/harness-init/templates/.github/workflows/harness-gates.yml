@@ -43,17 +43,32 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Resolve the diff range
-        id: range
+      # ADR 0043. 범위 해석의 단일 소스 — 스텝마다 인라인으로 조립하던 범위 문자열(감사 H1 의
+      # 트리거 표면)을 벤더링된 resolve-base.sh 로 교체한다. PR 이벤트만 diff 범위를 가진다:
+      # push/dispatch 는 ADR 0041 이후 전체 트리 감사(--all / --coverage)라 범위 자체가 없다.
+      # blocking 모드: base 를 해석 못 한 PR 런은 이 스텝에서 실패다 — 검사가 돌지 않은 머지는
+      # 통과가 아니다(ADR 0041 과 같은 원칙). 값은 env 로만 전달한다 — 워크플로 표현식을 run:
+      # 텍스트에 전개하지 않는다(셸 주입 표면). 출력 base 는 검증된 40-hex SHA 이므로 아래
+      # 스텝들이 범위 문자열로 안전하게 조립한다.
+      - name: Resolve the PR diff base (single resolver — ADR 0043)
+        id: base
+        if: github.event_name == 'pull_request'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          MODE: blocking
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "range=origin/${{ github.base_ref }}...HEAD" >> "$GITHUB_OUTPUT"
-          else
-            echo "range=" >> "$GITHUB_OUTPUT"
+          if [ ! -f scripts/harness/resolve-base.sh ]; then
+            echo "::error::scripts/harness/resolve-base.sh 없음 — /ywr-harness:harness-init 재실행으로 배치하세요(ADR 0043)."
+            exit 1
           fi
+          sh scripts/harness/resolve-base.sh
 
       # ADR 0041. 시크릿 스캔의 CI 백스톱. .githooks/pre-push 가 패턴의 단일 소유자이므로 CI 는
       # 같은 스크립트를 이 런의 범위로 구동한다 — 패턴을 복제하지 않는다(두 사본은 어긋나는 길이다).
+      # 이 스텝은 의도적으로 resolve-base.sh 를 쓰지 않는다(ADR 0043 옵션 C 기각): 스캔 범위는
+      # rev-list 집합 차이라 비조상 base 도 유효하고, push 의 ZERO 폴백은 resolve-base 의 HEAD~1
+      # 강등보다 더 많이 스캔한다 — 통일이 강한 쪽을 약화시키는 방향이다.
       # core.hooksPath 는 클론별 수동 배선이라(ADR 0015) 배선 안 된 클론의 푸시는 로컬 스캔이 0회다;
       # 여기가 커버리지의 바닥이다. PR: base 를 해석 못 하면 이 스텝은 실패다 — 스캔이 돌지 않은
       # 머지는 통과가 아니다. push: before 가 0(브랜치 생성)이거나 도달 불가(force push)면 훅의
@@ -99,12 +114,17 @@ jobs:
       # 아니라 트리의 속성이고, 각각 green 인 두 PR 이 병합으로 만든 main 상태는 어떤 PR 런도 본
       # 적이 없다(ADR 0041). 리뷰 티어 줄은 감사 모드 문구로 바뀌지만 `review tier:` 접두는
       # 유지된다 — 아래 sed 의 윈도 종결 문장이다.
+      # base 는 env 로만 받는다 — 이 파일의 resolver 스텝이 스스로 세운 규칙(표현식을 run: 텍스트에
+      # 전개하지 않는다)은 그 스텝의 출력에도 적용된다(리뷰 2026-08-10 med). 값은 resolver 가
+      # 정규화한 40-hex SHA 또는 빈 문자열이지만, 패턴 자체를 남기지 않는 쪽이 규칙이다.
       - name: Emit deterministic gates and the review tier
         id: emit
+        env:
+          BASE: ${{ steps.base.outputs.base }}
         run: |
           set -o pipefail
-          if [ -n "${{ steps.range.outputs.range }}" ]; then
-            python scripts/harness/harness_gates.py --range "${{ steps.range.outputs.range }}" | tee "$RUNNER_TEMP/gates.txt"
+          if [ -n "$BASE" ]; then
+            python scripts/harness/harness_gates.py --range "$BASE..HEAD" | tee "$RUNNER_TEMP/gates.txt"
           else
             python scripts/harness/harness_gates.py --all | tee "$RUNNER_TEMP/gates.txt"
           fi
@@ -209,13 +229,15 @@ jobs:
           done
 
       - name: Slice retro over the PR range (advisory, report-only)
+        env:
+          BASE: ${{ steps.base.outputs.base }}
         run: |
           # ADR 0017. 로컬 post-commit 훅과 같은 스크립트를 PR 범위 전체에 돌린다 — 범위 모드는
           # "코드 커밋 먼저, 문서 커밋 나중" 같은 슬라이스 중간 오탐을 흡수하므로 여기서 남는
           # 발견은 실제로 슬라이스가 닫히지 않았다는 뜻이다. 리포트 전용: 실패시키지 않는다.
           if [ -f scripts/harness/harness_retro.py ]; then
-            if [ -n "${{ steps.range.outputs.range }}" ]; then
-              python scripts/harness/harness_retro.py "${{ steps.range.outputs.range }}" || true
+            if [ -n "$BASE" ]; then
+              python scripts/harness/harness_retro.py "$BASE..HEAD" || true
             else
               python scripts/harness/harness_retro.py --coverage || true
             fi
@@ -224,23 +246,47 @@ jobs:
           fi
 
       - name: Map changed files to spec-owned verify scripts (advisory)
+        env:
+          BASE: ${{ steps.base.outputs.base }}
         run: |
-          if [ -n "${{ steps.range.outputs.range }}" ]; then
-            python scripts/harness/verify_map.py --range "${{ steps.range.outputs.range }}"
+          if [ -n "$BASE" ]; then
+            python scripts/harness/verify_map.py --range "$BASE..HEAD"
           else
             python scripts/harness/verify_map.py
           fi
 
-      - name: Docs index drift (only when docs sources changed)
+      # ADR 0043. 이전 형태는 두 가지가 약했다: ① `git diff ... | grep -q .` 는 git 실패를
+      # "docs 변경 없음"으로 읽어 드리프트 검사를 조용히 생략했고(H1 급), ② push 는
+      # HEAD~1..HEAD 만 봐서 여러 커밋 push 의 앞 커밋 docs 변경을 놓쳤다. 지금: PR 은 검증된
+      # base 범위로 스킵 판정(diff 실패는 실패), push/dispatch 는 무조건 재빌드 — 트리 감사와
+      # 같은 원칙(ADR 0041)이고, 각각 green 인 두 PR 이 병합으로 만든 중복 id 는 빌더의
+      # 결정론적 거부(ADR 0043)가 바로 여기서 main 을 빨갛게 만든다.
+      - name: Docs index drift (PR — when docs sources changed · push/dispatch — always)
+        env:
+          BASE: ${{ steps.base.outputs.base }}
         run: |
-          if [ -f docs/build_docs.py ] && git diff --name-only ${{ steps.range.outputs.range || 'HEAD~1..HEAD' }} -- docs/ | grep -q .; then
-            python docs/build_docs.py >/dev/null
-            if [ -n "$(git status --porcelain docs/index.json docs/INDEX.md)" ]; then
-              echo "::error::docs/index.json 또는 docs/INDEX.md 가 소스와 어긋났습니다(드리프트). 로컬에서 pwsh docs/build.ps1 후 커밋하세요."
-              git --no-pager diff -- docs/index.json docs/INDEX.md
-              exit 1
-            fi
-            echo "OK — 커밋된 index 가 소스와 일치합니다."
-          else
-            echo "docs 소스 변경 없음 — 드리프트 검사 생략(보고됨, 무음 아님)."
+          if [ ! -f docs/build_docs.py ]; then
+            echo "docs/build_docs.py 없음 — 드리프트 검사 생략(보고됨, 무음 아님)."
+            exit 0
           fi
+          if [ -n "$BASE" ]; then
+            CHANGED=$(git diff --name-only "$BASE..HEAD" -- docs/) || {
+              echo "::error::docs 드리프트: 변경 파일 해석에 git 이 실패했습니다 — 검사가 돌지 않은 런은 통과가 아닙니다(ADR 0041)."
+              exit 1
+            }
+            if [ -z "$CHANGED" ]; then
+              echo "docs 소스 변경 없음 — 드리프트 검사 생략(보고됨, 무음 아님)."
+              exit 0
+            fi
+          fi
+          # stdout 만 버린다 — 빌더의 결정론적 거부(중복 id 등)는 stderr 로 나오고 그대로 보인다.
+          python docs/build_docs.py >/dev/null || {
+            echo "::error::docs 빌드 실패 — 빌더의 결정론적 거부(중복 id 등, ADR 0043)거나 소스 오류입니다. 위 stderr 를 보세요."
+            exit 1
+          }
+          if [ -n "$(git status --porcelain docs/index.json docs/INDEX.md)" ]; then
+            echo "::error::docs/index.json 또는 docs/INDEX.md 가 소스와 어긋났습니다(드리프트). 로컬에서 pwsh docs/build.ps1 후 커밋하세요."
+            git --no-pager diff -- docs/index.json docs/INDEX.md
+            exit 1
+          fi
+          echo "OK — 커밋된 index 가 소스와 일치합니다."

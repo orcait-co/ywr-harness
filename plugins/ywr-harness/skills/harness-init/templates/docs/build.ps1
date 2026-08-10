@@ -42,3 +42,7 @@ finally {
     if ($null -eq $prevUtf8) { Remove-Item Env:PYTHONUTF8 -ErrorAction SilentlyContinue } else { $env:PYTHONUTF8 = $prevUtf8 }
     if ($null -eq $prevIo) { Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue } else { $env:PYTHONIOENCODING = $prevIo }
 }
+# 자식 종료 코드를 명시적으로 전파한다 — 중복 id 는 결정론적 빌드 실패이고(ADR 0043), 래퍼가
+# 그것을 0 으로 바꾸면 사람이 실행하는 경로에서만 게이트가 사라진다. pwsh 7.4+ 는 EAP=Stop
+# 아래서 네이티브 비영 종료를 예외로 만들기도 하지만(설정 의존), 그 동작에 기대지 않는다.
+exit $LASTEXITCODE

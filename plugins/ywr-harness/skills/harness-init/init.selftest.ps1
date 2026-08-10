@@ -36,6 +36,8 @@ $EXPECT = @(
     'scripts/harness/harness_config.py', 'scripts/harness/harness_gates.py',
     'scripts/harness/verify_map.py', '.github/workflows/harness-gates.yml',
     'scripts/harness/.gitignore',
+    # CI PR-base resolver (ADR 0043) — the vendored workflow invokes it via sh.
+    'scripts/harness/resolve-base.sh',
     # Local execution layer (ADR 0015). Placement is asserted here; the WIRING branches are cases
     # K-O, and the hooks' own behaviour is githooks.selftest.ps1.
     '.githooks/pre-commit', '.githooks/pre-push',

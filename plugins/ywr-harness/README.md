@@ -156,8 +156,10 @@ the installed plugin (ADR 0034).
 
 `scripts/workflow-gates.mjs` (parse + behavioral gate over a workflow corpus; `--dir` selects
 the corpus, default `.claude/workflows`) and `scripts/resolve-base.sh` (CI diff-range base
-resolution). `lib/selftest-lib.ps1` is the shared assertion core the selftests dot-source —
-dot-source it, do not run it.
+resolution — since ADR 0043 vendored by the scaffold as `scripts/harness/resolve-base.sh` and
+invoked by the vendored workflow to resolve the PR base once, `MODE=blocking`).
+`lib/selftest-lib.ps1` is the shared assertion core the selftests dot-source — dot-source it,
+do not run it.
 
 ## Prerequisites
 
@@ -218,9 +220,10 @@ uncovered files. Nothing is excluded from that count but the selftests themselve
 the runner, the gate, or the shared lib would narrow the population without saying so, which
 is how a partial count comes to read as full coverage.
 
-Currently uncovered: `selftest-lib.ps1` and `resolve-base.sh` (selftests for both exist in
-`ywr-platform` and have not been ported), `harness_config.py` (exercised only through its two
-consumers), plus `selftest.ps1` itself, the runner.
+Currently uncovered: `selftest-lib.ps1` (its selftest exists in `ywr-platform` and has not been
+ported), `harness_config.py` (exercised only through its two consumers), plus `selftest.ps1`
+itself, the runner. `resolve-base.sh` left this list with ADR 0043 — its selftest is ported
+hermetic (fixture repos, all ten cases deterministic on every platform).
 
 The count reads `template-payload-excluded=N` separately for files under `templates/` — payload
 this plugin copies rather than runs, which cannot have a selftest here. Two of them are the

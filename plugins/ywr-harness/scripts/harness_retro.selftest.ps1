@@ -233,6 +233,55 @@ $rJ2 = Invoke-Retro $j @("$base..HEAD")
 $ok = (Assert-True 'J per-commit reports the split' ($rJ1.Out -match 'SPEC:') $rJ1.Out) -and $ok
 $ok = (Assert-True 'J over the whole range it is silent' ($rJ2.Out -notmatch 'SPEC:') $rJ2.Out) -and $ok
 
+# --- L: a merge commit is a range in disguise (ADR 0043) -----------------------------------------
+# diff-tree without -m prints NOTHING for a merge commit, so before the fix the retro ran all
+# seven checks over an empty change set — a conflicted `git pull` concluded with `git commit`
+# fired post-commit and passed silently having checked nothing. L1 is the mutation anchor: it
+# fails when the HEAD^2 probe is removed. L2 pins the silence half — first-parent scope must not
+# over-report a merge that landed nothing interesting.
+$l = New-Repo 'merge' $CFG
+Write-F $l 'src/app.py' "x = 1`n"
+Write-F $l 'docs/spec/0001-s.md' (Spec '0001' @('src/app.py'))
+Commit $l 'chore: base'
+$mainBranch = (& git -C $l symbolic-ref --short HEAD 2>$null).Trim()
+& git -C $l checkout -q -b side 2>$null
+Write-F $l 'src/app.py' "x = 2`n"
+Commit $l 'fix: change the mapped file on a branch, spec untouched'
+& git -C $l checkout -q $mainBranch 2>$null
+& git -C $l merge -q --no-ff --no-edit side 2>$null
+$rL = Invoke-Retro $l @()
+$ok = (Assert-True 'L1 a merge commit fires the checks over its first-parent diff' ($rL.Out -match 'SPEC:.*0001-s\.md') $rL.Out) -and $ok
+$ok = (Assert-True 'L1 stays advisory on a merge (exit 0)' ($rL.Code -eq 0) "exit=$($rL.Code)") -and $ok
+
+& git -C $l checkout -q -b side2 2>$null
+Write-F $l 'notes.txt' "nothing interesting`n"
+Commit $l 'chore: an innocuous branch change'
+& git -C $l checkout -q $mainBranch 2>$null
+& git -C $l merge -q --no-ff --no-edit side2 2>$null
+$rL2 = Invoke-Retro $l @()
+$ok = (Assert-True 'L2 a clean merge is completely silent' ([string]::IsNullOrWhiteSpace($rL2.Out)) "got: $($rL2.Out)") -and $ok
+
+# --- L3: an octopus merge is covered by the same range -------------------------------------------
+# The review's octopus concern (2026-08-10, low) claimed non-first legs escape the diff. They do
+# not — HEAD^1..HEAD is a tree diff plus a reachability log, both of which include every leg —
+# and this case MEASURES that: the SPEC-firing change lives on the SECOND merged branch.
+$l3 = New-Repo 'merge-octopus' $CFG
+Write-F $l3 'src/app.py' "x = 1`n"
+Write-F $l3 'docs/spec/0001-s.md' (Spec '0001' @('src/app.py'))
+Commit $l3 'chore: base'
+$mainBranch3 = (& git -C $l3 symbolic-ref --short HEAD 2>$null).Trim()
+& git -C $l3 checkout -q -b legA 2>$null
+Write-F $l3 'notes-a.txt' "leg a`n"
+Commit $l3 'chore: innocuous leg A'
+& git -C $l3 checkout -q $mainBranch3 2>$null
+& git -C $l3 checkout -q -b legB 2>$null
+Write-F $l3 'src/app.py' "x = 2`n"
+Commit $l3 'fix: mapped-file change on leg B, spec untouched'
+& git -C $l3 checkout -q $mainBranch3 2>$null
+& git -C $l3 merge -q --no-edit legA legB 2>$null
+$rL3 = Invoke-Retro $l3 @()
+$ok = (Assert-True 'L3 an octopus merge fires on a non-first leg''s change' ($rL3.Out -match 'SPEC:.*0001-s\.md') $rL3.Out) -and $ok
+
 # --- K: --coverage reports DISABLED checks rather than passing quietly --------------------------
 # Silence must mean clean, never "not configured".
 $k = New-Repo 'nocfg' '{ "retro": {} }'

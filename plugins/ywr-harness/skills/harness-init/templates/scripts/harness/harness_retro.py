@@ -19,7 +19,8 @@ ADVISORY. Always exits 0, prints nothing when clean, and never blocks a commit �
 than pre-commit precisely so a finding prompts a follow-up docs commit instead of standing between
 the author and their own history.
 
-  python harness_retro.py                  # the commit just made (HEAD)
+  python harness_retro.py                  # the commit just made (HEAD); a merge commit
+                                           # resolves as HEAD^1..HEAD (first-parent, ADR 0043)
   python harness_retro.py main~3..HEAD     # a whole slice — absorbs mid-slice false positives
   python harness_retro.py --coverage       # full unowned / dead-mapping audit
   SLICE_RETRO=0 git commit ...             # skip once
@@ -156,7 +157,23 @@ def frontmatter_at(root: Path, rev: str, path: str) -> str:
 
 
 def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, list[str]]], list[str], str, str]:
-    """(changes, subjects, pre, post). `changes` is [(status, [paths])] — rename lines carry two."""
+    """(changes, subjects, pre, post). `changes` is [(status, [paths])] — rename lines carry two.
+
+    A merge commit is a RANGE in disguise (ADR 0043): `diff-tree` without `-m` prints NOTHING
+    for one, so the pre-0043 shape ran all seven checks over an empty change set — a merge
+    concluded with `git commit` fired post-commit and passed silently having checked nothing.
+    First-parent semantics (`HEAD^1..HEAD`): everything this merge landed on the line of
+    history, subjects included. Root and ordinary commits keep the diff-tree path unchanged.
+
+    The scope is DELIBERATELY relative to the first parent — "what arrived on the line the
+    committer stood on". An octopus merge is fully covered by that range (the tree diff and the
+    subject log both include every non-first leg — selftest case L3 measures it). A foxtrot
+    merge (first parent = the topic side) therefore reports the OTHER line's changes; that is
+    the stated semantics of an advisory gate, named rather than special-cased (review
+    2026-08-10, low): parent order is what the committer's own `git merge` produced.
+    """
+    if not rev_range and git(root, "rev-parse", "-q", "--verify", "HEAD^2").strip():
+        rev_range = "HEAD^1..HEAD"
     if rev_range:
         raw = git(root, "diff", "--name-status", "-M", rev_range)
         subjects = [s for s in git(root, "log", "--format=%s", rev_range).splitlines() if s.strip()]
