@@ -78,9 +78,38 @@ function stripContextSuffix(name) {
   return String(name).replace(/\s*\([^()]*\bcontext\b[^()]*\)\s*$/i, "").trim() || String(name);
 }
 
-function pluginVersion(home) {
-    // The version of this plugin actually INSTALLED on this machine, read from Claude Code's
-    // install registry (`~/.claude/plugins/installed_plugins.json`).
+// The user scope this session runs under: explicit non-empty arg -> CLAUDE_CONFIG_DIR ->
+// ~/.claude (ADR 0046; an empty explicit arg counts as absent). Claude Code's registry and
+// settings follow the env var, so a canon that read `~/.claude` unconditionally reported the
+// OTHER account's install on a multi-account machine. The env value is trusted only when
+// ABSOLUTE: a relative value would resolve against whatever cwd the renderer was spawned with,
+// making the version segment flicker with the spawn point — so a set-but-malformed value
+// returns "" and the caller treats the registry as unmeasured (the segment disappears;
+// absent != 0, and falling back to ~/.claude would resurrect the wrong-account read).
+function claudeDir(dir, env = process.env) {
+  if (dir) return dir;
+  const raw = String(env.CLAUDE_CONFIG_DIR || "").trim();
+  if (raw) return path.isAbsolute(raw) ? raw : "";
+  return path.join(os.homedir(), ".claude");
+}
+
+// Tab-title head: the config-dir account (`.claude-ywrlabs` -> `claude-ywrlabs`), or "" when no
+// CLAUDE_CONFIG_DIR is set. The account is the one session dimension with no other surface —
+// `loc` is already the line's first segment — and it is what distinguishes two otherwise
+// identical terminals (ADR 0046). Unlike claudeDir(), no absoluteness demand: the label is a
+// pure string transform with no filesystem meaning, so the basename of even a relative value is
+// still the account the member set. Anything that strips to nothing yields "" and tabTitle()
+// falls back to the location — never a bare "/model" title.
+function accountLabel(env = process.env) {
+  const dir = String(env.CLAUDE_CONFIG_DIR || "").trim();
+  if (!dir) return "";
+  const base = dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
+  return base.replace(/^\./, "");
+}
+
+function pluginVersion(dir) {
+    // The version of this plugin actually INSTALLED for this account, read from Claude Code's
+    // install registry (`<config-dir>/plugins/installed_plugins.json`, resolution above).
     //
     // Deliberately the ON-DISK value, not the running session's: with marketplace auto-update on,
     // disk moves ahead of a live session — and that visible mismatch is exactly the "restart to
@@ -93,7 +122,9 @@ function pluginVersion(home) {
     // JSON, no entry, or a version the registry records as "unknown" -> empty, and the segment
     // disappears. Same rule as every other segment here: unmeasured is not the same as a value.
     try {
-        const p = path.join(home || os.homedir(), ".claude", "plugins", "installed_plugins.json");
+        const base = claudeDir(dir);
+        if (!base) return ""; // set-but-malformed CLAUDE_CONFIG_DIR: unmeasured, never a guess
+        const p = path.join(base, "plugins", "installed_plugins.json");
         const j = JSON.parse(fs.readFileSync(p, "utf8"));
         // A usable version carries at least one digit. That one shape test subsumes the
         // registry's literal "unknown" sentinel AND the corrupted-write shapes ("v", whitespace)
@@ -159,10 +190,18 @@ function render(j, ver = pluginVersion()) {
   };
 }
 
+// Tab title: account (falling back to location when no CLAUDE_CONFIG_DIR account is active),
+// then model/effort. Usage percentages are deliberately NOT in the title — they change on every
+// render and would make the tab flicker.
+function tabTitle(r, env = process.env) {
+  const head = accountLabel(env) || r.loc;
+  return `${head}/${r.model}${r.effort ? "/" + r.effort : ""}`;
+}
+
 // Exported for the selftest, which asserts on render() directly rather than on a spawned process:
 // a status line is a pure function of its payload, and testing it through stdio would measure the
 // harness more than the renderer.
-module.exports = { render, stripContextSuffix, windowSize, seg, pluginVersion, PLUGIN_LABEL };
+module.exports = { render, stripContextSuffix, windowSize, seg, pluginVersion, claudeDir, accountLabel, tabTitle, PLUGIN_LABEL };
 
 if (require.main === module) {
   let raw = "";
@@ -174,9 +213,7 @@ if (require.main === module) {
     } catch {}
     const r = render(j);
 
-    // Tab title: location/model/effort. Usage percentages are deliberately NOT in the title —
-    // they change on every render and would make the tab flicker.
-    const title = `${r.loc}/${r.model}${r.effort ? "/" + r.effort : ""}`;
+    const title = tabTitle(r);
     try {
       process.title = title; // Windows: SetConsoleTitle
     } catch {}

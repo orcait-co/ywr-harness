@@ -36,14 +36,21 @@ $hermeticHome = Join-Path $fxBase 'hermetic-home'
 New-Item -ItemType Directory -Force -Path (Join-Path $hermeticHome '.claude') | Out-Null
 
 function Invoke-Node([string[]]$NodeArgs, [string]$StdInFile) {
-    $ph = $env:USERPROFILE; $hh = $env:HOME
+    $ph = $env:USERPROFILE; $hh = $env:HOME; $pc = $env:CLAUDE_CONFIG_DIR
     try {
         # os.homedir() reads USERPROFILE on Windows and HOME elsewhere — both are pinned so the
-        # same fixture works on either platform.
+        # same fixture works on either platform. CLAUDE_CONFIG_DIR is CLEARED for the same
+        # hermetic reason: since ADR 0046 the renderer resolves it before ~/.claude, and a
+        # developer machine running under a config-dir account would otherwise leak its real
+        # registry into the exact-line assertions below.
         $env:USERPROFILE = $hermeticHome; $env:HOME = $hermeticHome
+        Remove-Item Env:\CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
         if ($StdInFile) { return (Get-Content -LiteralPath $StdInFile -Raw | & node @NodeArgs 2>&1) | Out-String }
         return (& node @NodeArgs 2>&1) | Out-String
-    } finally { $env:USERPROFILE = $ph; $env:HOME = $hh }
+    } finally {
+        $env:USERPROFILE = $ph; $env:HOME = $hh
+        if ($null -ne $pc) { $env:CLAUDE_CONFIG_DIR = $pc }
+    }
 }
 
 # Drive the module through stdin, exactly as Claude Code does. Output is stripped of ANSI so the
@@ -122,9 +129,13 @@ $ok = (Assert-True 'G empty stdin does not crash' ($null -ne $gEmpty) 'no output
 # disk moves ahead of a live session; that mismatch is the "restart to apply" signal, so the
 # segment must show what this machine HAS, never what a repo or the marketplace published.
 function Invoke-Ver([string]$HomeDir) {
+    # Since ADR 0046 pluginVersion takes the CONFIG DIR itself (explicit arg -> CLAUDE_CONFIG_DIR
+    # -> ~/.claude), not a home to append `.claude` to; the fixtures keep their home shape and the
+    # append happens here. The explicit arg also short-circuits the env var, which is what keeps
+    # these cases hermetic on a machine running under a config-dir account.
     $js = @"
 const m = require($(($mod -replace '\\','/') | ConvertTo-Json));
-process.stdout.write(m.pluginVersion($($HomeDir | ConvertTo-Json)) || '<empty>');
+process.stdout.write(m.pluginVersion($((Join-Path $HomeDir '.claude') | ConvertTo-Json)) || '<empty>');
 "@
     $f = Join-Path $fxBase ('g-' + [Guid]::NewGuid().ToString('N') + '.js')
     [IO.File]::WriteAllText($f, $js)
@@ -173,6 +184,49 @@ $ok = (Assert-True 'H user scope wins over an earlier project-scope entry' ((Inv
 $h9 = New-Home 'digitless-version' '{"version":2,"plugins":{"ywr-harness@ywrlabs":[{"version":"v"}]}}'
 $ok = (Assert-True 'H a digit-less version renders no segment' ((Invoke-Ver $h9) -eq '<empty>') "got: $(Invoke-Ver $h9)") -and $ok
 
+# No-arg resolution follows CLAUDE_CONFIG_DIR before ~/.claude (ADR 0046): a multi-account
+# machine must see the RUNNING account's install, never another account's. The env var is set
+# inside the node process so nothing leaks into this shell.
+$h10 = New-Home 'config-dir-account' '{"version":2,"plugins":{"ywr-harness@ywrlabs":[{"scope":"user","version":"0.30.0"}]}}'
+$js10 = @"
+process.env.CLAUDE_CONFIG_DIR = $((Join-Path $h10 '.claude') | ConvertTo-Json);
+const m = require($(($mod -replace '\\','/') | ConvertTo-Json));
+process.stdout.write(m.pluginVersion() || '<empty>');
+"@
+$f10 = Join-Path $fxBase 'h10.js'
+[IO.File]::WriteAllText($f10, $js10)
+$v10 = ((& node $f10 2>&1) | Out-String).Trim()
+$ok = (Assert-True 'H no-arg resolution follows CLAUDE_CONFIG_DIR' ($v10 -eq 'v0.30.0') "got: $v10") -and $ok
+
+# An explicit arg beats the env var — every hermetic case above depends on exactly this.
+$js11 = @"
+process.env.CLAUDE_CONFIG_DIR = $((Join-Path $h10 '.claude') | ConvertTo-Json);
+const m = require($(($mod -replace '\\','/') | ConvertTo-Json));
+process.stdout.write(m.pluginVersion($((Join-Path $h1 '.claude') | ConvertTo-Json)) || '<empty>');
+"@
+$f11 = Join-Path $fxBase 'h11.js'
+[IO.File]::WriteAllText($f11, $js11)
+$v11 = ((& node $f11 2>&1) | Out-String).Trim()
+$ok = (Assert-True 'H an explicit dir beats CLAUDE_CONFIG_DIR' ($v11 -eq 'v0.14.0') "got: $v11") -and $ok
+
+# A set-but-RELATIVE CLAUDE_CONFIG_DIR reads as UNMEASURED (no segment), never as a cwd-relative
+# path (review 2026-08-11, medium): a registry planted at exactly the cwd-relative spot must stay
+# invisible — a cwd-dependent read would make the segment flicker with wherever the renderer
+# happened to be spawned.
+$h12 = Join-Path $fxBase 'cwd-trap'
+New-Item -ItemType Directory -Force -Path (Join-Path $h12 'rel-cfg/plugins') | Out-Null
+[IO.File]::WriteAllText((Join-Path $h12 'rel-cfg/plugins/installed_plugins.json'), '{"version":2,"plugins":{"ywr-harness@ywrlabs":[{"scope":"user","version":"9.9.9"}]}}')
+$js12 = @"
+process.env.CLAUDE_CONFIG_DIR = 'rel-cfg';
+process.chdir($($h12 | ConvertTo-Json));
+const m = require($(($mod -replace '\\','/') | ConvertTo-Json));
+process.stdout.write(m.pluginVersion() || '<empty>');
+"@
+$f12 = Join-Path $fxBase 'h12.js'
+[IO.File]::WriteAllText($f12, $js12)
+$v12 = ((& node $f12 2>&1) | Out-String).Trim()
+$ok = (Assert-True 'H a relative CLAUDE_CONFIG_DIR is unmeasured — the cwd-planted registry stays invisible' ($v12 -eq '<empty>') "got: $v12") -and $ok
+
 # Placement, asserted by INJECTING the value rather than reading the machine's real cache. The
 # first version of this case asserted the segment was absent and failed on any machine that has a
 # guide delivered — a suite whose verdict depends on the developer's ~/.claude is not a suite.
@@ -192,6 +246,33 @@ $ok = (Assert-True 'H the segment renders last, after the quota segments' ($with
 # targets the label-plus-version form, not the bare name.
 $noVer = Invoke-Render $FULL ''
 $ok = (Assert-True 'H an empty version renders no segment at all' ($noVer -notmatch 'ywr-harness v') "got: $noVer") -and $ok
+
+# --- I: the tab-title head is the ACCOUNT, falling back to location (ADR 0046) -------------------
+# The account (config-dir basename, leading dot stripped) is the one session dimension with no
+# other surface — `loc` is already the line's first segment. Env is passed as a plain object, so
+# no real environment is consulted or mutated.
+function Invoke-Title([string]$Json, [hashtable]$EnvMap) {
+    $js = @"
+const m = require($(($mod -replace '\\','/') | ConvertTo-Json));
+process.stdout.write(m.tabTitle(m.render($Json, ''), $($EnvMap | ConvertTo-Json -Compress)));
+"@
+    $f = Join-Path $fxBase ('t-' + [Guid]::NewGuid().ToString('N') + '.js')
+    [IO.File]::WriteAllText($f, $js)
+    return ((& node $f 2>&1) | Out-String).Trim()
+}
+$i1 = Invoke-Title $FULL @{ CLAUDE_CONFIG_DIR = 'C:\Users\x\.claude-ywrlabs' }
+$ok = (Assert-True 'I a config-dir account heads the title' ($i1 -eq 'claude-ywrlabs/Opus 5/xhigh') "got: $i1") -and $ok
+$i2 = Invoke-Title $FULL @{}
+$ok = (Assert-True 'I no CLAUDE_CONFIG_DIR -> the location heads the title, unchanged' ($i2 -eq 'ywrlabs/ywr-harness/Opus 5/xhigh') "got: $i2") -and $ok
+$i3 = Invoke-Title $FULL @{ CLAUDE_CONFIG_DIR = '/home/x/.claude-orcait/' }
+$ok = (Assert-True 'I a trailing separator and forward slashes still yield the account' ($i3 -eq 'claude-orcait/Opus 5/xhigh') "got: $i3") -and $ok
+# Degenerate shapes that strip to NOTHING must fall back to the location — never a bare "/model"
+# title (review 2026-08-11: this pins tabTitle's `|| r.loc` fallback, which a `??` "modernization"
+# would silently break for exactly these values).
+$i4 = Invoke-Title $FULL @{ CLAUDE_CONFIG_DIR = '/home/x/.' }
+$ok = (Assert-True 'I a basename that strips to nothing falls back to the location' ($i4 -eq 'ywrlabs/ywr-harness/Opus 5/xhigh') "got: $i4") -and $ok
+$i5 = Invoke-Title $FULL @{ CLAUDE_CONFIG_DIR = '   ' }
+$ok = (Assert-True 'I a whitespace-only value falls back to the location' ($i5 -eq 'ywrlabs/ywr-harness/Opus 5/xhigh') "got: $i5") -and $ok
 
 Remove-FixtureRoot $fxBase
 

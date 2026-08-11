@@ -105,6 +105,55 @@ $ok = (Assert-True 'G dry run says so' ($rG.Out -match 'dry run') $rG.Out) -and 
 $ok = (Assert-True 'G dry run wrote no script' (-not (Test-Path -LiteralPath (Join-Path $g 'harness-statusline.js'))) 'script was written') -and $ok
 $ok = (Assert-True 'G dry run wrote no settings' (-not (Test-Path -LiteralPath (Join-Path $g 'settings.json'))) 'settings.json was written') -and $ok
 
+# --- H: the DEFAULT target follows CLAUDE_CONFIG_DIR (ADR 0046) ----------------------------------
+# No -ClaudeDir. The env var is the scope a multi-account session runs under; a default that
+# ignored it installed into a directory that session never reads — silently. The real ~/.claude
+# stays uninvolved: the env var points every no-flag run at a fixture.
+$h = New-Dir 'config-dir-default'
+$i = New-Dir 'explicit-beats-env'
+$prevCfg = $env:CLAUDE_CONFIG_DIR
+try {
+    $env:CLAUDE_CONFIG_DIR = $h
+    $outH = & pwsh -NoProfile -ExecutionPolicy Bypass -File $install 2>&1 | Out-String
+    $codeH = $LASTEXITCODE
+    # An explicit -ClaudeDir still wins over the env var — every fixture-pointed case in this
+    # suite depends on exactly that precedence.
+    $rI = Invoke-Install $i @()
+} finally {
+    if ($null -ne $prevCfg) { $env:CLAUDE_CONFIG_DIR = $prevCfg }
+    else { Remove-Item Env:\CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue }
+}
+$sH = Get-Settings $h
+$ok = (Assert-True 'H no-flag run exits 0' ($codeH -eq 0) "exit=$codeH out=$outH") -and $ok
+$ok = (Assert-True 'H no-flag run lands in CLAUDE_CONFIG_DIR' (Test-Path -LiteralPath (Join-Path $h 'harness-statusline.js') -PathType Leaf) $outH) -and $ok
+$ok = (Assert-True 'H no-flag wiring points into CLAUDE_CONFIG_DIR' ($sH.statusLine.command -like "*$h*") "got: $($sH.statusLine.command)") -and $ok
+$ok = (Assert-True 'H explicit -ClaudeDir beats the env var' (Test-Path -LiteralPath (Join-Path $i 'harness-statusline.js') -PathType Leaf) $rI.Out) -and $ok
+$ok = (Assert-True 'H explicit-dir wiring does not point at the env dir' ((Get-Settings $i).statusLine.command -notlike "*$h*") "got: $((Get-Settings $i).statusLine.command)") -and $ok
+
+# --- I: a malformed CLAUDE_CONFIG_DIR is REFUSED, never resolved against the cwd -----------------
+# (review 2026-08-11, medium) A relative or blank-but-set value — an unexpanded '$HOME/.claude',
+# a stray './cfg' — would land the install wherever the script was run FROM, silently. Refusal is
+# loud, names the value, and writes nothing; an explicit -ClaudeDir stays trusted verbatim.
+$j = New-Dir 'explicit-under-bad-env'
+$prevCfg2 = $env:CLAUDE_CONFIG_DIR
+try {
+    $env:CLAUDE_CONFIG_DIR = 'not-absolute\cfg'
+    Push-Location $fxBase
+    try {
+        $outI2 = & pwsh -NoProfile -ExecutionPolicy Bypass -File $install 2>&1 | Out-String
+        $codeI2 = $LASTEXITCODE
+    } finally { Pop-Location }
+    # Explicit dir under the same malformed env: must still install (trusted verbatim).
+    $rJ = Invoke-Install $j @()
+} finally {
+    if ($null -ne $prevCfg2) { $env:CLAUDE_CONFIG_DIR = $prevCfg2 }
+    else { Remove-Item Env:\CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue }
+}
+$ok = (Assert-True 'I a relative CLAUDE_CONFIG_DIR exits 1' ($codeI2 -eq 1) "exit=$codeI2 out=$outI2") -and $ok
+$ok = (Assert-True 'I the refusal names the variable and the value' (($outI2 -match 'CLAUDE_CONFIG_DIR') -and ($outI2 -match 'not-absolute')) $outI2) -and $ok
+$ok = (Assert-True 'I nothing was created at the cwd-relative path' (-not (Test-Path (Join-Path $fxBase 'not-absolute'))) 'cwd-relative dir was created') -and $ok
+$ok = (Assert-True 'I an explicit -ClaudeDir still installs under the malformed env' (($rJ.Code -eq 0) -and (Test-Path -LiteralPath (Join-Path $j 'harness-statusline.js') -PathType Leaf)) "exit=$($rJ.Code) $($rJ.Out)") -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'statusline install selftest: FAILED' -ForegroundColor Red; exit 1 }

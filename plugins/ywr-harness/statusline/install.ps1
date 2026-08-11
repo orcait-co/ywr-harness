@@ -21,8 +21,11 @@
 
 [CmdletBinding()]
 param(
-    # Override the target .claude directory. Defaults to the user scope.
-    [string]$ClaudeDir = (Join-Path $HOME '.claude'),
+    # Override the target .claude directory. When omitted, the default is the user scope THIS
+    # SESSION runs under: CLAUDE_CONFIG_DIR when set, else ~/.claude (ADR 0046). A default that
+    # ignored the env var installed into a directory a config-dir session never reads — silently,
+    # which looks identical to "the plugin did nothing".
+    [string]$ClaudeDir,
     # Report what would change and write nothing.
     [switch]$DryRun
 )
@@ -32,6 +35,25 @@ $ErrorActionPreference = 'Stop'
 # that behaviour and the branches below read exit codes themselves.
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# Resolve the default target (ADR 0046). An explicit -ClaudeDir is trusted verbatim; the env var
+# is NOT — a relative or blank-but-set value (an unexpanded '$HOME/.claude', a stray './cfg')
+# would resolve against whatever directory this script was run FROM, recreating exactly the
+# silent wrong-dir install this default exists to prevent. A value this script cannot interpret
+# is refused loudly, the same posture as the foreign-statusLine refusal below (review 2026-08-11).
+if (-not $PSBoundParameters.ContainsKey('ClaudeDir')) {
+    $rawCfg = [string]$env:CLAUDE_CONFIG_DIR
+    if ($rawCfg) {
+        $trimCfg = $rawCfg.Trim()
+        if (-not $trimCfg -or -not [System.IO.Path]::IsPathRooted($trimCfg)) {
+            Write-Host "FAIL — CLAUDE_CONFIG_DIR ('$rawCfg') is not an absolute path; refusing to resolve it against the current directory. Fix the variable or pass -ClaudeDir." -ForegroundColor Red
+            exit 1
+        }
+        $ClaudeDir = $trimCfg
+    } else {
+        $ClaudeDir = Join-Path $HOME '.claude'
+    }
+}
 
 $SCRIPT_NAME = 'harness-statusline.js'
 $src = Join-Path $PSScriptRoot $SCRIPT_NAME
