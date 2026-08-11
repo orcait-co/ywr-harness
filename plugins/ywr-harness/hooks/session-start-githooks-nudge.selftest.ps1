@@ -91,9 +91,9 @@ if ($gitOk) {
     #    carry the fact, the exact command, and the suggest-only contract
     $out = Invoke-Hook (New-Payload @{ cwd = $unwired })
     $ok = (Assert-Nudge 'unwired clone nudges' $out `
-            @('\[hook:githooks-nudge\]', 'repo-unwired', 'core\.hooksPath is UNSET',
+            @('\[hook:githooks-nudge\]', 'repo-unwired', 'core\.hooksPath가 UNSET',
             'git config core\.hooksPath \.githooks', '/ywr-harness:harness-init',
-            'feedback latency', 'Do not run it unasked', 'only suggests') `
+            'feedback latency', 'Do not run it unasked', '제안만 합니다') `
             @('SCHEMA DRIFT', 'UNKNOWN')) -and $ok
 
     # 2. wired clone -> byte-silent (the permanent steady state must cost nothing)
@@ -113,7 +113,7 @@ if ($gitOk) {
     #    for the repo (that is what rev-parse buys over a bare Join-Path on cwd)
     $out = Invoke-Hook (New-Payload @{ cwd = (Join-Path $unwired 'subA/subB') })
     $ok = (Assert-Nudge 'subdirectory cwd resolves the root' $out `
-            @('repo-unwired', 'core\.hooksPath is UNSET') `
+            @('repo-unwired', 'core\.hooksPath가 UNSET') `
             @('subA', 'SCHEMA DRIFT')) -and $ok
 
     # 6. BOM-prefixed stdin -> still parses (the config-change-audit 07-23 incident class)
@@ -140,8 +140,8 @@ exit `$LASTEXITCODE
         $env:PATH = "$shimDir$([IO.Path]::PathSeparator)$savedPath"
         $out = Invoke-Hook (New-Payload @{ cwd = $unwired })
         $ok = (Assert-Nudge 'unreadable config reports UNKNOWN, not a nudge' $out `
-                @('could not be read cleanly', 'git config exit 3', 'UNKNOWN, not verified') `
-                @('UNSET', 'only suggests', 'SCHEMA DRIFT')) -and $ok
+                @('정상적으로 읽을 수 없습니다', 'git config exit 3', 'UNKNOWN, 확인되지 않았습니다') `
+                @('UNSET', '제안만 합니다', 'SCHEMA DRIFT')) -and $ok
     }
     finally { $env:PATH = $savedPath }
 
@@ -188,7 +188,7 @@ $ok = (Assert-EmptyStdout 'unresolvable root silent and clean' $out) -and $ok
 # 10. ANTI-VACUITY: no `cwd` in the payload -> the hook says so instead of falling silent
 $out = Invoke-Hook (New-Payload @{})
 $ok = (Assert-Nudge 'schema drift is reported, not swallowed' $out `
-        @('SCHEMA DRIFT', 'Keys received: hook_event_name, session_id, source') `
+        @('SCHEMA DRIFT', '수신된 키: hook_event_name, session_id, source') `
         @('UNSET', 'git config core\.hooksPath')) -and $ok
 
 # 11. wrong event name -> silent (defensive event guard, symmetric with siblings)
@@ -207,7 +207,7 @@ try {
     $env:PATH = ''
     $out = Invoke-Hook (New-Payload @{ cwd = $unknownDir })
     $ok = (Assert-Nudge 'no git: .githooks present reports UNKNOWN' $out `
-            @('git is not runnable', 'UNKNOWN, not verified') `
+            @('git을 실행할 수 없어', 'UNKNOWN, 확인되지 않았습니다') `
             @('UNSET', 'git config core\.hooksPath', 'SCHEMA DRIFT')) -and $ok
     $out = Invoke-Hook (New-Payload @{ cwd = $plain })
     $ok = (Assert-EmptyStdout 'no git: no .githooks stays silent' $out) -and $ok

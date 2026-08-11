@@ -31,14 +31,14 @@ $src = ([string]$payload.source).Trim()
 if (-not $src) {
     $keys = '(none)'
     try { $k = @($payload.PSObject.Properties.Name | Sort-Object); if ($k) { $keys = $k -join ', ' } } catch { }
-    $drift = "[hook:config-audit] SCHEMA DRIFT — a ConfigChange payload arrived with no 'source' field, so this audit could not report which config tier changed. Keys received: $keys. Re-verify the payload shape and fix .claude/hooks/config-change-audit.ps1 (ADR #120)."
+    $drift = "[hook:config-audit] SCHEMA DRIFT — ConfigChange 페이로드에 'source' 필드가 없어, 어떤 설정 계층이 변경되었는지 확인할 수 없습니다. 수신된 키: $keys. 페이로드 형식을 다시 확인하고 .claude/hooks/config-change-audit.ps1을 수정하세요 (ADR #120)."
     @{ systemMessage = $drift } | ConvertTo-Json -Compress
     exit 0
 }
 
 $where = ([string]$payload.file_path).Trim()
-$msg = "[hook:config-audit] $src modified mid-session"
+$msg = "[hook:config-audit] $src 세션 중 변경됨"
 if ($where) { $msg += " ($where)" }
-$msg += ' (most keys live-reload; model/outputStyle apply at next session start). House rule: permission/hook self-modification requires explicit user approval — if you did not direct this change, review it now (git diff the settings file).'
+$msg += ' (대부분의 키는 즉시 반영되며, model/outputStyle은 다음 세션 시작 시 적용됩니다). 하우스 규칙: 권한/훅 자기 수정은 명시적인 사용자 승인이 필요합니다 — 직접 지시한 변경이 아니라면 지금 검토하세요 (git diff로 설정 파일 확인).'
 @{ systemMessage = $msg } | ConvertTo-Json -Compress
 exit 0

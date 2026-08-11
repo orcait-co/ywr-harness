@@ -138,11 +138,11 @@ $staleHash = (Get-FileHash -LiteralPath (Join-Path $stale 'scripts/harness/harne
 #    REVERT-hand-edits warning, the suggest-only contract.
 $out = Invoke-Hook (New-Payload @{ cwd = $stale })
 $ok = (Assert-Nudge 'drifted scaffold at the same version reads as a hand-edit' $out `
-        @('\[hook:scaffold-refresh-nudge\]', 'repo-stale', '2 vendored toolchain file', 'v\d+\.\d+\.\d+',
+        @('\[hook:scaffold-refresh-nudge\]', 'repo-stale', '2개의 벤더링된 툴체인 파일', 'v\d+\.\d+\.\d+',
         'harness_gates\.py', 'harness-gates\.yml \(missing\)', 'EQUALS', 'hand-edit',
-        'REVERT hand-edits', 'only suggests') `
-        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more', 'basis is STALE', 'direction-blind',
-        'Refresh: run', 'NEWER than this session', 'OLDER than this session')) -and $ok
+        'REVERT', '제안만 합니다') `
+        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more', '기준이 STALE', 'direction-blind',
+        '리프레시: 이 저장소에서', 'NEWER합니다', 'OLDER합니다')) -and $ok
 
 # 1b. REPO-AHEAD (ADR 0042): stamp newer than the running plugin — the multi-writer everyday
 #     state (another writer refreshed this repo with a newer release). The advice must FLIP:
@@ -152,9 +152,9 @@ Copy-Item -LiteralPath $stale -Destination $ahead -Recurse -Force
 Set-Content -LiteralPath (Join-Path $ahead '.harness-version') -Value '99.0.0'
 $out = Invoke-Hook (New-Payload @{ cwd = $ahead })
 $ok = (Assert-Nudge 'repo-ahead stamp flips the advice to update-the-plugin' $out `
-        @('v99\.0\.0', 'NEWER than this session', 'do NOT run /ywr-harness:harness-init',
-        '/ywr-harness:update', 'REVERT the newer refresh', 'only suggests') `
-        @('Refresh: run', 'seeds preserved', 'basis is STALE', 'direction-blind', 'SCHEMA DRIFT',
+        @('v99\.0\.0', 'NEWER합니다', '/ywr-harness:harness-init을 실행하지 마세요',
+        '/ywr-harness:update', '리프레시를 REVERT', '제안만 합니다') `
+        @('리프레시: 이 저장소에서', '시드는 보존', '기준이 STALE', 'direction-blind', 'SCHEMA DRIFT',
         'EXTRACTION DRIFT')) -and $ok
 
 # 1c. REPO-BEHIND: stamp older than the running plugin — the one state where the refresh advice
@@ -165,10 +165,10 @@ Copy-Item -LiteralPath $stale -Destination $behind -Recurse -Force
 Set-Content -LiteralPath (Join-Path $behind '.harness-version') -Value '0.0.1'
 $out = Invoke-Hook (New-Payload @{ cwd = $behind })
 $ok = (Assert-Nudge 'repo-behind stamp keeps the refresh advice, direction measured' $out `
-        @('v0\.0\.1', 'OLDER than this session', 'measured, not guessed',
-        'Refresh: run /ywr-harness:harness-init', 'seeds preserved', 'only suggests') `
-        @('re-run is safe: toolchain', 'REVERT the newer refresh', 'direction-blind',
-        'basis is STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('v0\.0\.1', 'OLDER합니다', '측정된 것입니다', '여기서는',
+        '리프레시: 이 저장소에서 /ywr-harness:harness-init', '시드는 보존', '제안만 합니다') `
+        @('리프레시를 REVERT', 'direction-blind',
+        '기준이 STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 1d. NO STAMP (every pre-0042 repo): direction-blind — and the caveat must now sit on the
 #     HUMAN surface too, not only in additionalContext: the 2026-08-10 audit's asymmetry
@@ -178,10 +178,10 @@ Copy-Item -LiteralPath $stale -Destination $nostamp -Recurse -Force
 Remove-Item -LiteralPath (Join-Path $nostamp '.harness-version') -Force
 $out = Invoke-Hook (New-Payload @{ cwd = $nostamp })
 $ok = (Assert-Nudge 'stampless repo gets the direction-blind caveat' $out `
-        @('direction-blind', 'no readable \.harness-version', 'REVERT', 'BEFORE running it',
-        '/ywr-harness:update', 'only suggests') `
-        @('re-run is safe: toolchain', 'NEWER than this session', 'OLDER than this session',
-        'basis is STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('direction-blind', '읽을 수 있는 \.harness-version 스탬프 없음', 'REVERT', '실행하기 전에',
+        '/ywr-harness:update', '제안만 합니다') `
+        @('EQUALS', 'NEWER합니다', 'OLDER합니다',
+        '기준이 STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 $sysOnly = ''
 try { $sysOnly = [string]((ConvertFrom-Json $out.Trim()).systemMessage) } catch { }
 $ok = (Assert-True '1d the caveat is in the HUMAN banner, not only the context half' `
@@ -198,8 +198,8 @@ Copy-Item -LiteralPath $stale -Destination $hugestamp -Recurse -Force
 [IO.File]::WriteAllText((Join-Path $hugestamp '.harness-version'), ('1.2.3' + ('x' * 5MB)))
 $out = Invoke-Hook (New-Payload @{ cwd = $hugestamp })
 $ok = (Assert-Nudge 'huge one-line stamp degrades to direction-blind cleanly' $out `
-        @('direction-blind', 'no readable \.harness-version') `
-        @('NEWER than this session', 'OLDER than this session', 'EQUALS', 'basis is STALE',
+        @('direction-blind', '읽을 수 있는 \.harness-version 스탬프 없음') `
+        @('NEWER합니다', 'OLDER합니다', 'EQUALS', '기준이 STALE',
         'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 1f. component-count normalization (review 2026-08-10, low): a 4-component stamp X.0 names the
@@ -213,7 +213,7 @@ Set-Content -LiteralPath (Join-Path $padstamp '.harness-version') -Value "$mfVer
 $out = Invoke-Hook (New-Payload @{ cwd = $padstamp })
 $ok = (Assert-Nudge 'a 4-component stamp naming the same release reads as EQUALS, not ahead' $out `
         @('EQUALS', 'hand-edit') `
-        @('NEWER than this session', 'do NOT run /ywr-harness:harness-init', 'basis is STALE',
+        @('NEWER합니다', '/ywr-harness:harness-init을 실행하지 마세요', '기준이 STALE',
         'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 2. freshly scaffolded repo -> byte-silent (the permanent steady state must cost nothing)
@@ -237,13 +237,13 @@ $ok = (Assert-EmptyStdout 'foreign post-commit silent' $out) -and $ok
 # 6. marker-carrying post-commit drifted -> counted like any toolchain file
 $out = Invoke-Hook (New-Payload @{ cwd = $ourspc })
 $ok = (Assert-Nudge 'guarded post-commit with marker counts' $out `
-        @('1 vendored toolchain file', '\.githooks[\\/]post-commit') `
+        @('1개의 벤더링된 툴체인 파일', '\.githooks[\\/]post-commit') `
         @('harness_gates\.py', 'SCHEMA DRIFT', '\(missing\)')) -and $ok
 
 # 7. seven drifts -> five named, cap STATED (a silent truncation reads as full coverage)
 $out = Invoke-Hook (New-Payload @{ cwd = $many })
 $ok = (Assert-Nudge 'file list caps at five and says so' $out `
-        @('7 vendored toolchain file', '\+2 more') `
+        @('7개의 벤더링된 툴체인 파일', '\+2 more') `
         @('SCHEMA DRIFT', 'harness_config\.py')) -and $ok
 
 # 8. scripts/harness/ that is not ours -> silent (file-level sentinel, not the directory gate:
@@ -259,7 +259,7 @@ $ok = (Assert-EmptyStdout 'unscaffolded repo silent' $out) -and $ok
 if ($gitOk) {
     $out = Invoke-Hook (New-Payload @{ cwd = (Join-Path $stale 'subA/subB') })
     $ok = (Assert-Nudge 'subdirectory cwd resolves the root' $out `
-            @('repo-stale', '2 vendored toolchain file') `
+            @('repo-stale', '2개의 벤더링된 툴체인 파일') `
             @('subA', 'SCHEMA DRIFT')) -and $ok
 }
 else {
@@ -285,8 +285,8 @@ $GUARD_MARKER = 'ywr-harness:post-commit'
 '@
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.ps1')
 $ok = (Assert-Nudge 'unreadable placement map reports EXTRACTION DRIFT, not silence' $out `
-        @('EXTRACTION DRIFT', 'UNKNOWN, not verified', 'placement map') `
-        @('differ from the installed', 'only suggests', 'SCHEMA DRIFT')) -and $ok
+        @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵') `
+        @('템플릿과 다릅니다', '제안만 합니다', 'SCHEMA DRIFT')) -and $ok
 
 # 12b. a PARTIAL literal — a hashtable whose value is computed but CONTAINS a string constant
 #      (`'docs/' + $x`) — must fail extraction WHOLE, never contribute the fragment to the map
@@ -305,8 +305,8 @@ $GUARD_MARKER = 'ywr-harness:post-commit'
 '@
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakePartial 'hooks/session-start-scaffold-refresh-nudge.ps1')
 $ok = (Assert-Nudge 'partial literal fails extraction whole, never a fragment' $out `
-        @('EXTRACTION DRIFT', 'UNKNOWN, not verified', 'placement map') `
-        @('differ from the installed', '\(missing\)', 'SCHEMA DRIFT')) -and $ok
+        @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵') `
+        @('템플릿과 다릅니다', '\(missing\)', 'SCHEMA DRIFT')) -and $ok
 
 # 12c. a fully literal map with NO scripts/harness/*.py destination -> the ownership sentinel
 #      is gone; an unchecked empty list would silently disable the hook on every repo forever
@@ -322,8 +322,8 @@ $GUARD_MARKER = 'ywr-harness:post-commit'
 '@
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeNoSent 'hooks/session-start-scaffold-refresh-nudge.ps1')
 $ok = (Assert-Nudge 'sentinel-less map reports EXTRACTION DRIFT, not permanent silence' $out `
-        @('EXTRACTION DRIFT', 'sentinel', 'UNKNOWN, not verified') `
-        @('differ from the installed', 'SCHEMA DRIFT')) -and $ok
+        @('EXTRACTION DRIFT', 'sentinel', 'UNKNOWN, 확인되지 않았습니다') `
+        @('템플릿과 다릅니다', 'SCHEMA DRIFT')) -and $ok
 
 # 13. a template missing from the plugin copy -> the same banner naming the file; freshness is
 #     never resolved into a nudge from an incomplete comparison set
@@ -336,8 +336,8 @@ Copy-Item -LiteralPath $templates -Destination (Join-Path $fakeTmpl 'skills/harn
 Remove-Item -LiteralPath (Join-Path $fakeTmpl 'skills/harness-init/templates/docs/build_docs.py') -Force
 $out = Invoke-Hook (New-Payload @{ cwd = $fresh }) (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.ps1')
 $ok = (Assert-Nudge 'missing template reports EXTRACTION DRIFT naming the file' $out `
-        @('EXTRACTION DRIFT', 'template missing', 'templates/docs/build_docs\.py') `
-        @('differ from the installed', 'SCHEMA DRIFT')) -and $ok
+        @('EXTRACTION DRIFT', '템플릿이 없습니다', 'templates/docs/build_docs\.py') `
+        @('템플릿과 다릅니다', 'SCHEMA DRIFT')) -and $ok
 
 # 13b-13f. STALE-BASIS PROBE (ADR 0039): a byte-identical hook copy runs from a fake VERSIONED
 #          CACHE layout (<plugins>/cache/<marketplace>/<name>/<version>) with the real init.ps1
@@ -373,9 +373,19 @@ Set-FakeRegistry @(
 )
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
 $ok = (Assert-Nudge 'superseded cache copy reports STALE basis, reload not refresh' $out `
-        @('comparison basis is STALE', 'v0\.0\.1', 'v9\.9\.9', '/reload-plugins', 'do NOT run /ywr-harness:harness-init',
-        '2 vendored toolchain file', 'harness_gates\.py', 'REVERT', 'only suggests') `
-        @('v8\.8\.8', 'Refresh: run', 'seeds preserved', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('비교 기준이 STALE합니다', 'v0\.0\.1', 'v9\.9\.9', '/reload-plugins', '/ywr-harness:harness-init을 실행하지 마세요',
+        '2개의 벤더링된 툴체인 파일', 'harness_gates\.py', 'REVERT', '제안만 합니다') `
+        @('v8\.8\.8', '리프레시: 이 저장소에서', '시드는 보존', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+# Both versions must survive in the HUMAN banner alone, not only in the English context half:
+# Assert-Nudge matches sys+ctx JOINED, and a Korean particle glued to a variable name silently
+# interpolates an undefined variable as EMPTY (Korean letters are legal in PS variable names —
+# the version-announce ${more}건 lesson). Caught live 2026-08-11: "$ver를"/"$staleActive입니다"
+# dropped BOTH versions from the banner while this case stayed green through the ctx half.
+$sysOnly = ''
+try { $sysOnly = [string]((ConvertFrom-Json $out.Trim()).systemMessage) } catch { }
+$ok = (Assert-True '13b both versions survive in the HUMAN banner (interpolation, not ctx)' `
+        ($sysOnly -match 'v0\.0\.1' -and $sysOnly -match 'v9\.9\.9') `
+        "systemMessage='$sysOnly'") -and $ok
 
 # 13c-13i run the NORMAL branch from a fake v0.0.1 cache copy, so pin the fixture's stamp BELOW
 # 0.0.1 first — the real-version stamp the scaffold wrote would otherwise flip these
@@ -387,23 +397,23 @@ Set-Content -LiteralPath (Join-Path $stale '.harness-version') -Value '0.0.0'
 Set-FakeRegistry @(@{ scope = 'user'; installPath = $staleCopy; version = '0.0.1'; lastUpdated = '2026-08-07T01:00:00Z' })
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
 $ok = (Assert-Nudge 'cache copy that IS the registered install nudges normally' $out `
-        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init', 'v0\.0\.1', 'seeds preserved') `
-        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('2개의 벤더링된 툴체인 파일', '리프레시: 이 저장소에서 /ywr-harness:harness-init', 'v0\.0\.1', '시드는 보존') `
+        @('기준이 STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 13d. no registry file -> probe yields nothing, normal nudge (fail toward 0033's behavior)
 Remove-Item -LiteralPath $fakeRegPath -Force
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
 $ok = (Assert-Nudge 'absent registry falls back to the normal nudge' $out `
-        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init') `
-        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('2개의 벤더링된 툴체인 파일', '리프레시: 이 저장소에서 /ywr-harness:harness-init') `
+        @('기준이 STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 13e. unparseable registry -> same fallback, and the envelope must still be clean JSON
 #      (2>&1 is captured: a non-terminating ConvertFrom-Json error line would corrupt it)
 Set-Content -LiteralPath $fakeRegPath -Value 'not json at all {{{'
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
 $ok = (Assert-Nudge 'garbage registry falls back cleanly' $out `
-        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init') `
-        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('2개의 벤더링된 툴체인 파일', '리프레시: 이 저장소에서 /ywr-harness:harness-init') `
+        @('기준이 STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 13f. registry carries only OTHER plugins (this one uninstalled mid-session) -> no registered
 #      install to reload into; the normal nudge is the conservative fallback
@@ -411,8 +421,8 @@ $ok = (Assert-Nudge 'garbage registry falls back cleanly' $out `
     Set-Content -LiteralPath $fakeRegPath
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
 $ok = (Assert-Nudge 'unlisted plugin falls back to the normal nudge' $out `
-        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init') `
-        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('2개의 벤더링된 툴체인 파일', '리프레시: 이 저장소에서 /ywr-harness:harness-init') `
+        @('기준이 STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 13g. SAME version registered at a DIFFERENT path -> normal nudge, never a self-contradictory
 #      "runs v0.0.1 while the install is v0.0.1" (review 2026-08-07, medium): a same-version
@@ -420,8 +430,8 @@ $ok = (Assert-Nudge 'unlisted plugin falls back to the normal nudge' $out `
 Set-FakeRegistry @(@{ scope = 'user'; installPath = (Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/elsewhere-0.0.1'); version = '0.0.1'; lastUpdated = '2026-08-07T02:00:00Z' })
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
 $ok = (Assert-Nudge 'same-version re-registration keeps the normal nudge' $out `
-        @('2 vendored toolchain file', 'Refresh: run /ywr-harness:harness-init', 'v0\.0\.1') `
-        @('basis is STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('2개의 벤더링된 툴체인 파일', '리프레시: 이 저장소에서 /ywr-harness:harness-init', 'v0\.0\.1') `
+        @('기준이 STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 13h. CROSS-MARKETPLACE union (the '@<marketplace>' half is deliberately unpinned — a consuming
 #      org may register the marketplace under another name): the original key is emptied
@@ -434,8 +444,8 @@ $ok = (Assert-Nudge 'same-version re-registration keeps the normal nudge' $out `
         } } | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $fakeRegPath
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
 $ok = (Assert-Nudge 'cross-marketplace registration is unioned into the STALE verdict' $out `
-        @('comparison basis is STALE', 'v0\.0\.1', 'v7\.7\.7', '/reload-plugins') `
-        @('Refresh: run', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('비교 기준이 STALE합니다', 'v0\.0\.1', 'v7\.7\.7', '/reload-plugins') `
+        @('리프레시: 이 저장소에서', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 13i. corrupted registered-version shapes are skipped, never rendered: an ARRAY version
 #      space-joins under [string] into a digit-bearing "1.0.0 2.0.0" that a bare digit test
@@ -448,8 +458,8 @@ Set-FakeRegistry @(
 )
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
 $ok = (Assert-Nudge 'corrupted version shapes are skipped, the usable entry is named' $out `
-        @('comparison basis is STALE', 'v6\.6\.6', '/reload-plugins') `
-        @('1\.0\.0 2\.0\.0', 'version unknown', 'Refresh: run', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+        @('비교 기준이 STALE합니다', 'v6\.6\.6', '/reload-plugins') `
+        @('1\.0\.0 2\.0\.0', 'version unknown', '리프레시: 이 저장소에서', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 14. plain non-repo directory -> silent on BOTH branches (with git: rev-parse fails; without
 #     git: no scripts/harness at cwd), so this case runs unguarded
@@ -474,8 +484,8 @@ $ok = (Assert-EmptyStdout 'unresolvable root silent and clean' $out) -and $ok
 # 17. ANTI-VACUITY: no `cwd` in the payload -> the hook says so instead of falling silent
 $out = Invoke-Hook (New-Payload @{})
 $ok = (Assert-Nudge 'schema drift is reported, not swallowed' $out `
-        @('SCHEMA DRIFT', 'Keys received: hook_event_name, session_id, source') `
-        @('vendored toolchain file\(s\) differ', 'EXTRACTION DRIFT')) -and $ok
+        @('SCHEMA DRIFT', '수신된 키: hook_event_name, session_id, source') `
+        @('템플릿과 다릅니다', 'EXTRACTION DRIFT')) -and $ok
 
 # 18. wrong event name -> silent (defensive event guard, symmetric with siblings)
 $out = Invoke-Hook '{"hook_event_name":"SessionEnd","cwd":"C:\\x","source":"startup"}'
@@ -493,7 +503,7 @@ try {
     $env:PATH = ''
     $out = Invoke-Hook (New-Payload @{ cwd = $stale })
     $ok = (Assert-Nudge 'no git: filesystem verdict still nudges' $out `
-            @('repo-stale', '2 vendored toolchain file', 'only suggests') `
+            @('repo-stale', '2개의 벤더링된 툴체인 파일', '제안만 합니다') `
             @('SCHEMA DRIFT', 'UNKNOWN')) -and $ok
     $out = Invoke-Hook (New-Payload @{ cwd = $plain })
     $ok = (Assert-EmptyStdout 'no git: plain dir stays silent' $out) -and $ok

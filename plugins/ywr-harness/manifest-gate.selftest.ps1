@@ -159,6 +159,17 @@ Try-Case 'rn-url-diverged' {
         Set-Content -LiteralPath $p -NoNewline
 }
 
+# The interpolation trap ADR 0045 makes reachable in every hook: Korean letters are legal in a
+# PS variable name, so "$ver를" interpolates an undefined variable named ver를 as EMPTY — the
+# value silently vanishes from the member banner (measured live 2026-08-11; the hook suites'
+# joined sys+ctx match stayed green through the English context half). The gate must refuse the
+# CLASS on a non-comment line; the comment-skip is what keeps hooks free to DOCUMENT the trap.
+Try-Case 'hangul-glued-variable' {
+    param($d)
+    $p = Join-Path $d 'hooks/session-start-githooks-nudge.ps1'
+    Add-Content -LiteralPath $p -Value "`n`$probe = `"지금 `$ver를 실행`"`n"
+}
+
 # Class-4 honesty, asserted on the MESSAGE not the exit code: with plugin.json corrupt and the
 # CHANGELOG intact, the gate already exits 1 from the manifest Bad — so an exit-code-only case
 # can never catch the defect this pins, which was the CHANGELOG check printing a false

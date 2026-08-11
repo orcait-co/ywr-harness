@@ -43,7 +43,7 @@ $cwd = ([string]$payload.cwd).Trim()
 if (-not $cwd) {
     $keys = '(none)'
     try { $k = @($payload.PSObject.Properties.Name | Sort-Object); if ($k) { $keys = $k -join ', ' } } catch { }
-    $drift = "[hook:githooks-nudge] SCHEMA DRIFT — a SessionStart payload arrived with no 'cwd' field, so this hook could not check whether this clone's git hooks are wired. Keys received: $keys. Re-verify the payload shape and fix hooks/session-start-githooks-nudge.ps1 (ADR 0029)."
+    $drift = "[hook:githooks-nudge] SCHEMA DRIFT — SessionStart 페이로드에 'cwd' 필드가 없어, 이 클론의 git 훅이 연결되어 있는지 확인할 수 없습니다. 수신된 키: $keys. 페이로드 형식을 다시 확인하고 hooks/session-start-githooks-nudge.ps1을 수정하세요 (ADR 0029)."
     @{ systemMessage = $drift } | ConvertTo-Json -Compress
     exit 0
 }
@@ -63,7 +63,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     # No git, no verdict — but `.githooks/` sitting at the cwd is a repo that EXPECTS hooks, so
     # unknown is reported rather than silently passed (the emitter's hooks_status posture).
     if (Test-Dir (Join-Path $cwd '.githooks')) {
-        @{ systemMessage = '[hook:githooks-nudge] .githooks/ is present but git is not runnable here, so whether this clone has core.hooksPath wired is UNKNOWN, not verified.' } | ConvertTo-Json -Compress
+        @{ systemMessage = '[hook:githooks-nudge] .githooks/ 는 있지만 이 환경에서 git을 실행할 수 없어, 이 클론에 core.hooksPath가 연결되어 있는지는 UNKNOWN, 확인되지 않았습니다.' } | ConvertTo-Json -Compress
     }
     exit 0
 }
@@ -89,12 +89,12 @@ $cfgExit = -1
 try { $lines = @(& git -C $root config --local --get core.hooksPath 2>$null); $cfgExit = $LASTEXITCODE; if ($lines.Count) { $cur = ([string]$lines[0]).Trim() } } catch { }
 if ($cur) { exit 0 }
 if ($cfgExit -ne 1) {
-    @{ systemMessage = "[hook:githooks-nudge] $root carries .githooks/ but this clone's core.hooksPath could not be read cleanly (git config exit $cfgExit, empty value) — wiring UNKNOWN, not verified." } | ConvertTo-Json -Compress
+    @{ systemMessage = "[hook:githooks-nudge] $root 에는 .githooks/ 가 있지만 이 클론의 core.hooksPath를 정상적으로 읽을 수 없습니다 (git config exit $cfgExit, 값 없음) — 연결 여부 UNKNOWN, 확인되지 않았습니다." } | ConvertTo-Json -Compress
     exit 0
 }
 
 $cmd = 'git config core.hooksPath .githooks'
-$sys = "[hook:githooks-nudge] $root carries .githooks/ but this clone's core.hooksPath is UNSET — no git hook runs here (pre-commit gates, pre-push secret scan). Wire it: $cmd — or re-run /ywr-harness:harness-init, which wires conditionally (ADR 0015). Nothing was changed; this hook only suggests (ADR 0029)."
+$sys = "[hook:githooks-nudge] $root 에는 .githooks/ 가 있지만 이 클론의 core.hooksPath가 UNSET입니다 — 이 환경에서는 어떤 git 훅도 실행되지 않습니다 (pre-commit 게이트, pre-push secret scan). 연결하려면: $cmd — 또는 조건부로 연결하는 /ywr-harness:harness-init을 다시 실행하세요 (ADR 0015). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0029)."
 $ctx = "The repo at $root ships .githooks/ (pre-commit gates, pre-push secret scan) but this clone's core.hooksPath is unset, so none of it runs locally; CI still gates the content, so the cost is feedback latency (ADR 0015). When the work turns commit-shaped, offer the user the wiring one-liner: $cmd. Do not run it unasked — this surface is suggest-only (ADR 0029)."
 @{
     systemMessage      = $sys

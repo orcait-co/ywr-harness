@@ -25,7 +25,11 @@ invariants the change can actually violate (proportionality, ADR 0050).
    guide rule; ADR 0074 applies it to CI range scoping).
 5. **Docs-as-code (docs/README.md)** — ADRs are append-only (supersede, never
    edit); frontmatter is the single source of truth (no body duplication); new
-   internal doc prose is English.
+   internal doc prose is English. The READER decides rendered-surface language
+   (ywr-harness ADR 0045): every hook `systemMessage` is Korean — state
+   markers, commands and paths verbatim — while `additionalContext` (model)
+   and internal docs stay English; a new hook shipping an English member
+   banner is a finding.
 6. **Secrets** — never committed (`.env` gitignored, `.env.example` only).
    Gitleaks-pin hygiene: NEVER quote a false-positive trigger string in pin
    comments, handoffs, or commit messages — the quotation becomes the next

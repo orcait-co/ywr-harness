@@ -127,6 +127,33 @@ if (-not (Test-Path -LiteralPath $clPath)) {
     else { Good 'release-notes link agrees across CHANGELOG.md and the announce hook' }
 }
 
+# --- hook banner interpolation (ADR 0045) ------------------------------------------------------
+# Korean letters are LEGAL in a PowerShell variable name, so a particle glued to a variable
+# inside a double-quoted banner — "$ver를" — silently interpolates an UNDEFINED variable named
+# ver를 as EMPTY: the value vanishes from the member banner while the joined sys+ctx selftest
+# match stays green through the English additionalContext (measured live 2026-08-11 on the
+# stale-basis banner: both versions dropped, 41/41 cases green). Since ADR 0045 every hook
+# systemMessage is Korean prose, the adjacency is reachable in every hook, so the CLASS is
+# refused here at build time rather than case-by-case in the suites. The fix is ${var}건.
+# Comment lines are skipped (they legitimately QUOTE the trap); a hit inside a single-quoted
+# (inert) string is still refused — bracing it is cheaper than carving a quote-context parser
+# into this gate, and the braced form is correct in both contexts.
+$hookGlued = 0
+foreach ($hf in @(Get-ChildItem -LiteralPath (Join-Path $root 'hooks') -File -Filter '*.ps1' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch '\.selftest\.' })) {
+    $lineNo = 0
+    foreach ($ln in (Get-Content -LiteralPath $hf.FullName)) {
+        $lineNo++
+        if ($ln -match '^\s*#') { continue }
+        if ($ln -match '\$[A-Za-z_][A-Za-z0-9_]*[가-힣]') {
+            Bad ("hooks/$($hf.Name):$lineNo — Hangul glued to a variable name: " +
+                '"$var한글" interpolates an undefined variable named var한글 as EMPTY — brace it: "${var}한글" (ADR 0045)')
+            $hookGlued++
+        }
+    }
+}
+if ($hookGlued -eq 0) { Good 'hook banners: no Hangul-glued variable interpolation' }
+
 # --- component namespacing ------------------------------------------------------------------
 # Plugin components are addressed as `<plugin>:<name>`, so an instruction that names one bare
 # fails at the point of use. Measured 2026-07-26 in a live sideloaded session:

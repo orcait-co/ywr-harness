@@ -49,7 +49,7 @@
 
   "groups": [
     {
-      "//": "One entry per file family that has its own gates. 'match' is a regex anchored at the repo root; 'cwd' is where the command runs; 'strip_prefix' is removed from file paths before they are passed. 'gates' are SELECTORS: ruff | ruff-format | pytest | pytest-nondb | eslint | prettier | tsc | vitest | cargo-clippy | cargo-test | go-vet | go-test | actionlint. A gate outside the set is dropped with the set named. A gate that is this REPO'S OWN SCRIPT (a test entry point no repo-independent selector could name) is a script-gate object: {\"runner\": \"pwsh\", \"script\": \"tools/selftest.ps1\", \"files\": false} — runner is a selector from the verify.runner closed set, script is a repo-relative path held to an allowlist ([A-Za-z0-9._/-] only, no '..', no leading '/' or '-'; refused otherwise), files:true appends the slice's changed files. There is deliberately no argument field: a gate that needs flags wraps them inside the script (ADR 0024). Need a shared TOOL that is missing? Add it to the plugin's closed set, where it is reviewed once and reaches every repo.",
+      "//": "One entry per file family that has its own gates. 'match' is a regex anchored at the repo root; 'cwd' is where the command runs; 'strip_prefix' is removed from file paths before they are passed. 'gates' are SELECTORS: ruff | ruff-format | pytest | pytest-nondb | eslint | prettier | tsc | vitest | cargo-clippy | cargo-test | go-vet | go-test | actionlint. A gate outside the set is dropped with the set named. A gate that is this REPO'S OWN SCRIPT (a test entry point no repo-independent selector could name) is a script-gate object: {\"runner\": \"pwsh\", \"script\": \"tools/selftest.ps1\", \"files\": false} — runner is a selector from the verify.runner closed set, script is a repo-relative path held to an allowlist ([A-Za-z0-9._/-] only, no '..', no leading '/' or '-'; refused otherwise), files:true appends the slice's changed files. There is deliberately no argument field: a gate that needs flags wraps them inside the script (ADR 0024). Need a shared TOOL that is missing? Add it to the plugin's closed set, where it is reviewed once and reaches every repo. Paths the scaffold itself places (scripts/harness/, .githooks/, the CI workflow, the seeds, .harness-version) are claimed BUILT-IN by the emitter and need no entry here (ADR 0044) — declare groups only for files this repo authors.",
       "name": "example-python",
       "match": "^src/.*\\.py$",
       "cwd": "",
@@ -60,14 +60,6 @@
       "//": "The Claude Code host's own project settings. Claimed because `claude plugin install --scope project` writes .claude/settings.json into the tree, and an unclaimed file fails CI (and reads as missing coverage locally). Claiming it is NOT permission to commit `enabledPlugins`: that key forces the plugin on every clone, and CI and pre-commit refuse it in both settings files regardless of its value (ADR 0010, ADR 0022).",
       "name": "claude-host",
       "match": "^\\.claude/settings(\\.local)?\\.json$",
-      "cwd": "",
-      "strip_prefix": "",
-      "gates": []
-    },
-    {
-      "//": "The ywr-harness toolchain stamp (ADR 0042) — /harness-init writes it on every successful run (which plugin version last scaffolded this repo), and the refresh nudge reads it to orient its advice. Claimed here so the partition rule covers it from day one; gates stay empty (one version line, no executable meaning).",
-      "name": "harness-meta",
-      "match": "^\\.harness-version$",
       "cwd": "",
       "strip_prefix": "",
       "gates": []

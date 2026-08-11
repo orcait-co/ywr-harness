@@ -41,7 +41,7 @@ if (-not $src) { $src = '(source absent)' }
 if (-not $dir) {
     $keys = '(none)'
     try { $k = @($payload.PSObject.Properties.Name | Sort-Object); if ($k) { $keys = $k -join ', ' } } catch { }
-    $drift = "[hook:dir-added] SCHEMA DRIFT — a DirectoryAdded payload arrived with no 'directory' field, so this guard could not report what was added to the workspace. Keys received: $keys. Re-verify the payload shape and fix .claude/hooks/directory-added-guard.ps1 (ADR #120)."
+    $drift = "[hook:dir-added] SCHEMA DRIFT — DirectoryAdded 페이로드에 'directory' 필드가 없어, 이 가드가 작업 공간에 무엇이 추가되었는지 보고할 수 없습니다. 수신된 키: $keys. 페이로드 형식을 다시 확인하고 .claude/hooks/directory-added-guard.ps1을 수정하세요 (ADR #120)."
     @{ systemMessage = $drift } | ConvertTo-Json -Compress
     exit 0
 }
@@ -63,10 +63,10 @@ try {
     # Add-Content trap in ADR #111/#112.
     $ErrorActionPreference = 'Stop'
     if (Test-Path -LiteralPath (Join-Path $dir '.claude/skills')) {
-        $loads += 'skills from .claude/skills (with live reload)'
+        $loads += '.claude/skills의 스킬 (라이브 리로드 포함)'
     }
     if (Test-Path -LiteralPath (Join-Path $dir '.claude/agents')) {
-        $loads += 'subagent definitions from .claude/agents — these can shadow the model/effort pins ADR #111/#112 rely on'
+        $loads += '.claude/agents의 서브에이전트 정의 — ADR #111/#112가 의존하는 model/effort 고정을 가릴 수 있음'
     }
     $keysFound = @()
     foreach ($s in @('.claude/settings.json', '.claude/settings.local.json')) {
@@ -81,7 +81,7 @@ try {
         }
         catch { $unparsed += $s }
     }
-    if ($keysFound) { $loads += "$($keysFound -join ' + ') from its settings files (the only settings keys an added directory contributes)" }
+    if ($keysFound) { $loads += "$($keysFound -join ' + ') — 설정 파일에서 로드됨 (추가된 디렉터리가 기여할 수 있는 유일한 설정 키)" }
 
     # CLAUDE.local.md is listed apart because the reference gives it a SECOND
     # precondition the others do not have (ADR #120 review, low).
@@ -93,20 +93,20 @@ try {
 catch { }
 
 $mdEnvSet = [bool][string]$env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
-$parts = @("[hook:dir-added] $dir is now a working directory of this session (source: $src).")
-$parts += "CLAUDE.md's context-isolation claim is a convention, not an enforcement: files under this tree are readable and editable by tools from here on, so business, legal and finance context can enter this session."
-$parts += 'This repo gates none of it — every hook and githook resolves its paths from CLAUDE_PROJECT_DIR, so ruff-on-edit, the ADR append-only guard, the handoff contract, pre-commit lint and the pre-push secret scan all skip edits made in the added tree.'
-if ($loads) { $parts += "Configuration loaded from it: $($loads -join ' · ')." }
-if ($unparsed) { $parts += "Could not parse $($unparsed -join ', '), so whether it contributes enabledPlugins or extraKnownMarketplaces is UNKNOWN, not absent." }
+$parts = @("[hook:dir-added] $dir 디렉터리가 이 세션의 작업 디렉터리로 추가되었습니다 (source: $src).")
+$parts += "CLAUDE.md의 컨텍스트 격리 주장은 관례일 뿐 강제 사항이 아닙니다: 이 트리 하위의 파일은 이제부터 도구가 읽고 편집할 수 있으므로, 비즈니스·법률·재무 관련 맥락이 이 세션에 유입될 수 있습니다."
+$parts += '이 저장소는 이를 전혀 게이트하지 않습니다 — 모든 훅과 git 훅은 경로를 CLAUDE_PROJECT_DIR 기준으로 해석하므로, ruff-on-edit, ADR append-only 가드, handoff 계약, pre-commit lint, pre-push secret scan 모두 추가된 트리에서의 수정을 건너뜁니다.'
+if ($loads) { $parts += "여기서 로드된 설정: $($loads -join ' · ')." }
+if ($unparsed) { $parts += "$($unparsed -join ', ')을(를) 파싱할 수 없어, enabledPlugins 또는 extraKnownMarketplaces 기여 여부는 UNKNOWN이며 부재로 단정할 수 없습니다." }
 if ($instr) {
     $found = $instr -join ', '
-    if ($mdEnvSet) { $parts += "Instruction files present ($found) and CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD is set — they MERGE into this session's prompt." }
-    else { $parts += "Instruction files present ($found), but CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD is unset, so they stay readable as files only and do not join the prompt." }
+    if ($mdEnvSet) { $parts += "지침 파일 존재 ($found), CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD도 설정됨 — 이 세션의 프롬프트에 MERGE됩니다." }
+    else { $parts += "지침 파일 존재 ($found), 그러나 CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD가 설정되지 않아 파일로만 읽히고 프롬프트에는 합류하지 않습니다." }
 }
 if ($instrLocal) {
-    if ($mdEnvSet) { $parts += 'CLAUDE.local.md is present and that env var is set, but it merges only while the `local` settings source is also enabled (the default) — one condition more than the other instruction files.' }
-    else { $parts += 'CLAUDE.local.md is present and does not join the prompt either, for the same unset env var.' }
+    if ($mdEnvSet) { $parts += 'CLAUDE.local.md가 존재하고 해당 환경 변수도 설정되어 있지만, `local` 설정 소스도 함께 활성화되어 있을 때만 병합됩니다 (기본값) — 다른 지침 파일보다 조건이 하나 더 있습니다.' }
+    else { $parts += 'CLAUDE.local.md가 존재하지만 같은 이유(환경 변수 미설정)로 프롬프트에 합류하지 않습니다.' }
 }
-$parts += 'Undo with /permissions if this was not intended.'
+$parts += '의도한 것이 아니라면 /permissions로 되돌리세요.'
 @{ systemMessage = ($parts -join ' ') } | ConvertTo-Json -Compress
 exit 0

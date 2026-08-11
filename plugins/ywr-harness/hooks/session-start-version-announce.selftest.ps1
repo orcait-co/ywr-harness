@@ -216,7 +216,7 @@ try {
             $out = Invoke-Hook (New-Payload) $hook
             $ok = (Assert-Announce 'blocked state write: announce with may-repeat note' $out `
                     @('v2\.4\.0 → v2\.5\.0', '기록 실패', '반복될 수 있습니다') `
-                    @('could not be read')) -and $ok
+                    @('버전으로 읽을 수 없습니다')) -and $ok
             $ok = (Assert-True 'blocked write: state untouched' ((Get-State) -eq '2.4.0') `
                     "state reads [$(Get-State)] (want 2.4.0)") -and $ok
         }
@@ -240,7 +240,7 @@ try {
     #    read its own manifest is broken; anti-vacuity posture), and announcements declared OFF
     $out = Invoke-Hook (New-Payload) $hookBroken
     $ok = (Assert-Announce 'broken own manifest is reported' $out `
-            @('could not be read as a version', 'announcements are OFF') `
+            @('버전으로 읽을 수 없습니다', '버전 안내는 OFF') `
             @('업데이트됨', '주요 변경')) -and $ok
 
     # 10. wrong event name -> silent (defensive event guard, symmetric with siblings)

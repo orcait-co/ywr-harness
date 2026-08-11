@@ -887,6 +887,100 @@ try { & git init -q 2>$null } finally { Pop-Location }
 $rY6 = Invoke-Gates $y6 @('--all')
 $ok = (Assert-True 'Y6 --all on an empty tree exits 0 and still prints the trailer facts' ($rY6.Code -eq 0 -and $rY6.Out -match 'review canon:') "exit=$($rY6.Code) out=$($rY6.Out)") -and $ok
 
+# --- Z: built-in scaffold claims (ADR 0044) ------------------------------------------------------
+# Z1: a scaffold-placed path no declared group matches is claimed built-in and REPORTED with its
+# name; a genuinely foreign file still fails the partition alone. Mutation anchors: dropping the
+# built-in claim moves .harness-version into ungrouped (the 1-file count fails); dropping the
+# report block fails the scaffold-claimed match while the count assertion still holds — each
+# half of the mechanism fails a distinct assertion.
+$z1 = New-Repo 'scaffold-claim' $CFG @('.harness-version', 'weird/thing.rb')
+$rZ1 = Invoke-Gates $z1 @()
+$ok = (Assert-True 'Z1 scaffold path claimed built-in, reported with the ADR' ($rZ1.Out -match 'scaffold-claimed \(1 file\(s\)' -and $rZ1.Out -match 'ADR 0044') $rZ1.Out) -and $ok
+$ok = (Assert-True 'Z1 the claimed path is NAMED on a 2-space line (parser-inert shape)' ($rZ1.Out -match '(?m)^  \.harness-version\s*$') $rZ1.Out) -and $ok
+$ok = (Assert-True 'Z1 the header sits at column 0 and never at command depth' ($rZ1.Out -match '(?m)^scaffold-claimed \(' -and $rZ1.Out -notmatch '(?m)^    \.harness-version') $rZ1.Out) -and $ok
+$ok = (Assert-True 'Z1 the foreign file still fails the partition alone' ($rZ1.Out -match 'ungrouped \(1 file' -and $rZ1.Out -match 'weird/thing\.rb') $rZ1.Out) -and $ok
+
+# Z2: a declared group WINS over the built-in claim — the set consumes leftovers only, so a repo
+# that already claims a scaffold path (every pre-0044 scaffolded repo does) changes nothing.
+$metaCfg = '{ "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] }, "groups": [ { "name": "meta", "match": "^\\.harness-version$", "cwd": "", "strip_prefix": "", "gates": [] } ] }'
+$z2 = New-Repo 'scaffold-claim-declared' $metaCfg @('.harness-version')
+$rZ2 = Invoke-Gates $z2 @()
+$ok = (Assert-True 'Z2 a declared group WINS over the built-in claim' ($rZ2.Out -match '\[meta\] 1 file' -and $rZ2.Out -notmatch 'scaffold-claimed') $rZ2.Out) -and $ok
+
+# Z3: the claim composes with --all (CI's push-run partition audit is where the pre-0044 failure
+# actually landed): the tracked, unchanged .harness.json is in the full-tree scope, claimed
+# built-in, and only the repo's own files stay ungrouped.
+$rZ3 = Invoke-Gates $z1 @('--all')
+$ok = (Assert-True 'Z3 --all claims scaffold paths built-in too' ($rZ3.Out -match 'scaffold-claimed \(2 file\(s\)' -and $rZ3.Out -match '(?m)^  \.harness\.json\s*$') $rZ3.Out) -and $ok
+$ok = (Assert-True 'Z3 --all still fails the partition on the repo''s own files' ($rZ3.Out -match 'ungrouped \(' -and $rZ3.Out -match 'weird/thing\.rb') $rZ3.Out) -and $ok
+
+# Z4: THE PAIRING GATE — harness_config.SCAFFOLD_CLAIMS must equal init.ps1's placement-map
+# destinations plus the generated .harness-version stamp, in BOTH directions (ADR 0044's
+# accepted second copy; the fm_digest pairing shape). Extraction is STRICT: a computed value in
+# a placement map fails this case loudly rather than degrading to a fragment (the ADR 0033
+# lesson — a fragment in the map is a wrong path compared quietly). Scope, stated so this is
+# never read wider than it checks (review 2026-08-11, low): the pairing covers the DESTINATION
+# axis only — the only axis SCAFFOLD_CLAIMS carries. A template SOURCE-key rename with the same
+# destination, or a GUARD_MARKER change, passes here by design; both are irrelevant to claims.
+$initPath = Join-Path $PSScriptRoot '../skills/harness-init/init.ps1'
+$zTok = $null; $zErr = $null
+$initAst = [System.Management.Automation.Language.Parser]::ParseFile($initPath, [ref]$zTok, [ref]$zErr)
+function Get-ZPureString($Node) {
+    if ($Node -is [System.Management.Automation.Language.StringConstantExpressionAst]) { return $Node.Value }
+    if ($Node -is [System.Management.Automation.Language.CommandExpressionAst]) { return (Get-ZPureString $Node.Expression) }
+    if ($Node -is [System.Management.Automation.Language.PipelineAst]) {
+        $e = @($Node.PipelineElements)
+        if ($e.Count -eq 1) { return (Get-ZPureString $e[0]) }
+    }
+    return $null
+}
+function Get-ZMapDestinations($Ast, [string]$VarName) {
+    $asgn = $Ast.Find({ param($a)
+            $a -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $a.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+            $a.Left.VariablePath.UserPath -eq $VarName }, $true)
+    if (-not $asgn) { return $null }
+    $e = $asgn.Right
+    if ($e -is [System.Management.Automation.Language.PipelineAst]) {
+        $el = @($e.PipelineElements)
+        if ($el.Count -ne 1) { return $null }
+        $e = $el[0]
+    }
+    if ($e -is [System.Management.Automation.Language.CommandExpressionAst]) { $e = $e.Expression }
+    while ($e -is [System.Management.Automation.Language.AttributedExpressionAst]) { $e = $e.Child }
+    if ($e -isnot [System.Management.Automation.Language.HashtableAst]) { return $null }
+    $vals = @()
+    foreach ($kv in $e.KeyValuePairs) {
+        $v = Get-ZPureString $kv.Item2
+        if ($null -eq $v) { return $null }
+        $vals += $v
+    }
+    return $vals
+}
+$zDests = @()
+$zExtractOk = $true
+foreach ($m in 'TOOLCHAIN', 'GUARDED', 'SEED', 'SEED_CORPUS') {
+    $v = Get-ZMapDestinations $initAst $m
+    if ($null -eq $v -or -not $v.Count) { $zExtractOk = $false; break }
+    $zDests += $v
+}
+$ok = (Assert-True 'Z4 init.ps1 placement maps extract whole (strict — no fragments)' $zExtractOk 'AST extraction returned null/empty for a placement map — init.ps1 literals moved; fix the extraction or the maps, and keep SCAFFOLD_CLAIMS paired') -and $ok
+if ($zExtractOk) {
+    $zExpected = @($zDests + '.harness-version' | Sort-Object -Unique)
+    $zSavedPP = $env:PYTHONPATH
+    $env:PYTHONPATH = $PSScriptRoot
+    try {
+        $zActual = @(& $py.Source -c "import harness_config; print('\n'.join(sorted(harness_config.SCAFFOLD_CLAIMS)))" 2>&1) |
+            ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }
+    }
+    finally { $env:PYTHONPATH = $zSavedPP }
+    $zMissing = @($zExpected | Where-Object { $zActual -notcontains $_ })
+    $zExtra = @($zActual | Where-Object { $zExpected -notcontains $_ })
+    $ok = (Assert-True 'Z4 SCAFFOLD_CLAIMS == init.ps1 destinations + .harness-version (both directions)' `
+        (-not $zMissing.Count -and -not $zExtra.Count) `
+        "missing from SCAFFOLD_CLAIMS: [$($zMissing -join ', ')] · extra in SCAFFOLD_CLAIMS: [$($zExtra -join ', ')]") -and $ok
+}
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_gates selftest: FAILED' -ForegroundColor Red; exit 1 }

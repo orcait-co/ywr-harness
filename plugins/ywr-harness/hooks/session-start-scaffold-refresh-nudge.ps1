@@ -74,7 +74,7 @@ $cwd = ([string]$payload.cwd).Trim()
 if (-not $cwd) {
     $keys = '(none)'
     try { $k = @($payload.PSObject.Properties.Name | Sort-Object); if ($k) { $keys = $k -join ', ' } } catch { }
-    $drift = "[hook:scaffold-refresh-nudge] SCHEMA DRIFT — a SessionStart payload arrived with no 'cwd' field, so this hook could not check whether this repo's vendored toolchain matches the installed plugin. Keys received: $keys. Re-verify the payload shape and fix hooks/session-start-scaffold-refresh-nudge.ps1 (ADR 0033)."
+    $drift = "[hook:scaffold-refresh-nudge] SCHEMA DRIFT — SessionStart 페이로드에 'cwd' 필드가 없어, 이 저장소의 벤더링된 툴체인이 설치된 플러그인과 일치하는지 확인할 수 없습니다. 수신된 키: $keys. 페이로드 형식을 다시 확인하고 hooks/session-start-scaffold-refresh-nudge.ps1을 수정하세요 (ADR 0033)."
     @{ systemMessage = $drift } | ConvertTo-Json -Compress
     exit 0
 }
@@ -184,7 +184,7 @@ function Get-LiteralValue($Ast, [string]$VarName) {
     return (Get-PureStringConstant $asgn.Right)
 }
 function Write-ExtractionDrift([string]$Detail) {
-    $msg = "[hook:scaffold-refresh-nudge] EXTRACTION DRIFT — $Detail — so whether $root's vendored toolchain matches the installed plugin is UNKNOWN, not verified. The installed plugin's own files are inconsistent: update or reinstall ywr-harness, and report it (ADR 0033)."
+    $msg = "[hook:scaffold-refresh-nudge] EXTRACTION DRIFT — $Detail — 이 저장소($root)의 벤더링된 툴체인이 설치된 플러그인과 일치하는지는 UNKNOWN, 확인되지 않았습니다. 설치된 플러그인 자체의 파일이 일관되지 않습니다: ywr-harness를 업데이트하거나 재설치하고 이를 보고하세요 (ADR 0033)."
     @{ systemMessage = $msg } | ConvertTo-Json -Compress
 }
 
@@ -199,7 +199,7 @@ if (Test-File $initPath) {
     }
 }
 if (-not $toolchain -or -not $guarded -or -not $marker) {
-    Write-ExtractionDrift 'the placement map could not be read from the installed plugin''s skills/harness-init/init.ps1 ($TOOLCHAIN/$GUARDED/$GUARD_MARKER literals)'
+    Write-ExtractionDrift '설치된 플러그인의 skills/harness-init/init.ps1에서 배치 맵을 읽을 수 없습니다 ($TOOLCHAIN/$GUARDED/$GUARD_MARKER 리터럴)'
     exit 0
 }
 
@@ -212,7 +212,7 @@ if (-not $sentinels.Count) {
     # ever moves the vendored scripts, an unchecked empty list would silently disable this hook
     # on every repo forever, which is the anti-vacuity failure mode this hook exists to refuse
     # (review 2026-08-06, medium).
-    Write-ExtractionDrift 'the extracted placement map contains no scripts/harness/*.py destination, so the ownership sentinel this hook keys on has moved in init.ps1'
+    Write-ExtractionDrift '추출된 배치 맵에 scripts/harness/*.py 대상이 없어, 이 훅이 기준으로 삼는 ownership sentinel이 init.ps1에서 이동했습니다'
     exit 0
 }
 $ours = $false
@@ -232,14 +232,14 @@ $drifted = [System.Collections.Generic.List[string]]::new()
 foreach ($k in @($toolchain.Keys)) {
     $src = Join-Path $templatesDir $k
     $dst = Join-Path $root $toolchain[$k]
-    if (-not (Test-File $src)) { Write-ExtractionDrift "template missing from the installed plugin: templates/$k"; exit 0 }
+    if (-not (Test-File $src)) { Write-ExtractionDrift "설치된 플러그인에 템플릿이 없습니다: templates/$k"; exit 0 }
     if (-not (Test-File $dst)) { $drifted.Add("$($toolchain[$k]) (missing)"); continue }
     try { if ((Get-ComparableText $src) -ne (Get-ComparableText $dst)) { $drifted.Add($toolchain[$k]) } } catch { $drifted.Add("$($toolchain[$k]) (unreadable)") }
 }
 foreach ($k in @($guarded.Keys)) {
     $src = Join-Path $templatesDir $k
     $dst = Join-Path $root $guarded[$k]
-    if (-not (Test-File $src)) { Write-ExtractionDrift "template missing from the installed plugin: templates/$k"; exit 0 }
+    if (-not (Test-File $src)) { Write-ExtractionDrift "설치된 플러그인에 템플릿이 없습니다: templates/$k"; exit 0 }
     if (-not (Test-File $dst)) { $drifted.Add("$($guarded[$k]) (missing)"); continue }
     try {
         $body = Get-ComparableText $dst
@@ -330,7 +330,7 @@ try {
 catch { $staleActive = $null }
 
 if ($staleActive) {
-    $sys = "[hook:scaffold-refresh-nudge] ${root}: $($drifted.Count) vendored toolchain file(s) differ from this session's ywr-harness ($ver) templates — $fileList — but the comparison basis is STALE: this session still runs $ver while this machine's registered install is $staleActive. The verdict may be inverted (the repo may simply match the newer install). Run /reload-plugins (or restart the session) and let the next session start re-check; do NOT run /ywr-harness:harness-init from this session — it would place the $ver templates (ADR 0039). Nothing was changed; this hook only suggests (ADR 0033)."
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $($drifted.Count)개의 벤더링된 툴체인 파일이 이 세션의 ywr-harness ($ver) 템플릿과 다릅니다 — $fileList — 하지만 비교 기준이 STALE합니다: 이 세션은 여전히 ${ver}를 실행 중이지만 이 머신에 등록된 설치는 ${staleActive}입니다. 판정이 뒤집혔을 수 있습니다 (저장소가 단순히 더 새로운 설치와 일치할 수 있습니다). /reload-plugins를 실행하거나 (또는 세션을 재시작) 다음 세션 시작 시 다시 확인하세요; 이 세션에서는 /ywr-harness:harness-init을 실행하지 마세요 — $ver 템플릿을 배치하게 됩니다 (ADR 0039). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033)."
     $ctx = "The repo at $root shows scaffold-toolchain drift ($fileList), but the verdict basis is STALE: this session's ywr-harness hooks and skills still run $ver while the machine's registered install is $staleActive — a running session keeps the plugin version it loaded until /reload-plugins or a restart. The drift verdict may therefore be inverted: the repo may already match the newer install's templates. Do NOT run or suggest /ywr-harness:harness-init from this session — the loaded skill would place the $ver templates and could REVERT correctly refreshed files (ADR 0039). The remedy is /reload-plugins or a session restart, after which the next session start re-checks against the updated plugin. This surface is suggest-only (ADR 0033)."
     @{
         systemMessage      = $sys
@@ -388,18 +388,18 @@ if ($ver -match '^v(\d+(\.\d+)+)$') {
     } catch { $runVer = $null }
 }
 
-$fileClause = "$($drifted.Count) vendored toolchain file(s) differ from the installed ywr-harness ($ver) templates — $fileList"
+$fileClause = "$($drifted.Count)개의 벤더링된 툴체인 파일이 설치된 ywr-harness ($ver) 템플릿과 다릅니다 — $fileList"
 if ($stampVer -and $runVer -and $stampVer -gt $runVer) {
-    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause — and this repo's .harness-version stamp says it was last scaffolded by ywr-harness $stampDisp, NEWER than this session's $ver. The repo is AHEAD: do NOT run /ywr-harness:harness-init from this session — it would place the older $ver templates and REVERT the newer refresh (ADR 0042). Remedy: /ywr-harness:update (or 'claude plugin update'), then restart or /reload-plugins and re-check. Nothing was changed; this hook only suggests (ADR 0033)."
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause — 그리고 이 저장소의 .harness-version 스탬프에 따르면 마지막으로 ywr-harness $stampDisp 로 스캐폴딩되었으며, 이는 이 세션의 $ver 보다 NEWER합니다. 저장소가 AHEAD 상태입니다: 이 세션에서 /ywr-harness:harness-init을 실행하지 마세요 — 더 오래된 $ver 템플릿을 배치하여 더 새로운 리프레시를 REVERT하게 됩니다 (ADR 0042). 해결 방법: /ywr-harness:update (또는 'claude plugin update')를 실행한 뒤 재시작하거나 /reload-plugins 후 다시 확인하세요. 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033)."
     $ctx = "The repo at $root shows scaffold-toolchain drift ($fileList), and its .harness-version stamp ($stampDisp) is NEWER than this session's installed ywr-harness ($ver) — another writer refreshed this repo with a newer plugin (ADR 0042). Do NOT run or suggest /ywr-harness:harness-init from this session: the loaded skill would place the $ver templates and REVERT the newer refresh. The remedy is updating the plugin (/ywr-harness:update or 'claude plugin update') and reloading or restarting; the next session start re-checks. This surface is suggest-only (ADR 0033)."
 } elseif ($stampVer -and $runVer -and $stampVer -lt $runVer) {
-    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause. The repo's .harness-version stamp ($stampDisp) is OLDER than this session's $ver — the refresh direction is measured, not guessed (ADR 0042). Refresh: run /ywr-harness:harness-init once for this repo and commit (re-run is safe here: toolchain refreshed, seeds preserved, nothing deleted — ADR 0010). Nothing was changed; this hook only suggests (ADR 0033)."
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause. 이 저장소의 .harness-version 스탬프($stampDisp)는 이 세션의 $ver 보다 OLDER합니다 — 리프레시 방향은 추측이 아니라 측정된 것입니다 (ADR 0042). 리프레시: 이 저장소에서 /ywr-harness:harness-init을 한 번 실행하고 커밋하세요 (여기서는 재실행이 안전합니다: 툴체인만 갱신되고, 시드는 보존되며, 아무것도 삭제되지 않습니다 — ADR 0010). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033)."
     $ctx = "The repo at $root carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates ($ver), and the repo's .harness-version stamp ($stampDisp) is OLDER than the installed plugin — the repo is genuinely behind (ADR 0042). A /ywr-harness:harness-init re-run refreshes the toolchain from the canon and never touches seeds or accumulated ADRs. Offer the re-run when the work touches gates, hooks, or CI; do not run it unasked — this surface is suggest-only (ADR 0033)."
 } elseif ($stampVer -and $runVer -and $stampVer -eq $runVer) {
-    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause — while the repo's .harness-version stamp EQUALS this session's $ver, so the difference is a hand-edit or an incomplete placement, not a version gap (ADR 0042). A /ywr-harness:harness-init re-run would REVERT hand-edits to the canon templates — ADR 0010's intended signal (harness defects are fixed in the canon, never patched in a consuming repo). Nothing was changed; this hook only suggests (ADR 0033)."
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause — 저장소의 .harness-version 스탬프가 이 세션의 $ver 와 EQUALS이므로, 이 차이는 버전 격차가 아니라 수동 편집(hand-edit) 또는 불완전한 배치입니다 (ADR 0042). /ywr-harness:harness-init을 재실행하면 수동 편집을 캐논 템플릿으로 REVERT하게 됩니다 — 이는 ADR 0010이 의도한 신호입니다 (하니스 결함은 캐논에서 고치며, 소비 저장소에서 패치하지 않습니다). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033)."
     $ctx = "The repo at $root shows scaffold-toolchain drift ($fileList) at the SAME version as this session's installed plugin (stamp $stampDisp equals $ver): a hand-edit or partial placement, not staleness (ADR 0042). A harness-init re-run reverts hand-edits — the intended ADR 0010 signal, but confirm the edits are not deliberate local work in progress before suggesting it. This surface is suggest-only (ADR 0033)."
 } else {
-    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause. CAVEAT — this comparison is direction-blind (no readable .harness-version stamp): if another writer refreshed this repo with a NEWER plugin than this machine's, a /ywr-harness:harness-init re-run from here would REVERT their refresh (ADR 0042). Confirm the installed plugin is current (/ywr-harness:update) BEFORE running it; a refresh re-run is otherwise safe (toolchain refreshed, seeds preserved, nothing deleted — ADR 0010). Nothing was changed; this hook only suggests (ADR 0033)."
+    $sys = "[hook:scaffold-refresh-nudge] ${root}: $fileClause. CAVEAT — 이 비교는 direction-blind 상태입니다 (읽을 수 있는 .harness-version 스탬프 없음): 만약 다른 작성자가 이 머신보다 더 새로운 플러그인으로 이 저장소를 리프레시했다면, 여기서 /ywr-harness:harness-init을 재실행하면 그 리프레시를 REVERT하게 됩니다 (ADR 0042). 실행하기 전에 설치된 플러그인이 최신인지 확인하세요 (/ywr-harness:update); 그 외에는 재실행이 안전합니다 (툴체인 갱신, 시드 보존, 삭제 없음 — ADR 0010). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033)."
     $ctx = "The repo at $root carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates ($ver): $fileList. No readable .harness-version stamp, so the comparison is DIRECTION-BLIND: if this working tree deliberately carries NEWER copies than the installed plugin (the canon mid-slice, or a multi-writer repo refreshed by a newer plugin), a re-run would REVERT them to the older installed templates (ADR 0042). Offer the re-run when the work touches gates, hooks, or CI, after confirming the installed plugin is current; do not run it unasked — this surface is suggest-only (ADR 0033)."
 }
 @{

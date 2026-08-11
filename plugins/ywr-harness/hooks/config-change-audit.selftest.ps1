@@ -43,12 +43,12 @@ $ok = $true
 # 1. real payload shape -> systemMessage names the changed tier (user-addressed banner)
 $out = Invoke-Hook '{"hook_event_name":"ConfigChange","source":"project_settings"}'
 $ok = (Assert-SystemMessage 'audit systemMessage' $out `
-        @('\[hook:config-audit\] project_settings modified', 'explicit user approval') `
+        @('\[hook:config-audit\] project_settings 세션 중 변경됨', '명시적인 사용자 승인') `
         @('SCHEMA DRIFT')) -and $ok
 # 2. optional file_path is surfaced when present (it names WHICH file, the tier does not)
 $out = Invoke-Hook '{"hook_event_name":"ConfigChange","source":"local_settings","file_path":"C:\\p\\.claude\\settings.local.json"}'
 $ok = (Assert-SystemMessage 'file_path surfaced' $out `
-        @('local_settings modified', 'settings\.local\.json') @('SCHEMA DRIFT')) -and $ok
+        @('local_settings 세션 중 변경됨', 'settings\.local\.json') @('SCHEMA DRIFT')) -and $ok
 # 3. garbage stdin -> silent exit 0 (unparseable = infra, not drift)
 $out = Invoke-Hook 'not json at all {{{'
 $ok = (Assert-EmptyStdout 'garbage fail-open' $out) -and $ok
@@ -60,18 +60,18 @@ $ok = (Assert-EmptyStdout 'wrong event silent' $out) -and $ok
 #    under the console's default codepage unless InputEncoding is UTF8 first)
 $out = Invoke-Hook ([char]0xFEFF + '{"hook_event_name":"ConfigChange","source":"project_settings"}')
 $ok = (Assert-SystemMessage 'BOM-prefixed stdin' $out `
-        @('\[hook:config-audit\] project_settings modified') @('SCHEMA DRIFT')) -and $ok
+        @('\[hook:config-audit\] project_settings 세션 중 변경됨') @('SCHEMA DRIFT')) -and $ok
 # 6. whitespace-only source -> drift, not a tier-less cosmetic banner and not silence
 $out = Invoke-Hook '{"hook_event_name":"ConfigChange","source":"  "}'
 $ok = (Assert-SystemMessage 'whitespace source reports drift' $out `
-        @('SCHEMA DRIFT', 'Keys received: hook_event_name, source') @('modified mid-session')) -and $ok
+        @('SCHEMA DRIFT', '수신된 키: hook_event_name, source') @('세션 중 변경됨')) -and $ok
 # 7. REGRESSION (ADR #120): the field name this hook shipped with. A payload carrying
 #    `config_source` and no `source` is the exact production input that produced two days
 #    of silence — it must now be reported, and the report must name the keys it did get.
 $out = Invoke-Hook '{"hook_event_name":"ConfigChange","config_source":"project_settings"}'
 $ok = (Assert-SystemMessage 'old config_source name is reported as drift' $out `
-        @('SCHEMA DRIFT', 'Keys received: config_source, hook_event_name') `
-        @('project_settings modified')) -and $ok
+        @('SCHEMA DRIFT', '수신된 키: config_source, hook_event_name') `
+        @('\[hook:config-audit\] project_settings')) -and $ok
 
 # META — every case above already carried a negative, so the ADR #116 guard in
 # Assert-SystemMessage is PREVENTIVE here rather than a fix. That is exactly why it needs this

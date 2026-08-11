@@ -19,10 +19,10 @@
 # and the selftest asserts the confinement. Announce-once is impossible without state, and a
 # stateless per-session notice is the nag class ADR 0029 already rejected.
 #
-# systemMessage is KOREAN — a deliberate divergence from the English sibling hooks (ADR 0030):
-# this hook's payload IS the member surface family (CHANGELOG, dist README, artifact), and an
-# English wrapper around Korean bullets serves no reader. additionalContext stays English; its
-# reader is the model.
+# systemMessage is KOREAN — since ADR 0045 this is the plugin-wide rule, not a per-hook
+# divergence: every hook's systemMessage is Korean (the member reader), every additionalContext
+# stays English (the model reader). This hook was simply first (ADR 0030); the sibling hooks now
+# carry the same split.
 #
 # Decision table (ADR 0030, absent-state row amended by ADR 0031): own manifest unreadable ->
 # reported (a plugin that cannot read its own manifest is broken — visible, never silent). No
@@ -55,7 +55,7 @@ try { $currentRaw = ([string](Get-Content -LiteralPath $manifestPath -Raw -Error
 $current = $null
 if ($currentRaw -match '^(\d+)\.(\d+)\.(\d+)') { $current = [version]$Matches[0] }
 if (-not $current) {
-    @{ systemMessage = "[hook:version-announce] this plugin's own .claude-plugin/plugin.json could not be read as a version (got '$currentRaw') — the install at $(Split-Path $PSScriptRoot -Parent) is broken; version announcements are OFF, not verified." } | ConvertTo-Json -Compress
+    @{ systemMessage = "[hook:version-announce] 이 플러그인 자체의 .claude-plugin/plugin.json을 버전으로 읽을 수 없습니다 (받은 값: '$currentRaw') — $(Split-Path $PSScriptRoot -Parent) 의 설치가 손상되었습니다; 버전 안내는 OFF이며 확인되지 않았습니다." } | ConvertTo-Json -Compress
     exit 0
 }
 

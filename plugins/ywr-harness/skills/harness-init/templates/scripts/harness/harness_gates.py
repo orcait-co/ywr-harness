@@ -357,7 +357,12 @@ def main() -> int:
         grouped[i] = sorted(f for f in files if rx and rx.match(f)) if rx else []
 
     claimed = {f for fs in grouped.values() for f in fs}
-    ungrouped = sorted(set(files) - claimed)
+    leftover = set(files) - claimed
+    # Built-in claims (ADR 0044): scaffold-placed paths no declared group matched. Declared
+    # groups win by construction — only leftovers are consulted — and the claim is REPORTED
+    # below, never silent: an absorbed file that printed nowhere would read as coverage.
+    scaffold_claimed = sorted(leftover & hc.SCAFFOLD_CLAIMS)
+    ungrouped = sorted(leftover - hc.SCAFFOLD_CLAIMS)
 
     hc.say("gates:")
     emitted = 0
@@ -425,6 +430,17 @@ def main() -> int:
         # exact string — change them together.
         hc.say("  (none — no declared group matched, matched groups declare no gates, or every "
                "declared gate was refused or skipped)")
+
+    # Built-in scaffold claims, stated with every path (ADR 0044). Line shapes are chosen for
+    # the two output parsers: a column-0 header that matches neither window-close sentinel
+    # (`^ungrouped (` / `^review tier:`) nor CI's `^ungrouped (` failure grep, and 2-space file
+    # lines that neither extractor (`^ {4}[^ (]`, awk `/^    [^ (]/`) can read as a command.
+    # The paths printed here are constants from the closed set, never repo-supplied text.
+    if scaffold_claimed:
+        hc.say(f"scaffold-claimed ({len(scaffold_claimed)} file(s) — placed or written by "
+               "/ywr-harness:harness-init and claimed built-in; no groups entry needed — ADR 0044):")
+        for f in scaffold_claimed:
+            hc.say(f"  {f}")
 
     # Never silent: a file no group claims is a file no deterministic gate sees.
     if ungrouped:
