@@ -135,7 +135,7 @@ try {
     $out = Invoke-Hook (New-Payload) $hook
     $ok = (Assert-Announce 'fresh: link-only welcome' $out `
             @('\[hook:version-announce\]', 'v2\.5\.0 적용 중', '첫 버전 안내',
-            'artifact/fec5c994-af2f-4e71-9e33-b03acc8cc1f7#rn', 'Team 좌석 로그인',
+            'artifact/a4387fdf-63d1-4a3d-9c8e-c362c9215a54#rn', 'Team 좌석 로그인',
             'once per machine') `
             @('업데이트됨', '→', '첫 번째 변경', '외 \d+건', '주요 변경')) -and $ok
     $ok = (Assert-True 'fresh: state seeded to current' ((Get-State) -eq '2.5.0') `
@@ -156,7 +156,7 @@ try {
             @('\[hook:version-announce\]', 'v2\.4\.0 → v2\.5\.0', '업데이트됨',
             '첫 번째 변경: 백틱 조각과 강조 표시가 섞여',
             '두 번째 변경이 여러 줄로 이어집니다', '세 번째 변경',
-            '외 1건', 'artifact/fec5c994-af2f-4e71-9e33-b03acc8cc1f7#rn', 'Team 좌석 로그인',
+            '외 1건', 'artifact/a4387fdf-63d1-4a3d-9c8e-c362c9215a54#rn', 'Team 좌석 로그인',
             'once-per-version', 'CHANGELOG') `
             @('네 번째', '\*\*', '`', '기록 실패', 'could not be read',
             '첫 버전 안내', '적용 중', 'once per machine')) -and $ok
@@ -199,7 +199,7 @@ try {
     Set-State '2.4.0'
     $out = Invoke-Hook (New-Payload) $hookNoNotes
     $ok = (Assert-Announce 'missing CHANGELOG: link-only announcement' $out `
-            @('v2\.4\.0 → v2\.5\.0', '업데이트됨', 'artifact/fec5c994-af2f-4e71-9e33-b03acc8cc1f7#rn') `
+            @('v2\.4\.0 → v2\.5\.0', '업데이트됨', 'artifact/a4387fdf-63d1-4a3d-9c8e-c362c9215a54#rn') `
             @('주요 변경', '외 \d+건', '첫 번째 변경', '첫 버전 안내', '적용 중', 'once per machine')) -and $ok
 
     # 8. state write blocked -> announce ANYWAY with the visible may-repeat note (never a lost

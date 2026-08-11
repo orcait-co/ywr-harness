@@ -44,7 +44,7 @@ if ([string]$payload.hook_event_name -ne 'SessionStart') { exit 0 }
 
 # One link, two shipped surfaces: this constant and the CHANGELOG header. manifest-gate.ps1
 # asserts the two agree, so neither can drift alone.
-$rnUrl = 'https://claude.ai/code/artifact/fec5c994-af2f-4e71-9e33-b03acc8cc1f7#rn'
+$rnUrl = 'https://claude.ai/code/artifact/a4387fdf-63d1-4a3d-9c8e-c362c9215a54#rn'
 
 # --- own version (the loaded one) -------------------------------------------------------------
 $manifestPath = Join-Path $PSScriptRoot '../.claude-plugin/plugin.json'
