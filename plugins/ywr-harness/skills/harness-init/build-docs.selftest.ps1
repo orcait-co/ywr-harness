@@ -140,6 +140,72 @@ $ok = (Assert-True 'G a relocated corpus builds and reads as current (no false S
 $rG2 = & $py.Source $verifyMap --repo $repo2 'x.py' 2>&1 | Out-String
 $ok = (Assert-True 'G2 the relocated corpus still yields a real signal on a frontmatter edit' ($rG2 -match 'index: STALE') $rG2) -and $ok
 
+# --- H: site title resolution (ADR 0050) — the declaration is the source, env a one-off override
+# The revert this pins (issue #43): env-only sourcing meant any caller that did not set
+# DOCS_SITE_TITLE — harness-init re-runs, CI — rebuilt committed surfaces back to the default
+# title. Cases A–F double as the no-declaration control: their fixture has no .harness.json
+# anywhere up the temp tree, and their builds carry the default title.
+$repo3 = Join-Path $fx 'repo-title'
+$docs3 = Join-Path $repo3 'docs'
+New-Item -ItemType Directory -Force -Path (Join-Path $docs3 'adr'), (Join-Path $docs3 'spec') | Out-Null
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docs3 'build_docs.py')
+[IO.File]::WriteAllText((Join-Path $docs3 'adr/0001-a.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"a`"`nstatus: accepted`n---`n# 0001`n")
+function Invoke-TitleBuild {
+    $out = & $py.Source (Join-Path $docs3 'build_docs.py') 2>&1 | Out-String
+    return @{ Out = $out; Code = $LASTEXITCODE }
+}
+
+[IO.File]::WriteAllText((Join-Path $repo3 '.harness.json'), '{ "docs": { "site_title": "myrepo - internal docs" } }')
+$rH = Invoke-TitleBuild
+$h1 = [IO.File]::ReadAllText((Join-Path $docs3 'docs.html'))
+$h1a = [IO.File]::ReadAllText((Join-Path $docs3 'docs.artifact.html'))
+$ok = (Assert-True 'H a declared docs.site_title lands in BOTH generated <title>s (no env var set)' `
+    ($rH.Code -eq 0 -and $h1 -match '<title>myrepo - internal docs</title>' -and $h1a -match '<title>myrepo - internal docs</title>') "exit=$($rH.Code): $($rH.Out)") -and $ok
+
+# H2: the env var still wins when explicitly set — it is an override, not the source.
+$env:DOCS_SITE_TITLE = 'one-off override'
+try { $rH2 = Invoke-TitleBuild } finally { Remove-Item Env:DOCS_SITE_TITLE -ErrorAction SilentlyContinue }
+$h2 = [IO.File]::ReadAllText((Join-Path $docs3 'docs.html'))
+$ok = (Assert-True 'H2 DOCS_SITE_TITLE overrides the declaration when set' `
+    ($rH2.Code -eq 0 -and $h2 -match '<title>one-off override</title>') "exit=$($rH2.Code): $($rH2.Out)") -and $ok
+
+# H3: a declaration WITHOUT site_title (or empty) falls back to the default title.
+[IO.File]::WriteAllText((Join-Path $repo3 '.harness.json'), '{ "docs": { "index": "docs/index.json", "site_title": "" } }')
+$rH3 = Invoke-TitleBuild
+$h3 = [IO.File]::ReadAllText((Join-Path $docs3 'docs.html'))
+$ok = (Assert-True 'H3 an empty site_title falls back to the default' `
+    ($rH3.Code -eq 0 -and $h3 -match '<title>Docs · ADR &amp; Spec</title>') "exit=$($rH3.Code): $($rH3.Out)") -and $ok
+
+# H4: an unreadable declaration is a REPORTED fallback, never silent and never fatal — a silent
+# revert is the exact defect the resolution order exists to remove.
+[IO.File]::WriteAllText((Join-Path $repo3 '.harness.json'), '{ not json')
+$rH4 = Invoke-TitleBuild
+$h4 = [IO.File]::ReadAllText((Join-Path $docs3 'docs.html'))
+$ok = (Assert-True 'H4 a malformed declaration warns, builds, and uses the default title' `
+    ($rH4.Code -eq 0 -and $rH4.Out -match 'unreadable' -and $h4 -match '<title>Docs · ADR &amp; Spec</title>') "exit=$($rH4.Code): $($rH4.Out)") -and $ok
+
+# H5: the upward walk stops at a repo boundary (review 2026-08-12, medium): a repo WITHOUT a
+# declaration must not silently adopt an unrelated ancestor's .harness.json title — a directory
+# carrying .git and no declaration ends the walk at the default.
+$outer = Join-Path $fx 'outer-tree'
+$inner = Join-Path $outer 'repo\docs'
+New-Item -ItemType Directory -Force -Path (Join-Path $inner 'adr'), (Join-Path $inner 'spec'), (Join-Path $outer 'repo\.git') | Out-Null
+[IO.File]::WriteAllText((Join-Path $outer '.harness.json'), '{ "docs": { "site_title": "ancestor title MUST NOT leak" } }')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $inner 'build_docs.py')
+[IO.File]::WriteAllText((Join-Path $inner 'adr/0001-a.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"a`"`nstatus: accepted`n---`n# 0001`n")
+& $py.Source (Join-Path $inner 'build_docs.py') 2>&1 | Out-Null
+$h5 = [IO.File]::ReadAllText((Join-Path $inner 'docs.html'))
+$ok = (Assert-True 'H5 a .git boundary without a declaration stops the walk at the default' `
+    ($h5 -match '<title>Docs · ADR &amp; Spec</title>' -and $h5 -notmatch 'ancestor title') $h5.Substring(0, 300)) -and $ok
+# H5b control: the SAME tree minus the .git marker is a plain nested docs tree, where walking to
+# the ancestor declaration is the intended behavior (relocated-corpus class, case G) — this pins
+# that H5 measures the boundary, not a broken walk.
+Remove-Item -Recurse -Force (Join-Path $outer 'repo\.git')
+& $py.Source (Join-Path $inner 'build_docs.py') 2>&1 | Out-Null
+$h5b = [IO.File]::ReadAllText((Join-Path $inner 'docs.html'))
+$ok = (Assert-True 'H5b without the boundary the ancestor declaration is honored (walk intact)' `
+    ($h5b -match 'ancestor title MUST NOT leak') $h5b.Substring(0, 300)) -and $ok
+
 Remove-FixtureRoot $fx
 
 if (-not $ok) { Write-Host 'build-docs selftest: FAILED' -ForegroundColor Red; exit 1 }

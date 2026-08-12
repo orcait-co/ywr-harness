@@ -2,15 +2,16 @@
 # -*- coding: utf-8 -*-
 r"""
 docs-as-code 생성기 — docs/adr/*.md + docs/spec/*.md (YAML frontmatter + 본문)에서
-세 표면(surface)을 한 번에 생성한다:
+네 표면(surface)을 한 번에 생성한다:
 
-  - docs/index.json   : 에이전트/기계가 로드하는 구조화 메타 + 의존 그래프
-  - docs/INDEX.md     : 사람/에이전트용 경량 자동 목차
-  - docs/docs.html    : 사람용 단일 브라우징 HTML (상태 배지 · 메타 패널 · 교차링크)
+  - docs/index.json         : 에이전트/기계가 로드하는 구조화 메타 + 의존 그래프
+  - docs/INDEX.md           : 사람/에이전트용 경량 자동 목차
+  - docs/docs.html          : 사람용 단일 브라우징 HTML (상태 배지 · 메타 패널 · 교차링크)
+  - docs/docs.artifact.html : claude.ai Artifact 발행용 fragment (호스트가 문서 골격을 감싼다)
 
 설계 원칙:
   - 진실원은 docs/adr, docs/spec 의 개별 .md (frontmatter + 본문).
-    상태/날짜/관계는 frontmatter가 단일 출처 → 산출물(위 3개)은 직접 편집 금지.
+    상태/날짜/관계는 frontmatter가 단일 출처 → 산출물(위 4개)은 직접 편집 금지.
   - 외부 의존성 없음(파이썬 표준 라이브러리만). frontmatter는 본 파일의 미니 파서로 처리.
   - 0000-template.md 는 스캔에서 제외.
 
@@ -19,7 +20,10 @@ docs-as-code 생성기 — docs/adr/*.md + docs/spec/*.md (YAML frontmatter + �
   python docs/build_docs.py --customer [--version <라벨>]   (고객 배포용 표면만 생성)
 
 브랜딩(선택):
-  환경변수 DOCS_SITE_TITLE 로 상단 제목을 바꾼다. 미설정 시 "Docs · ADR & Spec".
+  상단 제목의 정식 소스는 .harness.json 의 docs.site_title 선언이다(ADR 0050) — 레포별 값은
+  선언 파일에 산다(ADR 0010). 환경변수 DOCS_SITE_TITLE 은 1회성 오버라이드로만 남는다:
+  env 전용이던 시절 harness-init 재실행·CI 재빌드가 커밋된 타이틀을 기본값으로 되돌렸다(이슈
+  #43). 둘 다 없으면 "Docs · ADR & Spec".
 
 고객 배포 표면 (ADR 0005):
   frontmatter `audience: customer` 인 문서만(화이트리스트) 골라 단일 자기완결
@@ -49,7 +53,53 @@ OUT_ARTIFACT = os.path.join(ROOT, "docs.artifact.html")
 OUT_CUSTOMER = os.path.join(ROOT, "customer.html")
 
 SCHEMA_VERSION = "docs-as-code/1"
-SITE_TITLE = os.environ.get("DOCS_SITE_TITLE", "Docs · ADR & Spec")
+
+
+def _resolve_site_title():
+    """사이트 타이틀 해석 (ADR 0050): env 오버라이드 → .harness.json docs.site_title → 기본값.
+
+    선언이 정식 소스다 — env 전용이던 시절, 레포별 값을 알 수 없는 호출자(harness-init 재실행,
+    CI)가 커밋된 docs.html/<title> 을 기본값으로 되돌렸다(이슈 #43). DOCS_SITE_TITLE 은 1회성
+    오버라이드로만 남는다. 선언 파일은 ROOT(docs/)에서 위로 걸어 올라가 찾는다 — docs.index 를
+    재배치한 레포(케이스 G)에서도 레포 루트의 선언에 닿도록. 읽기 실패·비문자열 값은 stderr 로
+    보고하고 기본값으로 진행한다(조용한 리버트가 이 함수가 없애려는 결함이므로, 보고는 하되
+    빌드는 막지 않는다). 검증은 게이트 계층의 일이고, 여기서 읽는 값은 이스케이프를 거쳐 HTML
+    로만 가는 표시용 문자열이다(ADR 0012의 free-string 기준)."""
+    env = os.environ.get("DOCS_SITE_TITLE")
+    if env:
+        return env
+    d = ROOT
+    while True:
+        decl_path = os.path.join(d, ".harness.json")
+        if os.path.isfile(decl_path):
+            break
+        # 레포 경계에서 멈춘다: .git 이 있는 디렉토리에 선언이 없으면 거기서 끝 — 계속 오르면
+        # 무관한 상위 트리의 .harness.json 타이틀을 조용히 입는다(리뷰 2026-08-12, medium).
+        # .git 은 디렉토리(일반)일 수도 파일(worktree/submodule)일 수도 있어 exists 로 본다.
+        if os.path.exists(os.path.join(d, ".git")):
+            return "Docs · ADR & Spec"
+        parent = os.path.dirname(d)
+        if parent == d:
+            return "Docs · ADR & Spec"
+        d = parent
+    try:
+        with open(decl_path, encoding="utf-8") as f:
+            decl = json.load(f)
+    except (OSError, ValueError) as e:
+        print("warn: .harness.json unreadable (%s) -- default site title used"
+              % type(e).__name__, file=sys.stderr)
+        return "Docs · ADR & Spec"
+    docs = decl.get("docs") if isinstance(decl, dict) else None
+    title = docs.get("site_title") if isinstance(docs, dict) else None
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    if title is not None and not isinstance(title, str):
+        print("warn: .harness.json docs.site_title is not a string -- default site title used",
+              file=sys.stderr)
+    return "Docs · ADR & Spec"
+
+
+SITE_TITLE = _resolve_site_title()
 COPYRIGHT = "© 2026 YWR Labs Inc. All rights reserved."
 
 FILE_RE = re.compile(r"^\d{4}-.*\.md$")

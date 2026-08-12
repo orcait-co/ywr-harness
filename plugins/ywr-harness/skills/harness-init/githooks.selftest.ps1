@@ -257,6 +257,32 @@ print("    (no gate declared for this group — nothing deterministic runs on it
     $ok = (Assert-True 'E a parenthetical note is not executed' ($rE.Code -eq 0) "exit=$($rE.Code) out=$($rE.Out)") -and $ok
     $ok = (Assert-True 'E and it is not mistaken for a command' ($rE.Out -notmatch 'command not found') $rE.Out) -and $ok
 
+    # E2/E3: the no-commands report distinguishes DECLARED coverage from a coverage HOLE
+    # (issue #45). One message conflated them: files matching groups that declare `gates: []`
+    # read identically to files no group claims, and only the second is a warning.
+    # E2 — no group header in the window at all: the coverage-hole wording stays.
+    $e2 = New-StubRepo 'pc-unmatched' 'print("  (none — no declared group matched, matched groups declare no gates, or every declared gate was refused or skipped)")'
+    $rE2 = Invoke-Hook $e2 $preCommit $null
+    $ok = (Assert-True 'E2 unmatched files keep the no-match wording' ($rE2.Code -eq 0 -and $rE2.Out -match 'no file-scoped gate matched') "exit=$($rE2.Code) out=$($rE2.Out)") -and $ok
+    $ok = (Assert-True 'E2 and are not reported as matched' ($rE2.Out -notmatch 'matched group\(s\)') $rE2.Out) -and $ok
+
+    # E3 — groups matched but yield nothing runnable: the groups are NAMED and the no-match
+    # wording must not appear.
+    $e3 = New-StubRepo 'pc-matched-no-gates' 'print("  [scripts] 3 file(s)")
+print("    (no gate declared for this group — nothing deterministic runs on it)")
+print("  [meta] 1 file(s)")
+print("    (no gate declared for this group — nothing deterministic runs on it)")'
+    $rE3 = Invoke-Hook $e3 $preCommit $null
+    $ok = (Assert-True 'E3 matched-but-gateless names the groups' ($rE3.Code -eq 0 -and $rE3.Out -match 'matched group\(s\) \[scripts, meta\]') "exit=$($rE3.Code) out=$($rE3.Out)") -and $ok
+    $ok = (Assert-True 'E3 and does not claim nothing matched' ($rE3.Out -notmatch 'no file-scoped gate matched') $rE3.Out) -and $ok
+
+    # E4: a group name carrying ']' survives the extraction whole — cutting at the FIRST ']'
+    # misnamed the group in the report (review 2026-08-12, nit; names reach an echo only).
+    $e4 = New-StubRepo 'pc-bracket-name' 'print("  [we]ird] 2 file(s)")
+print("    (no gate declared for this group — nothing deterministic runs on it)")'
+    $rE4 = Invoke-Hook $e4 $preCommit $null
+    $ok = (Assert-True 'E4 a bracketed group name is reported whole' ($rE4.Code -eq 0 -and $rE4.Out -match 'matched group\(s\) \[we\]ird\],') "exit=$($rE4.Code) out=$($rE4.Out)") -and $ok
+
     # F: whole-program gates are deferred to CI, and the deferral is reported
     $f = New-StubRepo 'pc-whole' 'print("  [g] 1 file(s)")
 print("    true")
@@ -278,6 +304,7 @@ print("    false   # whole-program: gate on slice files or newly introduced only
     $rG = Invoke-Hook $g $preCommit $null
     $ok = (Assert-True 'G end-to-end with the real emitter exits 0' ($rG.Code -eq 0) "exit=$($rG.Code) out=$($rG.Out)") -and $ok
     $ok = (Assert-True 'G the real parenthetical is not executed either' ($rG.Out -notmatch 'command not found') $rG.Out) -and $ok
+    $ok = (Assert-True 'G the real emitter output yields the matched-group wording (issue #45)' ($rG.Out -match 'matched group\(s\) \[src\]') $rG.Out) -and $ok
 }
 
 # =================================================================================================

@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Places the docs-as-code shape so a repo can accumulate decisions: `docs/adr/` (why, append-only),
 `docs/spec/` (how it works now, living), the templates and rule documents for both, and the build
-pipeline that regenerates `index.json` · `INDEX.md` · `docs.html`.
+pipeline that regenerates `index.json` · `INDEX.md` · `docs.html` · `docs.artifact.html`.
 
 Run it:
 
@@ -45,7 +45,7 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
    what makes the record worth keeping.
 4. Rebuild and commit `index.json` + `INDEX.md` with the source change.
 
-If the run reported `SKIP build — python not on PATH`, the three surfaces do not exist yet: no
+If the run reported `SKIP build — python not on PATH`, the four surfaces do not exist yet: no
 tooling can query this repo's decisions until `pwsh docs/build.ps1` succeeds.
 
 ## The execution layer

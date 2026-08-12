@@ -1,12 +1,13 @@
 <#
 .SYNOPSIS
-  docs-as-code 빌드 — adr/·spec/ 의 .md(frontmatter 포함)에서 세 산출물을 재생성.
+  docs-as-code 빌드 — adr/·spec/ 의 .md(frontmatter 포함)에서 네 산출물을 재생성.
 
 .DESCRIPTION
   진실원은 docs/adr, docs/spec 의 개별 .md 다. 본 스크립트는 build_docs.py 를 호출해:
-    - index.json : 에이전트/기계용 구조화 메타 + 의존 그래프
-    - INDEX.md   : 사람/에이전트용 경량 목차
-    - docs.html  : 사람용 단일 브라우징 HTML
+    - index.json        : 에이전트/기계용 구조화 메타 + 의존 그래프
+    - INDEX.md          : 사람/에이전트용 경량 목차
+    - docs.html         : 사람용 단일 브라우징 HTML
+    - docs.artifact.html: claude.ai Artifact 발행용 fragment
   를 생성한다. 산출물은 직접 편집하지 말 것 — .md frontmatter/본문만 고친 뒤 재실행.
 
 .EXAMPLE

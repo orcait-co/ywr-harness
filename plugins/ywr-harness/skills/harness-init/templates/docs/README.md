@@ -23,11 +23,12 @@ the one that goes stale silently.
 pwsh docs/build.ps1        # or: bash docs/build.sh
 ```
 
-Regenerates three surfaces from the `.md` sources:
+Regenerates four surfaces from the `.md` sources:
 
 - `index.json` — for agents and tooling. Grep or `jq` it; do not read it whole, it grows.
 - `INDEX.md` — lightweight table of contents.
 - `docs.html` — human browsing.
+- `docs.artifact.html` — the claude.ai Artifact publish input (a fragment; the host wraps it).
 
 Commit `index.json` and `INDEX.md` alongside your source change. A CI drift gate that compares
 regenerated output against the committed copies will fail the PR otherwise — that is the point:

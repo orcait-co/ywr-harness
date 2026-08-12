@@ -2,7 +2,10 @@
   "//": "ywr-harness declaration. Repo-specific values live HERE so the plugin's scripts stay identical in every repo (ADR 0010). Placed once by /harness-init and never overwritten — edit it freely. Every command-shaped field is a SELECTOR from a closed set defined in the plugin, never a command string: this file is in the working tree, and the scripts print commands that get run (ADR 0012). A gate that is this repo's own script is declared as a script gate — closed-set runner + validated repo-relative path, still never a command string (ADR 0024).",
 
   "docs": {
-    "index": "docs/index.json"
+    "index": "docs/index.json",
+
+    "//site_title": "The <title>/header of the generated docs surfaces (docs.html · docs.artifact.html; the customer surface derives its default from it). THIS declaration is the source — the DOCS_SITE_TITLE env var is a one-off override only, so a harness-init re-run or CI rebuild can never revert a committed title (ADR 0050). Convention: '<repo> · <purpose>', same as artifact titles (ADR 0032). Empty = the builder's default. Display text only — it is escaped into HTML and never reaches a command.",
+    "site_title": ""
   },
 
   "//handoff": "Resume-point doc the slice close updates (reporting only — never reaches a command). A single file serves a single active work line; a value ending in '/' declares a DIRECTORY holding one resume file per work line (multi-writer repos), each named after the work line, never after a person (ADR 0040). Either form, the handoff is a resume point, not a ledger: the close that supersedes a Current state section moves it to docs/handoff-archive/<same filename>.",

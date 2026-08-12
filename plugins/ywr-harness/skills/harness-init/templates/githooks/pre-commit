@@ -118,8 +118,34 @@ DEFERRED=$(printf '%s\n' "$OUT" | grep -c '# whole-program')
 [ -n "$DEFERRED" ] || DEFERRED=0
 STAGED_N=$(printf '%s\n' "$STAGED" | wc -l | tr -d ' ')
 
+# Group headers are `  [name] N file(s)` (2-space indent) inside the same window CMDS reads.
+# Collected so the no-commands report below can tell DECLARED coverage from a coverage HOLE —
+# one message for both conflated them (issue #45): files that matched groups declaring
+# `gates: []` were reported in the same words as files no group claims, and the harness's own
+# principle is that coverage is declared, never inferred from silence. The scaffold-claimed
+# section's 2-space file lines cannot match: its paths are closed-set constants, none starting
+# with `[`, and its column-0 header closes the window first anyway.
+MATCHED_GROUPS=$(printf '%s\n' "$OUT" | awk '
+    /^gates:/              { g = 1; next }
+    /^scaffold-claimed \(/ { g = 0 }
+    /^ungrouped \(/        { g = 0 }
+    /^review tier:/        { g = 0 }
+    g && /^  \[/ {
+        line = $0
+        # Strip the fixed trailer, not everything after the FIRST "]" — a group name may itself
+        # carry "]" and truncating it misnames the group in the report (review 2026-08-12, nit).
+        sub(/^  \[/, "", line); sub(/\] [0-9]+ file\(s\)$/, "", line)
+        out = out (out == "" ? "" : ", ") line
+    }
+    END { print out }
+')
+
 if [ -z "$CMDS" ]; then
-    echo "[harness] pre-commit: no file-scoped gate matched the $STAGED_N staged file(s)."
+    if [ -n "$MATCHED_GROUPS" ]; then
+        echo "[harness] pre-commit: the $STAGED_N staged file(s) matched group(s) [$MATCHED_GROUPS], but none yields a runnable file-scoped gate here."
+    else
+        echo "[harness] pre-commit: no file-scoped gate matched the $STAGED_N staged file(s)."
+    fi
     if [ "$DEFERRED" -gt 0 ]; then
         echo "[harness]   $DEFERRED whole-program gate(s) deferred to CI (reported, not silent)."
     fi

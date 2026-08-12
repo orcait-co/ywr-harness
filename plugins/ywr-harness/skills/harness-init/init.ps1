@@ -302,12 +302,91 @@ if ($existingRecords.Count -eq 0 -and $foreignRecords.Count -eq 0) {
     }
 }
 
+# --- preserved-seed drift note (ADR 0051) ---------------------------------------------------------
+# A preserved seed is the one placement mode with no update path, so this probe REPORTS — never
+# merges — what the current template carries that the seed lacks. It closes the measured blind
+# spot between the toolchain stamp (ADR 0042) and the refresh nudge (ADR 0033): seed drift was
+# found only by hand (issue #44 — a repo missing `review.derived` and the load-bearing
+# `.githooks/* text eol=lf` line through five releases). Per-seed comparator, a closed set:
+#   harness.json  -> STRUCTURAL: template key paths absent here. `//` comment keys are skipped
+#                    and arrays are leaves — their content (groups, items) is repo-specific by
+#                    design and must not be compared.
+#   line-based    -> template lines (trimmed, non-empty, non-#) absent here; count + first one.
+# CLAUDE.md is deliberately absent: it is placeholder prose a repo rewrites wholesale, so every
+# template line would read as "missing" forever — a permanent-noise note is worse than none.
+# Read-only by construction; an unparseable seed is a reported probe skip, never fatal.
+$DRIFT_SEEDS = @('harness.json', 'gitattributes', 'githooks/slice-retro-ignore')
+$seedRelByDest = @{}
+foreach ($k in $SEED.Keys) { $seedRelByDest[$SEED[$k]] = $k }
+
+function Get-JsonKeyPaths([object]$Node, [string]$Prefix = '') {
+    $out = @()
+    if ($Node -isnot [System.Management.Automation.PSCustomObject]) { return $out }
+    foreach ($p in $Node.PSObject.Properties) {
+        if ($p.Name.StartsWith('//')) { continue }
+        $full = if ($Prefix) { "$Prefix.$($p.Name)" } else { $p.Name }
+        $out += $full
+        if ($p.Value -is [System.Management.Automation.PSCustomObject]) {
+            $out += Get-JsonKeyPaths $p.Value $full
+        }
+    }
+    return $out
+}
+
+function Get-SeedDriftNote([string]$Rel, [string]$Dest) {
+    $src = Join-Path $templates $Rel
+    $dst = Join-Path $root $Dest
+    if (-not (Test-Path -LiteralPath $src -PathType Leaf) -or -not (Test-Path -LiteralPath $dst -PathType Leaf)) { return '' }
+    if ($Rel -eq 'harness.json') {
+        try {
+            $t = Get-Content -LiteralPath $src -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            $r = Get-Content -LiteralPath $dst -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            # One message for read AND parse failures — naming only JSON here sent an operator
+            # hunting a syntax error in a merely-locked file (review 2026-08-12, low).
+            return 'drift probe skipped: seed could not be read or parsed as JSON'
+        }
+        $have = @(Get-JsonKeyPaths $r)
+        $missing = @(Get-JsonKeyPaths $t | Where-Object { $have -notcontains $_ })
+        if (-not $missing.Count) { return '' }
+        # A hand-written minimal declaration can lack dozens of keys — cap the display so the
+        # note stays one line; the count is always exact.
+        $shown = $missing; $more = ''
+        if ($missing.Count -gt 6) { $shown = $missing[0..5]; $more = ", +$($missing.Count - 6) more" }
+        return "template has $($missing.Count) key(s) this seed lacks: $($shown -join ', ')$more"
+    }
+    # Line-based seeds. Latin1 is the same byte-faithful read as Place() — both sides go through
+    # the identical transform, so the comparison can never be skewed by a decode.
+    $latin1 = [System.Text.Encoding]::Latin1
+    $readLines = {
+        param($p)
+        @($latin1.GetString([IO.File]::ReadAllBytes($p)).Replace("`r", '') -split "`n" |
+            ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+    }
+    # Guarded like the JSON branch: under the script-global EAP=Stop an unguarded ReadAllBytes on
+    # a locked/ACL-denied seed would abort the WHOLE run non-zero after every placement already
+    # succeeded — the exact exit-contract violation ADR 0051 forbids (review 2026-08-12, high;
+    # Test-Path above proves existence, never readability).
+    try {
+        $have = & $readLines $dst
+        $missing = @((& $readLines $src) | Where-Object { $have -notcontains $_ })
+    } catch { return 'drift probe skipped: seed or template could not be read' }
+    if (-not $missing.Count) { return '' }
+    return "template has $($missing.Count) line(s) this seed lacks, e.g. '$($missing[0])'"
+}
+
 $mode = if ($DryRun) { ' (dry run — nothing written)' } else { '' }
 Write-Host "harness-init -> $root$mode"
 Write-Host "  created=$($created.Count) refreshed=$($refreshed.Count) preserved=$($preserved.Count) refused=$($refused.Count) unchanged=$($considered - $created.Count - $refreshed.Count - $preserved.Count - $refused.Count)"
 foreach ($f in $created) { Write-Host "  + $f" -ForegroundColor Green }
 foreach ($f in $refreshed) { Write-Host "  ~ $f (toolchain refreshed from canon)" -ForegroundColor Cyan }
-foreach ($f in $preserved) { Write-Host "  = $f (existing seed preserved — not overwritten)" -ForegroundColor Yellow }
+foreach ($f in $preserved) {
+    $note = ''
+    $rel = $seedRelByDest[$f]
+    if ($rel -and $DRIFT_SEEDS -contains $rel) { $note = Get-SeedDriftNote $rel $f }
+    if ($note) { Write-Host "  = $f (existing seed preserved — $note)" -ForegroundColor Yellow }
+    else { Write-Host "  = $f (existing seed preserved — not overwritten)" -ForegroundColor Yellow }
+}
 foreach ($f in $refused) {
     Write-Host "  ! $f REFUSED — an existing file without the '$GUARD_MARKER' marker" -ForegroundColor Yellow
     Write-Host "      It is doing something this scaffold did not write, so it was left alone." -ForegroundColor Yellow
@@ -406,7 +485,7 @@ $wireColor = if ($wire -match 'wired$') { 'Green' } else { 'Yellow' }
 Write-Host "  hooks: $wire" -ForegroundColor $wireColor
 
 if (-not $DryRun) {
-    # Generating the three surfaces needs python. Absent python is a REPORTED skip, never silent:
+    # Generating the four surfaces needs python. Absent python is a REPORTED skip, never silent:
     # a repo with no index.json cannot be queried by tooling, and the reader must know why.
     # Invoke the WRAPPER, not build_docs.py directly: docs/build.ps1 owns the Python encoding pin.
     # The builder prints non-ASCII and Python on Windows encodes stdout with the console codepage,
@@ -420,7 +499,9 @@ if (-not $DryRun) {
         Push-Location $root
         try {
             & pwsh -NoProfile -ExecutionPolicy Bypass -File $wrapper *> $null
-            if ($LASTEXITCODE -eq 0) { Write-Host '  built: index.json · INDEX.md · docs.html' -ForegroundColor Green }
+            # All FOUR surfaces — docs.artifact.html is the artifact-publish path's input (ADR
+            # 0032/0048) and omitting it here taught readers a three-surface pipeline (issue #45).
+            if ($LASTEXITCODE -eq 0) { Write-Host '  built: index.json · INDEX.md · docs.html · docs.artifact.html' -ForegroundColor Green }
             else { Write-Host "  SKIP build — docs/build.ps1 exited $LASTEXITCODE; run it directly and read the error" -ForegroundColor Yellow }
         } finally { Pop-Location }
     } else {
@@ -430,7 +511,8 @@ if (-not $DryRun) {
 
 if ($preserved.Count) {
     Write-Host ''
-    Write-Host 'Preserved seeds were NOT updated. If you scaffolded this repo before, compare them' -ForegroundColor Yellow
-    Write-Host 'against skills/harness-init/templates/ by hand — this script will never clobber them.' -ForegroundColor Yellow
+    Write-Host 'Preserved seeds were NOT updated. Notes above name template-side keys/lines a seed' -ForegroundColor Yellow
+    Write-Host 'lacks (report only — ADR 0051); anything beyond additions still needs a hand compare' -ForegroundColor Yellow
+    Write-Host 'against skills/harness-init/templates/. This script will never clobber them.' -ForegroundColor Yellow
 }
 exit 0

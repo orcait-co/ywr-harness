@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# docs-as-code 빌드 — adr/·spec/ 의 .md(frontmatter 포함)에서 세 산출물을 재생성.
-#   index.json (기계) · INDEX.md (목차) · docs.html (브라우징)
+# docs-as-code 빌드 — adr/·spec/ 의 .md(frontmatter 포함)에서 네 산출물을 재생성.
+#   index.json (기계) · INDEX.md (목차) · docs.html (브라우징) · docs.artifact.html (Artifact 발행용)
 # 산출물은 직접 편집 금지 — .md frontmatter/본문만 고친 뒤 재실행한다.
 #
 # 사용: bash docs/build.sh   (mac/Linux/WSL · GitHub Actions 러너)

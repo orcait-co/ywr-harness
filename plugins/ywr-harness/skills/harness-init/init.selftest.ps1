@@ -100,6 +100,10 @@ $after = Get-Content -LiteralPath (Join-Path $d 'CLAUDE.md') -Raw
 $ok = (Assert-True 'D existing seed reported preserved' ($rD.Out -match 'preserved=1') $rD.Out) -and $ok
 $ok = (Assert-True 'D existing seed is byte-identical afterwards' ($after -eq $mine) 'CLAUDE.md was modified') -and $ok
 $ok = (Assert-True 'D preserved seed still warns the reader' ($rD.Out -match 'never clobber') $rD.Out) -and $ok
+# CLAUDE.md is deliberately OUTSIDE the drift probe (ADR 0051): it is placeholder prose a repo
+# rewrites wholesale, so a note would be permanent noise. This seed shares zero lines with the
+# template — a note here means the exclusion regressed.
+$ok = (Assert-True 'D a rewritten CLAUDE.md never carries a drift note' ($rD.Out -notmatch 'this seed lacks') $rD.Out) -and $ok
 
 # --- E: content files are never touched -------------------------------------------------------
 # A repo's accumulated decisions are the one thing a re-runnable scaffold must not endanger.
@@ -418,6 +422,64 @@ Set-Content -LiteralPath (Join-Path $s3 '.harness-version') -Value 'not a versio
 $rS3 = Invoke-Init @('-Target', $s3)
 $ok = (Assert-True 'S3 garbage stamp proceeds' ($rS3.Code -eq 0) "exit=$($rS3.Code) out=$($rS3.Out)") -and $ok
 $ok = (Assert-True 'S3 garbage stamp is rewritten to the plugin version' (((Get-Content -LiteralPath (Join-Path $s3 '.harness-version') -Raw).Trim()) -eq $manifestVer) 'stamp not repaired') -and $ok
+
+# --- T: preserved-seed drift note (ADR 0051) — report only, never a merge ----------------------
+# The measured blind spot this section pins (issue #44): a repo scaffolded at vN re-runs at vN+k
+# and its preserved .harness.json / .gitattributes silently lack template-side additions
+# (review.derived; the load-bearing `.githooks/* text eol=lf` line) that only a hand diff found.
+$t = New-Target 'seed-drift'
+$declT = Get-Content -LiteralPath (Join-Path $templates 'harness.json') -Raw | ConvertFrom-Json
+$declT.review.PSObject.Properties.Remove('derived')
+[IO.File]::WriteAllText((Join-Path $t '.harness.json'), ($declT | ConvertTo-Json -Depth 16))
+[IO.File]::WriteAllText((Join-Path $t '.gitattributes'), "* text=auto eol=lf`n*.sh text eol=lf`n*.ps1 text eol=crlf`n")
+# -DryRun first: the probe is read-only, so it must report identically with nothing written.
+$rT = Invoke-Init @('-Target', $t, '-DryRun')
+$ok = (Assert-True 'T1 missing declaration key is named (dry run — probe is read-only)' `
+    ($rT.Out -match 'template has 1 key\(s\) this seed lacks: review\.derived') $rT.Out) -and $ok
+$ok = (Assert-True 'T2 missing line is counted and exampled' `
+    ($rT.Out -match "template has 1 line\(s\) this seed lacks, e\.g\. '\.githooks/\* text eol=lf'") $rT.Out) -and $ok
+$rTr = Invoke-Init @('-Target', $t)
+$ok = (Assert-True 'T3 the note rides the real run too, which still exits 0' `
+    ($rTr.Code -eq 0 -and $rTr.Out -match 'review\.derived') "exit=$($rTr.Code) out=$($rTr.Out)") -and $ok
+$ok = (Assert-True 'T3 the seeds themselves are untouched (report only)' `
+    ((Get-Content -LiteralPath (Join-Path $t '.gitattributes') -Raw) -notmatch [regex]::Escape('.githooks/*')) 'the probe wrote into a seed') -and $ok
+
+# T4: a template-complete seed carries NO note — including one with repo-only additions, which
+# are normal (the declaration exists to accumulate repo-specific content, ADR 0051's scope is
+# template-side additions only).
+$t4 = New-Target 'seed-no-drift'
+$declC = Get-Content -LiteralPath (Join-Path $templates 'harness.json') -Raw | ConvertFrom-Json
+$declC | Add-Member -NotePropertyName 'repo_only_extra' -NotePropertyValue 'kept'
+[IO.File]::WriteAllText((Join-Path $t4 '.harness.json'), ($declC | ConvertTo-Json -Depth 16))
+Copy-Item -LiteralPath (Join-Path $templates 'gitattributes') -Destination (Join-Path $t4 '.gitattributes')
+$rT4 = Invoke-Init @('-Target', $t4)
+$ok = (Assert-True 'T4 complete seeds (with repo-only additions) carry no note' `
+    ($rT4.Code -eq 0 -and $rT4.Out -notmatch 'this seed lacks') "exit=$($rT4.Code) out=$($rT4.Out)") -and $ok
+
+# T5: an unparseable seed is a REPORTED probe skip — never fatal, never silent.
+$t5 = New-Target 'seed-bad-json'
+[IO.File]::WriteAllText((Join-Path $t5 '.harness.json'), '{ not json')
+$rT5 = Invoke-Init @('-Target', $t5)
+$ok = (Assert-True 'T5 unparseable seed: probe skip is reported, run exits 0' `
+    ($rT5.Code -eq 0 -and $rT5.Out -match 'drift probe skipped') "exit=$($rT5.Code) out=$($rT5.Out)") -and $ok
+
+# T6: an UNREADABLE line-based seed must not abort the run (review 2026-08-12, high): the probe's
+# ReadAllBytes on a locked seed used to throw uncaught under the script-global EAP=Stop, turning a
+# fully successful placement into a non-zero exit. Windows-gated: the exclusive-share lock that
+# forces the read failure is mandatory there and advisory on POSIX (CI's windows-latest runs it).
+if ($IsWindows) {
+    $t6 = New-Target 'seed-locked'
+    $t6ga = Join-Path $t6 '.gitattributes'
+    [IO.File]::WriteAllText($t6ga, "* text=auto eol=lf`n")
+    $lock = [IO.File]::Open($t6ga, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try { $rT6 = Invoke-Init @('-Target', $t6) } finally { $lock.Dispose() }
+    $ok = (Assert-True 'T6 a locked line-based seed is a reported probe skip, run exits 0' `
+        ($rT6.Code -eq 0 -and $rT6.Out -match 'drift probe skipped: seed or template could not be read') "exit=$($rT6.Code) out=$($rT6.Out)") -and $ok
+    $ok = (Assert-True 'T6 the run still completes its tail reports (stamp line present)' `
+        ($rT6.Out -match 'stamp: ') $rT6.Out) -and $ok
+} else {
+    Write-Host 'SKIP [T6 locked seed] POSIX — FileShare.None is advisory there; windows-latest CI runs this case' -ForegroundColor Yellow
+}
 
 # --- P: a non-git target places the hooks and says they will not run ---------------------------
 # The fixture targets in A-J are plain directories, so this is the branch they all exercised
