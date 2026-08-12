@@ -554,8 +554,24 @@ def load(root: Path) -> tuple[dict, list[str]]:
 # ---------------------------------------------------------------------------------------------
 def git_lines(root: Path, *args: str) -> list[str]:
     import subprocess
+    # `-c core.quotepath=false`: git's default octal-escapes non-ASCII paths
+    # (`"docs/AWS \354..."`), which no anchored group pattern matches — every such file reads as
+    # ungrouped exactly where it matters most, CI's fresh checkout with no local override
+    # (issue #40). The raw bytes are UTF-8, so the decode is pinned as well: text=True alone
+    # decodes with the console codepage on Windows, where cp949 pairs a hangul trail byte with
+    # the following ASCII byte and raises — the decl_changed_keys constraint, applied here.
+    # The pin goes through subprocess's OWN encoding args, not a manual .decode(): check=True
+    # raises CalledProcessError, and both scope-path consumers print e.stderr into the ADR 0041
+    # fail-loud diagnostic — a manual success-path decode left that str on the happy path and
+    # bytes-repr on the one path that exists to be read (review 2026-08-12, medium).
+    # errors="backslashreplace", not "replace": a path that is not UTF-8 must surface visibly
+    # mangled (likely ungrouped), never kill the run — and DISTINCT byte sequences must stay
+    # distinct, because U+FFFD-merged paths collapse into one set entry and silently shrink the
+    # audit scope (review 2026-08-12, medium).
     out = subprocess.run(
-        ["git", *args], cwd=root, capture_output=True, text=True, check=True
+        ["git", "-c", "core.quotepath=false", *args],
+        cwd=root, capture_output=True, check=True,
+        encoding="utf-8", errors="backslashreplace",
     ).stdout
     return [norm(line) for line in out.splitlines() if line.strip()]
 

@@ -831,6 +831,11 @@ $rY1 = Invoke-Gates $y1 @('--range', 'no-such-ref..HEAD')
 $ok = (Assert-True 'Y1 an unresolvable range exits non-zero (the one non-advisory exit)' ($rY1.Code -ne 0) "exit=$($rY1.Code) out=$($rY1.Out)") -and $ok
 $ok = (Assert-True 'Y1 the failure is a stdout marker, not only stderr' ($rY1.Out -match 'scope: FAILED — git could not resolve' -and $rY1.Out -match 'must not be read as a pass') $rY1.Out) -and $ok
 $ok = (Assert-True 'Y1 nothing below the marker is computed (no gates window, no tier)' ($rY1.Out -notmatch '(?m)^gates:' -and $rY1.Out -notmatch 'review tier:') $rY1.Out) -and $ok
+# The stderr diagnostic must be LEGIBLE git text, not a Python bytes-repr: git_lines pins the
+# subprocess encoding so CalledProcessError.stderr reaches this print as str (review 2026-08-12,
+# medium — a success-path-only decode passed every case while garbling the one line that exists
+# to be read). Reverting the encoding args to a manual .decode() turns exactly this assertion red.
+$ok = (Assert-True 'Y1 the stderr diagnostic is legible text, not bytes-repr' ($rY1.Out -match 'git failed: fatal' -and $rY1.Out -notmatch "git failed: b'") $rY1.Out) -and $ok
 
 # Y2: verify_map shares the scope path and the same contract (its silence read as "nothing to
 # verify" to the /verify skill). It reads the docs index BEFORE resolving scope — that earlier
@@ -886,6 +891,34 @@ Push-Location $y6
 try { & git init -q 2>$null } finally { Pop-Location }
 $rY6 = Invoke-Gates $y6 @('--all')
 $ok = (Assert-True 'Y6 --all on an empty tree exits 0 and still prints the trailer facts' ($rY6.Code -eq 0 -and $rY6.Out -match 'review canon:') "exit=$($rY6.Code) out=$($rY6.Out)") -and $ok
+
+# Y7: non-ASCII paths survive scope resolution VERBATIM (issue #40). git's default
+# core.quotepath=true octal-escapes any non-ASCII path (`"docs/AWS \354..."`), no anchored group
+# pattern matches the quoted form, and every such file reads as ungrouped — exactly in CI, whose
+# fresh checkout carries no local quotepath override (dev clones usually do, which is why six
+# main-push failures shipped before any local repro). The fixture pins quotepath=true repo-locally
+# to reproduce the CI default on any machine; the fix (`-c core.quotepath=false` in git_lines)
+# overrides repo config, so reverting it turns Y7 red. Two files on purpose: the grouped one is
+# the #40 regression, the ungrouped one is NAMED in output and proves the path arrives raw
+# end-to-end (git → UTF-8 decode → report), not merely regrouped.
+$cfgY7 = '{ "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] }, "groups": [ { "name": "docs", "match": "^docs/", "cwd": "", "strip_prefix": "", "gates": [] } ] }'
+$y7 = New-Repo 'quotepath' $cfgY7 @()
+foreach ($f in @('docs/AWS 조직통합_경영보고.html', '메모.rb')) {
+    $full = Join-Path $y7 $f
+    $dir = Split-Path -Parent $full
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    Set-Content -LiteralPath $full -Value 'x' -NoNewline
+}
+Push-Location $y7
+try {
+    & git config core.quotepath true 2>$null
+    & git add -A 2>$null; & git commit -q -m 'non-ascii paths' 2>$null
+} finally { Pop-Location }
+$rY7 = Invoke-Gates $y7 @('--all')
+$ok = (Assert-True 'Y7 --all exits 0 with non-ASCII tracked paths' ($rY7.Code -eq 0) "exit=$($rY7.Code) out=$($rY7.Out)") -and $ok
+$ok = (Assert-True 'Y7 the non-ASCII file is claimed by its group, not ungrouped' ($rY7.Out -match '\[docs\] 1 file') $rY7.Out) -and $ok
+$ok = (Assert-True 'Y7 the ungrouped non-ASCII file is named VERBATIM' ($rY7.Out -match 'ungrouped \(2 file' -and $rY7.Out -match [regex]::Escape('메모.rb') -and $rY7.Out -match 'seed\.txt') $rY7.Out) -and $ok
+$ok = (Assert-True 'Y7 no octal-escaped or C-quoted path anywhere in the report' ($rY7.Out -notmatch '\\\d{3}' -and $rY7.Out -notmatch '"docs/') $rY7.Out) -and $ok
 
 # --- Z: built-in scaffold claims (ADR 0044) ------------------------------------------------------
 # Z1: a scaffold-placed path no declared group matches is claimed built-in and REPORTED with its

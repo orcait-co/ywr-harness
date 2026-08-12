@@ -49,9 +49,17 @@ DOCS_RX = re.compile(r"^docs/(adr|spec)/[0-9].*\.md$")
 
 
 def git(root: Path, *args: str) -> str:
+    # Same constraints as harness_config.git_lines (issue #40): quotepath off so a non-ASCII
+    # path arrives matchable rather than octal-escaped; encoding pinned through subprocess's own
+    # args because text=True would use the console codepage on Windows — this helper also reads
+    # file CONTENT (`git show rev:path`), which for this org's docs is UTF-8 Korean; and
+    # errors="backslashreplace" so undecodable bytes stay visible AND distinct (git_lines'
+    # comment carries the full rationale).
     try:
         return subprocess.run(
-            ["git", *args], cwd=root, capture_output=True, text=True, check=False
+            ["git", "-c", "core.quotepath=false", *args],
+            cwd=root, capture_output=True, check=False,
+            encoding="utf-8", errors="backslashreplace",
         ).stdout
     except OSError:
         return ""
