@@ -247,10 +247,12 @@ $ok = (Assert-True 'H the segment renders last, after the quota segments' ($with
 $noVer = Invoke-Render $FULL ''
 $ok = (Assert-True 'H an empty version renders no segment at all' ($noVer -notmatch 'ywr-harness v') "got: $noVer") -and $ok
 
-# --- J: a Fable session carries the weekly quota INSIDE the model chunk (ADR 0047) ---------------
-# The number MOVES, it never duplicates: `Fable 5(7d N%)` and NO tail 7d segment. It is the
-# all-models weekly relocated (the payload has no model-scoped weekly — measured, 2.1.227), so
-# the tail segment's thresholds and absence rule apply verbatim.
+# --- J: a Fable session renders like every other model — weekly at the TAIL, never inline --------
+# v0.32.0 rendered `Fable 5(7d N%)` (ADR 0047) and it read as a Fable-scoped figure — which
+# /usage now actually shows, on a different denominator (the Team-plan Fable cap) — while the
+# payload carries only the account-wide weekly (re-measured 2.1.228: five_hour/seven_day, no
+# model-scoped key). ADR 0049 removed the inline form; these cases pin the removal so the
+# parenthetical cannot quietly return.
 $FABLE = @'
 {"model":{"display_name":"Fable 5 (1M context)","id":"claude-fable-5[1m]"},
  "effort":{"level":"xhigh"},
@@ -259,34 +261,16 @@ $FABLE = @'
  "rate_limits":{"five_hour":{"used_percentage":5},"seven_day":{"used_percentage":3}}}
 '@
 $j1 = Invoke-Line $FABLE
-$ok = (Assert-True 'J the weekly rides inside the model chunk, tail 7d gone' ($j1 -eq 'ywrlabs/ywr-harness · Fable 5(7d 3%) · xhigh · ctx 24%/1M · 5h 5%') "got: $j1") -and $ok
+$ok = (Assert-True 'J a Fable session is shaped exactly like the Opus line — tail 7d, no parenthetical' ($j1 -eq 'ywrlabs/ywr-harness · Fable 5 · xhigh · ctx 24%/1M · 5h 5% · 7d 3%') "got: $j1") -and $ok
+$ok = (Assert-True 'J no inline weekly parenthetical anywhere on a Fable session' ($j1 -notmatch '\(7d ') $j1) -and $ok
 
-# Absence rule unchanged: no rate_limits -> plain model label AND no weekly anywhere.
+# The absence rule is model-independent: no rate_limits -> no weekly anywhere.
 $j2 = Invoke-Line '{"model":{"display_name":"Fable 5","id":"claude-fable-5"},"workspace":{"current_dir":"C:/a/b"}}'
 $ok = (Assert-True 'J unmeasured weekly -> plain label, no weekly anywhere' ($j2 -eq 'a/b · Fable 5') "got: $j2") -and $ok
 
-# A measured 0 is a value, not an absence (the control for J2).
+# A measured 0 is a value, not an absence — and it renders at the TAIL, id-detected model or not.
 $j3 = Invoke-Line '{"model":{"display_name":"Fable 5","id":"claude-fable-5"},"workspace":{"current_dir":"C:/a/b"},"rate_limits":{"seven_day":{"used_percentage":0}}}'
-$ok = (Assert-True 'J a measured 0 renders inline as (7d 0%)' ($j3 -eq 'a/b · Fable 5(7d 0%)') "got: $j3") -and $ok
-
-# Detection leans on model.id — a display name with no "Fable" in it still routes by id.
-$j4 = Invoke-Line '{"model":{"display_name":"F. 5","id":"claude-fable-5[1m]"},"workspace":{"current_dir":"C:/a/b"},"rate_limits":{"seven_day":{"used_percentage":7}}}'
-$ok = (Assert-True 'J the id alone carries the detection' ($j4 -eq 'a/b · F. 5(7d 7%)') "got: $j4") -and $ok
-
-# ...and the mirror: a payload with NO id and "Fable" only in the display name still routes —
-# "takes both" is a tested property in both directions, not prose (review 2026-08-11).
-$j4b = Invoke-Line '{"model":{"display_name":"Fable 5 (preview)"},"workspace":{"current_dir":"C:/a/b"},"rate_limits":{"seven_day":{"used_percentage":7}}}'
-$ok = (Assert-True 'J the display name alone carries the detection (no id in the payload)' ($j4b -eq 'a/b · Fable 5 (preview)(7d 7%)') "got: $j4b") -and $ok
-
-# Non-Fable models are byte-identical to before: tail 7d, no parenthetical (case A pins the
-# exact Opus line; this pins the negative on the paren shape).
-$a2 = Invoke-Line $FULL
-$ok = (Assert-True 'J non-Fable keeps the tail segment and gains no parenthetical' (($a2 -match '· 7d 1%') -and ($a2 -notmatch '\(7d ')) "got: $a2") -and $ok
-
-# The inline percentage colors on the QUOTA curve — 50% is already yellow, same bands as the
-# tail segment it replaces.
-$jRaw = Invoke-Raw '{"model":{"display_name":"Fable 5","id":"claude-fable-5"},"workspace":{"current_dir":"a"},"rate_limits":{"seven_day":{"used_percentage":50}}}'
-$ok = (Assert-True 'J inline 50% is yellow (quota curve)' ($jRaw -match "`e\[33m50%") 'expected yellow at 50% inline') -and $ok
+$ok = (Assert-True 'J a measured 0 renders at the tail as 7d 0%' ($j3 -eq 'a/b · Fable 5 · 7d 0%') "got: $j3") -and $ok
 
 # --- I: the tab-title head is the ACCOUNT, falling back to location (ADR 0046) -------------------
 # The account (config-dir basename, leading dot stripped) is the one session dimension with no

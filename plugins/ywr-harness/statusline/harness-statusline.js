@@ -12,15 +12,19 @@
 // ## The payload
 //
 // stdin is the statusline JSON. Keys used, all confirmed against live payloads (2.1.220,
-// 2026-07-27; model.id and the rate_limits cap re-confirmed on 2.1.227, 2026-08-11) rather
-// than read off the docs:
+// 2026-07-27; the rate_limits cap re-confirmed on 2.1.228, 2026-08-12) rather than read off
+// the docs:
 //
-//   model.display_name · model.id (Fable detection, ADR 0047) · effort.level
+//   model.display_name · model.id (display fallback) · effort.level
 //   workspace.current_dir
 //   context_window.used_percentage       — context consumed
 //   context_window.context_window_size   — window size, a session constant
-//   rate_limits.{five_hour,seven_day}.used_percentage   — what /usage shows; these two windows
-//                                          are ALL the payload carries (no model-scoped weekly)
+//   rate_limits.{five_hour,seven_day}.used_percentage   — the ACCOUNT-WIDE windows, and ALL the
+//                                          payload carries. /usage additionally shows a
+//                                          model-scoped weekly (e.g. Fable vs its Team-plan cap)
+//                                          that is NOT in the payload — do not render any
+//                                          weekly next to the model name until it is
+//                                          (ADR 0049; upstream anthropics/claude-code#85964)
 //
 // A key absent on some version or plan means its segment DISAPPEARS. It is never rendered as
 // `0%`: unmeasured and zero are different states, and a status line that says 0% when it does not
@@ -174,20 +178,6 @@ function render(j, ver = pluginVersion()) {
   const ctxSeg = ctxPct("ctx", cw.used_percentage);
 
   const rl = j.rate_limits || {};
-  const week = rl.seven_day && rl.seven_day.used_percentage;
-
-  // Fable burns the weekly budget fastest, so on a Fable session the weekly quota rides INSIDE
-  // the model chunk — `Fable 5(7d 30%)`, the owner-requested shape — and the tail 7d segment is
-  // dropped: the number MOVES, it never duplicates (ADR 0047). It is the all-models weekly
-  // RELOCATED — the payload carries no model-scoped weekly (measured live on 2.1.227 plus the
-  // docs, 2026-08-11) — keeping the tail segment's thresholds and absence rule verbatim:
-  // unmeasured -> plain model label and no weekly anywhere. Detection leans on model.id (the
-  // stable token; display_name is a marketing string) but takes both.
-  const isFable = /fable/i.test(String((j.model && j.model.id) || "") + " " + model);
-  const weekInline =
-    isFable && typeof week === "number" && isFinite(week)
-      ? `${DIM}(7d ${RESET}${pctColor(Math.round(week), 50, 80)}${Math.round(week)}%${RESET}${DIM})${RESET}`
-      : "";
 
   return {
     loc,
@@ -195,14 +185,18 @@ function render(j, ver = pluginVersion()) {
     effort,
     line:
       `\x1b[36m${loc}${RESET} ${DIM}·${RESET} \x1b[1m${model}${RESET}` +
-      weekInline +
       (effort ? ` ${DIM}·${RESET} \x1b[33m${effort}${RESET}` : "") +
       ctxSeg +
       // The size rides along only when the percentage actually rendered — a bare "/1M" with no
       // number in front of it is noise.
       (ctxSeg && size ? `${DIM}/${size}${RESET}` : "") +
       pct("5h", rl.five_hour && rl.five_hour.used_percentage) +
-      (weekInline ? "" : pct("7d", week)) +
+      // The weekly stays at the TAIL for every model, Fable included: v0.32.0 rendered it
+      // inside the Fable model chunk and it read as a Fable-scoped figure — which /usage now
+      // actually shows, on a different denominator (the Team-plan Fable cap) — while this is
+      // the account-wide number, the only weekly the payload carries (ADR 0049, superseding
+      // 0047; re-measured 2.1.228).
+      pct("7d", rl.seven_day && rl.seven_day.used_percentage) +
       // Last. The LABEL is dim like every other label; the VERSION gets magenta — readable
       // without shouting, and deliberately outside the green/yellow/red family so it is never
       // mistaken for a threshold. Dim-on-dim was the first attempt and was simply too faint to
