@@ -17,6 +17,15 @@ pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/harness-init/init.ps1" -Targ
 ```
 
 Add `-DryRun` to see the plan without writing. `-Target` defaults to the current directory.
+Requires pwsh 7 (plugin README §Prerequisites) — under Windows PowerShell 5.1 the script
+refuses explicitly rather than running.
+
+**Brownfield repos (an existing `docs/` or its own build scripts): run `-DryRun` first.** On a
+FIRST run (no `.harness-version` stamp yet), an existing file at a toolchain path whose content
+differs is REFUSED rather than replaced — it is not the canon's output, and overwriting it
+would be data loss (ADR 0055). Merge or move each refused file and re-run; a deliberate
+replacement re-runs with `-Force`. The version stamp is withheld until the collisions are
+resolved, so a later re-run cannot silently overwrite them either.
 
 ## What re-running does
 
@@ -25,9 +34,12 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
 - **Toolchain is overwritten** — the builder, templates, and rule documents come from the canon.
   Re-running is how a plugin-side improvement reaches this repo. Do not hand-edit these files:
   the next run reverts them, which is the intended signal (ywr-harness ADR 0010 — harness defects
-  are fixed in the canon, not patched locally).
+  are fixed in the canon, not patched locally). First runs are the exception above (ADR 0055).
 - **Seeds are never overwritten** — an existing `CLAUDE.md` or `.gitattributes` is preserved
-  byte-identical and reported as preserved.
+  byte-identical and reported as preserved (template-only additions are reported on the same
+  line, ADR 0051). A seed this repo does not have yet — e.g. the root `.gitignore` (ADR 0053)
+  or the starter `REVIEW.md` (ADR 0054) on a repo scaffolded before they existed — IS placed by
+  a re-run: creation is not an overwrite.
 - **Nothing is ever deleted.** Accumulated ADRs and specs are untouched.
 - **Placement writes LF** — no matter how the installed plugin cache was checked out
   (`core.autocrlf` can stamp CRLF onto it), CRLF in a template folds to LF on write (only the
@@ -43,7 +55,10 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
    the rebuild step.
 3. Write the repo's first ADR from `docs/adr/0000-template.md`. Record rejected options; that is
    what makes the record worth keeping.
-4. Rebuild and commit `index.json` + `INDEX.md` with the source change.
+4. **Replace the starter content in `REVIEW.md`** with this repo's own review invariants
+   (ADR 0054) — the slice close cites this file, and until it is rewritten reviews run against
+   the generic starters only.
+5. Rebuild and commit `index.json` + `INDEX.md` with the source change.
 
 If the run reported `SKIP build — python not on PATH`, the four surfaces do not exist yet: no
 tooling can query this repo's decisions until `pwsh docs/build.ps1` succeeds.
@@ -76,6 +91,12 @@ on each `/ywr-harness:slice-close` and CI run:
 hooks: .githooks/ present but core.hooksPath is UNSET — NO git hook runs in this clone
        run: git config core.hooksPath .githooks
 ```
+
+The **executable bit** is the second per-checkout axis of the same gap (ADR 0056): a repo
+scaffolded on Windows commits its hooks at mode 100644, and a POSIX/WSL clone then silently
+skips them. The same `hooks:` line reports it on POSIX (CI's ubuntu checkout included) with the
+remedy; on a POSIX clone, `chmod +x .githooks/*` fixes this checkout and
+`git update-index --chmod=+x .githooks/*` commits the mode for every future clone.
 
 ## What this does NOT install
 

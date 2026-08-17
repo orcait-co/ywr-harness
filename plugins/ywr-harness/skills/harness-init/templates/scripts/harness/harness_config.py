@@ -126,6 +126,8 @@ SCAFFOLD_CLAIMS: frozenset = frozenset({
     # claim asserts — a byte contract was never part of a claim)
     "CLAUDE.md",
     ".gitattributes",
+    ".gitignore",
+    "REVIEW.md",
     ".githooks/slice-retro-ignore",
     ".harness.json",
     # $SEED_CORPUS destination

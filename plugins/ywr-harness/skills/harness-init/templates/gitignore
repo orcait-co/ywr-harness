@@ -1,0 +1,20 @@
+# Root ignore seed, placed once by /ywr-harness:harness-init (ADR 0053) — edit freely; this
+# file is a SEED and is never overwritten. Template-only lines are reported on re-runs
+# (ADR 0051), never merged.
+
+# Regenerable docs surfaces — index.json/INDEX.md are COMMITTED (queryable without a build);
+# the html renders are rebuilt from them and go stale if committed (spec 0005 shape).
+docs/docs.html
+docs/docs.artifact.html
+docs/customer.html
+
+# Machine-local telemetry ledger the ywr-harness SubagentStop hook appends. Per-machine, so a
+# committed copy conflicts for every other writer.
+.claude/telemetry/
+
+# Secrets — commit .env.example only.
+.env
+
+# Python bytecode (the vendored scripts/harness/*.py compile on import).
+__pycache__/
+*.pyc

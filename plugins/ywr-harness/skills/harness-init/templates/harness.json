@@ -66,6 +66,30 @@
       "cwd": "",
       "strip_prefix": "",
       "gates": []
+    },
+    {
+      "//": "The decision records this repo accumulates (docs/adr append-only, docs/spec living). Claimed so the first ADR you write — the whole point of the shape — does not fail the partition audit (ADR 0052). Prose has no deterministic gate; the docs build is the pipeline that consumes these.",
+      "name": "docs-corpus",
+      "match": "^docs/(adr|spec)/.*\\.md$",
+      "cwd": "",
+      "strip_prefix": "",
+      "gates": []
+    },
+    {
+      "//": "The two builder outputs the pipeline COMMITS (index.json + INDEX.md — the html surfaces are gitignored, ADR 0053). If this repo moves docs.index, update this match with it (ADR 0052).",
+      "name": "docs-generated",
+      "match": "^docs/(index\\.json|INDEX\\.md)$",
+      "cwd": "",
+      "strip_prefix": "",
+      "gates": []
+    },
+    {
+      "//": "Root prose every repo has. Widen this as the repo's own prose accumulates (CONTRIBUTING.md, a handoff doc, …) — a new prose file surfacing as ungrouped is this group asking to be widened (ADR 0052).",
+      "name": "prose",
+      "match": "^README\\.md$",
+      "cwd": "",
+      "strip_prefix": "",
+      "gates": []
     }
   ],
 

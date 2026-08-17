@@ -31,6 +31,8 @@ $EXPECT = @(
     'docs/spec/README.md', 'docs/spec/0000-template.md',
     'docs/build.ps1', 'docs/build.sh', 'docs/build_docs.py',
     'CLAUDE.md', '.gitattributes', '.harness.json',
+    # Root ignore seed (ADR 0053) + starter review canon seed (ADR 0054).
+    '.gitignore', 'REVIEW.md',
     'docs/adr/0001-adopt-docs-as-code.md',  # corpus seed — without it the builder has nothing to index
     # Vendored so a consuming repo's CI needs no access to the private canon (ADR 0014).
     'scripts/harness/harness_config.py', 'scripts/harness/harness_gates.py',
@@ -63,6 +65,10 @@ $ok = (Assert-True 'A stamp written with the plugin version' `
         (((Get-Content -LiteralPath (Join-Path $a '.harness-version') -Raw).Trim()) -eq $manifestVer)) `
         "stamp missing or wrong; manifest=$manifestVer out=$($rA.Out)") -and $ok
 $ok = (Assert-True 'A stamp is reported' ($rA.Out -match 'stamp: \.harness-version') $rA.Out) -and $ok
+# Issue #52: the stamp is claimed BUILT-IN since ADR 0044 — the old "claim it in .harness.json
+# groups" instruction sent members declaring an entry the emitter already owns.
+$ok = (Assert-True 'A stamp line says claimed built-in, not claim-it-yourself' `
+        ($rA.Out -match 'claimed built-in by the emitter' -and $rA.Out -notmatch 'claim it in \.harness\.json groups') $rA.Out) -and $ok
 # The point of the corpus seed: a scaffolded repo must BUILD. Without a record the builder exits 1
 # ("found no .md with frontmatter") and no tooling can query the repo's decisions — the defect the
 # first end-to-end run surfaced, which this case pins.
@@ -95,15 +101,19 @@ $ok = (Assert-True 'C toolchain content matches canon after refresh' ($builderNo
 $d = New-Target 'seeded'
 $mine = "# my own CLAUDE.md`nkeep me`n"
 Set-Content -LiteralPath (Join-Path $d 'CLAUDE.md') -Value $mine -NoNewline
+$mineReview = "# my own REVIEW.md`nhouse invariants`n"
+Set-Content -LiteralPath (Join-Path $d 'REVIEW.md') -Value $mineReview -NoNewline
 $rD = Invoke-Init @('-Target', $d)
 $after = Get-Content -LiteralPath (Join-Path $d 'CLAUDE.md') -Raw
-$ok = (Assert-True 'D existing seed reported preserved' ($rD.Out -match 'preserved=1') $rD.Out) -and $ok
+$ok = (Assert-True 'D existing seeds reported preserved' ($rD.Out -match 'preserved=2') $rD.Out) -and $ok
 $ok = (Assert-True 'D existing seed is byte-identical afterwards' ($after -eq $mine) 'CLAUDE.md was modified') -and $ok
+$ok = (Assert-True 'D existing REVIEW.md is byte-identical afterwards (ADR 0054 — SEED)' `
+        ((Get-Content -LiteralPath (Join-Path $d 'REVIEW.md') -Raw) -eq $mineReview) 'REVIEW.md was modified') -and $ok
 $ok = (Assert-True 'D preserved seed still warns the reader' ($rD.Out -match 'never clobber') $rD.Out) -and $ok
-# CLAUDE.md is deliberately OUTSIDE the drift probe (ADR 0051): it is placeholder prose a repo
-# rewrites wholesale, so a note would be permanent noise. This seed shares zero lines with the
-# template — a note here means the exclusion regressed.
-$ok = (Assert-True 'D a rewritten CLAUDE.md never carries a drift note' ($rD.Out -notmatch 'this seed lacks') $rD.Out) -and $ok
+# CLAUDE.md and REVIEW.md are deliberately OUTSIDE the drift probe (ADR 0051/0054): both are
+# placeholder prose a repo rewrites wholesale, so a note would be permanent noise. These seeds
+# share zero lines with their templates — a note here means the exclusion regressed.
+$ok = (Assert-True 'D rewritten CLAUDE.md/REVIEW.md never carry a drift note' ($rD.Out -notmatch 'this seed lacks') $rD.Out) -and $ok
 
 # --- E: content files are never touched -------------------------------------------------------
 # A repo's accumulated decisions are the one thing a re-runnable scaffold must not endanger.
@@ -479,6 +489,118 @@ if ($IsWindows) {
         ($rT6.Out -match 'stamp: ') $rT6.Out) -and $ok
 } else {
     Write-Host 'SKIP [T6 locked seed] POSIX — FileShare.None is advisory there; windows-latest CI runs this case' -ForegroundColor Yellow
+}
+
+# T7: the root .gitignore joins the line-based drift probe (ADR 0053) — an existing ignore
+# missing template lines gets the count + first example, and is never merged into.
+$t7 = New-Target 'seed-gitignore-drift'
+$t7gi = "docs/docs.html`n"
+[IO.File]::WriteAllText((Join-Path $t7 '.gitignore'), $t7gi)
+$rT7 = Invoke-Init @('-Target', $t7)
+$ok = (Assert-True 'T7 gitignore drift note names count + first missing line' `
+    ($rT7.Out -match "= \.gitignore \(existing seed preserved — template has \d+ line\(s\) this seed lacks, e\.g\. 'docs/docs\.artifact\.html'") $rT7.Out) -and $ok
+$ok = (Assert-True 'T7 the seed itself is untouched (report only)' `
+    ((Get-Content -LiteralPath (Join-Path $t7 '.gitignore') -Raw) -eq $t7gi) 'the probe wrote into .gitignore') -and $ok
+
+# --- U: first-run TOOLCHAIN collision refuses (ADR 0055, issue #50) ----------------------------
+# The measured brownfield loss: a repo's own docs/README.md silently replaced and labeled
+# "toolchain refreshed from canon" on the FIRST run. No stamp file = first run; a differing file
+# at a toolchain path is then refused, the stamp is withheld (else the next run re-runs with
+# overwrite semantics and the guard defeats itself), and -Force is the deliberate replacement.
+$u = New-Target 'first-run-collision'
+New-Item -ItemType Directory -Force -Path (Join-Path $u 'docs') | Out-Null
+$ownDocs = "# my own docs index — not the canon's`n"
+Set-Content -LiteralPath (Join-Path $u 'docs/README.md') -Value $ownDocs -NoNewline
+$rU1 = Invoke-Init @('-Target', $u)
+$ok = (Assert-True 'U1 first-run collision refuses, run exits 0' `
+    ($rU1.Code -eq 0 -and $rU1.Out -match 'docs/README\.md REFUSED — first run found an existing file at this TOOLCHAIN path') "exit=$($rU1.Code) out=$($rU1.Out)") -and $ok
+$ok = (Assert-True 'U1 the colliding file survives byte-identical' `
+    ((Get-Content -LiteralPath (Join-Path $u 'docs/README.md') -Raw) -eq $ownDocs) 'first run overwrote a pre-existing file') -and $ok
+$ok = (Assert-True 'U1 refusal is counted' ($rU1.Out -match 'refused=1') $rU1.Out) -and $ok
+$ok = (Assert-True 'U1 the stamp is withheld while refusals stand' `
+    ((-not (Test-Path -LiteralPath (Join-Path $u '.harness-version') -PathType Leaf)) -and $rU1.Out -match 'stamp: NOT written') $rU1.Out) -and $ok
+$ok = (Assert-True 'U1 never labeled as a canon refresh' ($rU1.Out -notmatch 'docs/README\.md \(toolchain refreshed') $rU1.Out) -and $ok
+# "First run" is inferred from the stamp's absence, and a scaffolded repo can lose its stamp —
+# the refusal must state the inference and the stamp-lost remedy, never assert the file's origin
+# as fact (review 2026-08-17, medium).
+$ok = (Assert-True 'U1 the refusal states the inference and the stamp-lost remedy' `
+    ($rU1.Out -match 'Nothing marks it as this scaffold' -and $rU1.Out -match 'only the stamp is missing') $rU1.Out) -and $ok
+# U2: the protection is not one-shot — with the stamp withheld, a re-run is STILL a first run.
+$rU2 = Invoke-Init @('-Target', $u)
+$ok = (Assert-True 'U2 re-run still refuses (stamp was withheld, so still a first run)' `
+    ($rU2.Out -match 'REFUSED — first run' -and -not (Test-Path -LiteralPath (Join-Path $u '.harness-version') -PathType Leaf)) $rU2.Out) -and $ok
+# U3: -DryRun shows the same refusal (the SKILL.md brownfield advice depends on this).
+$rU3 = Invoke-Init @('-Target', $u, '-DryRun')
+$ok = (Assert-True 'U3 dry run shows the refusal too' ($rU3.Out -match 'REFUSED — first run') $rU3.Out) -and $ok
+# U4: -Force replaces, labeled truthfully (never "refreshed"), and the run then stamps.
+$rU4 = Invoke-Init @('-Target', $u, '-Force')
+$ok = (Assert-True 'U4 -Force replaces with the truthful label' `
+    ($rU4.Code -eq 0 -and $rU4.Out -match 'docs/README\.md \(REPLACED a pre-existing non-canon file under -Force' -and $rU4.Out -match 'replaced=1') "exit=$($rU4.Code) out=$($rU4.Out)") -and $ok
+$ok = (Assert-True 'U4 the canon copy is placed' `
+    ((Get-Content -LiteralPath (Join-Path $u 'docs/README.md') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/README.md') -Raw)) 'forced run did not place the canon copy') -and $ok
+$ok = (Assert-True 'U4 the stamp is written once resolved' `
+    ((Test-Path -LiteralPath (Join-Path $u '.harness-version') -PathType Leaf) -and (((Get-Content -LiteralPath (Join-Path $u '.harness-version') -Raw).Trim()) -eq $manifestVer)) $rU4.Out) -and $ok
+# U5: identical content at a toolchain path is a silent no-op, never a refusal — a repo that
+# hand-copied a canon file must not be told to merge with itself.
+$u5 = New-Target 'first-run-identical'
+New-Item -ItemType Directory -Force -Path (Join-Path $u5 'docs') | Out-Null
+Copy-Item -LiteralPath (Join-Path $templates 'docs/README.md') -Destination (Join-Path $u5 'docs/README.md')
+$rU5 = Invoke-Init @('-Target', $u5)
+$ok = (Assert-True 'U5 identical-content collision is a no-op, not a refusal; run stamps' `
+    ($rU5.Code -eq 0 -and $rU5.Out -notmatch 'REFUSED — first run' -and (Test-Path -LiteralPath (Join-Path $u5 '.harness-version') -PathType Leaf)) "exit=$($rU5.Code) out=$($rU5.Out)") -and $ok
+# U6: a REFUSED hook keeps its mode — "left byte-identical" includes the executable bit. The
+# chmod block must never grant +x to a first-run-refused hook (or a marker-less post-commit):
+# that would turn a preserved foreign script into a live hook once wired (review 2026-08-17,
+# high). POSIX-gated: the mode bit does not exist on Windows; CI ubuntu measures this.
+if ($IsWindows) {
+    Write-Host 'SKIP [U6 refused-hook mode] Windows — no POSIX mode bit; CI ubuntu runs this case' -ForegroundColor Yellow
+} else {
+    $u6 = New-Target 'first-run-foreign-hook-mode'
+    New-Item -ItemType Directory -Force -Path (Join-Path $u6 '.githooks') | Out-Null
+    Set-Content -LiteralPath (Join-Path $u6 '.githooks/pre-commit') -Value "#!/bin/sh`n# my experiment, deliberately not executable`n" -NoNewline
+    Set-Content -LiteralPath (Join-Path $u6 '.githooks/post-commit') -Value "#!/bin/sh`n# my own post-commit, no marker`n" -NoNewline
+    $rU6 = Invoke-Init @('-Target', $u6)
+    $execRefused = @('.githooks/pre-commit', '.githooks/post-commit') | Where-Object {
+        ([IO.File]::GetUnixFileMode((Join-Path $u6 $_)) -band [IO.UnixFileMode]::UserExecute) -ne 0
+    }
+    $ok = (Assert-True 'U6 refused hooks stay non-executable' ($execRefused.Count -eq 0) "chmod +x landed on: $($execRefused -join ', ') out=$($rU6.Out)") -and $ok
+    $ok = (Assert-True 'U6 a hook this run PLACED is still made executable' `
+        (([IO.File]::GetUnixFileMode((Join-Path $u6 '.githooks/pre-push')) -band [IO.UnixFileMode]::UserExecute) -ne 0) $rU6.Out) -and $ok
+}
+
+# --- V: the install→init E2E the #47/#48 issues measured — a fresh scaffold must pass its OWN
+# full-tree audit (ADR 0041) after the first commit, html surfaces and ledger ignored (ADR 0052/
+# 0053), review canon present (ADR 0054), and the growth loop (a new ADR) must stay claimed.
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host 'SKIP [V audit] git absent (reported, not silent) — CI has git' -ForegroundColor Yellow
+} elseif (-not $pyAvail) {
+    Write-Host 'SKIP [V audit] python absent (reported, not silent) — CI has python' -ForegroundColor Yellow
+} else {
+    $v = New-GitTarget 'audit-clean'
+    Set-Content -LiteralPath (Join-Path $v 'README.md') -Value "# fixture repo`n" -NoNewline
+    $rV0 = Invoke-Init @('-Target', $v)
+    $ok = (Assert-True 'V scaffold run exits 0' ($rV0.Code -eq 0) "exit=$($rV0.Code) out=$($rV0.Out)") -and $ok
+    # The first commit exactly as SKILL.md instructs (`git add -A` + commit). The placed hooks
+    # are bypassed via a nonexistent hooksPath: their behavior is githooks.selftest.ps1's job,
+    # and this case must measure the audit, not the hooks.
+    & git -C $v add -A 2>$null | Out-Null
+    & git -C $v -c core.hooksPath=.git/no-hooks commit -q -m 'scaffold' 2>$null | Out-Null
+    $tracked = @(& git -C $v ls-files 2>$null)
+    $ok = (Assert-True 'V regenerable html surfaces stayed out of the first commit (ADR 0053)' `
+        (-not ($tracked -match 'docs/docs\.html|docs/docs\.artifact\.html')) "tracked: $($tracked -join ', ')") -and $ok
+    $ok = (Assert-True 'V committed outputs ARE tracked (index.json + INDEX.md)' `
+        (($tracked -contains 'docs/index.json') -and ($tracked -contains 'docs/INDEX.md')) "tracked: $($tracked -join ', ')") -and $ok
+    & git -C $v check-ignore -q .claude/telemetry/subagent-stops.jsonl 2>$null
+    $ok = (Assert-True 'V telemetry ledger path is ignored before it exists (audit M3)' ($LASTEXITCODE -eq 0) 'check-ignore says not ignored') -and $ok
+    $pyCmd = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+    $rV1 = & $pyCmd.Source (Join-Path $v 'scripts/harness/harness_gates.py') --all --repo $v 2>&1 | Out-String
+    $ok = (Assert-True 'V full-tree audit reports ZERO ungrouped (the #47 red first push)' ($rV1 -notmatch 'ungrouped \(') $rV1) -and $ok
+    $ok = (Assert-True 'V review canon is FOUND (the #49 first-close hard stop)' ($rV1 -notmatch 'NOT FOUND') $rV1) -and $ok
+    # The growth loop: After-running step 3 writes an ADR — the measured "each decision makes
+    # the audit redder" half of #47.
+    Set-Content -LiteralPath (Join-Path $v 'docs/adr/0002-first-decision.md') -Value "---`nid: `"0002`"`n---`n# 0002. first`n" -NoNewline
+    $rV2 = & $pyCmd.Source (Join-Path $v 'scripts/harness/harness_gates.py') --all --repo $v 2>&1 | Out-String
+    $ok = (Assert-True 'V a newly written ADR stays claimed (docs-corpus group)' ($rV2 -notmatch 'ungrouped \(') $rV2) -and $ok
 }
 
 # --- P: a non-git target places the hooks and says they will not run ---------------------------

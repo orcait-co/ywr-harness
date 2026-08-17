@@ -1,3 +1,8 @@
+# pwsh 7 is a documented prerequisite (plugin README); under Windows PowerShell 5.1 this script
+# used to die on a null-method error ([Text.Encoding]::Latin1 is .NET 5+) — the #Requires line
+# turns the wrong-interpreter path into an explicit refusal 5.1 itself prints (issue #51).
+#Requires -Version 7.0
+
 # Scaffold the docs-as-code shape into a repo. Deterministic placement, no model judgment —
 # that is why this is a script and not prose in SKILL.md: a scaffold that cannot be tested is a
 # scaffold nobody can trust to re-run.
@@ -14,8 +19,13 @@
 #
 # Nothing is ever deleted. There is no path through this script that removes a file.
 #
-# Exit 0 = placement completed (with or without preserved seeds). Exit 1 = target unusable, a
-# template is missing from the plugin, or a write failed.
+# TOOLCHAIN overwrite applies to RE-runs only: on a FIRST run (no .harness-version stamp) an
+# existing, differing file at a toolchain path is refused rather than replaced — it is not the
+# canon's output, and overwriting it is data loss, not an update (ADR 0055). -Force replaces
+# deliberately; the stamp is withheld while such refusals stand.
+#
+# Exit 0 = placement completed (with or without preserved seeds and refusals). Exit 1 = target
+# unusable, a template is missing from the plugin, or a write failed.
 
 [CmdletBinding()]
 param(
@@ -81,6 +91,12 @@ try {
     if ($mf.version -is [string] -and $mf.version -match '\d') { $ownVersionRaw = ([string]$mf.version).Trim() }
 } catch { $ownVersionRaw = $null }
 $ownVersion = ConvertTo-VersionOrNull $ownVersionRaw
+# First run = no stamp FILE, whatever its content (only this scaffold plausibly writes that
+# name). On a first run an existing file at a TOOLCHAIN path is by definition not a canon
+# artifact, so overwriting it is data loss, not an update — those collisions are refused below
+# (ADR 0055). A present-but-garbage stamp still counts as "has run": refusing there could only
+# protect files a previous run already placed.
+$isFirstRun = -not (Test-Path -LiteralPath $stampPath -PathType Leaf)
 $repoStamp = $null; $repoStampRaw = ''
 if (Test-Path -LiteralPath $stampPath -PathType Leaf) {
     try {
@@ -150,6 +166,14 @@ $GUARDED = [ordered]@{
 $SEED = [ordered]@{
     'CLAUDE.md'     = 'CLAUDE.md'
     'gitattributes' = '.gitattributes'
+    # Root ignore (ADR 0053): makes the shipped claims true at placement — the html surfaces
+    # stay out of the first commit, the telemetry ledger's "(gitignored)" header holds, and
+    # CLAUDE.md's ".env is gitignored" line is true. What a repo ignores is its decision → SEED.
+    'gitignore'     = '.gitignore'
+    # Starter review canon (ADR 0054): the emitter's default review.canon points at the repo
+    # root, and the first slice close hard-stops on NOT FOUND — house invariants are repo-owned
+    # decisions, so the container+format is seeded once and the content is theirs.
+    'REVIEW.md'     = 'REVIEW.md'
     # The UNMAPPED exemption list, which doubles as the repo's visible spec-debt register. A SEED
     # for the same reason .harness.json is one: its whole content is decisions only this repo has.
     'githooks/slice-retro-ignore' = '.githooks/slice-retro-ignore'
@@ -170,8 +194,11 @@ $SEED_CORPUS = [ordered]@{
 }
 
 $created = @(); $refreshed = @(); $preserved = @(); $failed = @(); $skippedSeed = @(); $refused = @()
+# ADR 0055's two buckets: first-run TOOLCHAIN collisions refused (differing content, no stamp,
+# no -Force), and the -Force replacements — labeled truthfully, never as "refreshed".
+$firstRunRefused = @(); $replaced = @()
 
-function Place([string]$Rel, [string]$Dest, [bool]$Overwrite) {
+function Place([string]$Rel, [string]$Dest, [bool]$Overwrite, [bool]$OwnershipKnown = $false) {
     $src = Join-Path $templates $Rel
     if (-not (Test-Path -LiteralPath $src -PathType Leaf)) {
         $script:failed += "template missing in plugin: $Rel"
@@ -204,15 +231,28 @@ function Place([string]$Rel, [string]$Dest, [bool]$Overwrite) {
         if ($existing -eq $text.Replace("`r", '')) { return }
     }
 
+    # First-run TOOLCHAIN collision (ADR 0055): the file exists, its content DIFFERS (the
+    # identical case returned above), and no stamp says this scaffold has run here — so it is
+    # not the canon's output and overwriting it is data loss, not an update. Refused unless
+    # -Force; a GUARDED caller that already proved ownership by marker passes $OwnershipKnown.
+    # Applies under -DryRun too: the dry run must show the same refusals the real run makes.
+    $isReplacement = $false
+    if ($exists -and $Overwrite -and $script:isFirstRun -and -not $OwnershipKnown) {
+        if ($Force) { $isReplacement = $true }
+        else { $script:firstRunRefused += $Dest; return }
+    }
+
     if ($DryRun) {
-        if ($exists) { $script:refreshed += $Dest } else { $script:created += $Dest }
+        if ($isReplacement) { $script:replaced += $Dest }
+        elseif ($exists) { $script:refreshed += $Dest } else { $script:created += $Dest }
         return
     }
     try {
         $parent = Split-Path -Parent $dst
         if ($parent -and -not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
         [IO.File]::WriteAllBytes($dst, $latin1.GetBytes($text))
-        if ($exists) { $script:refreshed += $Dest } else { $script:created += $Dest }
+        if ($isReplacement) { $script:replaced += $Dest }
+        elseif ($exists) { $script:refreshed += $Dest } else { $script:created += $Dest }
     } catch { $script:failed += "$Dest — $($_.Exception.Message)" }
 }
 
@@ -232,7 +272,9 @@ function Place-Guarded([string]$Rel, [string]$Dest) {
             return
         }
     }
-    Place $Rel $Dest $true
+    # Ownership is settled here (absent, or the marker proved it ours), so the first-run
+    # collision guard inside Place() must not re-judge it (ADR 0055).
+    Place $Rel $Dest $true $true
 }
 
 $considered = 0
@@ -312,10 +354,11 @@ if ($existingRecords.Count -eq 0 -and $foreignRecords.Count -eq 0) {
 #                    and arrays are leaves — their content (groups, items) is repo-specific by
 #                    design and must not be compared.
 #   line-based    -> template lines (trimmed, non-empty, non-#) absent here; count + first one.
-# CLAUDE.md is deliberately absent: it is placeholder prose a repo rewrites wholesale, so every
-# template line would read as "missing" forever — a permanent-noise note is worse than none.
+# CLAUDE.md and REVIEW.md are deliberately absent: both are placeholder prose a repo rewrites
+# wholesale (ADR 0054 for the latter), so every template line would read as "missing" forever —
+# a permanent-noise note is worse than none.
 # Read-only by construction; an unparseable seed is a reported probe skip, never fatal.
-$DRIFT_SEEDS = @('harness.json', 'gitattributes', 'githooks/slice-retro-ignore')
+$DRIFT_SEEDS = @('harness.json', 'gitattributes', 'gitignore', 'githooks/slice-retro-ignore')
 $seedRelByDest = @{}
 foreach ($k in $SEED.Keys) { $seedRelByDest[$SEED[$k]] = $k }
 
@@ -377,9 +420,28 @@ function Get-SeedDriftNote([string]$Rel, [string]$Dest) {
 
 $mode = if ($DryRun) { ' (dry run — nothing written)' } else { '' }
 Write-Host "harness-init -> $root$mode"
-Write-Host "  created=$($created.Count) refreshed=$($refreshed.Count) preserved=$($preserved.Count) refused=$($refused.Count) unchanged=$($considered - $created.Count - $refreshed.Count - $preserved.Count - $refused.Count)"
+$refusedTotal = $refused.Count + $firstRunRefused.Count
+Write-Host "  created=$($created.Count) refreshed=$($refreshed.Count) replaced=$($replaced.Count) preserved=$($preserved.Count) refused=$refusedTotal unchanged=$($considered - $created.Count - $refreshed.Count - $replaced.Count - $preserved.Count - $refusedTotal)"
 foreach ($f in $created) { Write-Host "  + $f" -ForegroundColor Green }
 foreach ($f in $refreshed) { Write-Host "  ~ $f (toolchain refreshed from canon)" -ForegroundColor Cyan }
+# -Force over a first-run collision is never labeled "refreshed": the previous content was not
+# the canon's, and the label must say what actually happened to it (ADR 0055).
+foreach ($f in $replaced) { Write-Host "  ~ $f (REPLACED a pre-existing non-canon file under -Force — previous content survives only in git history; ADR 0055)" -ForegroundColor Yellow }
+foreach ($f in $firstRunRefused) {
+    Write-Host "  ! $f REFUSED — first run found an existing file at this TOOLCHAIN path (ADR 0055)" -ForegroundColor Yellow
+    Write-Host "      Nothing marks it as this scaffold's output, so it was left byte-identical. Merge or move it," -ForegroundColor Yellow
+    Write-Host "      then re-run; a deliberate replacement re-runs with -Force (the previous content then survives" -ForegroundColor Yellow
+    Write-Host "      only in git history)." -ForegroundColor Yellow
+}
+if ($firstRunRefused.Count) {
+    # "First run" is INFERRED from the stamp's absence, and a scaffolded repo can lose its stamp
+    # (never committed, or cleaned) — in that state the refusals above land on legitimate
+    # toolchain drift, so the inference and its remedy must be stated, not implied (review
+    # 2026-08-17, medium: the message read as a fact about the file's origin).
+    Write-Host "      (No $STAMP_FILE stamp was found, so this run treated the repo as never scaffolded. If it WAS" -ForegroundColor Yellow
+    Write-Host "      scaffolded and only the stamp is missing, -Force IS the normal re-run: toolchain files return" -ForegroundColor Yellow
+    Write-Host "      to canon, and seeds are never touched either way.)" -ForegroundColor Yellow
+}
 foreach ($f in $preserved) {
     $note = ''
     $rel = $seedRelByDest[$f]
@@ -405,13 +467,17 @@ if ($failed.Count) {
 # refresh nudge reads this AFTER byte drift is found, to orient its advice; it is never the
 # trigger. In no placement map on purpose: manifest-gate's map-driven sweep and the nudge's
 # template comparison must never see it, so it can never itself count as drift.
-if ($ownVersionRaw) {
+if ($firstRunRefused.Count) {
+    # A stamp means "scaffolded": writing it now would make the very next run a re-run that
+    # silently overwrites exactly the files the refusals above just protected (ADR 0055).
+    Write-Host "  stamp: NOT written — $($firstRunRefused.Count) first-run toolchain collision(s) above are unresolved; a stamped repo re-runs with overwrite semantics (ADR 0055)" -ForegroundColor Yellow
+} elseif ($ownVersionRaw) {
     if ($DryRun) {
         Write-Host "  stamp: would write $STAMP_FILE = $ownVersionRaw (dry run)" -ForegroundColor Cyan
     } else {
         try {
             [IO.File]::WriteAllBytes($stampPath, [System.Text.Encoding]::ASCII.GetBytes("$ownVersionRaw`n"))
-            Write-Host "  stamp: $STAMP_FILE = $ownVersionRaw (which plugin version last scaffolded this repo — ADR 0042; claim it in .harness.json groups)" -ForegroundColor Green
+            Write-Host "  stamp: $STAMP_FILE = $ownVersionRaw (which plugin version last scaffolded this repo — ADR 0042; claimed built-in by the emitter, ADR 0044)" -ForegroundColor Green
         } catch {
             Write-Host "  stamp: FAILED to write $STAMP_FILE — $($_.Exception.Message) (reported, not silent)" -ForegroundColor Yellow
         }
@@ -434,9 +500,15 @@ $hookFiles = @('.githooks/pre-commit', '.githooks/pre-push', '.githooks/post-com
 if (-not $DryRun -and -not $IsWindows) {
     # The placement write does not carry an executable bit, and git will not run a non-executable
     # hook on a POSIX checkout. No-op on Windows, where git invokes hooks through sh regardless of
-    # the bit.
+    # the bit. NEVER on a hook this run REFUSED (a first-run collision or a marker-less
+    # post-commit): "left byte-identical" must include the mode — granting +x would turn a
+    # preserved foreign script into a live hook the moment the wiring below lands (review
+    # 2026-08-17, high). The emitter's hooks: line reports the resulting bit gap (ADR 0056), so
+    # the member makes that call, not this block.
     if (Get-Command chmod -ErrorAction SilentlyContinue) {
+        $notOurs = @($firstRunRefused) + @($refused)
         foreach ($h in $hookFiles) {
+            if ($notOurs -contains $h) { continue }
             $hp = Join-Path $root $h
             if (Test-Path -LiteralPath $hp -PathType Leaf) { & chmod +x $hp 2>$null | Out-Null }
         }

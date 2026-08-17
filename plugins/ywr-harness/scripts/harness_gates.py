@@ -127,6 +127,28 @@ def changed_lines(root: Path, rev_range: str | None, is_exempt=None) -> tuple[in
     return (total, counted) if got else (0, 0)
 
 
+def exec_bit_gap(root: Path) -> str:
+    """POSIX only: the scaffold hooks present under `.githooks/` that this checkout holds
+    NON-executable — git runs hooks from the working tree and silently skips one without the
+    bit. Empty string when nothing is wrong or the question does not apply (Windows git invokes
+    hooks through sh regardless of the mode). The committed mode travels with the repo, so a
+    Windows-scaffolded repo (index mode 100644, ADR 0056) surfaces here on every POSIX clone —
+    including CI's ubuntu checkout, which is what makes the gap visible to an all-Windows org.
+    Filenames printed are constants from the scaffold's own set, never repo-supplied text."""
+    import os
+    if os.name != "posix":
+        return ""
+    bad = [h for h in ("pre-commit", "pre-push", "post-commit")
+           if (root / ".githooks" / h).is_file()
+           and not os.access(root / ".githooks" / h, os.X_OK)]
+    if not bad:
+        return ""
+    return ("\n       " + f"{len(bad)} hook(s) NOT executable ({', '.join(bad)}) — git silently "
+            "skips them in this clone (ADR 0056)\n"
+            "       run: chmod +x .githooks/*   (this clone) and commit the mode for every "
+            "future clone: git update-index --chmod=+x .githooks/*")
+
+
 def hooks_status(root: Path) -> str | None:
     """One line on whether THIS CLONE has the scaffolded git hooks wired, or None when the repo has
     no `.githooks/` to wire.
@@ -135,6 +157,11 @@ def hooks_status(root: Path) -> str | None:
     repo can carry `.githooks/` in its tree while any given clone runs none of it, and an unwired
     clone is otherwise indistinguishable from a wired one — the scaffold cannot reach a machine it
     never ran on, but this line does, because it prints on every /slice-close and every CI run.
+    The executable bit is the second per-checkout axis of the same gap (ADR 0056), appended by
+    `exec_bit_gap` on the UNSET and wired branches. The foreign-hooksPath branch deliberately
+    omits it: git is not consulting `.githooks/` there, so a chmod suggestion would read as a
+    remedy that fixes nothing — the only remedy on that branch is the hooksPath one (review
+    2026-08-17, medium).
     """
     if not (root / ".githooks").is_dir():
         return None
@@ -148,9 +175,9 @@ def hooks_status(root: Path) -> str | None:
     cur = (out.stdout or "").strip()
     if out.returncode != 0 or not cur:
         return (".githooks/ present but core.hooksPath is UNSET — NO git hook runs in this clone\n"
-                "       run: git config core.hooksPath .githooks")
+                "       run: git config core.hooksPath .githooks" + exec_bit_gap(root))
     if cur == ".githooks":
-        return ".githooks/ wired (core.hooksPath)"
+        return ".githooks/ wired (core.hooksPath)" + exec_bit_gap(root)
     # `cur` comes from the clone's own `.git/config`, and the UNSET branch above returns a
     # deliberately TWO-line string — so this is the one status line that cannot go through
     # `hc.say()`. The repo-supplied part is sanitized here instead, which is the documented

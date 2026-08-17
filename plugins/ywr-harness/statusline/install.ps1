@@ -1,3 +1,7 @@
+# pwsh 7 required (ConvertFrom-Json -AsHashtable is PS 6+); under 5.1 the #Requires line turns
+# a wrong-interpreter run into an explicit refusal instead of a mid-run parse error (issue #51).
+#Requires -Version 7.0
+
 # Install the harness statusline into the USER scope, so it applies to every Claude Code session
 # on this machine rather than one repo.
 #

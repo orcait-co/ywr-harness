@@ -33,7 +33,8 @@
   `Workflow({name: 'ywr-harness:adversarial-review', args: {scope: '<files + invariants + passed gates>'}})`.
   Put house-specific review angles in `args.lensExtra` rather than redefining the lens set —
   redefining means later improvements to the canonical lenses never reach this repo.
-  The review invariants canon is `REVIEW.md` (shipped by the ywr-harness plugin).
+  The review invariants canon is `REVIEW.md` (seeded at the repo root by harness-init —
+  replace the starter with this repo's own invariants; ywr-harness ADR 0054).
 - The review runs once per slice: a fix diff for its confirmed findings closes with re-run gates
   + per-finding fix checks, never a second full review — one bounded re-review only when the fix
   is a new mechanism rather than a patch, with the criterion named in the close.

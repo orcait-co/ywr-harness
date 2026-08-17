@@ -11,6 +11,37 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.36.0 — 2026-08-17
+
+- **신규 스캐폴드 레포의 첫 push CI가 이제 그린입니다** (이슈 #47, ADR 0052): 템플릿
+  `.harness.json`이 정본이 손으로 선언하던 세 파티션 그룹(`docs-corpus`·`docs-generated`·
+  `prose`)을 기본 동봉해, 스캐폴드 자신의 산출물과 여러분이 쓰는 ADR이 더 이상 ungrouped 로
+  CI를 붉히지 않습니다. 시드라 기존 레포에는 닿지 않습니다 — 이미 그룹을 선언해 그린인
+  레포는 그대로 두면 됩니다.
+- **루트 `.gitignore` 시드** (이슈 #48, 감사 M3, ADR 0053): 재생성 가능한 html 산출물
+  (`docs/docs.html` 등), 텔레메트리 ledger(`.claude/telemetry/`), `.env`, 파이썬 바이트코드가
+  첫 커밋에 들어가지 않습니다. 기존 `.gitignore`는 보존되고 부족한 라인은 재실행 시 드리프트
+  노트로 보고됩니다. **조치**: 기존 스캐폴드 레포는 harness-init 재실행 한 번으로 시드를
+  받습니다 (없던 시드는 재실행 때 새로 배치됩니다).
+- **시작용 `REVIEW.md` 시드** (이슈 #49, ADR 0054): 모든 신규 레포의 첫 slice-close 를 막던
+  `review canon: NOT FOUND` 하드스톱이 사라집니다. 배치되는 것은 형식 + 공통 불변식 2개의
+  스타터입니다 — **이 레포의 불변식으로 교체하세요** (After-running 4단계로 추가됨).
+  templates/CLAUDE.md 의 오독 문구("shipped by the plugin")도 교정.
+- **브라운필드 첫 실행이 기존 파일을 더 이상 조용히 교체하지 않습니다** (이슈 #50, ADR 0055):
+  `.harness-version` 스탬프가 없는 첫 실행에서 TOOLCHAIN 경로에 내용이 다른 기존 파일이 있으면
+  REFUSE 하고 병합/이동 후 재실행을 안내합니다. 의도적 교체는 `-Force` (라벨도 `REPLACED` 로
+  정직하게 표기). 충돌이 해소될 때까지 스탬프를 쓰지 않아 다음 실행이 덮어쓰기 시맨틱으로
+  넘어가지 않습니다. 기존 docs/ 가 있는 레포는 `-DryRun` 먼저.
+- **Windows PowerShell 5.1 에서 명확히 거절합니다** (이슈 #51): `init.ps1`·`selftest.ps1`·
+  `statusline/install.ps1` 에 `#Requires -Version 7.0` — 이전에는 무의미한 null 메서드 에러로
+  죽었습니다. pwsh 7 은 원래 선행조건입니다 (README §Prerequisites).
+- **훅 실행비트 갭을 emitter 가 보고합니다** (이슈 #53, ADR 0056): Windows 에서 스캐폴드한
+  레포의 훅은 인덱스 모드 100644 라 POSIX/WSL 클론에서 git 이 조용히 건너뜁니다. 이제
+  `hooks:` 라인이 POSIX(CI ubuntu 포함)에서 실행비트 결손을 치유 커맨드와 함께 보고합니다
+  (`chmod +x .githooks/*` + `git update-index --chmod=+x .githooks/*`).
+- **출력 문구 정정** (이슈 #52): 스탬프 라인의 "claim it in .harness.json groups" 가 ADR 0044
+  의 built-in 청구와 모순이라 "claimed built-in by the emitter" 로 교체.
+
 ## v0.35.0 — 2026-08-12
 
 - **docs 사이트 타이틀이 더 이상 리버트되지 않습니다** (이슈 #43, ADR 0050): 타이틀의 정식

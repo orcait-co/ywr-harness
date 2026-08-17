@@ -177,6 +177,32 @@ $ok = (Assert-True 'K3 a foreign hooksPath is reported, not called wired' ($rK3.
 # scaffolded repo would try to execute it as a gate command.
 $ok = (Assert-True 'K4 hooks line stays below the tier line' (($rK2.Out -split 'review tier:').Count -eq 2 -and ($rK2.Out -split 'review tier:')[1] -match 'hooks:') $rK2.Out) -and $ok
 
+# K5: the executable bit is the SECOND per-checkout axis of the same gap (ADR 0056): a
+# Windows-scaffolded repo commits hooks at mode 100644 and a POSIX clone silently skips them.
+# POSIX-gated — Windows git invokes hooks through sh regardless of the bit, and the mode of a
+# file written here IS the checkout state under test; CI's ubuntu selftest is the measurement.
+if ($IsWindows) {
+    Write-Host 'SKIP [K5 exec bit] Windows — git invokes hooks through sh regardless of the mode bit; CI ubuntu runs this case' -ForegroundColor Yellow
+} else {
+    & git -C $k config --local core.hooksPath '.githooks' 2>$null
+    $rK5 = Invoke-Gates $k @()
+    $ok = (Assert-True 'K5 a non-executable hook is reported with both remedies' `
+        ($rK5.Out -match 'NOT executable \(pre-commit\)' -and $rK5.Out -match 'chmod \+x \.githooks/\*' -and $rK5.Out -match 'git update-index --chmod=\+x \.githooks/\*') $rK5.Out) -and $ok
+    $ok = (Assert-True 'K5 still advisory (exit 0)' ($rK5.Code -eq 0) "exit=$($rK5.Code)") -and $ok
+    & chmod +x (Join-Path $k '.githooks/pre-commit') 2>$null
+    $rK5b = Invoke-Gates $k @()
+    $ok = (Assert-True 'K5b an executable hook stops the report (wired line stays)' `
+        ($rK5b.Out -notmatch 'NOT executable' -and $rK5b.Out -match 'hooks: \.githooks/ wired') $rK5b.Out) -and $ok
+    # K5c: the foreign-hooksPath branch OMITS the exec-bit report — git is not consulting
+    # .githooks/ there, so a chmod remedy would read as a fix that fixes nothing; the only
+    # honest remedy on that branch is the hooksPath one (review 2026-08-17, medium).
+    Set-Content -LiteralPath (Join-Path $k '.githooks/pre-push') -Value '#!/bin/sh' -NoNewline
+    & git -C $k config --local core.hooksPath '.elsewhere' 2>$null
+    $rK5c = Invoke-Gates $k @()
+    $ok = (Assert-True 'K5c foreign hooksPath drops the exec-bit note (bit is irrelevant there)' `
+        ($rK5c.Out -match "points at '\.elsewhere'" -and $rK5c.Out -notmatch 'NOT executable') $rK5c.Out) -and $ok
+}
+
 # --- L: script gates (ADR 0024) — closed-set runner + validated repo path ----------------------
 $CFG_SCRIPT = @'
 {

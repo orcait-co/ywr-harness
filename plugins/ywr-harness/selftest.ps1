@@ -1,3 +1,8 @@
+# pwsh 7 required — the suites this runner spawns use PS7-only surfaces (Latin1, $IsWindows),
+# and a 5.1 run would fail per-suite with unrelated-looking errors instead of one clear
+# refusal (issue #51).
+#Requires -Version 7.0
+
 # Plugin selftest runner — the single entry point for everything this plugin can verify about
 # itself: the manifest/wiring gate, the JS-side workflow corpus gate, then every shipped
 # PowerShell selftest.
