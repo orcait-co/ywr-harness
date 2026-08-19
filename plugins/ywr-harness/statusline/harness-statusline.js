@@ -17,6 +17,12 @@
 //
 //   model.display_name · model.id (display fallback) · effort.level
 //   workspace.current_dir
+//   workspace.git_worktree               — the linked-worktree NAME (a string), present only
+//                                          inside a `git worktree add` checkout, absent in the
+//                                          main working tree. DOC-VERIFIED 2026-08-19 (ADR 0059;
+//                                          statusline docs example `"git_worktree":
+//                                          "feature-xyz"`), live confirmation queued — the only
+//                                          key here not yet read off a captured payload.
 //   context_window.used_percentage       — context consumed
 //   context_window.context_window_size   — window size, a session constant
 //   rate_limits.{five_hour,seven_day}.used_percentage   — the ACCOUNT-WIDE windows, and ALL the
@@ -170,6 +176,16 @@ function render(j, ver = pluginVersion()) {
     (j.workspace && (j.workspace.current_dir || j.workspace.project_dir)) || j.cwd || "";
   const parts = String(cwd).replace(/\\/g, "/").split("/").filter(Boolean);
   const loc = parts.slice(-2).join("/") || cwd || "?";
+  // Linked-worktree name (ADR 0059). Guarded to the documented STRING shape: anything else —
+  // absent, object, number — renders nothing, per the absence rule. A wrong host shape must
+  // show up as a missing segment, never as a wrong one. The CONTENT is sanitized too
+  // (review 2026-08-19, low): the name is a member-chosen directory name interpolated between
+  // this line's own escape codes, and a raw ESC or newline in it would break the line or leak
+  // color into the next segment — control bytes are stripped, never rendered.
+  const wt =
+    (j.workspace && typeof j.workspace.git_worktree === "string"
+      ? j.workspace.git_worktree.replace(/[\x00-\x1f\x7f]/g, "").trim()
+      : "");
   const model = stripContextSuffix((j.model && (j.model.display_name || j.model.id)) || "?");
   const effort = (j.effort && j.effort.level) || "";
 
@@ -184,7 +200,11 @@ function render(j, ver = pluginVersion()) {
     model,
     effort,
     line:
-      `\x1b[36m${loc}${RESET} ${DIM}·${RESET} \x1b[1m${model}${RESET}` +
+      `\x1b[36m${loc}${RESET}` +
+      // The worktree segment rides right after the location — it IS a location fact. Cyan like
+      // loc, dim `wt` label like every other label.
+      (wt ? ` ${DIM}·${RESET} ${DIM}wt${RESET} \x1b[36m${wt}${RESET}` : "") +
+      ` ${DIM}·${RESET} \x1b[1m${model}${RESET}` +
       (effort ? ` ${DIM}·${RESET} \x1b[33m${effort}${RESET}` : "") +
       ctxSeg +
       // The size rides along only when the percentage actually rendered — a bare "/1M" with no

@@ -127,17 +127,35 @@ $current = $null
 if ($settings.ContainsKey('statusLine')) { $current = $settings['statusLine'] }
 $currentCmd = if ($current -is [hashtable] -or $current -is [System.Collections.IDictionary]) { [string]$current['command'] } else { '' }
 
+# The block this script writes carries a 30s refresh timer alongside the command (ADR 0059):
+# event-driven renders go quiet while a session idles on background agents, and the timer keeps
+# the quota/git-state segments current. On a block that already points here, refreshInterval is
+# ADD-IF-ABSENT only — a present value, whatever it is, is a member decision this script cannot
+# see the reasons for (the ADR 0015 rule, same as the foreign-statusLine refusal below).
+$REFRESH_SECONDS = 30
 if (-not $current) {
     if ($DryRun) {
-        Write-Host "  wiring: statusLine absent — would set it" -ForegroundColor Yellow
+        Write-Host "  wiring: statusLine absent — would set it (refreshInterval ${REFRESH_SECONDS}s)" -ForegroundColor Yellow
     } else {
-        $settings['statusLine'] = [ordered]@{ type = 'command'; command = $wanted }
+        $settings['statusLine'] = [ordered]@{ type = 'command'; command = $wanted; refreshInterval = $REFRESH_SECONDS }
         $json = $settings | ConvertTo-Json -Depth 20
         Set-Content -LiteralPath $settingsPath -Value $json -Encoding utf8
-        Write-Host "  wiring: statusLine set — wired" -ForegroundColor Green
+        Write-Host "  wiring: statusLine set — wired (refreshInterval ${REFRESH_SECONDS}s)" -ForegroundColor Green
     }
 } elseif ($currentCmd -eq $wanted) {
-    Write-Host '  wiring: statusLine already points here — already wired' -ForegroundColor Green
+    # $current is necessarily a dictionary here — $currentCmd is only non-empty for one.
+    if (-not $current.Contains('refreshInterval')) {
+        if ($DryRun) {
+            Write-Host "  wiring: statusLine already points here — would add refreshInterval ${REFRESH_SECONDS}s" -ForegroundColor Yellow
+        } else {
+            $current['refreshInterval'] = $REFRESH_SECONDS
+            $json = $settings | ConvertTo-Json -Depth 20
+            Set-Content -LiteralPath $settingsPath -Value $json -Encoding utf8
+            Write-Host "  wiring: statusLine already points here — refreshInterval ${REFRESH_SECONDS}s added" -ForegroundColor Green
+        }
+    } else {
+        Write-Host '  wiring: statusLine already points here — already wired' -ForegroundColor Green
+    }
 } else {
     # Same rule as ADR 0015's hooksPath: a value this script did not write is a decision it cannot
     # see the reasons for.

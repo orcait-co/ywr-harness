@@ -100,14 +100,46 @@ $ok = (Assert-True 'D no percentage -> no dangling size' ($d -notmatch '/1M') $d
 $e = Invoke-Line '{"model":{"display_name":"Fable 5 (preview)"},"workspace":{"current_dir":"C:/a/b"},"context_window":{"used_percentage":40,"context_window_size":200000}}'
 $ok = (Assert-True 'E a non-context parenthetical is preserved' ($e -match 'Fable 5 \(preview\)') $e) -and $ok
 
-# --- F: thresholds colour by band ----------------------------------------------------------------
-# Asserted on the raw ANSI, because the colour IS the signal here — a wrong band is invisible in
-# stripped text and this is the only place the two differ.
+# --- W: the worktree segment (ADR 0059) -----------------------------------------------------------
+# workspace.git_worktree is DOC-VERIFIED as a string (the linked-worktree name), not yet
+# live-captured — which is exactly why the guard is a type check: any other shape the host might
+# actually send must vanish, never render as "[object Object]" next to the location.
+$W = @'
+{"model":{"display_name":"Opus 5 (1M context)","id":"claude-opus-5[1m]"},
+ "effort":{"level":"xhigh"},
+ "workspace":{"current_dir":"C:/Projects/ywrlabs/ywr-harness","git_worktree":"feature-xyz"},
+ "context_window":{"used_percentage":24,"context_window_size":1000000},
+ "rate_limits":{"five_hour":{"used_percentage":5},"seven_day":{"used_percentage":1}}}
+'@
+$w1 = Invoke-Line $W
+$ok = (Assert-True 'W the worktree name renders right after the location' ($w1 -eq 'ywrlabs/ywr-harness · wt feature-xyz · Opus 5 · xhigh · ctx 24%/1M · 5h 5% · 7d 1%') "got: $w1") -and $ok
+$wAbsent = Invoke-Line $FULL
+$ok = (Assert-True 'W no git_worktree key -> no wt segment (main working tree)' ($wAbsent -notmatch '· wt ') $wAbsent) -and $ok
+# A non-string shape — say the host ever switches to the worktree.* object form here — is
+# UNMEASURED, not a value: the segment disappears rather than stringifying.
+$w3 = Invoke-Line '{"model":{"display_name":"Opus 5"},"workspace":{"current_dir":"C:/a/b","git_worktree":{"name":"feature-xyz"}}}'
+$ok = (Assert-True 'W a non-string git_worktree renders no segment' (($w3 -notmatch 'wt') -and ($w3 -notmatch 'object')) $w3) -and $ok
+$w4 = Invoke-Line '{"model":{"display_name":"Opus 5"},"workspace":{"current_dir":"C:/a/b","git_worktree":"  "}}'
+$ok = (Assert-True 'W a blank-string git_worktree renders no segment' ($w4 -notmatch '· wt') $w4) -and $ok
+# Control bytes in the NAME are stripped, not rendered (review 2026-08-19): a raw ESC would
+# start an ANSI sequence of the member's choosing mid-line, and a newline would break the one
+# line this renderer owns. Asserted on the RAW output — the ANSI-stripping Invoke-Line would
+# mask an injected ESC that survived. (Invoke-Raw lives here because this is its first use;
+# section F below asserts colour bands on it too.)
 function Invoke-Raw([string]$Json) {
     $f = Join-Path $fxBase ('r-' + [Guid]::NewGuid().ToString('N') + '.json')
     [IO.File]::WriteAllText($f, $Json)
     return Invoke-Node @($mod) $f
 }
+$w5raw = Invoke-Raw '{"model":{"display_name":"Opus 5"},"workspace":{"current_dir":"C:/a/b","git_worktree":"evil\u001b[31mred\nx"}}'
+$ok = (Assert-True 'W an injected ESC byte does not survive into the raw output' ($w5raw -notmatch "evil`e") "raw: $w5raw") -and $ok
+$ok = (Assert-True 'W an injected newline does not split the line' (-not (($w5raw.Trim()) -match "`n")) "raw: $w5raw") -and $ok
+$ok = (Assert-True 'W the printable remainder still renders as the name' ($w5raw -match 'wt') "raw: $w5raw") -and $ok
+
+# --- F: thresholds colour by band ----------------------------------------------------------------
+# Asserted on the raw ANSI, because the colour IS the signal here — a wrong band is invisible in
+# stripped text and this is the only place the two differ. (Invoke-Raw is defined at its first
+# use in section W above.)
 $lowCtx = Invoke-Raw '{"model":{"display_name":"m"},"workspace":{"current_dir":"a"},"context_window":{"used_percentage":50}}'
 $hiCtx = Invoke-Raw '{"model":{"display_name":"m"},"workspace":{"current_dir":"a"},"context_window":{"used_percentage":95}}'
 $ok = (Assert-True 'F context 50% is still green (ordinary working state)' ($lowCtx -match "`e\[32m50%") 'expected green at 50%') -and $ok
