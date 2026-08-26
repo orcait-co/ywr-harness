@@ -5,7 +5,10 @@
     "index": "docs/index.json",
 
     "//site_title": "The <title>/header of the generated docs surfaces (docs.html · docs.artifact.html; the customer surface derives its default from it). THIS declaration is the source — the DOCS_SITE_TITLE env var is a one-off override only, so a harness-init re-run or CI rebuild can never revert a committed title (ADR 0050). Convention: '<repo> · <purpose>', same as artifact titles (ADR 0032). Empty = the builder's default. Display text only — it is escaped into HTML and never reaches a command.",
-    "site_title": ""
+    "site_title": "",
+
+    "//customer": "OPTIONAL customer-corpus surface (ADR 0060). null = off (the default build stays 4 surfaces). An object turns it on: every subdirectory of 'dir' (default docs/customer) is one program — its name is the program id — and MUST hold spec.md (the record: frontmatter title · updated · program == the directory name), user-guide.md, and release-notes.md (one '## YYYY-MM-DD — title [TAG]' per entry, newest first); the builder renders them into ONE docs/customer.artifact.html and REFUSES the build (exit 1) when the directory is missing or a program lacks a file or a required key. Keys — display text (escaped into HTML, never a command): title, eyebrow, description, contact, other_label, unkeyed_label, chip_suffix (appended to the chip value ONLY in PROJECTS.md's file-form listing, e.g. '.p' → `xgglbsrp.p`; the HTML chip shows the bare value). Frontmatter key names: chip_field (rendered as each program's mono chip; required on spec.md when declared), required_frontmatter (extra keys spec.md must carry), group_field (default 'menu'; the LEADING INTEGER of its first comma-separated value picks the sidebar group), project_field (default 'project'). groups: [{\"label\": \"재무회계 (25.x)\", \"keys\": [25]}, …] in display order, first match wins; a program whose key matches none lands under other_label, one without a parseable key under unkeyed_label. projects_md: true also writes docs/PROJECTS.md (project → programs; COMMITTED like INDEX.md). release_stages: [{\"tag\": \"FUT\", \"label\": \"FUT\"}, …] — the [TAG] vocabulary release entries may carry, in stage order, the LAST being the final stage (default FUT · UAT · PROD→COMPLETE). panels: [{\"module\": \"scripts/ops/customer_env_panel.py\", \"label\": \"환경 차이\"}, …] — EXTENSION POINT: each module is a repo-relative .py path (same allowlist as a script-gate path — the builder IMPORTS it) exposing `render_panel(repo_root) -> str` (an HTML fragment) and optionally `CSS`; each becomes one more top-level tab after the documents tab. 'dir' is held to the path allowlist ([A-Za-z0-9._/-], no '..'): a traversal would publish files from outside the repo into a customer page. Not a whitelist surface: docs/customer.html (--customer, ADR 0005) is a different, frontmatter-selected page and keeps working unchanged.",
+    "customer": null
   },
 
   "//handoff": "Resume-point doc the slice close updates (reporting only — never reaches a command). A single file serves a single active work line; a value ending in '/' declares a DIRECTORY holding one resume file per work line (multi-writer repos), each named after the work line, never after a person (ADR 0040). Either form, the handoff is a resume point, not a ledger: the close that supersedes a Current state section moves it to docs/handoff-archive/<same filename>.",
@@ -76,9 +79,9 @@
       "gates": []
     },
     {
-      "//": "The two builder outputs the pipeline COMMITS (index.json + INDEX.md — the html surfaces are gitignored, ADR 0053). If this repo moves docs.index, update this match with it (ADR 0052).",
+      "//": "The builder outputs the pipeline COMMITS (index.json + INDEX.md — the html surfaces are gitignored, ADR 0053; PROJECTS.md is committed like INDEX.md when docs.customer.projects_md is declared true, ADR 0060). If this repo moves docs.index, update this match with it (ADR 0052).",
       "name": "docs-generated",
-      "match": "^docs/(index\\.json|INDEX\\.md)$",
+      "match": "^docs/(index\\.json|INDEX\\.md|PROJECTS\\.md)$",
       "cwd": "",
       "strip_prefix": "",
       "gates": []

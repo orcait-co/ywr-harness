@@ -11,6 +11,25 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.38.0 — 2026-08-27
+
+- **고객 문서 코퍼스 표면이 선언으로 켜집니다** (ADR 0060): `.harness.json` `docs.customer` 를
+  채우면 `docs/customer/<프로그램>/{spec,user-guide,release-notes}.md` 코퍼스가 하나의
+  `docs/customer.artifact.html`(+ 선택 `docs/PROJECTS.md`)로 렌더링됩니다 — 사이드바 그룹·릴리즈
+  배지·프로그램 칩·확장 탭(`panels[]`)이 전부 선언 데이터입니다. 기본값 `null` 이면 아무것도
+  달라지지 않습니다. **client-pjems 조치, 이 순서로**: ① `/ywr-harness:harness-init` 재실행(새
+  빌더와 새 리더가 함께 배치됩니다 — 포크한 `docs/build_docs.py` 는 이때 덮어써도 됩니다) →
+  ② `.harness.json` `docs.customer` 를 채움 → ③ `pwsh docs/build.ps1`. 순서가 어긋나 리더가
+  구버전인 채로 선언만 있으면 빌드는 트레이스백 대신 "리더가 구버전" 이라고 지목하며 exit 1
+  로 멈춥니다. 환경 차이 탭은 렌더러를 `panels[]` 모듈로 옮겨야 유지됩니다.
+- **마크다운 렌더링 수정 3종** (모든 표면 공통): 하드랩된 리스트 항목의 연속 줄이 같은 항목으로
+  합쳐지고, ```` ```diff ```` 펜스가 +/− 줄 채색되고, 표가 가로 스크롤 래퍼로 감싸집니다.
+  재빌드하면 `docs.html` 마크업이 조금 달라지지만 커밋 대상(index.json·INDEX.md)은 그대로입니다.
+- **선언 검증 강화**: `docs.customer` 의 잘못된 값은 항목별로 경고되고 항목만 버려지며, 빈
+  문자열도 "미선언"이 아니라 경고 후 기본값입니다. 멤버 조치 없음 — 기존 레포는 다음 init
+  재실행 때 `.harness.json` 이 `docs.customer` 키를 갖지 않는다는 드리프트 노트 한 줄을 봅니다
+  (`"customer": null` 을 추가하면 조용해집니다).
+
 ## v0.37.0 — 2026-08-19
 
 - **상태줄에 worktree 세그먼트가 추가됩니다** (ADR 0059): linked git worktree 안에서 세션이

@@ -374,6 +374,272 @@ def compile_re(pattern: str, field: str, warns: list[str]) -> re.Pattern | None:
         return None
 
 
+# ---------------------------------------------------------------------------------------------
+# Customer-corpus surface declaration (ADR 0060). `docs.customer` turns on the docs builder's
+# optional program-corpus surface: `<dir>/<Program>/{spec,user-guide,release-notes}.md` → one
+# `docs/customer.artifact.html` (+ `docs/PROJECTS.md` when `projects_md`). Parsed and VALIDATED
+# here; the builder imports this reader instead of re-reading the file, because two validators of
+# one schema diverge — the client-pjems fork this schema upstreams WAS that: the same rules as
+# constants in a second copy of the builder, unreachable by any canon fix (ADR 0010 local-patch
+# state, and the SessionStart drift nudge fired there every session).
+#
+# Nothing here reaches a command position: `dir` selects files the builder READS and renders into
+# HTML; every other value is display text or a frontmatter key name. `dir` is still held to the
+# path allowlist — a `..` segment would publish files from OUTSIDE the repo into a customer-facing
+# page, which is a leak rather than a shell injection and is refused for the same reason. Display
+# text is sanitized the way a group name is (control characters escaped, reported): it is echoed
+# in warnings and in the builder's stderr, both line-shaped surfaces.
+#
+# Three states, distinguished on purpose (the `artifacts.malformed` precedent):
+#   cfg["customer"] is None            key absent or null — the surface is OFF; nothing is checked
+#   cfg["customer"]["malformed"] != "" declared but unusable — the BUILDER MUST REFUSE (exit 1) and
+#                                      the emitter warns; a declared surface that quietly stops
+#                                      building is the committed-page-goes-stale defect
+#   otherwise                          validated values with defaults filled, plus `declared` —
+#                                      the known keys the declarer wrote (non-null), so an
+#                                      explicit "" stays distinguishable from an absent key
+# An explicitly EMPTY value ("" or []) is never read as absent: it warns and takes the default.
+# The three filenames are the corpus CONTRACT, not a key: a role attaches to each (record file ·
+# guide · release feed), and a declared name without a role is not expressible.
+# ---------------------------------------------------------------------------------------------
+CUSTOMER_FILES = ("spec.md", "user-guide.md", "release-notes.md")
+CUSTOMER_KEYS = ("dir", "title", "eyebrow", "description", "contact", "required_frontmatter",
+                 "chip_field", "chip_suffix", "group_field", "groups", "other_label",
+                 "unkeyed_label", "project_field", "projects_md", "release_stages", "panels")
+# Display defaults are deliberately EMPTY here: the builder owns its UI language and fills them.
+# `release_stages` is a parsing contract (which `[TAG]` tokens a release entry may carry, in
+# stage order — the LAST is the final stage), so its default lives with the validation.
+# `panels` (ADR 0060's extension point): repo-relative Python modules, each contributing one
+# top-level tab — the builder imports the module and calls `render_panel(repo_root) -> str`.
+# The module path is a script-gate-class value (ADR 0024): a path to code the repo already
+# carries, never a command string, held to the same allowlist; a module the builder EXECUTES is
+# exactly why the allowlist matters here even though no shell is involved.
+CUSTOMER_DEFAULTS: dict = {
+    "dir": "docs/customer",
+    "title": "", "eyebrow": "", "description": "", "contact": "",
+    "required_frontmatter": [],
+    "chip_field": "", "chip_suffix": "",
+    "group_field": "menu", "groups": [], "other_label": "", "unkeyed_label": "",
+    "project_field": "project", "projects_md": False,
+    "release_stages": [{"tag": "FUT", "label": "FUT"}, {"tag": "UAT", "label": "UAT"},
+                       {"tag": "PROD", "label": "COMPLETE"}],
+    "panels": [],
+}
+# parse_frontmatter's key shape (build_docs.py: `^([A-Za-z0-9_]+)\s*:`) — a declared key name
+# outside it can never match a parsed key, so it is refused rather than silently never-found.
+FM_KEY = re.compile(r"^[A-Za-z0-9_]+\Z")
+STAGE_TAG = re.compile(r"^[A-Za-z0-9_-]+\Z")
+
+
+def _display(value, field: str, warns: list[str]) -> str:
+    """Repo-supplied display text → one-line form, control characters escaped and REPORTED
+    (the groups[].name rule: a value that never exists raw after load cannot be echoed raw)."""
+    s = str(value)
+    if has_control(s):
+        warns.append(f"{field}: control character(s) in the value were escaped for display "
+                     f"('{one_line(s)}') — display text is echoed on line-shaped surfaces")
+    return one_line(s).strip()
+
+
+def _fm_key(value, field: str, warns: list[str], default: str = "") -> str:
+    """A declared frontmatter key name. An EMPTY value is reported, never read as absent: `""`
+    is something a declarer (or their templating) wrote, and a silent default here was the
+    review's high finding (2026-08-27) — the only path in this block that degraded without a
+    warning."""
+    s = str(value if value is not None else "").strip()
+    how = f"using the default '{default}'" if default else "ignored"
+    if not s:
+        warns.append(f"{field}: declared empty — {how}")
+        return default
+    if not FM_KEY.match(s):
+        warns.append(f"{field}: '{one_line(s)}' is not a frontmatter key name ([A-Za-z0-9_] only) "
+                     f"— {how}")
+        return default
+    return s
+
+
+def _is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)   # JSON true/false are ints in Python
+
+
+def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
+    """Validate `docs.customer`. Returns None (surface off), a dict with `malformed` set (declared
+    but unusable — the builder refuses), or the validated declaration with defaults filled."""
+    field = "docs.customer"
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        warns.append(f"{field}: expected an object (or null to leave the surface off), got "
+                     f"{type(raw).__name__} — the customer surface CANNOT be built until fixed")
+        return {"malformed": "expected an object or null"}
+    # Defaults are copied one level DEEPER than the list: `release_stages` holds dicts, and a
+    # shallow `list(v)` would hand every load the module constant's own dict objects — one
+    # in-place edit by a consumer (or a selftest) would poison every later load in the process
+    # (review 2026-08-27, medium).
+    out: dict = {k: ([dict(s) if isinstance(s, dict) else s for s in v] if isinstance(v, list) else v)
+                 for k, v in CUSTOMER_DEFAULTS.items()}
+    out["malformed"] = ""
+    # Which known keys the declarer actually wrote (non-null). The builder fills its own UI
+    # default ONLY for keys absent here, so `"title": ""` is an intentional blank and an absent
+    # `title` is "use yours" — without this list the two are the same empty string (review
+    # 2026-08-27, low: a contract gap slice 2 could not have resolved from the values alone).
+    out["declared"] = [k for k in CUSTOMER_KEYS if raw.get(k) is not None]
+    for key in raw:
+        if key not in CUSTOMER_KEYS and not str(key).startswith("//"):
+            warns.append(f"{field}: unknown key '{one_line(str(key))}' ignored "
+                         f"(known: {', '.join(CUSTOMER_KEYS)})")
+
+    # `dir`: the one path. Refused → malformed, never defaulted: a default would build the surface
+    # from a directory the declarer did not name. Declared EMPTY → the default, reported — the
+    # silent branch here was the review's high finding (2026-08-27).
+    if raw.get("dir") is not None:
+        d = norm(str(raw["dir"])).rstrip("/")
+        if not d:
+            warns.append(f"{field}.dir: declared empty — using the default "
+                         f"'{CUSTOMER_DEFAULTS['dir']}'")
+        elif not token_ok(d) or d.startswith("-"):
+            warns.append(f"{field}.dir: '{one_line(d)}' refused (a repo-relative path of "
+                         "[A-Za-z0-9._/-] only, no '..', no leading '/' or '-') — the customer "
+                         "surface CANNOT be built until fixed")
+            out["malformed"] = "dir refused"
+        else:
+            out["dir"] = d
+    if not out["malformed"] and not (root / out["dir"]).is_dir():
+        # Kept, not dropped — the builder refuses at build time and names the path; this names it
+        # at emit time, where CI reads it.
+        warns.append(f"{field}.dir: '{out['dir']}' does not exist — the docs build will refuse "
+                     "until the corpus directory is there")
+
+    for key in ("title", "eyebrow", "description", "contact", "chip_suffix",
+                "other_label", "unkeyed_label"):
+        if raw.get(key) is None:
+            continue
+        if not isinstance(raw[key], str):
+            warns.append(f"{field}.{key}: must be a string — ignored")
+            continue
+        out[key] = _display(raw[key], f"{field}.{key}", warns)
+
+    for key in ("chip_field", "group_field", "project_field"):
+        if raw.get(key) is not None:
+            out[key] = _fm_key(raw[key], f"{field}.{key}", warns, CUSTOMER_DEFAULTS[key])
+
+    rf = raw.get("required_frontmatter")
+    if isinstance(rf, list):
+        out["required_frontmatter"] = [
+            v for v in (_fm_key(k, f"{field}.required_frontmatter", warns) for k in rf) if v]
+    elif rf is not None:
+        warns.append(f"{field}.required_frontmatter: expected a list of frontmatter key names "
+                     "— ignored")
+
+    grp = raw.get("groups")
+    if isinstance(grp, list):
+        kept: list = []
+        for i, g in enumerate(grp):
+            gf = f"{field}.groups[{i}]"
+            if not isinstance(g, dict):
+                warns.append(f"{gf}: expected an object with 'label' and 'keys' — ignored")
+                continue
+            for k in g:
+                if k not in ("label", "keys") and not str(k).startswith("//"):
+                    warns.append(f"{gf}: unknown key '{one_line(str(k))}' ignored (known: label, keys)")
+            label = _display(g["label"], f"{gf}.label", warns) if isinstance(g.get("label"), str) else ""
+            keys_raw = g.get("keys")
+            keys = [k for k in keys_raw if _is_int(k)] if isinstance(keys_raw, list) else []
+            bad = [k for k in keys_raw if not _is_int(k)] if isinstance(keys_raw, list) else []
+            if not label or not keys or bad:
+                shown = f" — refused: {', '.join(one_line(str(b)) for b in bad)}" if bad else ""
+                warns.append(f"{gf}: needs a non-empty 'label' and 'keys' as a list of integers "
+                             f"(the leading integer of a program's '{out['group_field']}' "
+                             f"value){shown} — entry ignored")
+                continue
+            kept.append({"label": label, "keys": keys})
+        out["groups"] = kept
+        if grp and not kept:
+            warns.append(f"{field}.groups: every entry was rejected — every program will land "
+                         "in the fallback groups")
+    elif grp is not None:
+        warns.append(f"{field}.groups: expected a list of {{label, keys}} objects — ignored")
+
+    pm = raw.get("projects_md", False)
+    if not isinstance(pm, bool):
+        # The script-gate `files` lesson: bool("false") is True, so a JSON string would silently
+        # INVERT the declared intent. The default (off) is the conservative direction.
+        warns.append(f"{field}.projects_md: must be a JSON boolean (true/false), got "
+                     f"'{one_line(str(pm))}' — treated as false (no PROJECTS.md)")
+        pm = False
+    out["projects_md"] = pm
+
+    rs = raw.get("release_stages")
+    if isinstance(rs, list):
+        if not rs:
+            # An empty list is a declaration too (the `""` rule above, list form): reported as
+            # what it is, not as "every entry was rejected" (review 2026-08-27, low).
+            warns.append(f"{field}.release_stages: declared empty — using the default "
+                         "vocabulary (FUT, UAT, PROD)")
+        stages: list = []
+        for i, s in enumerate(rs):
+            sf = f"{field}.release_stages[{i}]"
+            if not isinstance(s, dict):
+                warns.append(f"{sf}: expected an object with 'tag' and 'label' — ignored")
+                continue
+            for k in s:
+                if k not in ("tag", "label") and not str(k).startswith("//"):
+                    warns.append(f"{sf}: unknown key '{one_line(str(k))}' ignored (known: tag, label)")
+            tag = str(s.get("tag") if s.get("tag") is not None else "").strip()
+            if not STAGE_TAG.match(tag):
+                warns.append(f"{sf}: tag '{one_line(tag)}' must be [A-Za-z0-9_-] — entry ignored")
+                continue
+            if any(x["tag"] == tag for x in stages):
+                warns.append(f"{sf}: duplicate tag '{tag}' — entry ignored")
+                continue
+            label = (_display(s["label"], f"{sf}.label", warns)
+                     if isinstance(s.get("label"), str) and s["label"].strip() else tag)
+            stages.append({"tag": tag, "label": label})
+        if stages:
+            out["release_stages"] = stages
+        elif rs:
+            warns.append(f"{field}.release_stages: every entry was rejected — using the default "
+                         "vocabulary (FUT, UAT, PROD)")
+    elif rs is not None:
+        warns.append(f"{field}.release_stages: expected a list of {{tag, label}} objects "
+                     "— ignored")
+
+    pn = raw.get("panels")
+    if isinstance(pn, list):
+        panels: list = []
+        for i, p in enumerate(pn):
+            pf = f"{field}.panels[{i}]"
+            if not isinstance(p, dict):
+                warns.append(f"{pf}: expected an object with 'module' and 'label' — ignored")
+                continue
+            for k in p:
+                if k not in ("module", "label") and not str(k).startswith("//"):
+                    warns.append(f"{pf}: unknown key '{one_line(str(k))}' ignored (known: module, label)")
+            module = norm(str(p.get("module") if p.get("module") is not None else ""))
+            # The same refusal as a script-gate path — this is a file the builder will IMPORT.
+            if (not module or not token_ok(module) or module.startswith("-")
+                    or not module.endswith(".py")):
+                warns.append(f"{pf}: module '{one_line(module)}' refused (a repo-relative .py path of "
+                             "[A-Za-z0-9._/-] only, no '..', no leading '/' or '-') — entry ignored")
+                continue
+            if not (root / module).is_file():
+                # Kept, not dropped — the builder refuses at build time and names the path.
+                warns.append(f"{pf}: module '{module}' does not exist — the docs build will "
+                             "refuse until it does")
+            label = (_display(p["label"], f"{pf}.label", warns)
+                     if isinstance(p.get("label"), str) and p["label"].strip() else "")
+            if not label:
+                warns.append(f"{pf}: needs a non-empty 'label' (the tab text) — entry ignored")
+                continue
+            panels.append({"module": module, "label": label})
+        out["panels"] = panels
+        if pn and not panels:
+            warns.append(f"{field}.panels: every entry was rejected — no extra tab will be built")
+    elif pn is not None:
+        warns.append(f"{field}.panels: expected a list of {{module, label}} objects — ignored")
+    return out
+
+
 def find_repo_root(start: Path) -> Path:
     """Walk upward for .harness.json, then for .git. Falls back to `start`: both consumers are
     advisory, so a repo with neither marker still works on defaults rather than failing."""
@@ -403,6 +669,8 @@ def load(root: Path) -> tuple[dict, list[str]]:
     # carries a section-level shape error for the same reason: a declaration that cannot be
     # checked must never read as enforcement.
     cfg["artifacts"] = {"readme": "README.md", "items": [], "malformed": ""}
+    # Customer-corpus surface (ADR 0060): None = off. Validated by `customer_decl` below.
+    cfg["customer"] = None
 
     path = root / ".harness.json"
     if not path.exists():
@@ -415,8 +683,12 @@ def load(root: Path) -> tuple[dict, list[str]]:
         return cfg, warns
 
     docs = raw.get("docs") or {}
+    if not isinstance(docs, dict):
+        warns.append("docs: expected an object — ignored")
+        docs = {}
     if docs.get("index"):
         cfg["index"] = safe_path(docs["index"], "docs.index", warns) or DEFAULTS["index"]
+    cfg["customer"] = customer_decl(docs.get("customer"), root, warns)
 
     ver = raw.get("verify") or {}
     runner = str(ver.get("runner") or DEFAULTS["runner"])

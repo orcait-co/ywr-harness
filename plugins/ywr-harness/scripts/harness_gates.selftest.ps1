@@ -1040,6 +1040,170 @@ if ($zExtractOk) {
         "missing from SCAFFOLD_CLAIMS: [$($zMissing -join ', ')] · extra in SCAFFOLD_CLAIMS: [$($zExtra -join ', ')]") -and $ok
 }
 
+# --- AA: the customer-corpus declaration (ADR 0060) — validated by the reader, off by default ---
+# `docs.customer` is the schema the client-pjems build_docs.py fork upstreams into. Three states
+# must stay distinguishable (off / malformed / validated); a traversal `dir` must be REFUSED into
+# the malformed state, never defaulted (a default would build a customer page from a directory
+# nobody named — and `..` would publish files from outside the repo into it); and every degraded
+# sub-value must warn while dropping only the entry — the fork carried these rules as constants
+# that no canon fix could ever reach. Direct import, like case V: the emitter prints no parsed
+# config, so shape assertions need the dict itself.
+$aaScript = Join-Path $fxBase 'customer_checks.py'
+Set-Content -LiteralPath $aaScript -NoNewline -Value @'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import harness_config as hc
+root = Path(sys.argv[2])
+(root / "docs" / "customer" / "prog").mkdir(parents=True, exist_ok=True)
+fails = []
+def load(decl):
+    (root / ".harness.json").write_text(json.dumps(decl), encoding="utf-8")
+    return hc.load(root)
+# 1 absent and null are both OFF, with no warning
+for decl in ({"docs": {"index": "docs/index.json"}}, {"docs": {"customer": None}}):
+    cfg, w = load(decl)
+    if cfg["customer"] is not None or any("customer" in m for m in w):
+        fails.append("absent/null did not read as OFF without warnings: %r" % w)
+# 2 a valid block validates silently; defaults fill; a trailing slash on dir is normalized
+cfg, w = load({"docs": {"customer": {"dir": "docs/customer/", "title": "r · 고객 문서",
+    "chip_field": "program_file", "chip_suffix": ".p",
+    "groups": [{"label": "A (25.x)", "keys": [25]}, {"label": "B", "keys": [27, 28]}],
+    "other_label": "기타", "unkeyed_label": "배치", "projects_md": True}}})
+c = cfg["customer"]
+if w or c["malformed"] or c["dir"] != "docs/customer" or c["group_field"] != "menu" \
+   or c["groups"] != [{"label": "A (25.x)", "keys": [25]}, {"label": "B", "keys": [27, 28]}] \
+   or c["projects_md"] is not True or [s["tag"] for s in c["release_stages"]] != ["FUT", "UAT", "PROD"]:
+    fails.append("a valid block did not validate cleanly: %r %r" % (c, w))
+# 3 a traversal dir is REFUSED into the malformed state, never defaulted
+cfg, w = load({"docs": {"customer": {"dir": "../outside"}}})
+if cfg["customer"]["malformed"] != "dir refused" or not any("CANNOT be built" in m for m in w):
+    fails.append("traversal dir was not refused as malformed: %r %r" % (cfg["customer"], w))
+# 4 a non-object block is malformed
+cfg, w = load({"docs": {"customer": "yes"}})
+if not cfg["customer"]["malformed"] or not any("expected an object" in m for m in w):
+    fails.append("non-object block was not malformed")
+# 5 a missing corpus dir warns and is KEPT (the builder refuses at build time and names it)
+cfg, w = load({"docs": {"customer": {"dir": "docs/nope"}}})
+if cfg["customer"]["malformed"] or not any("does not exist" in m for m in w):
+    fails.append("missing dir did not warn, or was wrongly malformed: %r" % w)
+# 6 every degraded sub-value warns; the ENTRY is dropped, never the block
+cfg, w = load({"docs": {"customer": {"dir": "docs/customer", "bogus": 1, "//c": "x",
+    "projects_md": "false", "chip_field": "bad key!", "required_frontmatter": ["ok_key", "bad-key"],
+    "groups": [{"label": "a"}, {"label": "b", "keys": ["25"]}, {"label": "c", "keys": [1, True]},
+               "str", {"label": "e", "keys": [9], "x": 1}],
+    "release_stages": [{"tag": "FUT"}, {"tag": "FUT", "label": "dup"}, {"tag": "bad tag"},
+                       {"tag": "PROD", "label": "완료"}],
+    "title": 5, "eyebrow": "line\ntwo"}}})
+c = cfg["customer"]
+joined = "\n".join(w)
+expect = ["unknown key 'bogus' ignored (known: dir, title", "projects_md: must be a JSON boolean",
+          "treated as false", "chip_field: 'bad key!' is not a frontmatter key name",
+          "required_frontmatter: 'bad-key' is not a frontmatter key name",
+          "groups[0]: needs a non-empty 'label' and 'keys'", "groups[1]: needs", "refused: 25",
+          "groups[2]: needs", "refused: True", "groups[3]: expected an object",
+          "groups[4]: unknown key 'x' ignored (known: label, keys)",
+          "release_stages[1]: duplicate tag 'FUT'", "release_stages[2]: tag 'bad tag' must be",
+          "title: must be a string", "eyebrow: control character(s)"]
+for e in expect:
+    if e not in joined:
+        fails.append("missing warning: %s" % e)
+if "'//c'" in joined:
+    fails.append("a //-prefixed key warned")
+if c["malformed"] or c["projects_md"] is not False or c["chip_field"] != "" \
+   or c["required_frontmatter"] != ["ok_key"] or c["groups"] != [{"label": "e", "keys": [9]}] \
+   or c["release_stages"] != [{"tag": "FUT", "label": "FUT"}, {"tag": "PROD", "label": "완료"}] \
+   or c["title"] != "" or c["eyebrow"] != "line\\ntwo":
+    fails.append("degraded values were not dropped/defaulted as declared: %r" % c)
+if "\n" in c["eyebrow"]:
+    fails.append("a raw newline survived into a display value")
+# 7 wrong container types are ignored with a warning; defaults stay
+cfg, w = load({"docs": {"customer": {"groups": "no", "release_stages": [{"tag": "!!"}],
+                                     "required_frontmatter": "x"}}})
+c = cfg["customer"]
+if c["groups"] != [] or c["required_frontmatter"] != [] \
+   or [s["tag"] for s in c["release_stages"]] != ["FUT", "UAT", "PROD"] \
+   or not any("groups: expected a list" in m for m in w) \
+   or not any("every entry was rejected — using the default vocabulary" in m for m in w):
+    fails.append("wrong container types were not defaulted with warnings: %r %r" % (c, w))
+# 8 an EXPLICIT empty value warns and defaults — "" is something the declarer wrote, never
+#   "absent" (review 2026-08-27, high: this was the one silent path in the block)
+cfg, w = load({"docs": {"customer": {"dir": "", "chip_field": "", "group_field": "", "title": "",
+                                     "required_frontmatter": ["", "ok"], "release_stages": []}}})
+c = cfg["customer"]
+joined = "\n".join(w)
+for e in ["dir: declared empty — using the default 'docs/customer'", "chip_field: declared empty — ignored",
+          "group_field: declared empty — using the default 'menu'",
+          "required_frontmatter: declared empty — ignored",
+          "release_stages: declared empty — using the default vocabulary"]:
+    if e not in joined:
+        fails.append("missing empty-value warning: %s" % e)
+if "every entry was rejected" in joined:
+    fails.append("an EMPTY release_stages list was reported as 'every entry was rejected'")
+if c["malformed"] or c["dir"] != "docs/customer" or c["group_field"] != "menu" \
+   or c["required_frontmatter"] != ["ok"] or [s["tag"] for s in c["release_stages"]] != ["FUT", "UAT", "PROD"]:
+    fails.append("explicit empties did not take the defaults: %r" % c)
+# 9 declared-vs-unset is carried: the explicit "" title IS declared, the absent eyebrow is NOT
+if "title" not in c["declared"] or "eyebrow" in c["declared"] or "dir" not in c["declared"]:
+    fails.append("`declared` does not distinguish an explicit \"\" from an absent key: %r" % c["declared"])
+# 10 defaults are copied per load — mutating a returned value cannot poison the next load
+#    (review 2026-08-27, medium: the shallow list copy aliased the default stage dicts)
+cfg, w = load({"docs": {"customer": {}}})
+if w or cfg["customer"]["declared"] != [] or cfg["customer"]["malformed"]:
+    fails.append("an empty object did not read as ON-with-defaults, silently: %r %r" % (cfg["customer"], w))
+cfg["customer"]["release_stages"][0]["label"] = "POISON"
+cfg2, _ = load({"docs": {"customer": {}}})
+if cfg2["customer"]["release_stages"][0]["label"] != "FUT":
+    fails.append("a mutation of a returned default poisoned the next load")
+# 11 panels (the extension point): a module path is a script-gate-class value — the builder
+#    IMPORTS it — so traversal / leading dash / non-.py are refused per entry; a missing file is
+#    kept and warned (the builder refuses at build time); a blank label drops the entry
+(root / "scripts" / "panels").mkdir(parents=True, exist_ok=True)
+(root / "scripts" / "panels" / "ok.py").write_text("CSS=''\ndef render_panel(root):\n    return '<p>x</p>'\n", encoding="utf-8")
+cfg, w = load({"docs": {"customer": {"panels": [
+    {"module": "scripts/panels/ok.py", "label": "환경 차이"},
+    {"module": "../evil.py", "label": "t"},
+    {"module": "-x.py", "label": "t"},
+    {"module": "scripts/panels/notpy.txt", "label": "t"},
+    {"module": "scripts/panels/missing.py", "label": "later"},
+    {"module": "scripts/panels/ok.py", "label": ""},
+    "str", {"module": "scripts/panels/ok.py", "label": "k", "z": 1}]}}})
+c = cfg["customer"]
+joined = "\n".join(w)
+if [p["module"] for p in c["panels"]] != ["scripts/panels/ok.py", "scripts/panels/missing.py", "scripts/panels/ok.py"] \
+   or c["panels"][0]["label"] != "환경 차이":
+    fails.append("panels did not keep exactly the safe entries: %r" % c["panels"])
+for e in ["panels[1]: module '../evil.py' refused", "panels[2]: module '-x.py' refused",
+          "panels[3]: module 'scripts/panels/notpy.txt' refused",
+          "panels[4]: module 'scripts/panels/missing.py' does not exist",
+          "panels[5]: needs a non-empty 'label'", "panels[6]: expected an object",
+          "panels[7]: unknown key 'z' ignored (known: module, label)"]:
+    if e not in joined:
+        fails.append("missing panels warning: %s" % e)
+cfg, w = load({"docs": {"customer": {"panels": "no"}}})
+if cfg["customer"]["panels"] != [] or not any("panels: expected a list" in m for m in w):
+    fails.append("a non-list panels value was not defaulted with a warning")
+print("AA-OK" if not fails else "AA-FAIL: " + "; ".join(fails))
+'@
+$aaRoot = Join-Path $fxBase 'customer-decl'
+New-Item -ItemType Directory -Force -Path $aaRoot | Out-Null
+$rAA = (& $py.Source $aaScript $PSScriptRoot $aaRoot 2>&1 | Out-String)
+$ok = (Assert-True 'AA docs.customer: off/malformed/validated stay distinct, a traversal dir is refused, every degraded value warns' ($rAA -match 'AA-OK') $rAA) -and $ok
+
+# AA2: the CLI path — the refusal reaches the emitter's warning channel, where CI reads it, and
+# the run stays advisory (exit 0): the declaration is metadata class (ADR 0038), not a gate.
+$CFG_CUST = @'
+{
+  "docs": { "customer": { "dir": "../outside" } },
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "groups": []
+}
+'@
+$aa2 = New-Repo 'customer-cli' $CFG_CUST @('src/x.py')
+$rAA2 = Invoke-Gates $aa2 @()
+$ok = (Assert-True 'AA2 the emitter surfaces a refused customer dir as a warning and stays advisory' `
+    ($rAA2.Out -match "docs\.customer\.dir: '\.\./outside' refused" -and $rAA2.Code -eq 0) "exit=$($rAA2.Code): $($rAA2.Out)") -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_gates selftest: FAILED' -ForegroundColor Red; exit 1 }
