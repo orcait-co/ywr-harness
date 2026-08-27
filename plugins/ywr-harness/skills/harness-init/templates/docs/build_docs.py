@@ -1791,8 +1791,12 @@ def _selfcheck_release_helpers():
     prod_fx = {"release_html": _mark_release_status(
         convert_body("## 2026-08-01 — x [PROD]\n".split("\n")), stages)}
     assert "완료" in _release_posture(prod_fx, stages), "posture: 최상단 PROD 는 완료"
-    assert '<span class="relstat rs-fut">FUT</span>' in fx["release_html"], \
-        "기본 어휘의 배지 클래스는 rs-fut (포크와 바이트 동일)"
+    # 픽스처에 있는 태그(UAT·PROD)로 검사한다 — 0.38.0 은 픽스처에 없는 [FUT] 배지를 단정해
+    # 항상 실패했고, 로컬 셀프테스트는 Python 3.13 의 -c 트레이스백이 명령 소스(센티널 포함)를
+    # 되비추는 탓에 그 실패를 통과로 읽었다(CI 3.12 에서 발견, 2026-08-27).
+    assert '<span class="relstat rs-uat">UAT</span>' in fx["release_html"] \
+        and '<span class="relstat rs-prod">COMPLETE</span>' in prod_fx["release_html"], \
+        "기본 어휘의 배지 클래스는 rs-uat/rs-prod 그대로, PROD 라벨은 COMPLETE (포크와 바이트 동일)"
 
 
 # --------------------------------------------------------------- main
