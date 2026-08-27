@@ -11,6 +11,27 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.39.0 — 2026-08-27
+
+- **고객 문서 확장 탭(`panels[]`)이 선언 키를 얻습니다** (ADR 0061, client-pjems 요청): 항목 키
+  `id`(탭 id — `#top-<id>` 딥링크와 `panel-<id>` 스코프 클래스; 재정렬해도 링크가 살아남습니다)와
+  `position: "before-docs" | "after-docs"`(문서 탭 앞/뒤, 기본 뒤), 블록 키 `default_tab`(페이지가
+  열리는 탭, 기본 = 첫 탭)과 `footer_date_label`(푸터 문구, 기본 "문서 생성일"). 패널 모듈은 선택
+  속성 `UPDATED`('YYYY-MM-DD', 푸터 날짜의 max 에 합산 — 시계 없음 유지)와 `TAB_CHIPS`(탭 버튼 안
+  칩 목록)를 노출할 수 있습니다. 패널 컨테이너에 `panel-<id>` 클래스가 붙고, 패널 CSS 의 선택자가 패널 소유
+  클래스 없이 캐논(또는 다른 패널)의 클래스명만 건드리면(`.mono{}` — 문서 탭을 덮어쓰는 모양)
+  빌드 시 경고됩니다(거부 아님; `.envpanel .mono` 처럼 스코프된 규칙과 고유 이름은 조용).
+  새 키를 쓰지 않은 기존 선언의 산출물은 `panel-<id>` 클래스 한 곳만 달라집니다.
+  **client-pjems 조치**: 플러그인 업데이트 → `/ywr-harness:harness-init` 재실행(빌더·리더 동시
+  갱신) → 두 패널에 `id`(process / env), 프로세스 맵에 `position: "before-docs"`, 블록에
+  `default_tab: "process"` 선언 → 모듈의 인라인 `<script>`(탭 이동·해시 재작성)와 자체 래퍼를
+  제거하고 건수 칩은 `TAB_CHIPS`, 프로세스 코퍼스 날짜는 `UPDATED` 로 옮김 → 재빌드 후 diff 의
+  모든 헝크를 설명.
+- **ABL/C# 게이트는 새 셀렉터가 아니라 스크립트 게이트로 답합니다** (ADR 0061 항목 5, 캐논 변경
+  없음): 그룹에 `{"runner": "python", "script": "scripts/checks/precommit_check.py", "files": true}`
+  를 선언하면 pre-commit 훅과 CI 가 변경 파일 목록을 붙여 실행합니다 — 스크립트가 argv 의 경로
+  목록을 받도록 하면 됩니다(없으면 `--staged` 폴백).
+
 ## v0.38.1 — 2026-08-27
 
 - **셀프테스트 수정 1건** (동작 변경 없음): v0.38.0 의 빌더 셀프체크(`_selfcheck_release_helpers`,

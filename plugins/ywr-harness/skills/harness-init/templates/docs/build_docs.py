@@ -1638,6 +1638,7 @@ def _load_panels(cfg, root):
     harness_config.py 의 panels 검증(오케스트레이터가 병행 작업)에 위임한다 — 이 함수는
     이미 검증된 값만 받는다는 전제 위에서, 파일 부재/로드 실패만 여기서 명명한다."""
     panels = []
+    used_ids = {"docs"}
     for i, decl in enumerate(cfg.get("panels", []) or []):
         mod_rel = decl.get("module") if isinstance(decl, dict) else None
         label = (decl.get("label") if isinstance(decl, dict) else None) or ("패널 %d" % (i + 1))
@@ -1669,9 +1670,87 @@ def _load_panels(cfg, root):
         if not isinstance(css, str):
             sys.exit("[오류] 패널 모듈의 CSS 는 문자열이어야 합니다: %s (타입 %s)"
                      % (mod_path, type(css).__name__))
-        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or ("panel-%d" % i)
-        panels.append({"id": slug, "label": label, "html": html_frag, "css": css})
+        # 탭 id 는 리더가 확정한다(ADR 0061 — 선언 `id`, 없으면 라벨 슬러그/`panel-N`; default_tab
+        # 검증이 같은 집합을 봐야 하므로 한 곳에서). 0061 이전 리더(id 미산출)와 짝지어진
+        # 빌더만 예전 유도식으로 스스로 채운다 — 빌드는 멈추지 않고 새 키만 미지 키 경고로 남는다.
+        pid = decl.get("id") if isinstance(decl, dict) else None
+        if not pid:
+            # 구버전 리더 폴백도 중복은 막는다 — 같은 data-top 이 둘이면 showTop 이 두 패널을
+            # 동시에 켠다(리뷰 2026-08-27 medium). 라벨 슬러그, 겹치면 첫 빈 panel-N.
+            pid = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+            if not pid or pid in used_ids:
+                n = i
+                while "panel-%d" % n in used_ids:
+                    n += 1
+                pid = "panel-%d" % n
+        used_ids.add(pid)
+        # 모듈 선택 속성(ADR 0061): UPDATED — 모듈 콘텐츠의 ISO 날짜, 푸터 날짜의 max 에 합산
+        # (시계 없음 규칙은 그대로 — 모듈이 자기 콘텐츠에 대해 말하는 값이지 date.today() 가
+        # 아니다); TAB_CHIPS — 탭 버튼 안의 칩 문자열 목록(문서 탭의 건수 칩과 같은 자리).
+        # 형이 어긋나면 CSS 와 같이 모듈을 지목하는 exit — 조용히 버리면 계약이 있는 줄 모른다.
+        updated = getattr(mod, "UPDATED", None)
+        if updated is not None and not (isinstance(updated, str) and re.match(r"^\d{4}-\d{2}-\d{2}\Z", updated)):
+            sys.exit("[오류] 패널 모듈의 UPDATED 는 'YYYY-MM-DD' 문자열이어야 합니다: %s (값 %r)"
+                     % (mod_path, updated))
+        chips = getattr(mod, "TAB_CHIPS", None)
+        if chips is None:
+            chips = []
+        if not isinstance(chips, (list, tuple)) or not all(isinstance(c, str) for c in chips):
+            sys.exit("[오류] 패널 모듈의 TAB_CHIPS 는 문자열 목록이어야 합니다: %s" % mod_path)
+        panels.append({"id": pid, "label": label, "html": html_frag, "css": css, "module": str(mod_rel),
+                       "position": (decl.get("position") if isinstance(decl, dict) else None) or "after-docs",
+                       "updated": updated or "", "chips": list(chips)})
+    # 격리는 스코프 클래스 + 저자 규율이다(CSS 재작성은 ADR 0061 에서 기각). 캐논이나 다른 패널이
+    # 쓰는 클래스명을 `.panel-<id>` 밖에서 건드리는 선택자만 경고한다 — 거부가 아니라 stderr 한 줄.
+    # 고유한 이름(`.pm-card`)은 조용하다: 누출은 이름이 겹칠 때만 일어난다.
+    for pl in panels:
+        others = _css_classes(CUSTOMER_CSS)
+        for q in panels:
+            if q is not pl:
+                others |= _css_classes(q["css"])
+        for sel, cls in _leaking_selectors(pl["css"], pl["id"], others):
+            print("[경고] 패널 CSS 의 선택자 '%s' 가 캐논/다른 패널의 클래스 '.%s' 를 스코프 없이 덮어씁니다 — "
+                  "'.panel-%s %s' 처럼 스코프하세요 (%s)" % (sel, cls, pl["id"], sel, pl["module"]), file=sys.stderr)
     return panels
+
+
+def _selector_classes(sel):
+    """선택자 텍스트에서 클래스명만 뽑는다 — 속성 선택자(`[href$=".mono"]`)와 따옴표 문자열 안의
+    `.` 은 클래스가 아니므로 먼저 걷어낸다(리뷰 2026-08-27 medium: 오경보 원인)."""
+    sel = re.sub(r"\[[^\]]*\]", "", sel)
+    sel = re.sub(r"\"[^\"]*\"|'[^']*'", "", sel)
+    return re.findall(r"\.([A-Za-z_-][\w-]*)", sel)
+
+
+def _css_classes(css):
+    """CSS 텍스트가 선택자에서 쓰는 클래스명 집합(선언 블록 안의 `.png` 같은 값은 제외)."""
+    text = re.sub(r"/\*.*?\*/", "", css or "", flags=re.S)
+    text = re.sub(r"\{[^{}]*\}", "{}", text)
+    return set(_selector_classes(text))
+
+
+def _leaking_selectors(css, pid, other_classes):
+    """패널 CSS 에서 `other_classes`(캐논 + 다른 패널의 클래스명)를 건드리면서 패널 소유 클래스는
+    하나도 없는 선택자를 찾는다 — 같은 특이도로 뒤에 붙어 문서 탭을 덮어쓰는 누출(pjems 리뷰
+    2026-08-27: `.mono`/`.clip`). 선택자 어디에든 패널 고유 클래스가 있으면(`.envpanel .mono`,
+    `.pm-dom.on`) 그 요소·자손에만 걸리므로 스코프된 것으로 본다. 휴리스틱이다: 주석·@규칙
+    머리를 걷어낸 뒤 각 규칙의 선택자 목록만 본다. (selector, 겹친 클래스) 쌍의 목록."""
+    text = re.sub(r"/\*.*?\*/", "", css or "", flags=re.S)
+    text = re.sub(r"@[a-zA-Z-]+[^{;]*;", "", text)          # @import / @charset
+    text = re.sub(r"@[a-zA-Z-]+[^{]*\{", "", text)          # @media 등의 여는 부분만 걷어낸다
+    scope = "panel-%s" % pid
+    found = []
+    for sel_group in re.findall(r"([^{}]+)\{", text):
+        for sel in sel_group.split(","):
+            sel = sel.strip()
+            if not sel:
+                continue
+            classes = _selector_classes(sel)
+            hit = [c for c in classes if c in other_classes]
+            owned = [c for c in classes if c not in other_classes or c == scope]
+            if hit and not owned:
+                found.append((sel, hit[0]))
+    return found
 
 
 def build_customer_artifact(programs, cfg, panels):
@@ -1727,27 +1806,48 @@ def build_customer_artifact(programs, cfg, panels):
         for label, members in customer_sidebar_groups(programs, cfg)
         for opened in [label == RECENT_GROUP_LABEL])
     articles = "".join(customer_program_article(cfg, p, first=(i == 0)) for i, p in enumerate(programs))
-    max_updated = max((str(p.get("updated") or "") for p in programs), default="")
+    # 푸터 날짜 = 코퍼스 updated 와 패널 UPDATED 의 최댓값(ADR 0061; 여전히 시계 없음).
+    max_updated = max([str(p.get("updated") or "") for p in programs]
+                      + [pl["updated"] for pl in panels if pl["updated"]], default="")
+    footer_label = _declared(cfg, "footer_date_label", "문서 생성일")
 
-    top_tabs = ['<button type="button" class="toptab" role="tab" data-top="docs" aria-selected="true">'
-                '문서 모음 <span class="chip">명세 %d건</span><span class="chip">릴리즈 노트 %d건</span></button>'
-                % (count, rel_count)]
-    top_panels = ['<div class="toppanel on" data-top="docs"><div class="docview">'
-                  '<aside class="doclist"><div class="search">%s'
-                  '<input type="search" placeholder="프로그램 검색 (제목·코드·분류·#프로젝트)" aria-label="프로그램 검색"></div>'
-                  '<div class="proglist">%s</div>'
-                  '<div class="relflat">%s</div>'
-                  '<div class="noresult" hidden>검색 결과가 없습니다</div></aside>'
-                  '<div class="docmain">%s</div>'
-                  '</div></div>' % (SEARCH_ICON, items, relflat, articles)]
-    extra_css = ""
-    for pl in panels:
-        top_tabs.append(
-            '<button type="button" class="toptab" role="tab" data-top="%s" aria-selected="false">%s</button>'
-            % (esc(pl["id"]), esc(pl["label"])))
-        top_panels.append('<div class="toppanel" data-top="%s">%s</div>' % (esc(pl["id"]), pl["html"]))
-        if pl["css"]:
-            extra_css += pl["css"]
+    # 탭 순서(ADR 0061): before-docs 패널(선언 순) → 문서 탭 → after-docs 패널(선언 순).
+    # 초기 선택 = 선언 default_tab, 없으면 렌더 순서의 첫 탭 — CUSTOMER_JS 는 빈 해시에서
+    # 아무것도 바꾸지 않으므로 여기서 찍은 aria-selected/.on 이 그대로 첫 화면이다.
+    docs_tab = {"id": "docs", "chips": ["명세 %d건" % count, "릴리즈 노트 %d건" % rel_count]}
+    ordered = ([pl for pl in panels if pl.get("position") == "before-docs"] + [docs_tab]
+               + [pl for pl in panels if pl.get("position") != "before-docs"])
+    known_ids = [t["id"] for t in ordered]
+    initial = cfg.get("default_tab") or ""
+    if initial not in known_ids:
+        initial = known_ids[0]
+
+    def tab_button(tid, label_html, chips):
+        return ('<button type="button" class="toptab" role="tab" data-top="%s" aria-selected="%s">%s%s</button>'
+                % (esc(tid), "true" if tid == initial else "false", label_html,
+                   "".join('<span class="chip">%s</span>' % esc(c) for c in chips)))
+
+    docs_view = ('<div class="docview">'
+                 '<aside class="doclist"><div class="search">%s'
+                 '<input type="search" placeholder="프로그램 검색 (제목·코드·분류·#프로젝트)" aria-label="프로그램 검색"></div>'
+                 '<div class="proglist">%s</div>'
+                 '<div class="relflat">%s</div>'
+                 '<div class="noresult" hidden>검색 결과가 없습니다</div></aside>'
+                 '<div class="docmain">%s</div>'
+                 '</div>' % (SEARCH_ICON, items, relflat, articles))
+    top_tabs, top_panels, extra_css = [], [], ""
+    for t in ordered:
+        on = " on" if t["id"] == initial else ""
+        if t is docs_tab:
+            top_tabs.append(tab_button("docs", "문서 모음 ", t["chips"]))
+            top_panels.append('<div class="toppanel%s" data-top="docs">%s</div>' % (on, docs_view))
+            continue
+        top_tabs.append(tab_button(t["id"], esc(t["label"]), t["chips"]))
+        # 컨테이너에 panel-<id> 스코프 클래스 — 패널 CSS 는 이 아래로 선택자를 스코프한다(ADR 0061).
+        top_panels.append('<div class="toppanel panel-%s%s" data-top="%s">%s</div>'
+                          % (esc(t["id"]), on, esc(t["id"]), t["html"]))
+        if t["css"]:
+            extra_css += t["css"]
 
     body = (
         '<header class="cust-app"><div class="cust-in">'
@@ -1755,8 +1855,8 @@ def build_customer_artifact(programs, cfg, panels):
         '<div class="toptabs" role="tablist">%s</div>'
         '</div></header>'
         '<main class="cust-main">%s</main>'
-        '<footer class="cust-foot">%s<span>문서 생성일 %s</span></footer>'
-    ) % (esc(eyebrow), "".join(top_tabs), "".join(top_panels), contact_row, esc(max_updated))
+        '<footer class="cust-foot">%s<span>%s %s</span></footer>'
+    ) % (esc(eyebrow), "".join(top_tabs), "".join(top_panels), contact_row, esc(footer_label), esc(max_updated))
 
     return (
         '<title>%s</title>'

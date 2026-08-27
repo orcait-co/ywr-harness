@@ -1177,12 +1177,53 @@ for e in ["panels[1]: module '../evil.py' refused", "panels[2]: module '-x.py' r
           "panels[3]: module 'scripts/panels/notpy.txt' refused",
           "panels[4]: module 'scripts/panels/missing.py' does not exist",
           "panels[5]: needs a non-empty 'label'", "panels[6]: expected an object",
-          "panels[7]: unknown key 'z' ignored (known: module, label)"]:
+          "panels[7]: unknown key 'z' ignored (known: module, label, id, position)"]:
     if e not in joined:
         fails.append("missing panels warning: %s" % e)
 cfg, w = load({"docs": {"customer": {"panels": "no"}}})
 if cfg["customer"]["panels"] != [] or not any("panels: expected a list" in m for m in w):
     fails.append("a non-list panels value was not defaulted with a warning")
+# 12 ADR 0061 — panel id / position / default_tab / footer_date_label: a declared id is used
+#    verbatim; a refused or duplicate id drops the ENTRY (a published deep link is never silently
+#    renamed); 'docs' is reserved; an absent id derives (label slug, else panel-<n> over the KEPT
+#    entries); a bad position degrades to after-docs; default_tab is validated against the FINAL ids
+cfg, w = load({"docs": {"customer": {"panels": [
+    {"module": "scripts/panels/ok.py", "label": "프로세스 맵", "id": "process", "position": "before-docs"},
+    {"module": "scripts/panels/ok.py", "label": "환경 차이"},
+    {"module": "scripts/panels/ok.py", "label": "Env Diff", "position": "sideways"},
+    {"module": "scripts/panels/ok.py", "label": "dup", "id": "process"},
+    {"module": "scripts/panels/ok.py", "label": "res", "id": "docs"},
+    {"module": "scripts/panels/ok.py", "label": "bad", "id": "Top-1"}],
+    "default_tab": "env-diff", "footer_date_label": "최종 갱신"}}})
+c = cfg["customer"]
+if [(p["id"], p["position"]) for p in c["panels"]] != [("process", "before-docs"), ("panel-1", "after-docs"), ("env-diff", "after-docs")]:
+    fails.append("panel ids/positions: %r" % c["panels"])
+if c["default_tab"] != "env-diff" or c["footer_date_label"] != "최종 갱신" or "default_tab" not in c["declared"]:
+    fails.append("default_tab/footer_date_label not carried: %r %r" % (c["default_tab"], c["footer_date_label"]))
+for e in ["panels[2]: position 'sideways' is not one of before-docs, after-docs — using 'after-docs'",
+          "panels[3]: id 'process' is already taken — entry ignored",
+          "panels[4]: id 'docs' is reserved for the documents tab — entry ignored",
+          "panels[5]: id 'Top-1' must match ^[a-z][a-z0-9_-]*$ — entry ignored"]:
+    if not any(e in m for m in w):
+        fails.append("missing 0061 warning: %s" % e)
+cfg, w = load({"docs": {"customer": {"panels": [{"module": "scripts/panels/ok.py", "label": "x", "id": "x"}], "default_tab": "nope"}}})
+if cfg["customer"]["default_tab"] != "" or not any("default_tab: 'nope' is not a tab id (docs, x)" in m for m in w):
+    fails.append("an unknown default_tab was not warned + unset: %r" % w)
+cfg, w = load({"docs": {"customer": {"panels": [{"module": "scripts/panels/ok.py", "label": "A"}, {"module": "scripts/panels/ok.py", "label": "a"}]}}})
+if [p["id"] for p in cfg["customer"]["panels"]] != ["a", "panel-1"] or not any("derived id 'a' collides" in m for m in w):
+    fails.append("a colliding derived id did not fall back to panel-<n> with a warning: %r %r" % (cfg["customer"]["panels"], w))
+# review 2026-08-27 (high): the fallback must skip an id an EARLIER entry declared — `id: "panel-1"`
+#    followed by a Korean label (empty slug) would otherwise give two tabs one data-top / scope class
+cfg, w = load({"docs": {"customer": {"panels": [{"module": "scripts/panels/ok.py", "label": "A", "id": "panel-1"}, {"module": "scripts/panels/ok.py", "label": "데모"}]}}})
+if [p["id"] for p in cfg["customer"]["panels"]] != ["panel-1", "panel-2"]:
+    fails.append("a derived fallback collided with a declared id: %r" % [p["id"] for p in cfg["customer"]["panels"]])
+# review 2026-08-27 (medium): a non-string display value is IGNORED — so it must also leave `declared`,
+#    or the builder reads the untouched "" as an intentional blank instead of filling its default
+cfg, w = load({"docs": {"customer": {"footer_date_label": 123, "title": ["x"]}}})
+c = cfg["customer"]
+if c["footer_date_label"] != "" or "footer_date_label" in c["declared"] or "title" in c["declared"] \
+   or not any("footer_date_label: must be a string — ignored" in m for m in w):
+    fails.append("an ignored non-string display value stayed in declared: %r %r" % (c["declared"], w))
 print("AA-OK" if not fails else "AA-FAIL: " + "; ".join(fails))
 '@
 $aaRoot = Join-Path $fxBase 'customer-decl'

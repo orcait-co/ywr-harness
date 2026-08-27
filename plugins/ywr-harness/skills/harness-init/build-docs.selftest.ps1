@@ -474,6 +474,15 @@ $c14 = if (Test-Path $custHtml) { Get-Content -LiteralPath $custHtml -Raw -Encod
 $ok = (Assert-True 'I14 a declared panel module renders its fragment + CSS + tab' `
     ($rI14.Code -eq 0 -and $c14 -match 'PANEL-OK' -and $c14 -match '\.demo\{color:red\}' `
      -and $c14 -match '>데모<') $rI14.Out) -and $ok
+# I14 (ADR 0061 defaults): with none of the new keys the page keeps its pre-0061 shape — docs tab
+# first and initially selected, the panel id derived (Korean label → `panel-0`), footer label
+# 문서 생성일 over the corpus max — the only addition being the `panel-<id>` scope class.
+$ok = (Assert-True 'I14 no new keys → docs first + selected, derived id panel-0, default footer label (pre-0061 shape + scope class)' `
+    ($c14 -match '<div class="toptabs" role="tablist"><button type="button" class="toptab" role="tab" data-top="docs" aria-selected="true">' `
+     -and $c14 -match 'data-top="panel-0" aria-selected="false">데모</button>' `
+     -and $c14 -match '<div class="toppanel on" data-top="docs">' `
+     -and $c14 -match '<div class="toppanel panel-panel-0" data-top="panel-0">' `
+     -and $c14 -match '<span>문서 생성일 2026-08-20</span>') $rI14.Out) -and $ok
 [IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), '{
   "docs": { "customer": {
     "dir": "docs/customer", "chip_field": "program_file", "chip_suffix": ".p",
@@ -537,6 +546,73 @@ Rename-Item -LiteralPath (Join-Path $repoI 'scripts/harness-real') -NewName 'har
 $rI14c = Invoke-IBuild
 $ok = (Assert-True 'I14c a raising render_panel() exits 1 naming the module, no traceback' `
     ($rI14c.Code -ne 0 -and $rI14c.Out -match 'render_panel' -and $rI14c.Out -match [regex]::Escape('scripts') -and $rI14c.Out -match 'boom' -and $rI14c.Out -notmatch 'Traceback') $rI14c.Out) -and $ok
+
+# I19: ADR 0061 — the declaration keys that replace pjems's inline DOM surgery. `first` is
+# declared before-docs with an id, TAB_CHIPS and an UPDATED newer than the corpus; `demo` keeps
+# its unscoped `.demo{}` rule. Expect: tab order first → docs → demo; `first` is the initial tab
+# (default_tab) with its chips; the docs panel is NOT `on`; each panel container carries
+# `panel-<id>`; the footer reads the declared label + the panel's newer date. `leak` reuses the
+# canon classes `.mono` / `.chip.on` with no panel-owned class in the selector (the pjems leak) →
+# warned; its `.panel-leak .chip` and `.own .clip` rules (scoped by a panel-owned class), its own
+# `.pf-x`, and demo's own `.demo` are NOT (unique names leak into nothing).
+[IO.File]::WriteAllText((Join-Path $panelsDir 'first.py'), (
+    "UPDATED = '2026-09-01'`nTAB_CHIPS = ['칩A', '칩<B>']`nCSS = `".panel-first .pf{color:blue}`"`n`ndef render_panel(root):`n    return '<p class=`"pf`">FIRST-OK</p>'`n" `
+    -replace "`r`n", "`n"))
+[IO.File]::WriteAllText((Join-Path $panelsDir 'leak.py'), (
+    "CSS = `"/* .clip in a comment */ .mono{color:red} .chip.on{x:y} .panel-leak .chip{color:blue} .own .clip{x:y} .pf-x{background:url(a.png)} a[href$='.clip']{x:y} [data-k='.tblwrap'] b{x:y}`"`n`ndef render_panel(root):`n    return '<p>LEAK</p>'`n" `
+    -replace "`r`n", "`n"))
+[IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), '{
+  "docs": { "customer": {
+    "dir": "docs/customer", "chip_field": "program_file", "chip_suffix": ".p",
+    "groups": [{ "label": "g", "keys": [25] }],
+    "panels": [
+      { "module": "scripts/panels/demo.py", "label": "데모", "id": "demo" },
+      { "module": "scripts/panels/first.py", "label": "첫 탭", "id": "first", "position": "before-docs" },
+      { "module": "scripts/panels/leak.py", "label": "누출", "id": "leak" }
+    ],
+    "default_tab": "first",
+    "footer_date_label": "최종 갱신"
+  } }
+}')
+$rI19 = Invoke-IBuild
+$c19 = if (Test-Path $custHtml) { Get-Content -LiteralPath $custHtml -Raw -Encoding UTF8 } else { '' }
+$tablist19 = if ($c19 -match '(?s)<div class="toptabs" role="tablist">(.*?)</div>') { $Matches[1] } else { '' }
+$ok = (Assert-True 'I19 tab order = before-docs panel, docs, after-docs panel; default_tab is the initial tab with its chips' `
+    ($rI19.Code -eq 0 `
+     -and $tablist19.IndexOf('data-top="first"') -ge 0 `
+     -and $tablist19.IndexOf('data-top="first"') -lt $tablist19.IndexOf('data-top="docs"') `
+     -and $tablist19.IndexOf('data-top="docs"') -lt $tablist19.IndexOf('data-top="demo"') `
+     -and $tablist19 -match 'data-top="first" aria-selected="true">첫 탭<span class="chip">칩A</span><span class="chip">칩&lt;B&gt;</span></button>' `
+     -and $tablist19 -match 'data-top="docs" aria-selected="false">문서 모음 <span class="chip">명세 2건</span>' `
+     -and $c19 -match '<div class="toppanel panel-first on" data-top="first"><p class="pf">FIRST-OK</p></div>' `
+     -and $c19 -match '<div class="toppanel" data-top="docs"><div class="docview">' `
+     -and $c19 -match '<div class="toppanel panel-demo" data-top="demo"><p class="demo">PANEL-OK</p></div>') "$($rI19.Out)`n$tablist19") -and $ok
+$ok = (Assert-True 'I19 footer = declared footer_date_label + max(corpus updated, panel UPDATED)' `
+    ($c19 -match '<span>최종 갱신 2026-09-01</span>') ($c19 -replace '(?s).*<footer', '<footer')) -and $ok
+$ok = (Assert-True 'I19 a panel selector reusing a canon class outside .panel-<id> is warned about (naming the fix), unique/scoped names are not, never refused' `
+    ($rI19.Code -eq 0 -and $rI19.Out -match [regex]::Escape("'.mono'") -and $rI19.Out -match [regex]::Escape("'.mono' 를") `
+     -and $rI19.Out -match [regex]::Escape('.panel-leak .mono') -and $rI19.Out -match [regex]::Escape('scripts/panels/leak.py') `
+     -and $rI19.Out -match [regex]::Escape("'.chip.on'") -and $rI19.Out -notmatch [regex]::Escape("'.panel-leak .chip'") `
+     -and $rI19.Out -notmatch [regex]::Escape("'.demo'") -and $rI19.Out -notmatch 'pf-x' -and $rI19.Out -notmatch 'clip' -and $rI19.Out -notmatch 'tblwrap' `
+     -and ([regex]::Matches($rI19.Out, '\[경고\] 패널 CSS').Count -eq 2)) $rI19.Out) -and $ok
+# I19c (review 2026-08-27, medium): the builder's OWN id fallback — the path a pre-0061 reader leaves
+# it on (entries without `id`) — must not hand two panels one data-top: labels "Env"/"env" both
+# slugify to `env`, so the second takes the first free panel-<n>. Direct call, like I13.
+$rI19c = & $py.Source -c "import sys; sys.path.insert(0, r'$docsI'); import build_docs; ps = build_docs._load_panels({'panels': [{'module': 'scripts/panels/demo.py', 'label': 'Env'}, {'module': 'scripts/panels/demo.py', 'label': 'env'}, {'module': 'scripts/panels/demo.py', 'label': '데모'}]}, r'$repoI'); print('IDS=' + ','.join(p['id'] for p in ps))" 2>&1 | Out-String
+$ok = (Assert-True 'I19c builder fallback ids (no reader id) stay unique: env, panel-1, panel-2' `
+    ($LASTEXITCODE -eq 0 -and $rI19c -match 'IDS=env,panel-1,panel-2') $rI19c) -and $ok
+# I19b: a malformed UPDATED is a named refusal (the module's contract, like a non-str CSS).
+[IO.File]::WriteAllText((Join-Path $panelsDir 'baddate.py'), "UPDATED = '2026/09/01'`ndef render_panel(root):`n    return '<p>x</p>'`n")
+[IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), '{
+  "docs": { "customer": {
+    "dir": "docs/customer", "chip_field": "program_file", "chip_suffix": ".p",
+    "groups": [{ "label": "g", "keys": [25] }],
+    "panels": [{ "module": "scripts/panels/baddate.py", "label": "날짜" }]
+  } }
+}')
+$rI19b = Invoke-IBuild
+$ok = (Assert-True 'I19b a panel UPDATED that is not YYYY-MM-DD exits 1 naming the module, no traceback' `
+    ($rI19b.Code -ne 0 -and $rI19b.Out -match 'UPDATED' -and $rI19b.Out -match 'baddate' -and $rI19b.Out -notmatch 'Traceback') $rI19b.Out) -and $ok
 [IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), $declFull)
 $rFinal = Invoke-IBuild
 $ok = (Assert-True 'I18 the fixture builds clean again after the failure cases (all 6 surfaces)' `

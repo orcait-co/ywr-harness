@@ -405,7 +405,8 @@ def compile_re(pattern: str, field: str, warns: list[str]) -> re.Pattern | None:
 CUSTOMER_FILES = ("spec.md", "user-guide.md", "release-notes.md")
 CUSTOMER_KEYS = ("dir", "title", "eyebrow", "description", "contact", "required_frontmatter",
                  "chip_field", "chip_suffix", "group_field", "groups", "other_label",
-                 "unkeyed_label", "project_field", "projects_md", "release_stages", "panels")
+                 "unkeyed_label", "project_field", "projects_md", "release_stages", "panels",
+                 "default_tab", "footer_date_label")
 # Display defaults are deliberately EMPTY here: the builder owns its UI language and fills them.
 # `release_stages` is a parsing contract (which `[TAG]` tokens a release entry may carry, in
 # stage order — the LAST is the final stage), so its default lives with the validation.
@@ -414,6 +415,9 @@ CUSTOMER_KEYS = ("dir", "title", "eyebrow", "description", "contact", "required_
 # The module path is a script-gate-class value (ADR 0024): a path to code the repo already
 # carries, never a command string, held to the same allowlist; a module the builder EXECUTES is
 # exactly why the allowlist matters here even though no shell is involved.
+# ADR 0061 adds the per-panel `id` (the `#top-<id>` deep link; derived here for EVERY kept entry
+# so `default_tab` can be validated against the final set) and `position`, plus the block-level
+# `default_tab` and `footer_date_label` — the keys that let a panel stop editing the canon DOM.
 CUSTOMER_DEFAULTS: dict = {
     "dir": "docs/customer",
     "title": "", "eyebrow": "", "description": "", "contact": "",
@@ -424,7 +428,13 @@ CUSTOMER_DEFAULTS: dict = {
     "release_stages": [{"tag": "FUT", "label": "FUT"}, {"tag": "UAT", "label": "UAT"},
                        {"tag": "PROD", "label": "COMPLETE"}],
     "panels": [],
+    "default_tab": "", "footer_date_label": "",
 }
+PANEL_KEYS = ("module", "label", "id", "position")
+PANEL_POSITIONS = ("before-docs", "after-docs")
+# A tab id is spliced into `data-top`, a CSS class (`panel-<id>`) and a URL fragment — ASCII
+# token only; `docs` is the documents tab and is checked separately (reserved).
+PANEL_ID = re.compile(r"^[a-z][a-z0-9_-]*\Z")
 # parse_frontmatter's key shape (build_docs.py: `^([A-Za-z0-9_]+)\s*:`) — a declared key name
 # outside it can never match a parsed key, so it is refused rather than silently never-found.
 FM_KEY = re.compile(r"^[A-Za-z0-9_]+\Z")
@@ -511,11 +521,14 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
                      "until the corpus directory is there")
 
     for key in ("title", "eyebrow", "description", "contact", "chip_suffix",
-                "other_label", "unkeyed_label"):
+                "other_label", "unkeyed_label", "footer_date_label"):
         if raw.get(key) is None:
             continue
         if not isinstance(raw[key], str):
+            # "ignored" must mean the builder's default applies: leaving the key in `declared`
+            # would make the untouched "" read as an intentional blank (review 2026-08-27, medium).
             warns.append(f"{field}.{key}: must be a string — ignored")
+            out["declared"] = [k for k in out["declared"] if k != key]
             continue
         out[key] = _display(raw[key], f"{field}.{key}", warns)
 
@@ -607,14 +620,16 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
     pn = raw.get("panels")
     if isinstance(pn, list):
         panels: list = []
+        used_ids: set = {"docs"}
         for i, p in enumerate(pn):
             pf = f"{field}.panels[{i}]"
             if not isinstance(p, dict):
                 warns.append(f"{pf}: expected an object with 'module' and 'label' — ignored")
                 continue
             for k in p:
-                if k not in ("module", "label") and not str(k).startswith("//"):
-                    warns.append(f"{pf}: unknown key '{one_line(str(k))}' ignored (known: module, label)")
+                if k not in PANEL_KEYS and not str(k).startswith("//"):
+                    warns.append(f"{pf}: unknown key '{one_line(str(k))}' ignored "
+                                 f"(known: {', '.join(PANEL_KEYS)})")
             module = norm(str(p.get("module") if p.get("module") is not None else ""))
             # The same refusal as a script-gate path — this is a file the builder will IMPORT.
             if (not module or not token_ok(module) or module.startswith("-")
@@ -631,12 +646,61 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
             if not label:
                 warns.append(f"{pf}: needs a non-empty 'label' (the tab text) — entry ignored")
                 continue
-            panels.append({"module": module, "label": label})
+            # `id` (ADR 0061): the tab's `#top-<id>` deep link — a PUBLISHED value, so a refused or
+            # duplicate declared id drops the entry rather than silently renaming the link the
+            # declarer asked for. Absent → the pre-0061 derivation (label slug, else `panel-<n>`
+            # over the KEPT entries) so existing pages keep their ids; an auto slug that collides
+            # falls back to `panel-<n>` with a warning.
+            pid_raw = p.get("id")
+            if pid_raw is not None:
+                pid = str(pid_raw)
+                if not PANEL_ID.match(pid) or pid in used_ids:
+                    why = ("is reserved for the documents tab" if pid == "docs"
+                           else "is already taken" if pid in used_ids
+                           else "must match ^[a-z][a-z0-9_-]*$")
+                    warns.append(f"{pf}: id '{one_line(pid)}' {why} — entry ignored")
+                    continue
+            else:
+                pid = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+                # The first FREE `panel-<n>` from the kept-entry index: the index alone can land on
+                # an id an earlier entry declared (`id: "panel-1"` then a Korean label) and two tabs
+                # would share one `data-top` / scope class (review 2026-08-27, high).
+                n = len(panels)
+                while "panel-%d" % n in used_ids:
+                    n += 1
+                fallback = "panel-%d" % n
+                if pid and pid in used_ids:
+                    warns.append(f"{pf}: derived id '{pid}' collides with an earlier tab — using "
+                                 f"'{fallback}'; declare 'id' to pin it")
+                    pid = fallback
+                elif not pid:
+                    pid = fallback
+            position = p.get("position")
+            if position is None:
+                position = "after-docs"
+            elif position not in PANEL_POSITIONS:
+                warns.append(f"{pf}: position '{one_line(str(position))}' is not one of "
+                             f"{', '.join(PANEL_POSITIONS)} — using 'after-docs'")
+                position = "after-docs"
+            used_ids.add(pid)
+            panels.append({"module": module, "label": label, "id": pid, "position": position})
         out["panels"] = panels
         if pn and not panels:
             warns.append(f"{field}.panels: every entry was rejected — no extra tab will be built")
     elif pn is not None:
         warns.append(f"{field}.panels: expected a list of {{module, label}} objects — ignored")
+
+    # `default_tab` (ADR 0061): validated against the FINAL ids above, so it may name a derived
+    # one. The builder's own default is the first tab in rendered order, which is why "" here
+    # means "unset", never "the docs tab".
+    dt = raw.get("default_tab")
+    if dt is not None:
+        known = ["docs"] + [pl["id"] for pl in out["panels"]]
+        if not isinstance(dt, str) or dt not in known:
+            warns.append(f"{field}.default_tab: '{one_line(str(dt))}' is not a tab id "
+                         f"({', '.join(known)}) — the first tab in rendered order opens")
+        else:
+            out["default_tab"] = dt
     return out
 
 
