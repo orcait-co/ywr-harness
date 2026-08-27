@@ -140,6 +140,15 @@ MATCHED_GROUPS=$(printf '%s\n' "$OUT" | awk '
     END { print out }
 ')
 
+# ADR 0062 (issue #55). Files no group claims are reported by the emitter but blocked ONLY in CI
+# ("Fail on ungrouped files"), so a local run read as passing right up to the first CI run. Said
+# here, at the earliest local point, and never blocking: a mid-slice commit legitimately adds a
+# file before the declaration catches up, and the emitter's exit contract stays advisory (ADR 0041).
+UNGROUPED_N=$(printf '%s\n' "$OUT" | sed -n 's/^ungrouped (\([0-9][0-9]*\) file.*/\1/p' | head -n 1)
+if [ -n "$UNGROUPED_N" ]; then
+    echo "[harness] pre-commit: $UNGROUPED_N staged file(s) matched NO declared group — CI's harness-gates run FAILS on ungrouped files (not blocked here; add a groups entry to .harness.json)."
+fi
+
 if [ -z "$CMDS" ]; then
     if [ -n "$MATCHED_GROUPS" ]; then
         echo "[harness] pre-commit: the $STAGED_N staged file(s) matched group(s) [$MATCHED_GROUPS], but none yields a runnable file-scoped gate here."

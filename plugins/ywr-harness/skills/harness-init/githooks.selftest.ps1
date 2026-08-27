@@ -257,6 +257,21 @@ print("    (no gate declared for this group — nothing deterministic runs on it
     $ok = (Assert-True 'E a parenthetical note is not executed' ($rE.Code -eq 0) "exit=$($rE.Code) out=$($rE.Out)") -and $ok
     $ok = (Assert-True 'E and it is not mistaken for a command' ($rE.Out -notmatch 'command not found') $rE.Out) -and $ok
 
+    # E5: an ungrouped file is REPORTED at commit time (ADR 0062, issue #55). CI fails on the
+    # emitter's `ungrouped (` header; the hook does not — the line closes the local/CI asymmetry
+    # without changing the advisory exit contract, so the commit still proceeds. The stub prints
+    # the header VERBATIM as harness_gates.py emits it since ADR 0062 (long tail, em dashes) — a
+    # fixture with the old short text would keep passing while the real parser drifted (review
+    # 2026-08-28, medium); case G below is the end-to-end pairing with the real emitter.
+    $e5 = New-StubRepo 'pc-ungrouped' 'print("  [g] 1 file(s)")
+print("    true")
+print("ungrouped (1 file(s) — no declared group matched, so NO deterministic gate covers them; CI''s harness-gates run FAILS on this — add a groups entry to .harness.json):")
+print("  weird.rb")'
+    $rE5 = Invoke-Hook $e5 $preCommit $null
+    $ok = (Assert-True 'E5 an ungrouped file is named as a CI failure at commit time' ($rE5.Out -match '1 staged file\(s\) matched NO declared group') $rE5.Out) -and $ok
+    $ok = (Assert-True 'E5 but it does not block the commit' ($rE5.Code -eq 0) "exit=$($rE5.Code) out=$($rE5.Out)") -and $ok
+    $ok = (Assert-True 'E5 the gate before the header still ran' ($rE5.Out -match '\$ true') $rE5.Out) -and $ok
+
     # E2/E3: the no-commands report distinguishes DECLARED coverage from a coverage HOLE
     # (issue #45). One message conflated them: files matching groups that declare `gates: []`
     # read identically to files no group claims, and only the second is a warning.

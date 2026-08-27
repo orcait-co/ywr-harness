@@ -11,6 +11,22 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.39.1 — 2026-08-28
+
+- **벤더링 CI(`harness-gates.yml`)가 게이트를 실제로 돌립니다** (ADR 0062, issue #55 — qad-adaptive-mcp
+  가 CI 를 처음 배선하며 발견): ① push 트리거가 `branches: [main, master]` 로 — 기본 브랜치가 `master` 인
+  레포는 지금까지 push 런이 한 번도 없었고 GitHub 은 워크플로를 등록조차 하지 않았습니다.
+  `harness-init` 이 `origin/HEAD` 를 목록과 대조해 벗어나면 `ci trigger:` 줄로 경고합니다. ② 에미터가
+  출력한 게이트의 러너를 CI 가 준비합니다 — `uv run …` 이 있으면 `astral-sh/setup-uv` + `uv sync`,
+  `npx …` 면 lockfile 이 있을 때 `npm ci`(둘 다 그룹 `cwd` 디렉터리마다 한 번); 없는 러너는
+  `sh: uv: not found`(exit 127) 대신 이름 붙은
+  실패로 멈춥니다. 조건부라 게이트를 선언하지 않은 레포의 CI 는 달라지지 않습니다. ③ 그룹이 청구하지
+  않은 파일(`ungrouped`)은 로컬에서도 "CI 가 실패하는 줄"로 읽히도록 에미터 문구 끝과 pre-commit 의
+  보고 줄이 붙었습니다 — 차단은 여전히 CI 만(ADR 0041 의 advisory 계약 유지).
+  **조치**: 플러그인 업데이트 → `/ywr-harness:harness-init` 재실행(워크플로·에미터 사본·pre-commit 이
+  캐논에서 갱신). qad-adaptive-mcp 는 로컬 패치(9ffb6d6 · eb852e3)가 캐논 사본으로 대체되는지 diff 로
+  확인하면 됩니다; Python 게이트를 선언한 다른 레포는 첫 CI 런이 이번 버전부터 실제로 돕니다.
+
 ## v0.39.0 — 2026-08-27
 
 - **고객 문서 확장 탭(`panels[]`)이 선언 키를 얻습니다** (ADR 0061, client-pjems 요청): 항목 키

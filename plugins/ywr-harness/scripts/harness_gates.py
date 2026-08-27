@@ -471,7 +471,11 @@ def main() -> int:
 
     # Never silent: a file no group claims is a file no deterministic gate sees.
     if ungrouped:
-        hc.say(f"ungrouped ({len(ungrouped)} file(s) — no declared group matched, so NO deterministic gate covers them):")
+        # The tail names the consequence: CI's "Fail on ungrouped files" step hard-fails on this
+        # header while every local run stays advisory (ADR 0041's exit contract), so without it a
+        # repo reads as passing right up to its first CI run (issue #55, ADR 0062).
+        hc.say(f"ungrouped ({len(ungrouped)} file(s) — no declared group matched, so NO deterministic gate covers them; "
+               "CI's harness-gates run FAILS on this — add a groups entry to .harness.json):")
         for f in ungrouped:
             hc.say(f"  {f}")
 

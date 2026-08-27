@@ -556,6 +556,26 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 $wireColor = if ($wire -match 'wired$') { 'Green' } else { 'Yellow' }
 Write-Host "  hooks: $wire" -ForegroundColor $wireColor
 
+# ADR 0062 (issue #55). The vendored workflow's push trigger ENUMERATES `branches: [main, master]`
+# — `on:` takes no expressions, `$default-branch` exists only in GitHub's starter templates, and
+# the placed copy must stay byte-identical to the template (ADR 0014), so per-repo substitution is
+# out. A repo whose default branch is outside the list never gets a push run, and GitHub does not
+# even register a workflow no event has matched — nothing in CI can report a run that never
+# happens. The scaffold is the one step that knows the repo, so it says it here. origin/HEAD is the
+# only default-branch signal available offline; when it is unset (a `git init` + `remote add`
+# clone never sets it) nothing is printed — the current branch would be a guess, and a wrong
+# warning on every feature branch teaches readers to ignore the line.
+$CI_PUSH_BRANCHES = @('main', 'master')
+if ((Get-Command git -ErrorAction SilentlyContinue) -and $wire -notmatch '^(git not on PATH|not a git repository)') {
+    $head = & git -C $root symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$head)) {
+        $defaultBranch = ([string]$head).Trim() -replace '^origin/', ''
+        if ($CI_PUSH_BRANCHES -notcontains $defaultBranch) {
+            Write-Host "  ci trigger: default branch '$defaultBranch' is NOT in the vendored workflow's push list [$($CI_PUSH_BRANCHES -join ', ')] — harness-gates never runs on push here (PR and workflow_dispatch runs still do). A default branch outside the list needs a canon change, not a local edit (ADR 0062)." -ForegroundColor Yellow
+        }
+    }
+}
+
 if (-not $DryRun) {
     # Generating the four surfaces needs python. Absent python is a REPORTED skip, never silent:
     # a repo with no index.json cannot be queried by tooling, and the reader must know why.

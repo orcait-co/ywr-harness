@@ -603,6 +603,25 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $ok = (Assert-True 'V a newly written ADR stays claimed (docs-corpus group)' ($rV2 -notmatch 'ungrouped \(') $rV2) -and $ok
 }
 
+# --- W: CI push-trigger warning (ADR 0062, issue #55) -------------------------------------------
+# The vendored workflow enumerates `branches: [main, master]`; a repo whose default branch is
+# outside that list never gets a push run and GitHub never registers the workflow. The scaffold is
+# the only step that knows the repo, so it warns — and stays quiet when the branch is in the list
+# or origin/HEAD is unset (the current branch is a guess, not a default-branch signal).
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $w1 = New-GitTarget 'ci-trigger-develop'
+    & git -C $w1 symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop 2>$null
+    $rW1 = Invoke-Init @('-Target', $w1)
+    $ok = (Assert-True "W1 a default branch outside [main, master] is warned about" ($rW1.Out -match "ci trigger: default branch 'develop' is NOT in") $rW1.Out) -and $ok
+    $ok = (Assert-True 'W1 the warning does not fail the run' ($rW1.Code -eq 0) "exit=$($rW1.Code)") -and $ok
+    $w2 = New-GitTarget 'ci-trigger-master'
+    & git -C $w2 symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master 2>$null
+    $rW2 = Invoke-Init @('-Target', $w2)
+    $ok = (Assert-True 'W2 a default branch IN the list prints no ci trigger line' ($rW2.Out -notmatch 'ci trigger:') $rW2.Out) -and $ok
+    # K's fixture is a remote-less repo: origin/HEAD unset -> quiet, never a guess from HEAD.
+    $ok = (Assert-True 'W3 unset origin/HEAD prints no ci trigger line' ($rK.Out -notmatch 'ci trigger:') $rK.Out) -and $ok
+}
+
 # --- P: a non-git target places the hooks and says they will not run ---------------------------
 # The fixture targets in A-J are plain directories, so this is the branch they all exercised
 # implicitly. Asserted explicitly so "placed but inert" can never become silent.
