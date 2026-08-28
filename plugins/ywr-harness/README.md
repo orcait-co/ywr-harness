@@ -14,7 +14,7 @@ Defects in anything here are fixed **in this repo**, never patched in a consumin
 Plugin components resolve as `ywr-harness:<name>`. A bare name does not resolve:
 
 ```
-/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init
+/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:feedback
 Workflow({name: 'ywr-harness:adversarial-review', args: {...}})
 ```
 
@@ -137,6 +137,18 @@ A key the payload does not carry **removes its segment** — never `0%`. Unmeasu
 different states, and rate-limit keys are legitimately absent on a session's first render, before
 the first API response. Context and quota use different threshold curves: 50% context is ordinary
 working state, 50% of a rate limit is already worth watching.
+
+## Upstream feedback (skill)
+
+`/ywr-harness:feedback <description>` — send a defect or request to the canon (ADR 0064). The canon
+repo is private, so the report is filed as an issue on the PUBLIC dist repo `orcait-co/ywr-harness`
+with label `upstream-report`, which the canon's session start lists. The skill drafts the body
+(running + registered plugin versions, `claude --version`, OS, `owner/repo` + `.harness-version`,
+the refresh nudge's verdict and `init.ps1 -DryRun` output quoted verbatim, `git log --oneline -3`
+of every file a re-run would change, a dedupe fingerprint), shows it, and files it only after ONE
+confirmation — the reviewed file is what gets filed. It never includes file contents or diffs
+(the tracker is public; the canon asks in-thread), never runs `harness-init`, and without `gh`
+keeps the body and prints the by-hand URL (`NOT FILED`, exit 2).
 
 ## Apply-now update (skill)
 
