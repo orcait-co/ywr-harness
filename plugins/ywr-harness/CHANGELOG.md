@@ -11,6 +11,18 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.40.1 — 2026-08-31
+
+- **벤더링 CI 템플릿(`harness-gates.yml`)의 액션 핀이 Node 24 타깃 메이저로 올라갑니다** (issue #56):
+  `actions/checkout@v5` · `actions/setup-python@v6` · `astral-sh/setup-uv@v7`. 지금까지는 모든
+  harness-gates 런에 GitHub 의 "Node.js 20 is deprecated" annotation 이 붙었고(강제 Node 24 실행
+  — 실패는 아님), GitHub 이 강제 실행을 끝내면 하드 실패로 바뀌기 때문에 그 전에 정본에서 한 번
+  범프합니다. 세 메이저 모두 "Node 24 타깃 중 가장 보수적인" 선택이고 각 릴리스 노트를 실제 사용
+  입력과 대조했습니다 — 워크플로의 트리거·스텝·동작은 그대로입니다 (setup-uv v8~v10 의 캐시 정책
+  변경은 배제). **조치**: 플러그인 업데이트 → `/ywr-harness:harness-init` 재실행(워크플로 사본
+  갱신). 재실행 전까지 annotation 은 계속 보이지만 실패가 아닙니다. 정본 자체 CI 실측: 범프된
+  워크플로의 첫 런 그린, check-run annotation 0건.
+
 ## v0.40.0 — 2026-08-28
 
 - **결함·요청을 캐논에 보내는 명령이 생겼습니다**: `/ywr-harness:feedback <설명>` (ADR 0064). 실행 중·설치된

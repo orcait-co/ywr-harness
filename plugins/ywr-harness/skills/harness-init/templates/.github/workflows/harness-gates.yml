@@ -39,13 +39,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # 0 = 전체 히스토리. emitter 가 --range 로 슬라이스 범위를 계산할 수 있어야 한다.
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -251,7 +251,7 @@ jobs:
       # 고르는 문자열이 아니다(ADR 0012) — 그래서 .harness.json 에 러너 접두를 선언하게 하지 않는다.
       - name: Setup uv (the emitted gates use it)
         if: contains(steps.cmds.outputs.runners, ' uv ')
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
 
       # 설치는 게이트가 실행되는 디렉터리마다 한 번이다 — 레포 루트에서 한 번만 돌리면 `groups[].cwd` 로
       # 분리된 서브프로젝트(`backend/pyproject.toml`)는 설치되지 않은 채 게이트가 돈다(리뷰 2026-08-28
