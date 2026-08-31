@@ -130,6 +130,10 @@ MATCHED_GROUPS=$(printf '%s\n' "$OUT" | awk '
     /^scaffold-claimed \(/ { g = 0 }
     /^ungrouped \(/        { g = 0 }
     /^review tier:/        { g = 0 }
+    # The declared-artifact drift-check header (ADR 0068) shares the 2-space "[label]" shape but
+    # is NOT a group that matched staged files — splicing it in garbled this report (its trailer
+    # is not "] N file(s)", so the strip below would keep the raw tail; review 2026-08-31, high).
+    g && /^  \[artifacts\] [0-9]+ declared drift check/ { next }
     g && /^  \[/ {
         line = $0
         # Strip the fixed trailer, not everything after the FIRST "]" — a group name may itself

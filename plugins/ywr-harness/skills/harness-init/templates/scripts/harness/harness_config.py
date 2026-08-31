@@ -364,6 +364,45 @@ def script_gate(raw: dict, group: str, strip_prefix: str, root: Path,
     return {"runner": runner, "script": script, "files": files}
 
 
+def artifact_check(raw: dict, field: str, problems: list[str], warns: list[str],
+                   root: Path) -> str:
+    """Validate an `artifacts.items[].check` drift check (ADR 0068) and compose the ONE command
+    it emits into the gates window.
+
+    The script-gate shape (ADR 0024) minus `files`: a check is ALWAYS whole-program — its
+    contract is `build_onboarding.py`'s (default mode = drift check, exit 1 on drift, writes
+    nothing). No strip_prefix and no cwd: artifact sources are declared repo-root-relative and
+    the check runs from the root, so the declared path IS the composed path.
+
+    Shape/refusal failures land in `problems` — the caller renders them as
+    `artifact: VIOLATION`, which CI fails on. NOT the script-gate warn-and-drop posture, on
+    purpose: a declared check that quietly stops composing is unenforced coverage that still
+    reads as coverage. A missing script FILE stays a warn (the emitted command fails loudly at
+    run time — the script-gate stance for the same case)."""
+    for key in raw:
+        if key not in ("runner", "script") and not str(key).startswith("//"):
+            if key == "files":
+                warns.append(f"{field}: 'files' is not a check key — a check is always "
+                             "whole-program; ignored")
+            else:
+                warns.append(f"{field}: unknown check key '{key}' ignored "
+                             "(known: runner, script)")
+    runner = str(raw.get("runner") or "")
+    if runner not in RUNNERS:
+        problems.append(f"check runner '{one_line(runner)}' is not in the closed set "
+                        f"({', '.join(sorted(RUNNERS))})")
+        return ""
+    script = norm(str(raw.get("script") or ""))
+    if not token_ok(script) or script.startswith("-"):
+        problems.append(f"check script path '{one_line(script)}' refused (a repo-relative path "
+                        "of [A-Za-z0-9._/-] only, no '..', no leading '/' or '-')")
+        return ""
+    if not (root / script).is_file():
+        warns.append(f"{field}: check script '{script}' does not exist — kept; the emitted "
+                     "command will fail until it does")
+    return " ".join([*RUNNERS[runner], as_arg(script)])
+
+
 def compile_re(pattern: str, field: str, warns: list[str]) -> re.Pattern | None:
     if not pattern:
         return None

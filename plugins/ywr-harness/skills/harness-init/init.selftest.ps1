@@ -96,6 +96,12 @@ $builderNow = Get-Content -LiteralPath $builder -Raw
 $builderCanon = Get-Content -LiteralPath (Join-Path $templates 'docs/build_docs.py') -Raw
 $ok = (Assert-True 'C edited toolchain file is refreshed' ($rC.Out -match 'refreshed=1') $rC.Out) -and $ok
 $ok = (Assert-True 'C toolchain content matches canon after refresh' ($builderNow -eq $builderCanon) 'builder still holds local edit') -and $ok
+# C is a same-version re-run, so ADR 0067 makes it save a pre-revert copy in temp — parse the
+# printed dir and clean it (the X cases own the block's assertions; this is fixture hygiene).
+if ($rC.Out -match 'pre-revert copies: (.+)') {
+    $cDir = $Matches[1].Trim()
+    if ($cDir -and (Test-Path -LiteralPath $cDir)) { Remove-Item -LiteralPath $cDir -Recurse -Force -ErrorAction SilentlyContinue }
+}
 
 # --- D: an existing SEED file survives byte-identical -----------------------------------------
 $d = New-Target 'seeded'
@@ -621,6 +627,93 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
     # K's fixture is a remote-less repo: origin/HEAD unset -> quiet, never a guess from HEAD.
     $ok = (Assert-True 'W3 unset origin/HEAD prints no ci trigger line' ($rK.Out -notmatch 'ci trigger:') $rK.Out) -and $ok
 }
+
+# --- X: same-version conflict signal (ADR 0067) -------------------------------------------------
+# stamp == running version + toolchain drift = a local hand edit the re-run reverts (the #55
+# shape). The block must fire on dry AND real runs, save pre-revert copies on the real one,
+# stay quiet across versions (an older stamp is expected canon change), and fold to the dogfood
+# note — with no copies — when the plugin runs from inside the target tree.
+$x = New-Target 'same-version-drift'
+Invoke-Init @('-Target', $x) | Out-Null
+$xEdit = Join-Path $x 'scripts/harness/harness_gates.py'
+Set-Content -LiteralPath $xEdit -Value '# local patch (issue #55 shape)' -NoNewline
+
+# X1: dry run — block printed, nothing changed, no copies made or named.
+$rX1 = Invoke-Init @('-Target', $x, '-DryRun')
+$ok = (Assert-True 'X1 dry run prints the SAME-VERSION block' ($rX1.Out -match 'upstream: SAME-VERSION drift') $rX1.Out) -and $ok
+$ok = (Assert-True 'X1 dry run says to report BEFORE the real run' ($rX1.Out -match 'BEFORE the real run') $rX1.Out) -and $ok
+$ok = (Assert-True 'X1 dry run leaves the local edit in place' ((Get-Content -LiteralPath $xEdit -Raw) -match 'local patch') 'edit reverted by a DRY run') -and $ok
+$ok = (Assert-True 'X1 dry run names no pre-revert copies' ($rX1.Out -notmatch 'pre-revert copies:') $rX1.Out) -and $ok
+$ok = (Assert-True 'X1 the report pointer is the namespaced skill' ($rX1.Out -match '/ywr-harness:feedback') $rX1.Out) -and $ok
+
+# X2: real run — revert happens, block + copies dir printed, the copy holds the LOCAL content.
+$rX2 = Invoke-Init @('-Target', $x)
+$ok = (Assert-True 'X2 real run prints the SAME-VERSION block' ($rX2.Out -match 'upstream: SAME-VERSION drift') $rX2.Out) -and $ok
+$ok = (Assert-True 'X2 the file is reverted to canon' ((Get-Content -LiteralPath $xEdit -Raw) -notmatch 'local patch') 'local edit survived a real refresh') -and $ok
+$xDir = ''
+if ($rX2.Out -match 'pre-revert copies: (.+)') { $xDir = $Matches[1].Trim() }
+$xBak = if ($xDir) { Join-Path $xDir 'scripts/harness/harness_gates.py' } else { '' }
+$ok = (Assert-True 'X2 pre-revert copy exists and holds the local content' `
+    ([bool]$xBak -and (Test-Path -LiteralPath $xBak -PathType Leaf) -and ((Get-Content -LiteralPath $xBak -Raw) -match 'local patch')) "dir='$xDir' out=$($rX2.Out)") -and $ok
+# The dir name must carry a per-process component after the second-resolution timestamp — two
+# same-second runs sharing the dir would -Force over each other's backups (review 2026-08-31).
+$ok = (Assert-True 'X2 copies dir name ends in timestamp-pid, never timestamp alone' `
+    ($xDir -match '-\d{8}-\d{6}-\d+$') "dir='$xDir'") -and $ok
+if ($xDir -and (Test-Path -LiteralPath $xDir)) { Remove-Item -LiteralPath $xDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+# X3: an OLDER stamp is a normal update — refresh happens, no conflict verdict.
+$x3 = New-Target 'cross-version-drift'
+Invoke-Init @('-Target', $x3) | Out-Null
+Set-Content -LiteralPath (Join-Path $x3 'scripts/harness/harness_gates.py') -Value '# local patch' -NoNewline
+Set-Content -LiteralPath (Join-Path $x3 '.harness-version') -Value "0.0.1`n" -NoNewline
+$rX3 = Invoke-Init @('-Target', $x3)
+$ok = (Assert-True 'X3 older-stamp drift refreshes WITHOUT the block' ($rX3.Out -match 'refreshed=1' -and $rX3.Out -notmatch 'SAME-VERSION drift') $rX3.Out) -and $ok
+
+# X4: same version, clean tree — no upstream line at all.
+$rX4 = Invoke-Init @('-Target', $x)
+$ok = (Assert-True 'X4 no drift, no upstream line' ($rX4.Out -notmatch 'upstream:') $rX4.Out) -and $ok
+
+# X6: an ALL-FAILED copy run must say FAILED and must NOT print the "pre-revert copies:" line —
+# the dir name is assigned before the copy that can fail, so an unguarded print would name a dir
+# holding nothing (review 2026-08-31, medium; the refresh itself must still proceed). Failure is
+# injected by pointing the CHILD's temp at a fixture whose 'ywr-harness-reverted' is a FILE, so
+# the backup dir cannot be created. GetTempPath reads TMP/TEMP (Windows) and TMPDIR (POSIX).
+$x6 = New-Target 'copy-fail-drift'
+Invoke-Init @('-Target', $x6) | Out-Null
+Set-Content -LiteralPath (Join-Path $x6 'scripts/harness/harness_gates.py') -Value '# local patch' -NoNewline
+$x6Tmp = New-Target 'copy-fail-tmp'
+Set-Content -LiteralPath (Join-Path $x6Tmp 'ywr-harness-reverted') -Value 'a file where the dir must go' -NoNewline
+$envKeys = @('TMP', 'TEMP', 'TMPDIR')
+$envSaved = @{}
+foreach ($k in $envKeys) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $x6Tmp) }
+try { $rX6 = Invoke-Init @('-Target', $x6) }
+finally { foreach ($k in $envKeys) { [Environment]::SetEnvironmentVariable($k, $envSaved[$k]) } }
+$ok = (Assert-True 'X6 all-failed copies: FAILED line names the file, run exits 0' `
+    ($rX6.Code -eq 0 -and $rX6.Out -match 'pre-revert copy FAILED for: .*harness_gates\.py') "exit=$($rX6.Code) out=$($rX6.Out)") -and $ok
+$ok = (Assert-True 'X6 all-failed copies: the "pre-revert copies:" line is NOT printed' `
+    ($rX6.Out -notmatch 'pre-revert copies:') $rX6.Out) -and $ok
+$ok = (Assert-True 'X6 the refresh still proceeded (copy failure never blocks the update path)' `
+    ((Get-Content -LiteralPath (Join-Path $x6 'scripts/harness/harness_gates.py') -Raw) -notmatch 'local patch') 'local edit survived') -and $ok
+
+# X5: in-tree run (the canon dogfood shape, ADR 0018) — the verdict folds to the visible note:
+# no report prompt, no pre-revert copies. Fixture: this whole skill dir + the plugin manifest
+# copied INSIDE the target, then THAT init.ps1 is run against the target.
+$x5 = New-Target 'dogfood-intree'
+$x5Skill = Join-Path $x5 'plugins/p/skills/harness-init'
+New-Item -ItemType Directory -Force -Path (Split-Path $x5Skill -Parent) | Out-Null
+Copy-Item -LiteralPath $PSScriptRoot -Destination $x5Skill -Recurse -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $x5 'plugins/p/.claude-plugin') | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../.claude-plugin/plugin.json') -Destination (Join-Path $x5 'plugins/p/.claude-plugin/plugin.json')
+$x5Init = Join-Path $x5Skill 'init.ps1'
+& pwsh -NoProfile -ExecutionPolicy Bypass -File $x5Init -Target $x5 2>&1 | Out-Null
+Set-Content -LiteralPath (Join-Path $x5 'scripts/harness/harness_gates.py') -Value '# canon-side propagation edit' -NoNewline
+$rX5 = & pwsh -NoProfile -ExecutionPolicy Bypass -File $x5Init -Target $x5 2>&1 | Out-String
+# -cnotmatch: the dogfood note itself says "same-version drift" in lowercase, and -notmatch is
+# case-insensitive — the first run of this case failed on exactly that. The second assertion is
+# the real discriminator: the dogfood note never prompts for a report.
+$ok = (Assert-True 'X5 in-tree run prints the dogfood note, not the report prompt' `
+    ($rX5 -match 'canon dogfood' -and $rX5 -cnotmatch 'SAME-VERSION drift' -and $rX5 -notmatch 'ywr-harness:feedback') $rX5) -and $ok
+$ok = (Assert-True 'X5 in-tree run makes no pre-revert copies' ($rX5 -notmatch 'pre-revert copies:') $rX5) -and $ok
 
 # --- P: a non-git target places the hooks and says they will not run ---------------------------
 # The fixture targets in A-J are plain directories, so this is the branch they all exercised

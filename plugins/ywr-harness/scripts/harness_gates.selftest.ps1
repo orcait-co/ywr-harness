@@ -437,7 +437,7 @@ Set-Content -LiteralPath (Join-Path $s2 'README.md') -Value 'no link here' -NoNe
 $rS2 = Invoke-Gates $s2 @()
 $ok = (Assert-True 'S2 a missing README link is a VIOLATION naming the readme' ($rS2.Out -match "artifact: VIOLATION — 'art-nolink · docs': README\.md does not contain the declared URL") $rS2.Out) -and $ok
 $ok = (Assert-True 'S2 the emitter stays advisory (exit 0) — CI is the enforcement point' ($rS2.Code -eq 0) "exit=$($rS2.Code)") -and $ok
-$ok = (Assert-True 'S2 the violation also reaches stderr as a warn (what pre-commit shows a human)' ($rS2.Out -match 'warn: artifacts: 1 declared item\(s\) violate the README-link/title rule') $rS2.Out) -and $ok
+$ok = (Assert-True 'S2 the violation also reaches stderr as a warn (what pre-commit shows a human)' ($rS2.Out -match 'warn: artifacts: 1 declared item\(s\) violate the README-link/title/source rule') $rS2.Out) -and $ok
 
 # S3: the title must start with the repo name — at a non-alphanumeric boundary, case-insensitive.
 $s3 = New-Repo 'art-title' (New-ArtCfg $SURL 'Docs · ADR & Spec') @('src/x.py')
@@ -826,6 +826,15 @@ $x4 = New-Repo 'decl-new' '' @()
 Set-Content -LiteralPath (Join-Path $x4 '.harness.json') -Value '{ "groups": [] }' -NoNewline
 $rX4 = Invoke-Gates $x4 @()
 $ok = (Assert-True 'X4 a newly added declaration is critical (undetermined base)' ($rX4.Out -match 'review tier: full — critical surface touched \(\.harness\.json' -and $rX4.Out -match 'declaration keys changed \(undetermined\)') $rX4.Out) -and $ok
+
+# X6: `artifacts` LEFT the safe set with ADR 0068 — items[].check composes a command CI runs, so
+# an artifacts edit forces critical now (over-approximate for a title typo, erring toward
+# critical). This case is the mutation anchor for putting the key back by mistake.
+$x6 = New-Repo 'decl-artifacts' $CFG_X @()
+$x6cfg = Join-Path $x6 '.harness.json'
+(Get-Content -Raw -LiteralPath $x6cfg).Replace('"handoff": ""', '"handoff": "", "artifacts": { "readme": "README.md", "items": [] }') | Set-Content -LiteralPath $x6cfg -NoNewline
+$rX6 = Invoke-Gates $x6 @()
+$ok = (Assert-True 'X6 an artifacts change is critical since ADR 0068 (check reaches command composition)' ($rX6.Out -match 'declaration keys changed \(artifacts\)' -and $rX6.Out -match 'review tier: full — critical surface touched \(\.harness\.json') $rX6.Out) -and $ok
 
 # --- H: handoff declaration forms (ADR 0040) ----------------------------------------------------
 # A trailing '/' declares a per-work-line directory and the emitter must say so — the slice-close
@@ -1244,6 +1253,83 @@ $aa2 = New-Repo 'customer-cli' $CFG_CUST @('src/x.py')
 $rAA2 = Invoke-Gates $aa2 @()
 $ok = (Assert-True 'AA2 the emitter surfaces a refused customer dir as a warning and stays advisory' `
     ($rAA2.Out -match "docs\.customer\.dir: '\.\./outside' refused" -and $rAA2.Code -eq 0) "exit=$($rAA2.Code): $($rAA2.Out)") -and $ok
+
+# --- AB: declared-artifact source + drift check (ADR 0068) --------------------------------------
+# `source` is completeness (allowlist-clean path that EXISTS); `check` is the script-gate shape
+# minus `files`, composed into the gates window as `# whole-program` — CI's extraction runs it,
+# pre-commit's existing rule defers it, `seen` dedupes it against an identical group gate. A
+# check on a VIOLATING item must never emit: half-validated enforcement reading as enforcement
+# is the defect class. All failure shapes are `artifact: VIOLATION` (CI's fail string), never a
+# warn-and-drop.
+function New-Ab([string]$Name, [string]$Items, [string]$Gates = '[]') {
+    $cfg = @"
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "artifacts": { "readme": "README.md", "items": [ $Items ] },
+  "groups": [ { "name": "py", "match": "^src/", "cwd": "", "strip_prefix": "", "gates": $Gates } ]
+}
+"@
+    $r = New-Repo $Name $cfg @('src/x.py')
+    Set-Content -LiteralPath (Join-Path $r 'README.md') -Value "docs: $SURL" -NoNewline
+    New-Item -ItemType Directory -Force -Path (Join-Path $r 'docs'), (Join-Path $r 'scripts') | Out-Null
+    Set-Content -LiteralPath (Join-Path $r 'docs/page.html') -Value '<p>page</p>' -NoNewline
+    Set-Content -LiteralPath (Join-Path $r 'scripts/check_drift.py') -Value 'import sys; sys.exit(0)' -NoNewline
+    return $r
+}
+
+# AB1: valid source + check — ok line carries both, the check lands in the window whole-program.
+$ab1 = New-Ab 'ab1-ok' ('{ "url": "' + $SURL + '", "title": "ab1-ok · docs", "source": "docs/page.html", "check": { "runner": "python", "script": "scripts/check_drift.py" } }')
+$rAB1 = Invoke-Gates $ab1 @()
+$ok = (Assert-True 'AB1 ok line reports source committed and check declared' ($rAB1.Out -match 'artifact: ok — .*· source docs/page\.html committed · check declared — emitted under gates: as whole-program') $rAB1.Out) -and $ok
+# No trailing $ anchors: Out-String yields CRLF lines and .NET multiline $ matches before \n,
+# not before \r — the first run of these two cases failed on exactly that.
+$ok = (Assert-True 'AB1 the [artifacts] header sits inside the gates window in group-header shape' ($rAB1.Out -match '(?m)^  \[artifacts\] 1 declared drift check\(s\) — run on every slice \(ADR 0068\)') $rAB1.Out) -and $ok
+$ok = (Assert-True 'AB1 the check is a 4-space command line marked # whole-program (CI runs it, pre-commit defers it)' ($rAB1.Out -match '(?m)^    python scripts/check_drift\.py   # whole-program: declared-artifact drift check \(ADR 0068\)') $rAB1.Out) -and $ok
+
+# AB2: a group already declares the identical whole-program gate — `seen` dedupes VISIBLY, the
+# command is emitted exactly once (the canon's own dogfood state: onboarding group + item check).
+$ab2 = New-Ab 'ab2-dedupe' ('{ "url": "' + $SURL + '", "title": "ab2-dedupe · docs", "source": "docs/page.html", "check": { "runner": "python", "script": "scripts/check_drift.py" } }') '[ { "runner": "python", "script": "scripts/check_drift.py", "files": false } ]'
+$rAB2 = Invoke-Gates $ab2 @()
+$ab2Run = @(($rAB2.Out -split "`n") | Where-Object { $_ -notmatch '^\s*warn:' -and $_ -match '^\s{4}[^ (]' -and $_ -match 'check_drift' })
+$ok = (Assert-True 'AB2 an identical group gate dedupes the check to ONE command line' ($ab2Run.Count -eq 1) "lines: $($ab2Run -join ' | ')") -and $ok
+$ok = (Assert-True 'AB2 the dedupe is visible, never silent' ($rAB2.Out -match '\(already emitted above — deduplicated: python scripts/check_drift\.py\)') $rAB2.Out) -and $ok
+
+# AB3: a source missing from the tree is a VIOLATION, and the item's otherwise-valid check must
+# NOT emit — half-validated enforcement reading as enforcement is the defect class.
+$ab3 = New-Ab 'ab3-nosrc' ('{ "url": "' + $SURL + '", "title": "ab3-nosrc · docs", "source": "docs/absent.html", "check": { "runner": "python", "script": "scripts/check_drift.py" } }')
+$rAB3 = Invoke-Gates $ab3 @()
+$ok = (Assert-True 'AB3 a missing source file is a VIOLATION naming the path' ($rAB3.Out -match "artifact: VIOLATION — 'ab3-nosrc · docs': declared source 'docs/absent\.html' is not a file in the tree") $rAB3.Out) -and $ok
+$ok = (Assert-True 'AB3 the violating item emits NO check' ($rAB3.Out -notmatch '\[artifacts\]' -and $rAB3.Out -notmatch 'declared-artifact drift check') $rAB3.Out) -and $ok
+
+# AB4: a traversal source is refused at the allowlist, not by the existence probe.
+$ab4 = New-Ab 'ab4-trav' ('{ "url": "' + $SURL + '", "title": "ab4-trav · docs", "source": "../outside.html" }')
+$rAB4 = Invoke-Gates $ab4 @()
+$ok = (Assert-True 'AB4 a traversal source is refused' ($rAB4.Out -match "artifact: VIOLATION.*source '\.\./outside\.html' refused") $rAB4.Out) -and $ok
+
+# AB5: a check without a source is a VIOLATION — a drift check needs the file it guards.
+$ab5 = New-Ab 'ab5-nosource' ('{ "url": "' + $SURL + '", "title": "ab5-nosource · docs", "check": { "runner": "python", "script": "scripts/check_drift.py" } }')
+$rAB5 = Invoke-Gates $ab5 @()
+$ok = (Assert-True 'AB5 check without source is a VIOLATION' ($rAB5.Out -match 'artifact: VIOLATION.*check declared without source') $rAB5.Out) -and $ok
+
+# AB6: a check runner outside the closed set is a VIOLATION (never a warn-and-drop) and emits
+# nothing; a bad script path is the same class.
+$ab6 = New-Ab 'ab6-runner' ('{ "url": "' + $SURL + '", "title": "ab6-runner · docs", "source": "docs/page.html", "check": { "runner": "bash", "script": "scripts/check_drift.py" } }')
+$rAB6 = Invoke-Gates $ab6 @()
+$ok = (Assert-True 'AB6 a check runner outside the closed set is a VIOLATION' ($rAB6.Out -match "artifact: VIOLATION.*check runner 'bash' is not in the closed set" -and $rAB6.Out -notmatch '\[artifacts\]') $rAB6.Out) -and $ok
+$ab6b = New-Ab 'ab6b-script' ('{ "url": "' + $SURL + '", "title": "ab6b-script · docs", "source": "docs/page.html", "check": { "runner": "python", "script": "-c" } }')
+$rAB6b = Invoke-Gates $ab6b @()
+$ok = (Assert-True 'AB6b a leading-dash check script is refused as a VIOLATION' ($rAB6b.Out -match "artifact: VIOLATION.*check script path '-c' refused") $rAB6b.Out) -and $ok
+
+# AB7: `files` is not a check key — warned, ignored, the check still emits (a check is ALWAYS
+# whole-program; a JSON string "false" here must never invert into file-scoping, the fact-36 class).
+$ab7 = New-Ab 'ab7-files' ('{ "url": "' + $SURL + '", "title": "ab7-files · docs", "source": "docs/page.html", "check": { "runner": "python", "script": "scripts/check_drift.py", "files": true } }')
+$rAB7 = Invoke-Gates $ab7 @()
+$ok = (Assert-True 'AB7 a files key on a check warns and is ignored; the check still emits whole-program' ($rAB7.Out -match "warn: artifacts\.items\[0\]\.check: 'files' is not a check key" -and $rAB7.Out -match '(?m)^    python scripts/check_drift\.py   # whole-program: declared-artifact drift check') $rAB7.Out) -and $ok
+
+# AB8: source without check is legal — completeness enforced, the drift gap SAID, never silent.
+$ab8 = New-Ab 'ab8-nocheck' ('{ "url": "' + $SURL + '", "title": "ab8-nocheck · docs", "source": "docs/page.html" }')
+$rAB8 = Invoke-Gates $ab8 @()
+$ok = (Assert-True 'AB8 source without check reports the unenforced drift gap on the ok line' ($rAB8.Out -match 'artifact: ok — .*source docs/page\.html committed · no check declared — drift between this source and its generator is unenforced') $rAB8.Out) -and $ok
 
 Remove-FixtureRoot $fxBase
 

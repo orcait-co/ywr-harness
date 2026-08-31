@@ -27,7 +27,9 @@
 - Never commit secrets. `.env` is gitignored; commit `.env.example` only.
 - A claude.ai Artifact this repo publishes is titled **`<repo-name> · <purpose>`** and declared
   under `artifacts` in `.harness.json` — the harness then enforces that the README carries the
-  link (CI fails on drift; ywr-harness ADR 0032).
+  link (CI fails on drift; ywr-harness ADR 0032). A GENERATED Artifact also declares its
+  committed `source` file and a `check` drift gate, and is republished via
+  `/ywr-harness:artifact-publish` — one confirmation, never headless (ywr-harness ADR 0068).
 - `docs/adr/` is append-only; `docs/spec/` is living. Detail in `docs/README.md`.
 - Adversarial code review before closing a slice:
   `Workflow({name: 'ywr-harness:adversarial-review', args: {scope: '<files + invariants + passed gates>'}})`.

@@ -320,6 +320,28 @@ print("    false   # whole-program: gate on slice files or newly introduced only
     $ok = (Assert-True 'G end-to-end with the real emitter exits 0' ($rG.Code -eq 0) "exit=$($rG.Code) out=$($rG.Out)") -and $ok
     $ok = (Assert-True 'G the real parenthetical is not executed either' ($rG.Out -notmatch 'command not found') $rG.Out) -and $ok
     $ok = (Assert-True 'G the real emitter output yields the matched-group wording (issue #45)' ($rG.Out -match 'matched group\(s\) \[src\]') $rG.Out) -and $ok
+
+    # G2: END-TO-END with a declared artifact check (ADR 0068) — the coverage gap that let the
+    # first cut ship: the emitter's `  [artifacts]` header shares the group-header shape, and
+    # the MATCHED_GROUPS awk spliced its unstripped tail into the report (review 2026-08-31,
+    # high — 'matched group(s) [src, artifacts] 1 declared drift check(s) …]'). The check line
+    # itself must be DEFERRED (whole-program), never run here.
+    $g2 = New-Repo 'pc-e2e-art'
+    New-Item -ItemType Directory -Force -Path (Join-Path $g2 'scripts/harness'), (Join-Path $g2 'docs') | Out-Null
+    foreach ($n in @('harness_config.py', 'harness_gates.py')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "templates/scripts/harness/$n") -Destination (Join-Path $g2 "scripts/harness/$n") -Force
+    }
+    $g2url = 'https://claude.ai/code/artifact/00000000-0000-0000-0000-00000000ab68'
+    Write-File $g2 '.harness.json' ('{ "artifacts": { "readme": "README.md", "items": [ { "url": "' + $g2url + '", "title": "pc-e2e-art · docs", "source": "docs/page.html", "check": { "runner": "python", "script": "scripts/check_drift.py" } } ] }, "groups": [ { "name": "src", "match": "^src/.*\\.py$", "gates": [] } ] }')
+    Write-File $g2 'README.md' "docs: $g2url"
+    Write-File $g2 'docs/page.html' '<p>page</p>'
+    Write-File $g2 'scripts/check_drift.py' 'print("CHECK-RAN")'
+    Write-File $g2 'src/app.py' "print(1)`n"
+    & git -C $g2 add -A 2>$null
+    $rG2 = Invoke-Hook $g2 $preCommit $null
+    $ok = (Assert-True 'G2 artifact-check e2e exits 0' ($rG2.Code -eq 0) "exit=$($rG2.Code) out=$($rG2.Out)") -and $ok
+    $ok = (Assert-True 'G2 the matched-group report stays clean — the [artifacts] header is not spliced in' ($rG2.Out -match 'matched group\(s\) \[src\]' -and $rG2.Out -notmatch 'declared drift check\(s\).*\],|\[src, artifacts') $rG2.Out) -and $ok
+    $ok = (Assert-True 'G2 the check is deferred to CI, not run by the hook' ($rG2.Out -notmatch 'CHECK-RAN' -and $rG2.Out -match 'whole-program gate\(s\) deferred to CI') $rG2.Out) -and $ok
 }
 
 # =================================================================================================

@@ -20,6 +20,11 @@ Add `-DryRun` to see the plan without writing. `-Target` defaults to the current
 Requires pwsh 7 (plugin README §Prerequisites) — under Windows PowerShell 5.1 the script
 refuses explicitly rather than running.
 
+**On a repo that already has a `.harness-version` stamp, ALWAYS run `-DryRun` first** — not a
+habit but a load-bearing order: if the dry run reports a same-version conflict, the upstream
+report must be drafted BEFORE the real run (§Same-version conflicts below), because the real run
+reverts exactly the drift the report needs to read.
+
 **Brownfield repos (an existing `docs/` or its own build scripts): run `-DryRun` first.** On a
 FIRST run (no `.harness-version` stamp yet), an existing file at a toolchain path whose content
 differs is REFUSED rather than replaced — it is not the canon's output, and overwriting it
@@ -46,6 +51,38 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
   pair — a lone 0x0D is content and survives), and a file that differs from its template only in
   line endings is left alone rather than counted as a refresh (ADR 0036; same comparison contract
   as the refresh nudge, ADR 0033).
+
+## Same-version conflicts → upstream report (ADR 0067)
+
+An `upstream: SAME-VERSION drift` block in the run output means toolchain files were hand-edited
+since the last scaffold at this SAME plugin version (the #55 shape) — the canon cannot have
+changed them, a re-run reverts them, and the canon should hear why they were worth editing
+(ywr-harness ADR 0010: the fix belongs in the canon, for every repo). When the DRY RUN prints
+the block, do this BEFORE the real run:
+
+1. Draft the report (nothing leaves the machine):
+   ```
+   pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/feedback/feedback.ps1" -Target <repo root> -Description "<which files were edited and why — name the files from the block, and what the member says the edit fixes>"
+   ```
+2. Show the member the FULL body file it printed, and the `similar open reports:` line. A
+   fingerprint hit there means this exact conflict is already filed — say so and default to NOT
+   filing again.
+3. Ask ONE question: file it / skip. On file, run the exact FILE command the draft printed
+   (`feedback.ps1 -File -BodyPath …`). On skip, print that command so the member can file later.
+   Never file without the confirmation, never change the body after showing it, never include
+   diff text (ADR 0064).
+4. Only then run the real `init.ps1`. The revert is intended — the canon ships the fix in a
+   release. The real run's block names a `pre-revert copies:` dir where the local content
+   survives, so the diff can still be attached in-thread when the canon asks for it.
+
+If the block appears only on a REAL run's output (someone skipped the dry run), the drift is
+already reverted: still offer the report — the body will carry the environment and the block's
+file list from your description, and the `pre-revert copies:` dir holds the content — but say
+that the drift section of the draft will read "none" because the working tree is already clean.
+
+A one-line `upstream: same-version drift … canon dogfood` note instead of the block means the
+plugin is running from inside the target tree (the canon itself): propagation, not a conflict —
+no report.
 
 ## After running
 

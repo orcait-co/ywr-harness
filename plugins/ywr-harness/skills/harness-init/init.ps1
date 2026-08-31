@@ -125,6 +125,29 @@ if ($repoStamp -and $ownVersion -and $repoStamp -gt $ownVersion) {
     }
 }
 
+# --- same-version conflict signal (ADR 0067) ------------------------------------------------------
+# stamp == this plugin's version means the canon cannot have changed a placed file since the last
+# scaffold — a refresh-path delta on this run is a LOCAL hand edit (or a modified plugin copy),
+# the #55 shape ADR 0010 wants surfaced upstream. Collected during placement, reported after it.
+# First runs can never qualify (no stamp), so this never overlaps ADR 0055's collision buckets.
+# When this script itself runs FROM the target tree (the canon dogfood, ADR 0018), templates newer
+# than the stamp's release are the intended source->placement propagation, not a hand edit — the
+# verdict is replaced by a visible one-line note, never silently dropped.
+$sameVersionRun = [bool]($repoStamp -and $ownVersion -and $repoStamp -eq $ownVersion)
+$inTreeRun = $false
+try {
+    $selfDir = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\', '/')
+    $rootFull = [IO.Path]::GetFullPath($root).TrimEnd('\', '/')
+    $cmpMode = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $inTreeRun = $selfDir.Equals($rootFull, $cmpMode) -or
+        $selfDir.StartsWith($rootFull + [IO.Path]::DirectorySeparatorChar, $cmpMode) -or
+        $selfDir.StartsWith($rootFull + [IO.Path]::AltDirectorySeparatorChar, $cmpMode)
+} catch { $inTreeRun = $false }
+$sameVersionDrift = @()
+$revertDir = ''
+$revertSaved = @()
+$revertFailed = @()
+
 # relative source under templates/  ->  relative destination under the target
 $TOOLCHAIN = [ordered]@{
     'docs/README.md'             = 'docs/README.md'
@@ -240,6 +263,41 @@ function Place([string]$Rel, [string]$Dest, [bool]$Overwrite, [bool]$OwnershipKn
     if ($exists -and $Overwrite -and $script:isFirstRun -and -not $OwnershipKnown) {
         if ($Force) { $isReplacement = $true }
         else { $script:firstRunRefused += $Dest; return }
+    }
+
+    # Same-version drift (ADR 0067): reaching here with an existing overwrite-mode file on a
+    # RE-run means the content differs from the template while the stamp already equals this
+    # plugin's version — a local hand edit this overwrite is about to revert (first runs never
+    # set $sameVersionRun, so $isReplacement can't reach here with it). Recorded for the
+    # upstream: block; on a real run the local content is copied aside FIRST, so the revert
+    # never destroys the only copy of an uncommitted patch. A failed copy is reported per file
+    # and never blocks the refresh — a temp-dir hiccup must not break the update path.
+    if ($exists -and $Overwrite -and $script:sameVersionRun) {
+        $script:sameVersionDrift += $Dest
+        # In-tree (dogfood) runs skip the copy: the "local" content is the canon's own tree,
+        # nothing uncommitted is being lost, and a silent temp write per propagation run is waste.
+        if (-not $DryRun -and -not $script:inTreeRun) {
+            try {
+                if (-not $script:revertDir) {
+                    # $PID in the name: the timestamp alone is second-resolution, so two runs in
+                    # the same second (a quick retry, or two same-leaf worktrees on one machine)
+                    # would share the dir and -Force would silently overwrite each other's
+                    # backups — the one thing this mechanism exists to keep (review 2026-08-31,
+                    # medium).
+                    $script:revertDir = Join-Path ([IO.Path]::GetTempPath()) `
+                        ('ywr-harness-reverted/' + (Split-Path $root -Leaf) + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $PID)
+                }
+                $bak = Join-Path $script:revertDir $Dest
+                $bakParent = Split-Path -Parent $bak
+                if ($bakParent -and -not (Test-Path -LiteralPath $bakParent)) { New-Item -ItemType Directory -Force -Path $bakParent | Out-Null }
+                Copy-Item -LiteralPath $dst -Destination $bak -Force
+                # Success is tracked separately from $revertDir being set: the dir name is
+                # assigned BEFORE the copy that can fail, so the report must key the
+                # "pre-revert copies:" line on at least one LANDED copy, or an all-failed run
+                # would name a dir that holds nothing (review 2026-08-31, medium).
+                $script:revertSaved += $Dest
+            } catch { $script:revertFailed += $Dest }
+        }
     }
 
     if ($DryRun) {
@@ -456,6 +514,27 @@ foreach ($f in $refused) {
     Write-Host '        [ "$SLICE_RETRO" = "0" ] || python scripts/harness/harness_retro.py || true' -ForegroundColor Yellow
 }
 foreach ($f in $skippedSeed) { Write-Host "  - $f" -ForegroundColor Yellow }
+
+# --- same-version drift report (ADR 0067) ---------------------------------------------------------
+# The prefix `upstream: SAME-VERSION drift` is a stable contract: the harness-init SKILL keys on
+# it to start the draft->confirm->file flow, and feedback.ps1's dry-run parser must keep ignoring
+# these lines (they match none of its `~`/`!` shapes).
+if ($sameVersionDrift.Count) {
+    if ($inTreeRun) {
+        Write-Host "  upstream: same-version drift on $($sameVersionDrift.Count) file(s), but this plugin copy runs FROM the target tree (canon dogfood, ADR 0018) — source->placement propagation, not a hand edit; no report (ADR 0067)." -ForegroundColor Cyan
+    } else {
+        Write-Host "  upstream: SAME-VERSION drift — $($sameVersionDrift.Count) file(s) marked ~ above differed from this plugin's templates while the stamp already reads v$repoStampRaw." -ForegroundColor Yellow
+        if ($DryRun) {
+            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ADR 0010/0067). A real run will REVERT them; nothing was changed yet." -ForegroundColor Yellow
+            Write-Host "      Report it upstream BEFORE the real run (the draft reads the drift still in the working tree): /ywr-harness:feedback — one confirmation before anything is filed." -ForegroundColor Yellow
+        } else {
+            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ADR 0010/0067). This run REVERTED them." -ForegroundColor Yellow
+            if ($revertSaved.Count) { Write-Host "      pre-revert copies: $revertDir" -ForegroundColor Yellow }
+            if ($revertFailed.Count) { Write-Host "      pre-revert copy FAILED for: $($revertFailed -join ', ') — that content now survives only in git history." -ForegroundColor Yellow }
+            Write-Host "      Report it upstream so the canon fixes it for every repo: /ywr-harness:feedback — one confirmation before anything is filed." -ForegroundColor Yellow
+        }
+    }
+}
 
 if ($failed.Count) {
     foreach ($f in $failed) { Write-Host "  FAIL $f" -ForegroundColor Red }

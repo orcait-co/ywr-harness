@@ -14,7 +14,7 @@ Defects in anything here are fixed **in this repo**, never patched in a consumin
 Plugin components resolve as `ywr-harness:<name>`. A bare name does not resolve:
 
 ```
-/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:feedback
+/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:feedback   /ywr-harness:artifact-publish
 Workflow({name: 'ywr-harness:adversarial-review', args: {...}})
 ```
 
@@ -149,6 +149,17 @@ of every file a re-run would change, a dedupe fingerprint), shows it, and files 
 confirmation — the reviewed file is what gets filed. It never includes file contents or diffs
 (the tracker is public; the canon asks in-thread), never runs `harness-init`, and without `gh`
 keeps the body and prints the by-hand URL (`NOT FILED`, exit 2).
+
+## Artifact publish (skill)
+
+`/ywr-harness:artifact-publish` — republish a declared claude.ai Artifact safely (ADR 0068). A
+repo that commits a GENERATED Artifact source declares `source` + `check` on its
+`artifacts.items[]` entry; the emitter enforces that the source exists and rides the drift check
+through CI, and this skill closes the loop: list the declared items, run each check, ONE
+confirmation, then the Artifact-tool publish with the enforced read-before-republish sequence
+and a byte-level lockstep proof against the committed file. Never headless (headless sessions
+have no Artifact tool — measured), never from a hook, never past a VIOLATION or a failed check;
+an ownership refusal is reported, not worked around.
 
 ## Apply-now update (skill)
 

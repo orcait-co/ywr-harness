@@ -11,6 +11,24 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.41.0 — 2026-08-31
+
+- **`harness-init` 가 같은-버전 손 편집(로컬 패치)을 감지하고 업스트림 보고를 제안합니다** (ADR 0067, issue #55 의
+  결함 모양). 스탬프(`.harness-version`)가 실행 중인 플러그인 버전과 같은데 툴체인 파일이 템플릿과 다르면 — 캐논이
+  바꿨을 리 없으니 로컬 손 편집입니다 — 재실행 출력에 `upstream: SAME-VERSION drift` 블록이 뜨고, 실 실행은 되돌리기
+  **전에** 로컬 내용을 temp 에 보존합니다(`pre-revert copies:` 경로 안내). **스탬프가 있는 레포는 반드시 `-DryRun`
+  먼저**: 보고 초안은 작업 트리의 드리프트를 읽으므로 실 실행 뒤에는 "드리프트 없음"으로 읽힙니다. 스킬이 초안을
+  보여 주고 **확인 한 번** 뒤 `/ywr-harness:feedback` 경로로 등록합니다 — 확인 없이 나가는 것은 없습니다.
+- **커밋된 생성형 Artifact 페이지가 생성기와 어긋나면 CI 가 빨갛습니다** (ADR 0068). `.harness.json` 의
+  `artifacts.items[]` 에 `source`(커밋된 소스 파일 — 존재 강제)와 `check`({runner, script} 드리프트 게이트)를
+  선언하면, emitter 가 그 체크를 기존 `gates:` 윈도우로 내보내 CI 가 실행하고 pre-commit 은 유예 보고합니다 —
+  벤더링 워크플로 변경 없음. 재발행은 새 스킬 `/ywr-harness:artifact-publish`: 선언 목록 확인 → 체크 실행 → **확인
+  한 번** → Artifact 발행 + 커밋본과 바이트 락스텝 증명. 주의: `artifacts` 키 변경은 이제 리뷰 티어를 critical 로
+  강제합니다(체크가 명령을 조합하므로).
+- **조치**: 플러그인 업데이트 → 스캐폴드 레포는 `/ywr-harness:harness-init` 재실행(pre-commit 훅의 표시 규칙 갱신
+  포함; 스탬프 있으면 `-DryRun` 먼저 — 위 첫 항목이 바로 그 이유입니다). 생성형 Artifact 를 커밋하는 레포
+  (예: client-pjems 의 `docs/customer.artifact.html`)는 `source`+`check` 를 선언하세요.
+
 ## v0.40.1 — 2026-08-31
 
 - **벤더링 CI 템플릿(`harness-gates.yml`)의 액션 핀이 Node 24 타깃 메이저로 올라갑니다** (issue #56):

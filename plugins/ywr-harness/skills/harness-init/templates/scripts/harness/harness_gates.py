@@ -54,8 +54,11 @@ SMALL_MAX_LINES = 150
 # The one file whose schema the canon itself owns (ADR 0038). The safe keys feed REPORTING only;
 # every other key reaches command composition, tier, or gate coverage, so a change to one is
 # critical in every repo, declared or not — the declaration cannot opt itself out.
+# `artifacts` LEFT this set with ADR 0068: `items[].check` composes a command the CI runs, so an
+# artifacts edit is critical now — over-approximate for a URL/title typo, and erring toward
+# critical is the posture the whole mechanism stands on.
 DECL_FILE = ".harness.json"
-DECL_SAFE_KEYS = {"docs", "handoff", "artifacts"}
+DECL_SAFE_KEYS = {"docs", "handoff"}
 
 
 def _drop_comment_keys(v):
@@ -224,13 +227,22 @@ def title_has_prefix(title: str, name: str) -> bool:
     return not rest[:1].isalnum()
 
 
-def artifact_status(root: Path, cfg: dict, warns: list[str]) -> list[str]:
-    """One `artifact:` line per declared item (ADR 0032) — `ok` or `VIOLATION` — or the
-    `none declared` report. The vendored CI fails on `^artifact: VIOLATION`; the emitter itself
-    stays advisory. Violations are ALSO appended to `warns`: stdout is where CI's fail step
-    reads, stderr is what the pre-commit hook shows a human. A malformed declaration is a
-    VIOLATION, never a drop — a typo that silently disabled enforcement would read as coverage
-    (the same posture as CI failing on an unparseable settings file).
+def artifact_status(root: Path, cfg: dict, warns: list[str]) -> tuple[list[str], list[str]]:
+    """(`artifact:` lines, validated drift-check commands). One line per declared item
+    (ADR 0032) — `ok` or `VIOLATION` — or the `none declared` report. The vendored CI fails on
+    `^artifact: VIOLATION`; the emitter itself stays advisory. Violations are ALSO appended to
+    `warns`: stdout is where CI's fail step reads, stderr is what the pre-commit hook shows a
+    human. A malformed declaration is a VIOLATION, never a drop — a typo that silently disabled
+    enforcement would read as coverage (the same posture as CI failing on an unparseable
+    settings file).
+
+    ADR 0068 adds two per-item keys. `source` (the committed Artifact source file) is
+    completeness: the path must be allowlist-clean and EXIST. `check` ({runner, script},
+    validated by `hc.artifact_check`) composes ONE whole-program command per valid item,
+    returned for the caller to emit inside the `gates:` window — CI's existing extraction runs
+    it, pre-commit's existing `# whole-program` rule defers it, and the window's `seen` set
+    dedupes it against an identical group gate. A check on a VIOLATING item is never returned:
+    half-validated enforcement reading as enforcement is the defect class this line exists for.
 
     The lines are returned, not printed: `hc.say()` is the single stdout exit that guarantees one
     line per line, so nothing here needs to remember to escape. That guarantee is load-bearing —
@@ -239,11 +251,11 @@ def artifact_status(root: Path, cfg: dict, warns: list[str]) -> list[str]:
     arts = cfg["artifacts"]
     if arts.get("malformed"):
         warns.append("artifacts: declaration malformed — CI fails on this (ADR 0032)")
-        return [f"artifact: VIOLATION — .harness.json artifacts is malformed ({arts['malformed']})"]
+        return ([f"artifact: VIOLATION — .harness.json artifacts is malformed ({arts['malformed']})"], [])
     items = arts["items"]
     if not items:
-        return ["artifact: none declared — README link check disabled (a repo with a claude.ai "
-                'Artifact declares it under "artifacts" in .harness.json)']
+        return (["artifact: none declared — README link check disabled (a repo with a claude.ai "
+                'Artifact declares it under "artifacts" in .harness.json)'], [])
     name, source = repo_name(root)
     readme = arts["readme"]
     try:
@@ -251,6 +263,7 @@ def artifact_status(root: Path, cfg: dict, warns: list[str]) -> list[str]:
     except OSError:
         text = None
     lines: list[str] = []
+    checks: list[str] = []
     bad = 0
     for i, it in enumerate(items):
         if not isinstance(it, dict):
@@ -258,8 +271,9 @@ def artifact_status(root: Path, cfg: dict, warns: list[str]) -> list[str]:
             bad += 1
             continue
         for key in it:
-            if key not in ("url", "title") and not str(key).startswith("//"):
-                warns.append(f"artifacts.items[{i}]: unknown key '{key}' ignored (known: url, title)")
+            if key not in ("url", "title", "source", "check") and not str(key).startswith("//"):
+                warns.append(f"artifacts.items[{i}]: unknown key '{key}' ignored "
+                             "(known: url, title, source, check)")
         url = str(it.get("url") or "")
         title = str(it.get("title") or "")
         problems = []
@@ -282,17 +296,53 @@ def artifact_status(root: Path, cfg: dict, warns: list[str]) -> list[str]:
             problems.append(f"README '{readme}' cannot be read, so the link cannot be verified")
         elif ARTIFACT_URL.match(url) and url not in text:
             problems.append(f"{readme} does not contain the declared URL — add the link")
+        # --- ADR 0068: committed source + drift check --------------------------------------------
+        # `src` on purpose — `source` above is the repo-NAME provenance from repo_name().
+        src = it.get("source")
+        check = it.get("check")
+        extras: list[str] = []
+        src_ok = False
+        if src is not None:
+            src = str(src)
+            if not hc.token_ok(src) or src.startswith("-"):
+                problems.append(f"source '{hc.one_line(src)}' refused (a repo-relative path of "
+                                "[A-Za-z0-9._/-] only, no '..', no leading '/' or '-')")
+            elif not (root / src).is_file():
+                problems.append(f"declared source '{src}' is not a file in the tree — the "
+                                "committed Artifact source is exactly what this key asserts "
+                                "(ADR 0068)")
+            else:
+                src_ok = True
+                extras.append(f"source {src} committed")
+        cmd = ""
+        if check is not None:
+            if src is None:
+                problems.append("check declared without source — a drift check needs the "
+                                "committed file it guards (ADR 0068)")
+            elif not isinstance(check, dict):
+                problems.append("check must be an object {runner, script} (ADR 0068)")
+            else:
+                cmd = hc.artifact_check(check, f"artifacts.items[{i}].check", problems,
+                                        warns, root)
+                if cmd:
+                    extras.append("check declared — emitted under gates: as whole-program")
+        elif src_ok:
+            extras.append("no check declared — drift between this source and its generator "
+                          "is unenforced")
         if problems:
             label = f"'{title}'" if title.strip() else (url or f"items[{i}]")
             lines.append(f"artifact: VIOLATION — {label}: " + "; ".join(problems))
             bad += 1
         else:
+            if cmd:
+                checks.append(cmd)
+            tail = (" · " + " · ".join(extras)) if extras else ""
             lines.append(f"artifact: ok — {readme} links {url} · title '{title}' starts with "
-                         f"repo name '{name}' (from {source})")
+                         f"repo name '{name}' (from {source})" + tail)
     if bad:
-        warns.append(f"artifacts: {bad} declared item(s) violate the README-link/title rule — "
-                     "CI fails on these (ADR 0032)")
-    return lines
+        warns.append(f"artifacts: {bad} declared item(s) violate the README-link/title/source "
+                     "rule — CI fails on these (ADR 0032/0068)")
+    return lines, checks
 
 
 def match_any(patterns: list[str], path: str, warns: list[str], field: str) -> bool:
@@ -358,7 +408,11 @@ def main() -> int:
     hc.print_scope(files, prov)
     # Above `gates:` on purpose — outside the window both output parsers consume — and BEFORE the
     # empty-scope return: CI's push-to-main run has no changed files and is an enforcement point.
-    for line in artifact_status(root, cfg, late):
+    # The drift-check COMMANDS ride the gates window below instead (ADR 0068), so the empty-scope
+    # path prints the completeness lines but runs no check — recorded residual; the next real
+    # slice and the publish skill re-check.
+    art_lines, art_checks = artifact_status(root, cfg, late)
+    for line in art_lines:
         hc.say(line)
     if not files:
         if prov.get("source") == "all":
@@ -449,6 +503,24 @@ def main() -> int:
             seen.add(cmd)
             whole = "" if hc.gate_is_scoped(gate) else "   # whole-program: gate on slice files or newly introduced only"
             hc.say(f"    {cmd}{whole}")
+            emitted += 1
+    # Declared-artifact drift checks (ADR 0068) — after the group gates, inside the same window,
+    # so CI's extraction runs them and pre-commit's `# whole-program` rule defers them. The
+    # header keeps the group-header shape (2-space `[label]`); the two COMMAND parsers (CI sed +
+    # pre-commit CMDS awk) skip it, and pre-commit's THIRD parser — the MATCHED_GROUPS awk, which
+    # reads 2-space `[label]` lines as group names — skips it by an explicit rule keyed on this
+    # exact trailer (review 2026-08-31, high: the first cut garbled that report on every commit
+    # whose CMDS was empty). Changing this header's wording means changing that awk rule too.
+    # `seen` collapses a check a group already declared as its own gate (the canon's dogfood state).
+    if art_checks:
+        hc.say(f"  [artifacts] {len(art_checks)} declared drift check(s) — run on every slice "
+               "(ADR 0068)")
+        for cmd in art_checks:
+            if cmd in seen:
+                hc.say(f"    (already emitted above — deduplicated: {cmd})")
+                continue
+            seen.add(cmd)
+            hc.say(f"    {cmd}   # whole-program: declared-artifact drift check (ADR 0068)")
             emitted += 1
     if emitted == 0:
         # Three causes share this line, and the third was unnamed until 2026-07-29's queue: a
