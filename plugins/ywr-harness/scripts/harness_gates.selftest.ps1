@@ -173,6 +173,42 @@ $ok = (Assert-True 'K2 wired clone stops nagging' ($rK2.Out -notmatch 'UNSET') $
 $rK3 = Invoke-Gates $k @()
 $ok = (Assert-True 'K3 a foreign hooksPath is reported, not called wired' ($rK3.Out -match "points at '\.elsewhere'") $rK3.Out) -and $ok
 
+# K6: the SAME directory in any other spelling is wired, not foreign. A literal compare against
+# '.githooks' reported an absolute value (the canon's own clone, 2026-09-02), a './' prefix, and the
+# Git-Bash-on-Windows MSYS form as "the harness hooks do not run in this clone" while they ran.
+$absHooks = (Join-Path $k '.githooks')
+& git -C $k config --local core.hooksPath $absHooks 2>$null
+$rK6 = Invoke-Gates $k @()
+$ok = (Assert-True 'K6 absolute hooksPath to .githooks is wired' ($rK6.Out -match 'hooks: \.githooks/ wired' -and $rK6.Out -notmatch 'do not run') $rK6.Out) -and $ok
+& git -C $k config --local core.hooksPath './.githooks' 2>$null
+$rK6b = Invoke-Gates $k @()
+$ok = (Assert-True 'K6b ./.githooks is wired' ($rK6b.Out -match 'hooks: \.githooks/ wired') $rK6b.Out) -and $ok
+if ($IsWindows -and $absHooks -match '^([A-Za-z]):\\(.*)$') {
+    $msys = '/' + $Matches[1].ToLower() + '/' + ($Matches[2] -replace '\\', '/')
+    & git -C $k config --local core.hooksPath $msys 2>$null
+    $rK6c = Invoke-Gates $k @()
+    $ok = (Assert-True 'K6c MSYS /c/... form is wired on Windows' ($rK6c.Out -match 'hooks: \.githooks/ wired') $rK6c.Out) -and $ok
+}
+# K6e: git expands `~/` in a pathname variable when it RUNS hooks, but `git config --get` returns the
+# raw text — the emitter must read the value the way git applies it (`--path`), or a tilde-wired
+# clone stays foreign (review 2026-09-02, medium). HOME is pinned to the fixture itself so `~/.githooks`
+# resolves there on every platform (git prefers HOME over USERPROFILE on Windows too). The value MUST
+# be a single-quoted literal: PowerShell tilde-expands a computed argument such as ('~/' + $x) before
+# git ever sees it (measured — the stored value was already USERPROFILE-expanded), a literal survives.
+$savedHome = $env:HOME
+try {
+    $env:HOME = $k
+    & git -C $k config --local core.hooksPath '~/.githooks' 2>$null
+    $rK6e = Invoke-Gates $k @()
+} finally {
+    if ($null -eq $savedHome) { Remove-Item Env:HOME -ErrorAction SilentlyContinue } else { $env:HOME = $savedHome }
+}
+$ok = (Assert-True 'K6e a ~/ hooksPath (git tilde expansion) is wired' ($rK6e.Out -match 'hooks: \.githooks/ wired') $rK6e.Out) -and $ok
+& git -C $k config --local core.hooksPath (Join-Path $k '.other-hooks') 2>$null
+$rK6d = Invoke-Gates $k @()
+$ok = (Assert-True 'K6d an absolute path to a DIFFERENT dir stays foreign' ($rK6d.Out -match 'do not run in this clone') $rK6d.Out) -and $ok
+& git -C $k config --local core.hooksPath '.elsewhere' 2>$null
+
 # The hook's output parser stops at `review tier:`; if the hooks line ever moved above it, a
 # scaffolded repo would try to execute it as a gate command.
 $ok = (Assert-True 'K4 hooks line stays below the tier line' (($rK2.Out -split 'review tier:').Count -eq 2 -and ($rK2.Out -split 'review tier:')[1] -match 'hooks:') $rK2.Out) -and $ok

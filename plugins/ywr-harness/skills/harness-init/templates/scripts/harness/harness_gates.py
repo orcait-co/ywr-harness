@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -152,6 +153,33 @@ def exec_bit_gap(root: Path) -> str:
             "future clone: git update-index --chmod=+x .githooks/*")
 
 
+def _hooks_path_is(root: Path, cur: str, rel: str) -> bool:
+    """True when the clone's `core.hooksPath` value names `root/rel`, whatever FORM it was written
+    in. `git config core.hooksPath .githooks` is the scaffold's spelling, but a hand-wired clone may
+    hold `./.githooks`, an absolute path (`C:\\...\\.githooks`, `/home/.../.githooks`), or — from Git
+    Bash on Windows — the MSYS form `/c/.../.githooks`, which git for Windows honours but no Python
+    path API does. A literal string compare reported every one of those as "the harness hooks do
+    not run in this clone" while they ran (handoff CARRIED item, observed on the canon's own clone).
+    Git resolves a relative value against the work tree's top level, so that is the base here. The
+    `~/`, `~user/` and `%(prefix)/` forms git ALSO accepts for a pathname variable are expanded by
+    git itself before this runs — the caller reads the value with `git config --path`, which is the
+    same expansion the hook runner applies; `--get` alone returns them raw (review 2026-09-02,
+    medium). Both OS-specific rewrites are Windows-only: a POSIX name may legitimately contain a
+    backslash or start `/c/` (review 2026-09-02, low)."""
+    if os.name == "nt":
+        m = re.match(r"^/([A-Za-z])/(.*)$", cur)
+        if m:
+            cur = f"{m.group(1)}:/{m.group(2)}"
+        cur = cur.replace("\\", "/")
+    try:
+        p = Path(cur)
+        if not p.is_absolute():
+            p = root / p
+        return p.resolve() == (root / rel).resolve()
+    except (OSError, ValueError):
+        return False
+
+
 def hooks_status(root: Path) -> str | None:
     """One line on whether THIS CLONE has the scaffolded git hooks wired, or None when the repo has
     no `.githooks/` to wire.
@@ -170,7 +198,7 @@ def hooks_status(root: Path) -> str | None:
         return None
     try:
         out = subprocess.run(
-            ["git", "config", "--local", "--get", "core.hooksPath"],
+            ["git", "config", "--local", "--path", "--get", "core.hooksPath"],
             cwd=root, capture_output=True, text=True,
         )
     except OSError:
@@ -179,7 +207,7 @@ def hooks_status(root: Path) -> str | None:
     if out.returncode != 0 or not cur:
         return (".githooks/ present but core.hooksPath is UNSET — NO git hook runs in this clone\n"
                 "       run: git config core.hooksPath .githooks" + exec_bit_gap(root))
-    if cur == ".githooks":
+    if _hooks_path_is(root, cur, ".githooks"):
         return ".githooks/ wired (core.hooksPath)" + exec_bit_gap(root)
     # `cur` comes from the clone's own `.git/config`, and the UNSET branch above returns a
     # deliberately TWO-line string — so this is the one status line that cannot go through

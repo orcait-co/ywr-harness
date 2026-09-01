@@ -53,7 +53,7 @@ async function run(plan) {
   const spawns = [];
   const agent = async (prompt, opts = {}) => {
     const label = opts.label || '';
-    spawns.push({ label, model: opts.model, effort: opts.effort, prompt });
+    spawns.push({ label, model: opts.model, effort: opts.effort, agentType: opts.agentType, prompt });
     if (label === 'canary') return plan.canaryDies ? null : 'ok';
     if (label.startsWith('find:')) {
       const key = label.slice('find:'.length);
@@ -72,7 +72,7 @@ async function run(plan) {
   };
   const fn = compile(SCRIPT);
   const result = await fn(agent, parallelStub, (m) => logs.push(String(m)), () => {},
-    plan.budget ?? budgetStub, { tier: 'small', scope: { files: ['f.md'], context: 'c' } });
+    plan.budget ?? budgetStub, plan.args ?? { tier: 'small', scope: { files: ['f.md'], context: 'c' } });
   return { result, logs, attempts, spawns };
 }
 
@@ -157,8 +157,8 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   const name = 'harness rejects the index-shift bug';
   const src = readFileSync(SCRIPT, 'utf8');
   const buggy = src.replace(
-    'const all = found.flatMap((r, i) => (r ? r.findings.map(f => ({ ...f, lens: LENSES[i].key })) : []))',
-    'const all = found.filter(Boolean).flatMap((r, i) => r.findings.map(f => ({ ...f, lens: LENSES[i].key })))',
+    'const all = found.flatMap((r, i) => (r ? r.findings.map(f => ({ ...f, lens: unitKey(UNITS[i]) })) : []))',
+    'const all = found.filter(Boolean).flatMap((r, i) => r.findings.map(f => ({ ...f, lens: unitKey(UNITS[i]) })))',
   );
   if (buggy === src) fail(name, 'could not construct the buggy variant — anchor drifted');
   else {
@@ -251,6 +251,132 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   else if (finds.some(bad)) fail(name, `find pin drifted: ${JSON.stringify(finds.map((s) => [s.model, s.effort]))}`);
   else if (byLabel(/^canary$/)[0]?.effort !== 'low') fail(name, 'canary is not effort low');
   else if (byLabel(/^verify:/).some((s) => s.model !== 'sonnet' || s.effort !== 'low')) fail(name, 'verify pin drifted');
+  else pass(name);
+}
+
+// 10a. the worker identity (ywr-harness ADR 0069). Canary, finders and skeptics run as the plugin's
+//     tool-restricted reviewer agent — the allowlist is what removes ~half of the prefix every
+//     worker request re-reads, and it only takes effect through agentType. The name must be the
+//     NAMESPACED form (fact 1: a bare name does not resolve, and manifest-gate does not scan
+//     agentType strings — this assertion is the only gate on it). The dedupe grouping deliberately
+//     stays on the default subagent (haiku; a model override on top of agentType is unmeasured).
+{
+  const name = 'canary/find/verify spawns run as the namespaced reviewer agent';
+  const { spawns } = await run({});
+  const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
+  const wrong = workers.filter((s) => s.agentType !== 'ywr-harness:reviewer');
+  const dedupe = spawns.filter((s) => s.label === 'dedupe:haiku');
+  if (!workers.length) fail(name, 'no worker spawns captured');
+  else if (wrong.length) fail(name, `agentType drifted: ${JSON.stringify(wrong.map((s) => [s.label, s.agentType]))}`);
+  else if (dedupe.some((s) => s.agentType)) fail(name, 'dedupe should stay on the default subagent');
+  else pass(name);
+}
+
+// 11. dynamic finder sharding (ywr-harness ADR 0070). The unit is lens × shard; without args.shards
+//     nothing changes (labels stay `find:<key>` — every earlier case is that regression check).
+{
+  const name = '11a shards=2 over 4 files → 4 finders, contiguous halves, counted exactly';
+  const files = ['a.md', 'b.md', 'c.md', 'd.md'];
+  const { result, spawns } = await run({ args: { tier: 'small', shards: 2, scope: { files, context: 'c' } } });
+  const finds = spawns.filter((s) => s.label.startsWith('find:'));
+  const labels = finds.map((s) => s.label).sort();
+  const first = finds.find((s) => s.label === 'find:correctness-pitfalls#1')?.prompt || '';
+  const second = finds.find((s) => s.label === 'find:correctness-pitfalls#2')?.prompt || '';
+  if (finds.length !== 4) fail(name, `find spawns=${finds.length}`);
+  else if (labels.join(',') !== 'find:boundary-ui-tests#1,find:boundary-ui-tests#2,find:correctness-pitfalls#1,find:correctness-pitfalls#2') fail(name, `labels=${labels.join(',')}`);
+  else if (!/샤드 1\/2\): a\.md, b\.md/.test(first) || !/샤드 2\/2\): c\.md, d\.md/.test(second)) fail(name, 'shard file lists not in the prompts');
+  else if (/c\.md/.test(first.split('담당 파일')[1]?.split('\n')[0] || '')) fail(name, 'shard 1 lists a shard-2 file');
+  else if (result.stats.agents_per_phase.find !== 4 || result.stats.shards !== 2 || result.stats.finders !== 4) fail(name, `stats ${JSON.stringify(result.stats)}`);
+  else pass(name);
+}
+{
+  const name = '11b shards=auto with 3 files stays a single finder per lens (ceil(3/4)=1), labels unchanged';
+  const { result, spawns } = await run({ args: { tier: 'small', shards: 'auto', scope: { files: ['a.md', 'b.md', 'c.md'], context: 'c' } } });
+  const finds = spawns.filter((s) => s.label.startsWith('find:'));
+  if (finds.length !== 2 || finds.some((s) => s.label.includes('#'))) fail(name, `labels=${finds.map((s) => s.label)}`);
+  else if (result.stats.shards !== 1 || result.stats.finders !== 2) fail(name, `stats ${JSON.stringify(result.stats)}`);
+  else pass(name);
+}
+{
+  const name = '11c shards=auto with 9 files → 3 EVEN shards of 3/3/3 (count from ceil(9/4), sizes rebalanced), split logged';
+  const files = Array.from({ length: 9 }, (_, i) => `f${i}.md`);
+  const { result, logs } = await run({ args: { tier: 'small', shards: 'auto', scope: { files, context: 'c' } } });
+  if (result.stats.shards !== 3 || result.stats.finders !== 6) fail(name, `stats ${JSON.stringify(result.stats)}`);
+  else if (!logs.some((l) => /파인더 분할: 렌즈 2 × 샤드 3 = 6 \(샤드 크기 3\/3\/3\)/.test(l))) fail(name, `no split log: ${logs.join(' | ')}`);
+  else pass(name);
+}
+await expectThrow('11d shards on a STRING scope throws (cannot split, must not silently run unsplit)',
+  { args: { tier: 'small', shards: 2, scope: 'free text scope' } }, 'scope.files');
+{
+  const name = '11e explicit groups are used verbatim (coupled files stay together)';
+  const { spawns } = await run({ args: { tier: 'small', shards: [['a.md'], ['b.md', 'c.md']], scope: { files: ['a.md', 'b.md', 'c.md'], context: 'c' } } });
+  const p1 = spawns.find((s) => s.label === 'find:boundary-ui-tests#1')?.prompt || '';
+  const p2 = spawns.find((s) => s.label === 'find:boundary-ui-tests#2')?.prompt || '';
+  if (!/샤드 1\/2\): a\.md\n/.test(p1) || !/샤드 2\/2\): b\.md, c\.md\n/.test(p2)) fail(name, 'group contents drifted');
+  else pass(name);
+}
+{
+  const name = '11f find prompt carries the batching clause and the local-first citation rule (ADR 0070)';
+  const { spawns } = await run({});
+  const p = spawns.find((s) => s.label.startsWith('find:'))?.prompt || '';
+  if (!p.includes('한 턴에 병렬 도구 호출로')) fail(name, 'batching clause missing');
+  else if (!p.includes('로컬 경로') || !p.includes('원격 조회는 로컬 원본이 없을 때만')) fail(name, 'local-first citation rule missing');
+  else if (!p.includes('스코프 파일 전부는 첫 턴에 한 번에 읽어라')) fail(name, 'first-turn read-all missing');
+  else pass(name);
+}
+
+{
+  const name = '11g shards=auto caps at MAX_SHARDS=4 (20 files → 4 shards of 5)';
+  const files = Array.from({ length: 20 }, (_, i) => `f${i}.md`);
+  const { result, logs } = await run({ args: { tier: 'small', shards: 'auto', scope: { files, context: 'c' } } });
+  if (result.stats.shards !== 4 || result.stats.finders !== 8) fail(name, `stats ${JSON.stringify(result.stats)}`);
+  else if (!logs.some((l) => /샤드 크기 5\/5\/5\/5/.test(l))) fail(name, `sizes: ${logs.join(' | ')}`);
+  else pass(name);
+}
+{
+  const name = '11h integer n=3 over 4 files honours 3 shards (2/1/1), never a silent 2 (review 2026-09-02 medium)';
+  const { result, logs } = await run({ args: { tier: 'small', shards: 3, scope: { files: ['a.md', 'b.md', 'c.md', 'd.md'], context: 'c' } } });
+  if (result.stats.shards !== 3) fail(name, `shards=${result.stats.shards}`);
+  else if (!logs.some((l) => /샤드 크기 2\/1\/1/.test(l))) fail(name, `sizes: ${logs.join(' | ')}`);
+  else pass(name);
+}
+{
+  const name = '11i n larger than the file count is clamped AND logged (2 files, shards=5 → 2, note in the split log)';
+  const { result, logs } = await run({ args: { tier: 'small', shards: 5, scope: { files: ['a.md', 'b.md'], context: 'c' } } });
+  if (result.stats.shards !== 2) fail(name, `shards=${result.stats.shards}`);
+  else if (!logs.some((l) => /샤드 5 요청 → 파일 2개라 2개/.test(l))) fail(name, `no clamp note: ${logs.join(' | ')}`);
+  else pass(name);
+}
+await expectThrow('11j explicit groups that omit a scope file throw naming it (silent coverage loss is the review-found HIGH)',
+  { args: { tier: 'small', shards: [['a.md'], ['b.md']], scope: { files: ['a.md', 'b.md', 'c.md'], context: 'c' } } }, '미배정: [c.md]');
+await expectThrow('11k explicit groups naming a file outside scope.files throw naming it',
+  { args: { tier: 'small', shards: [['a.md'], ['x.md']], scope: { files: ['a.md', 'b.md'], context: 'c' } } }, '스코프 밖: [x.md]');
+await expectThrow('11l explicit groups assigning one file twice throw naming it',
+  { args: { tier: 'small', shards: [['a.md', 'b.md'], ['b.md']], scope: { files: ['a.md', 'b.md'], context: 'c' } } }, '중복: [b.md]');
+{
+  const name = '11m a sharded finder that dies once is retried and attributed to ITS unit; dead_finders/dead_lenses stay exact';
+  // plan.find is keyed by the label suffix after 'find:' — with shards the key carries '#<i>'.
+  const files = ['a.md', 'b.md', 'c.md', 'd.md'];
+  const { result, spawns } = await run({ args: { tier: 'small', shards: 2, scope: { files, context: 'c' } }, find: { 'correctness-pitfalls#2': ['die', 'ok'] } });
+  const retried = spawns.filter((s) => s.label === 'find:correctness-pitfalls#2');
+  if (retried.length !== 2) fail(name, `retry spawns for the dead unit=${retried.length}`);
+  else if (result.stats.agents_per_phase.find !== 5) fail(name, `find count=${result.stats.agents_per_phase.find} (4 + 1 retry expected)`);
+  else if (result.stats.dead_finders.length || result.stats.dead_lenses.length) fail(name, `dead after recovery: ${JSON.stringify([result.stats.dead_finders, result.stats.dead_lenses])}`);
+  else pass(name);
+}
+{
+  const name = '11n a lens is dead only when EVERY shard of it died; one dead shard reports in dead_finders alone';
+  const files = ['a.md', 'b.md', 'c.md', 'd.md'];
+  const { result } = await run({ args: { tier: 'small', shards: 2, scope: { files, context: 'c' } }, find: { 'correctness-pitfalls#2': ['die', 'die'] } });
+  if (JSON.stringify(result.stats.dead_finders) !== JSON.stringify(['correctness-pitfalls#2'])) fail(name, `dead_finders=${JSON.stringify(result.stats.dead_finders)}`);
+  else if (result.stats.dead_lenses.length !== 0) fail(name, `dead_lenses=${JSON.stringify(result.stats.dead_lenses)} (sibling shard survived)`);
+  else pass(name);
+}
+{
+  const name = '11o the sharded prompt says "담당 파일 전부", the unsharded one "스코프 파일 전부" (no self-contradiction)';
+  const { spawns } = await run({ args: { tier: 'small', shards: 2, scope: { files: ['a.md', 'b.md', 'c.md', 'd.md'], context: 'c' } } });
+  const p = spawns.find((s) => s.label === 'find:boundary-ui-tests#1')?.prompt || '';
+  if (!p.includes('담당 파일 전부는 첫 턴에') || p.includes('스코프 파일 전부는 첫 턴에')) fail(name, 'shard prompt still says read every scope file');
   else pass(name);
 }
 

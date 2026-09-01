@@ -77,6 +77,21 @@ Workflow({name: 'ywr-harness:adversarial-review', args: {
 `invariants` come from the canon file the emitter printed. If it said **NOT FOUND**, stop and
 resolve that first: a review whose invariants nobody can cite is a review nobody can audit.
 
+Three scope habits decide the review's wall-clock and token cost (ADR 0070, measured):
+
+- **Name the LOCAL path of every source a claim rests on** — the ADR, spec, schema, or generated
+  file inside the repo. A finder reads a local path in one call; a URL or a bare "the docs say"
+  costs a `curl` round-trip, and round-trips are what a review's time is made of.
+- **Order `files` so files that changed together sit next to each other.** Finder shards are cut
+  along that order, so coupled files land in the same shard.
+- **`shards` is opt-in, for round-trip-bound finders only.** Measured (ADR 0070): with the two
+  habits above a 5-file review's finders finished in 2 requests each and the remaining time was
+  output generation — sharding then cut no time and cost +69% tokens (more finders → more raw
+  findings → more skeptics), buying recall. Add `shards: 'auto'` when the previous review's
+  busiest finder ran past ~10 requests or the scope exceeds ~8 files; explicit groups
+  `shards: [[…], […]]` (an exact partition of `files`) when the coupling is known; never on a
+  string scope (it throws).
+
 Use `lensExtra` for repo-specific angles rather than redefining the lens set — a redefined set
 never receives later improvements to the canonical lenses.
 

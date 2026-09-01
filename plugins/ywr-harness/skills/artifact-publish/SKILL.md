@@ -67,7 +67,8 @@ that is the contract, not an error (ywr-harness fact 43). The sequence that work
 
 1. `Artifact publish` (refused; the served copy lands in a file).
 2. Hash that saved file against the last committed state of the page BEFORE reading anything —
-   this proves nothing on the live page is being lost.
+   this proves nothing on the live page is being lost. Absorb the wrapper newline (step 5's
+   rule): served == committed + one trailing LF is a match, not a loss.
 3. Read the saved file in full, then `Artifact` `action: read` of the URL, then publish again
    (succeeds). Keep the favicon; label per the repo's convention (e.g. `v<version>-rn`).
 4. Do not fight a refusal with `force`, and do not read the served copy into context for the
@@ -80,8 +81,12 @@ can redeploy it. Report which account owns it and stop — never work around it.
 
 After publishing, prove served == committed by byte comparison: `Artifact read` saves the
 served HTML; strip the frame-runtime head through `<body>\n` and the trailing `</body></html>`,
-hash both sides, compare with the committed source file. State the hashes in the close. This is
-the release-checklist item the gate layer cannot perform (it cannot see claude.ai — ADR 0032).
+hash both sides, compare with the committed source file. **The serve wrapper appends ONE
+trailing LF before `</body></html>`** (measured 2026-09-01, pre- and post-publish; earlier
+serves lacked it) — treat served-stripped == committed + one trailing LF as identical. A raw
+hash mismatch of exactly that one-byte shape is lockstep, not drift; anything else is drift.
+State the hashes in the close. This is the release-checklist item the gate layer cannot
+perform (it cannot see claude.ai — ADR 0032).
 
 ## What this skill never does
 
