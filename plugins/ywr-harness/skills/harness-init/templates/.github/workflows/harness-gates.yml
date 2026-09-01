@@ -211,7 +211,7 @@ jobs:
       # `groups[].cwd` 가 선언된 그룹의 명령은 emitter 의 compose() 가 `cd <cwd> && <cmd>` 로 합성하므로
       # 첫 토큰이 러너가 아니라 `cd` 다 — 그 접두를 벗기지 않으면 uv 설치도 preflight 도 우회된다(`cd` 는
       # 내장 명령이라 `command -v cd` 가 성공한다; 리뷰 2026-08-28 high). `runners` 는 러너 집합(닫힌
-      # GATES 집합: uv · npx · cargo · go · actionlint, 스크립트 게이트의 python 등)을 공백으로 감싼
+      # GATES 집합: uv · npx · cargo · go · actionlint · shellcheck, 스크립트 게이트의 python 등)을 공백으로 감싼
       # 문자열이라 `contains()` 가 토큰 단위로 맞고(` uv ` 는 `uvx` 에 맞지 않는다), `uv_dirs`/`npx_dirs`
       # 는 그 러너의 게이트가 실행되는 디렉터리 집합이다(cwd 없는 그룹은 `.`). cwd 값은 emitter 의
       # token_ok 가 허용한 한 토큰이라 공백·메타문자가 없다 — 그래서 아래 word-split 이 안전하다.
@@ -256,6 +256,10 @@ jobs:
       # 설치는 게이트가 실행되는 디렉터리마다 한 번이다 — 레포 루트에서 한 번만 돌리면 `groups[].cwd` 로
       # 분리된 서브프로젝트(`backend/pyproject.toml`)는 설치되지 않은 채 게이트가 돈다(리뷰 2026-08-28
       # medium). 값은 env 로만 받는다(표현식을 run: 텍스트에 전개하지 않는 이 파일의 규칙).
+      # lock 이 커밋된 디렉터리는 `--locked` 로 단언한다(issue #58): plain `uv sync` 는 pyproject 와
+      # lock 이 어긋날 때 실패가 아니라 조용히 lock 을 재생성하고, 일회용 체크아웃에서 그 갱신본은
+      # 버려진다 — 그 런의 게이트는 레포가 갖고 있지 않은 해석본을 테스트한 뒤 초록이 된다. lock 이
+      # 없는 디렉터리(현행 기본)는 동작 불변이다.
       - name: Install the project with uv (once per directory the uv gates run in)
         if: contains(steps.cmds.outputs.runners, ' uv ')
         env:
@@ -264,7 +268,7 @@ jobs:
           set -euo pipefail
           for d in $UV_DIRS; do
             echo "::group::uv sync ($d)"
-            (cd "$d" && uv sync)
+            if [ -f "$d/uv.lock" ]; then (cd "$d" && uv sync --locked); else (cd "$d" && uv sync); fi
             echo "::endgroup::"
           done
 
@@ -300,7 +304,8 @@ jobs:
           fi
           # ADR 0062. 러너 preflight — 없는 러너는 `sh: 1: uv: not found` 가 아니라 이름 붙은 실패다.
           # 이 워크플로가 설치하는 러너는 uv(+ npx 의 npm ci)뿐이고, 다른 러너(cargo · go · actionlint)는
-          # 소비 레포가 선언하는 시점에 정본에 설치 스텝을 더한다 — 여기서 조용히 127 로 죽지 않게만 한다.
+          # 소비 레포가 선언하는 시점에 정본에 설치 스텝을 더한다 — 여기서 조용히 127 로 죽지 않게만 한다
+          # (shellcheck 는 ubuntu-latest 이미지에 이미 있어 설치 스텝 없이 preflight 를 통과한다 — issue #57).
           # $RUNNERS 는 env 로만 받는다(표현식을 run: 텍스트에 전개하지 않는 이 파일의 규칙).
           missing=""
           for r in $RUNNERS; do

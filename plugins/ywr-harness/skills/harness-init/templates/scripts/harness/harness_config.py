@@ -82,6 +82,11 @@ GATES: dict[str, dict] = {
     "go-vet":       {"cmd": ["go", "vet", "./..."],                            "files": False},
     "go-test":      {"cmd": ["go", "test", "./..."],                           "files": False},
     "actionlint":   {"cmd": ["actionlint"],                                    "files": True},
+    # issue #57: without a shell selector the org rule "deterministic gates before LLM review"
+    # was unsatisfiable for `*.sh` surfaces — a word-list expansion blind spot shellcheck flags
+    # mechanically (SC2044/SC2013) reached an adversarial review as a HIGH. The runner rides the
+    # ubuntu-latest image (no install step in the vendored CI); the preflight names it if absent.
+    "shellcheck":   {"cmd": ["shellcheck"],                                    "files": True},
 }
 
 # ---------------------------------------------------------------------------------------------

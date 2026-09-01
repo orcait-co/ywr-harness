@@ -329,6 +329,13 @@ def artifact_status(root: Path, cfg: dict, warns: list[str]) -> tuple[list[str],
         elif src_ok:
             extras.append("no check declared — drift between this source and its generator "
                           "is unenforced")
+        elif src is None:
+            # A url+title-only item (ADR 0032's shape) is legal — but the bare ok line matched
+            # NONE of the artifact-publish skill's step-1 shapes, so the skill had no defined
+            # outcome for it (dist issue #2). Name the shape: hand-published, nothing committed
+            # to republish from — the skill's taxonomy and this line must agree.
+            extras.append("no source declared — hand-published page (ADR 0032 shape); not "
+                          "publishable via /ywr-harness:artifact-publish")
         if problems:
             label = f"'{title}'" if title.strip() else (url or f"items[{i}]")
             lines.append(f"artifact: VIOLATION — {label}: " + "; ".join(problems))

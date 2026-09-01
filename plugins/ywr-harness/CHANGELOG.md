@@ -11,6 +11,24 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.42.0 — 2026-09-01
+
+- **셸 스크립트에 결정론 게이트가 생겼습니다**: 닫힌 GATES 집합에 `shellcheck` 셀렉터가 추가됐습니다 (issue #57).
+  `.harness.json` 의 셸 그룹에 `"gates": ["shellcheck"]` 를 선언하면 emitter 가 변경 파일 스코프로 명령을
+  내보내고 CI 가 실행합니다. CI 러너 설치 스텝은 필요 없습니다 — shellcheck 는 ubuntu-latest 이미지에 이미
+  있고, 이미지에서 빠지는 날이 오면 러너 preflight 가 이름 붙은 실패를 냅니다(ADR 0062 의 보장 — 조용한 127 없음).
+- **커밋된 `uv.lock` 이 stale 하면 CI 가 빨갛습니다** (issue #58). 벤더링 CI 의 설치 스텝이 lock 이 있는
+  디렉터리에서 `uv sync --locked` 로 단언합니다 — 이전에는 plain `uv sync` 가 일회용 체크아웃에서 조용히
+  lock 을 재생성해, 레포가 갖고 있지 않은 해석본으로 게이트가 초록이 되는 경로가 있었습니다. lock 을
+  커밋하지 않은 레포는 동작 불변입니다.
+- **source 없는 Artifact 선언(url+title 만, ADR 0032형)의 결과가 정의됐습니다** (dist issue #2). emitter 의
+  ok 라인이 `no source declared — hand-published page (ADR 0032 shape); not publishable via
+  /ywr-harness:artifact-publish` 꼬리로 끝나고, `/ywr-harness:artifact-publish` 스킬 1단계가 이 모양을
+  명시합니다 — 선언된 전 항목이 이 모양이면 목록 확인 후 종료가 **의도된 상태**입니다(실패 아님).
+- **조치**: 플러그인 업데이트 → 스캐폴드 레포는 `/ywr-harness:harness-init` 재실행(벤더링 워크플로와
+  harness 스크립트 갱신; 스탬프 있는 레포는 `-DryRun` 먼저). 셸 스크립트를 가진 레포는 해당 그룹에
+  `"gates": ["shellcheck"]` 한 줄을 선언하세요.
+
 ## v0.41.0 — 2026-08-31
 
 - **`harness-init` 가 같은-버전 손 편집(로컬 패치)을 감지하고 업스트림 보고를 제안합니다** (ADR 0067, issue #55 의

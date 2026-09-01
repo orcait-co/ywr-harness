@@ -1331,6 +1331,15 @@ $ab8 = New-Ab 'ab8-nocheck' ('{ "url": "' + $SURL + '", "title": "ab8-nocheck ·
 $rAB8 = Invoke-Gates $ab8 @()
 $ok = (Assert-True 'AB8 source without check reports the unenforced drift gap on the ok line' ($rAB8.Out -match 'artifact: ok — .*source docs/page\.html committed · no check declared — drift between this source and its generator is unenforced') $rAB8.Out) -and $ok
 
+# AB9: a url+title-only item (ADR 0032's shape) is legal — and the ok line SAYS it is
+# hand-published with nothing to republish from, so the artifact-publish skill's step-1 taxonomy
+# has a shape for it (dist issue #2: the bare ok line matched none, and the skill had no defined
+# outcome for a source-less item).
+$ab9 = New-Ab 'ab9-handpub' ('{ "url": "' + $SURL + '", "title": "ab9-handpub · docs" }')
+$rAB9 = Invoke-Gates $ab9 @()
+$ok = (Assert-True 'AB9 a source-less item names the hand-published shape on the ok line' ($rAB9.Out -match 'artifact: ok — .*· no source declared — hand-published page \(ADR 0032 shape\); not publishable via /ywr-harness:artifact-publish') $rAB9.Out) -and $ok
+$ok = (Assert-True 'AB9 a source-less item emits no check and stays ok, never a VIOLATION' ($rAB9.Out -notmatch '\[artifacts\]' -and $rAB9.Out -notmatch 'artifact: VIOLATION') $rAB9.Out) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_gates selftest: FAILED' -ForegroundColor Red; exit 1 }
