@@ -39,7 +39,16 @@
   replace the starter with this repo's own invariants; ywr-harness ADR 0054).
 - The review runs once per slice: a fix diff for its confirmed findings closes with re-run gates
   + per-finding fix checks, never a second full review — one bounded re-review only when the fix
-  is a new mechanism rather than a patch, with the criterion named in the close.
+  is a new mechanism rather than a patch, with the criterion named in the close (ywr-harness
+  ADR 0028). A rebase or merge after the review re-arms it only over the overlap — reviewed files
+  the incoming commits also touched, plus any hand-resolved conflict; an empty overlap keeps the
+  review standing, recorded in the close as `review basis:` (ywr-harness ADR 0072).
+- Close each slice with a commit plus an updated handoff — the resume file the `handoff` key in
+  `.harness.json` names. A value ending in `/` is a DIRECTORY holding one resume file per work
+  line (multi-writer repos), each named after the work line, never after a person (ywr-harness
+  ADR 0040). Either form is a resume point, not a ledger: the close that supersedes a
+  `## Current state` section moves it to `docs/handoff-archive/<same filename>`, newest first.
+  Start the next slice in a NEW session from the handoff.
 - Run the deterministic gates (lint, format, typecheck) on the slice scope BEFORE any LLM
   review, and state which gates passed in the review scope. Mechanical defects should never
   cost review tokens.

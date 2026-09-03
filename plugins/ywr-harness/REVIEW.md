@@ -107,6 +107,7 @@ For every confirmed finding, judge: is this one instance of a defect CLASS?
 If yes, name the deterministic owner that would retire the class forever — a
 ruff/eslint rule (gate expansion needs its own ADR, per ADR 0069), a CI check
 (ADR 0074), or a verify-script assertion — and record it as an ADR-candidate
-entry in `docs/handoff-archive/BACKLOG.md`, whose section matches the surface;
+entry in `docs/handoff-archive/BACKLOG.md`, whose section matches the surface,
+appended at the END of that section (the ledger's own header states the append rule);
 the handoff §Next actions carries only items whose trigger has fired (ADR 0116
 Addendum 2). Fixing only the instance is an incomplete disposition.

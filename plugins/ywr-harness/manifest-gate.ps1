@@ -338,6 +338,66 @@ if (-not $inTree) {
     }
 }
 
+# --- release lockstep (ADR 0073) --------------------------------------------------------------
+# A released version number must name ONE shipped tree. The scaffold stamps the placing plugin's
+# version into `.harness-version` (ADR 0042) and attributes same-version drift to a LOCAL hand
+# edit (ADR 0067) — both rest on "same version => same templates". The canon broke that premise
+# twice in two days by moving plugins/ywr-harness AFTER the release tag under the tag's own
+# version (v0.43.0: 13 files, two templates among them): a repo scaffolded from the canon working
+# tree carried the newer templates under the released stamp, the installed copy called them a
+# hand edit, and the member's re-run REVERTED the newer content (dist upstream-report #3,
+# 2026-09-02). Since ADR 0073 the version bumps in the SAME commit as the first shipped-tree
+# change after a tag, and this check makes the omission fail the build: when a local tag names
+# plugin.json's version, plugins/ywr-harness (WORKING TREE — an uncommitted edit counts, and so
+# does an untracked new file) must be identical to that tag's tree. The compare is ADR 0033's
+# fold, as everywhere else in this gate: `--ignore-cr-at-eol` drops CR-only differences, so a
+# .gitattributes renormalization between the tag and now (facts 34/35 — it has happened here)
+# cannot fail a release whose content did not move (review 2026-09-03, medium).
+# Canon shape only — the tag lives in the canon's history; a cache or a vendored copy has none.
+# No tag => an unreleased version, nothing to compare: said so, never silent. A tag-less shallow
+# clone reads the same line, which is why the fetch-depth-0 script gate (harness-gates.yml) is
+# the enforcing CI leg; the depth-1 Windows shards print the no-tag line.
+if (-not $inTree) {
+    Write-Host 'release lockstep: skipped — not the canon dogfood shape (the release tag lives in the canon history; a marketplace cache and a hand-vendored copy have none)' -ForegroundColor Yellow
+} else {
+    $mfVer = if ($mf) { [string]$mf.version } else { '' }
+    if (-not $mfVer) {
+        Bad 'release lockstep: plugin.json version unreadable (see the manifest failure above) — NOT CHECKED, not passed'
+    } elseif ($mfVer -notmatch '^\d+\.\d+\.\d+$') {
+        # The manifest check above accepts a suffix; a ref name cannot. A version the tag name
+        # cannot be derived from must not route to the no-tag PASS (review 2026-09-03, low).
+        Bad "release lockstep: plugin.json version '$mfVer' is not a plain major.minor.patch, so the release tag name cannot be derived — NOT CHECKED, not passed"
+    } elseif (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host 'release lockstep: skipped — git not on PATH (reported, not silent)' -ForegroundColor Yellow
+    } else {
+        $null = & git -C $repoRoot rev-parse --is-inside-work-tree 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'release lockstep: skipped — the canon shape is not inside a git work tree, so there is no tag history to compare (reported, not silent)' -ForegroundColor Yellow
+        } else {
+            $relTag = "ywr-harness--v$mfVer"
+            $null = & git -C $repoRoot rev-parse --verify --quiet "refs/tags/$relTag^{commit}" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                Good "release lockstep: no local tag $relTag — v$mfVer is unreleased in this clone, nothing to compare (a tag-less shallow clone reads the same; the fetch-depth-0 script gate is the enforcing CI leg)"
+            } else {
+                $lsChanged = @(& git -C $repoRoot diff --name-only --ignore-cr-at-eol $relTag -- plugins/ywr-harness 2>$null)
+                $rcDiff = $LASTEXITCODE
+                $lsUntracked = @(& git -C $repoRoot ls-files --others --exclude-standard -- plugins/ywr-harness 2>$null)
+                $rcLs = $LASTEXITCODE
+                if ($rcDiff -ne 0 -or $rcLs -ne 0) {
+                    Bad "release lockstep: git diff / ls-files against $relTag failed (exit $rcDiff / $rcLs) — NOT CHECKED, not passed"
+                } else {
+                    $moved = @(@($lsChanged) + @($lsUntracked) | Where-Object { "$_".Trim() } | Sort-Object -Unique)
+                    if ($moved.Count) {
+                        Bad ("release lockstep BROKEN: $($moved.Count) file(s) under plugins/ywr-harness differ from tag $relTag while plugin.json still says $mfVer — a released version must name ONE tree (ADR 0073). Bump plugin.json + .claude-plugin/marketplace.json + the CHANGELOG top entry in THIS commit: " + ($moved -join ', '))
+                    } else {
+                        Good "release lockstep: plugins/ywr-harness identical to tag $relTag"
+                    }
+                }
+            }
+        }
+    }
+}
+
 # --- coverage report (visible every run, never a silent cap) --------------------------------
 # Nothing is excluded but the selftests themselves. Excluding the runner, the gate, or the
 # shared lib would be the ADR 0125 miscount: a coverage number narrowed by an undeclared

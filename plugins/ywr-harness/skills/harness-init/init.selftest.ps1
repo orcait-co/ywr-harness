@@ -15,10 +15,62 @@ $fxBase = New-FixtureRoot 'harness-init-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 
 $ok = $true
-function Invoke-Init([string[]]$Arguments) {
-    $out = & pwsh -NoProfile -ExecutionPolicy Bypass -File $init @Arguments 2>&1 | Out-String
-    return @{ Out = $out; Code = $LASTEXITCODE }
+# In-process invocation (ADR 0071 option E, 2026-09-02): init.ps1 runs in a NEW RUNSPACE of this
+# pwsh through the lib's Invoke-ScriptInRunspace — no child process, no cold start (1.95 s → ~0.5 s
+# per run on the owner's box, paid on every Invoke-Init line — 57 when this landed), and a child's isolation kept (default
+# preferences, fresh $LASTEXITCODE, no scope leak). Contract in the lib: Code is init.ps1's own
+# `exit N`; an abort (missing script, `throw`, an unhandled error under init.ps1's own 'Stop') is
+# Code -1 with Aborted — never an exit code, so an infrastructure failure cannot pass as a G/H/S1
+# "exits 1" case. `-Script` runs a COPY of init.ps1 (cases H, R, X5 rewrite the plugin dir).
+function Invoke-Init([string[]]$Arguments, [string]$Script = $init) {
+    # Call sites pass argv-shaped arrays ('-Target', $x, '-DryRun'); an array splat binds positionally
+    # — '-Target' would bind AS the target — so fold it into a hashtable: a '-Name' followed by a
+    # non-dash value is a pair, a '-Name' followed by nothing or another '-Name' is a switch.
+    $p = @{}
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $k = $Arguments[$i].TrimStart('-')
+        if ($i + 1 -lt $Arguments.Count -and -not $Arguments[$i + 1].StartsWith('-')) { $p[$k] = $Arguments[$i + 1]; $i++ }
+        else { $p[$k] = $true }
+    }
+    return Invoke-ScriptInRunspace -Path $Script -Arguments $p
 }
+
+# --- Z0: the two contracts the in-process adapter rests on (review 2026-09-02, low ×2) ------------
+# `*>&1` captures SIX streams where the child's console capture saw two, so a Write-Warning /
+# Write-Verbose / Write-Debug / Write-Information added to init.ps1 would surface in $out for the
+# first time and could flip a `-notmatch` assertion — or let a loose `-match` pass on text it never
+# meant. init.ps1 reports through Write-Host only; this pins that so the day it changes, the failure
+# names the reason instead of a distant assertion doing so.
+$widened = @(Select-String -LiteralPath $init -Pattern '\bWrite-(Warning|Verbose|Debug|Information)\b' | Where-Object { $_.Line -notmatch '^\s*#' })
+$ok = (Assert-True 'Z0 init.ps1 reports through Write-Host only (the *>&1 capture contract)' ($widened.Count -eq 0) "lines: $(($widened | ForEach-Object { $_.LineNumber }) -join ', ')") -and $ok
+# The runner is a runspace in THIS process: a process-exit API in init.ps1 would end the whole suite
+# where a child confined it. init.ps1 exits through `exit` only — pin it.
+$procExit = @(Select-String -LiteralPath $init -Pattern 'Environment\]::Exit|SetShouldExit' | Where-Object { $_.Line -notmatch '^\s*#' })
+$ok = (Assert-True 'Z0 init.ps1 never calls a process-exit API (runspace, not child)' ($procExit.Count -eq 0) "lines: $(($procExit | ForEach-Object { $_.LineNumber }) -join ', ')") -and $ok
+# An abort is NOT an exit code. No case reaches the abort path through init.ps1 — every fallible
+# step there ends in an explicit `exit 1` — so drive it with a script that throws, and with a path
+# that does not exist: both must come back -1/Aborted with the reason, never as the 1 that cases
+# G, H and S1 accept as "refused as required".
+$thrower = Join-Path $fxBase 'thrower.ps1'
+Set-Content -LiteralPath $thrower -Value "param([string]`$Target)`nthrow 'boom from the fixture'" -NoNewline
+$rZ0 = Invoke-Init @('-Target', $fxBase) -Script $thrower
+$ok = (Assert-True 'Z0 a terminating error is an abort (code -1), not an exit code' ($rZ0.Code -eq -1 -and $rZ0.Aborted) "code=$($rZ0.Code) aborted=$($rZ0.Aborted)") -and $ok
+$ok = (Assert-True 'Z0 a terminating error keeps its message' ($rZ0.Out -match 'boom from the fixture') $rZ0.Out) -and $ok
+$rZ0m = Invoke-Init @('-Target', $fxBase) -Script (Join-Path $fxBase 'no-such-init.ps1')
+$ok = (Assert-True 'Z0 a missing script is an abort (code -1), not an exit code' ($rZ0m.Code -eq -1 -and $rZ0m.Aborted -and $rZ0m.Out -match 'script not found') "code=$($rZ0m.Code) out=$($rZ0m.Out)") -and $ok
+# init.ps1 is [CmdletBinding()]: a mistyped argument name at a call site is a binding failure — the
+# script never runs. A child exited 1 there, which cases G/H/S1 would have accepted as "refused as
+# required"; the runner must report an abort instead (re-review 2026-09-02, high).
+$binder = Join-Path $fxBase 'binder.ps1'
+Set-Content -LiteralPath $binder -Value "[CmdletBinding()] param([string]`$Target)`nWrite-Host ran`nexit 0" -NoNewline
+$rZ0b = Invoke-Init @('-Targett', $fxBase) -Script $binder
+$ok = (Assert-True 'Z0 a parameter-binding failure is an abort (code -1), never an exit code' ($rZ0b.Code -eq -1 -and $rZ0b.Aborted -and $rZ0b.Out -match 'Targett') "code=$($rZ0b.Code) aborted=$($rZ0b.Aborted) out=$($rZ0b.Out)") -and $ok
+$rZ0g = Invoke-Init @('-Target', $fxBase) -Script $binder
+$ok = (Assert-True 'Z0 the same script with the right argument name runs and exits 0' ($rZ0g.Code -eq 0 -and -not $rZ0g.Aborted -and $rZ0g.Out -match 'ran') "code=$($rZ0g.Code) out=$($rZ0g.Out)") -and $ok
+# Code is what a child would have returned; init.ps1 ends in an explicit `exit`, so Code is always
+# its own verdict — pin the last statement so a trailing edit that drops it fails here by name.
+$lastStmt = @(Get-Content -LiteralPath $init | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^#' })[-1]
+$ok = (Assert-True 'Z0 init.ps1 ends in an explicit exit (Code is always its own verdict)' ($lastStmt -match '^\s*exit\s+\d+\s*$') "last statement: $lastStmt") -and $ok
 function New-Target([string]$Name) {
     $p = Join-Path $fxBase $Name
     New-Item -ItemType Directory -Force -Path $p | Out-Null
@@ -159,8 +211,9 @@ Remove-Item -LiteralPath (Join-Path $brokenSkill 'templates/docs/build.sh') -For
 New-Item -ItemType Directory -Force -Path (Join-Path $fxBase 'lib') | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1') -Destination (Join-Path $fxBase 'lib/selftest-lib.ps1') -Force
 $h = New-Target 'broken'
-$outH = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $brokenSkill 'init.ps1') -Target $h 2>&1 | Out-String
-$codeH = $LASTEXITCODE
+$rH = Invoke-Init @('-Target', $h) -Script (Join-Path $brokenSkill 'init.ps1')
+$outH = $rH.Out
+$codeH = $rH.Code
 $ok = (Assert-True 'H missing template exits 1' ($codeH -eq 1) "exit=$codeH out=$outH") -and $ok
 $ok = (Assert-True 'H missing template is named' ($outH -match 'template missing in plugin') $outH) -and $ok
 
@@ -378,8 +431,9 @@ foreach ($t in Get-ChildItem -LiteralPath (Join-Path $crlfSkill 'templates') -Re
     [IO.File]::WriteAllBytes($t.FullName, $latin1.GetBytes($stamped))
 }
 $r = New-Target 'crlf-cache'
-$outR = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $crlfSkill 'init.ps1') -Target $r 2>&1 | Out-String
-$codeR = $LASTEXITCODE
+$rR = Invoke-Init @('-Target', $r) -Script (Join-Path $crlfSkill 'init.ps1')
+$outR = $rR.Out
+$codeR = $rR.Code
 $ok = (Assert-True 'R run against a CRLF cache exits 0' ($codeR -eq 0) "exit=$codeR out=$outR") -and $ok
 $withCr = @($EXPECT | Where-Object {
     (Test-Path -LiteralPath (Join-Path $r $_) -PathType Leaf) -and
@@ -392,7 +446,7 @@ $ok = (Assert-True 'R no placed file carries a CR' ($withCr.Count -eq 0) "CR fou
 # raw-compare regression (ADR 0036's rejected Option C — LF on disk vs a CRLF template differs
 # raw, so every re-run would re-report every placement as refreshed). A full revert passes this
 # assertion alone: verbatim run 1 makes run 2's raw compare byte-identical.
-$outR2 = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $crlfSkill 'init.ps1') -Target $r 2>&1 | Out-String
+$outR2 = (Invoke-Init @('-Target', $r) -Script (Join-Path $crlfSkill 'init.ps1')).Out
 $ok = (Assert-True 'R re-run refreshes nothing (CR-only delta is not a change)' ($outR2 -match 'refreshed=0' -and $outR2 -match 'created=0') $outR2) -and $ok
 # A LONE CR (0x0D with no LF after it) is also not a change: the compare is ADR 0033's fold
 # verbatim — drop every 0x0D — NOT a CRLF-pair fold, so the scaffold and the refresh nudge agree
@@ -401,7 +455,7 @@ $ok = (Assert-True 'R re-run refreshes nothing (CR-only delta is not a change)' 
 # a re-run would change anything, and line endings belong to git's attributes.
 $loneTarget = Join-Path $r 'docs/build.ps1'
 [IO.File]::WriteAllBytes($loneTarget, [byte[]]([IO.File]::ReadAllBytes($loneTarget) + [byte]13))
-$outR3 = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $crlfSkill 'init.ps1') -Target $r 2>&1 | Out-String
+$outR3 = (Invoke-Init @('-Target', $r) -Script (Join-Path $crlfSkill 'init.ps1')).Out
 $ok = (Assert-True 'R lone-CR delta is not a change (0033 fold, not a CRLF-pair fold)' ($outR3 -match 'refreshed=0' -and $outR3 -match 'created=0') $outR3) -and $ok
 $ok = (Assert-True 'R the lone CR is left as placed, not rewritten' ($latin1.GetString([IO.File]::ReadAllBytes($loneTarget)).EndsWith("`r")) 'lone CR was rewritten away') -and $ok
 
@@ -705,9 +759,9 @@ Copy-Item -LiteralPath $PSScriptRoot -Destination $x5Skill -Recurse -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $x5 'plugins/p/.claude-plugin') | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../.claude-plugin/plugin.json') -Destination (Join-Path $x5 'plugins/p/.claude-plugin/plugin.json')
 $x5Init = Join-Path $x5Skill 'init.ps1'
-& pwsh -NoProfile -ExecutionPolicy Bypass -File $x5Init -Target $x5 2>&1 | Out-Null
+Invoke-Init @('-Target', $x5) -Script $x5Init | Out-Null
 Set-Content -LiteralPath (Join-Path $x5 'scripts/harness/harness_gates.py') -Value '# canon-side propagation edit' -NoNewline
-$rX5 = & pwsh -NoProfile -ExecutionPolicy Bypass -File $x5Init -Target $x5 2>&1 | Out-String
+$rX5 = (Invoke-Init @('-Target', $x5) -Script $x5Init).Out
 # -cnotmatch: the dogfood note itself says "same-version drift" in lowercase, and -notmatch is
 # case-insensitive — the first run of this case failed on exactly that. The second assertion is
 # the real discriminator: the dogfood note never prompts for a report.

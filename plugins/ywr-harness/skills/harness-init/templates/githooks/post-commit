@@ -31,5 +31,11 @@ fi
 
 # `|| true` and the unconditional exit 0 are both deliberate: a crash in the retro must not look
 # like a problem with the commit, which has already happened and cannot be unmade here.
+# ---- canon-owned: a local edit ANYWHERE in this file is reverted ----
+# harness-init refreshes this file wholesale on every scaffold run while the marker line at the
+# top is present (only a same-version run keeps a pre-revert copy, ADR 0067). Repo-local
+# post-commit logic does not belong here. If you must have it: delete the marker line — the file
+# becomes yours and stops refreshing, the trade the header describes — and keep your block ABOVE
+# the final `exit 0`; appended after it, a block looks wired and never runs.
 "$PY" "$RETRO" --repo "$ROOT" || true
 exit 0

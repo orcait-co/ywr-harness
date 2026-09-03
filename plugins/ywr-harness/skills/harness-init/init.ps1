@@ -510,7 +510,8 @@ foreach ($f in $preserved) {
 foreach ($f in $refused) {
     Write-Host "  ! $f REFUSED — an existing file without the '$GUARD_MARKER' marker" -ForegroundColor Yellow
     Write-Host "      It is doing something this scaffold did not write, so it was left alone." -ForegroundColor Yellow
-    Write-Host "      To get the retro too, add this line to it (the retro never blocks a commit):" -ForegroundColor Yellow
+    Write-Host "      To get the retro too, add this line to it ABOVE any early exit — a line after an" -ForegroundColor Yellow
+    Write-Host "      exit looks wired and never runs (the retro itself never blocks a commit):" -ForegroundColor Yellow
     Write-Host '        [ "$SLICE_RETRO" = "0" ] || python scripts/harness/harness_retro.py || true' -ForegroundColor Yellow
 }
 foreach ($f in $skippedSeed) { Write-Host "  - $f" -ForegroundColor Yellow }
@@ -669,7 +670,13 @@ if (-not $DryRun) {
     if ($py -and (Test-Path -LiteralPath $wrapper)) {
         Push-Location $root
         try {
-            & pwsh -NoProfile -ExecutionPolicy Bypass -File $wrapper *> $null
+            # In-process, not a child pwsh (ADR 0071 option E, 2026-09-02): the wrapper's `exit
+            # $LASTEXITCODE` ends the wrapper only and lands here, its env pin is restored in its
+            # own finally, and the pwsh cold start it used to cost — measured 0.8 s of a 1.15 s
+            # scaffold run — is gone from every member's run and 56 times from the selftest. A
+            # throw inside the wrapper (no python — already excluded above) is the child's
+            # "exited 1" in this shape.
+            try { & $wrapper *> $null } catch { $global:LASTEXITCODE = 1 }
             # All FOUR surfaces — docs.artifact.html is the artifact-publish path's input (ADR
             # 0032/0048) and omitting it here taught readers a three-surface pipeline (issue #45).
             if ($LASTEXITCODE -eq 0) { Write-Host '  built: index.json · INDEX.md · docs.html · docs.artifact.html' -ForegroundColor Green }

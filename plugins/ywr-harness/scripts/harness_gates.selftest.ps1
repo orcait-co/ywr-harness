@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 $gates = Join-Path $PSScriptRoot 'harness_gates.py'
 $fxBase = New-FixtureRoot 'harness-gates-selftest'
-trap { Remove-FixtureRoot $fxBase; break }
+trap { Remove-FixtureRoot $fxBase; if ($null -ne $gitPathBefore) { $env:PATH = $gitPathBefore }; break }
 
 $py = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
 if (-not $py) {
@@ -21,6 +21,54 @@ if (-not $py) {
     }
     Write-Host 'SKIP [harness_gates] python absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
     Remove-FixtureRoot $fxBase; exit 0
+}
+
+# --- spawn budget (ADR 0071 option E, third suite — 2026-09-02) ---------------------------------
+# This suite is spawn-bound like init's and manifest-gate's, but the spawn is GIT, not python:
+# measured per case on the owner's box, python cold start + stdlib imports is ~80 ms while each git
+# call is ~60 ms — and a case pays 3 git calls inside the emitter (`diff --name-only HEAD`,
+# `ls-files --others`, `diff --numstat`) plus what its fixture build pays here. So the runspace
+# runner the other two suites adopted does not apply (nothing here is a .ps1 under test), and a
+# persistent interpreter would recover ~18% (~8 s of 45) at the cost of a request/response driver
+# that could not carry the per-run environment cases J (PYTHONIOENCODING) and K (HOME) need. Two
+# levers instead — THIS header is the single owner of the measurements (spec 0008 §6 points here):
+#
+# (1) New-Repo spawns 3 git processes, not 5 — identity rides on the commit as `-c`, never written
+#     into the fixture (two `git config` calls per fixture) and never set in this process's
+#     environment. Every later fixture commit goes through Invoke-FixtureCommit for the same
+#     reason: it must work where NO global identity exists — CI runners — so no site may rely on a
+#     repo-local identity New-Repo used to leave behind.
+# (2) On Windows the `git` on PATH is Git for Windows' cmd\git.exe, a LAUNCHER that spawns
+#     mingw64\bin\git.exe and waits — two processes per call. Measured 2026-09-02 (`status` x10):
+#     68 ms via the launcher, 49 ms direct. Prepending the real binary's directory reaches every
+#     call this process and its children make — the emitter resolves `git` from the PATH it
+#     inherits — for ~500 calls a run. Guarded on the exact layout; anything else leaves PATH alone.
+#     It is the worker binary the launcher would have spawned, and it resolves the same way: checked
+#     2026-09-02, both entry points print the same `--exec-path` and the same `--system` gitconfig
+#     origin (`git config --system --show-origin --list`) — only the hop is gone. PATH is restored
+#     at every exit (the trap and both `exit` lines) so a dot-sourced run leaves the session as it
+#     found it; under `pwsh -File` (the runner's shape) the process ends anyway.
+$gitPathBefore = $null
+if ($IsWindows) {
+    $gitCmd = (Get-Command git -ErrorAction SilentlyContinue).Source
+    if ($gitCmd -and (Split-Path -Leaf (Split-Path -Parent $gitCmd)) -eq 'cmd') {
+        $gitReal = Join-Path (Split-Path -Parent (Split-Path -Parent $gitCmd)) 'mingw64\bin'
+        if (Test-Path -LiteralPath (Join-Path $gitReal 'git.exe') -PathType Leaf) {
+            $gitPathBefore = $env:PATH
+            $env:PATH = $gitReal + [IO.Path]::PathSeparator + $env:PATH
+        }
+    }
+}
+function Restore-GitPath { if ($null -ne $gitPathBefore) { $env:PATH = $gitPathBefore } }
+# A fixture commit that FAILS is not a fixture: every current site's next assertion would go red
+# (the file it added stays untracked and changes the diff), but the helper does not lean on that —
+# a non-zero exit throws with git's own message, so the trap ends the suite as an ABORT rather
+# than letting a later site with no diff-sensitive assertion read green.
+function Invoke-FixtureCommit([string]$Repo, [string]$Message) {
+    $gitOut = & git -C $Repo add -A 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "fixture add failed in ${Repo}: $($gitOut | Out-String)" }
+    $gitOut = & git -C $Repo -c user.email=selftest@example.invalid -c user.name=selftest commit -q -m $Message 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "fixture commit '$Message' failed in ${Repo}: $($gitOut | Out-String)" }
 }
 
 $ok = $true
@@ -36,14 +84,9 @@ function New-Repo([string]$Name, [string]$Config, [string[]]$Files) {
     # counted as a changed file and every file-count and tier assertion was off by one — the config
     # file silently joining the diff it configures.
     if (-not [string]::IsNullOrEmpty($Config)) { Set-Content -LiteralPath (Join-Path $p '.harness.json') -Value $Config -NoNewline }
-    Push-Location $p
-    try {
-        & git init -q 2>$null
-        & git config user.email 'selftest@example.invalid' 2>$null
-        & git config user.name 'selftest' 2>$null
-        Set-Content -LiteralPath (Join-Path $p 'seed.txt') -Value 'seed' -NoNewline
-        & git add -A 2>$null; & git commit -q -m seed 2>$null
-    } finally { Pop-Location }
+    & git -C $p init -q 2>$null
+    Set-Content -LiteralPath (Join-Path $p 'seed.txt') -Value 'seed' -NoNewline
+    Invoke-FixtureCommit $p 'seed'
     foreach ($f in $Files) {
         $full = Join-Path $p $f
         $dir = Split-Path -Parent $full
@@ -530,7 +573,7 @@ $ok = (Assert-True 'S7 an unreadable readme is a VIOLATION naming the path' ($rS
 # exactly the empty-scope early return and is an enforcement point.
 $s8 = New-Repo 'art-clean' (New-ArtCfg $SURL 'art-clean · docs') @()
 Set-Content -LiteralPath (Join-Path $s8 'README.md') -Value "docs: $SURL" -NoNewline
-& git -C $s8 add -A 2>$null; & git -C $s8 commit -q -m readme 2>$null
+Invoke-FixtureCommit $s8 'readme'
 $rS8 = Invoke-Gates $s8 @()
 $ok = (Assert-True 'S8 artifact status prints on the no-changed-files path' ($rS8.Out -match 'artifact: ok' -and $rS8.Out -match 'no changed files — nothing to gate') $rS8.Out) -and $ok
 
@@ -663,7 +706,7 @@ $ok = (Assert-True 'T1 the exclusion is stated, never silent' ($rT1.Out -match '
 # T2: LINE weighting. Tracked changes: ~300 changed lines in a docs file, ~6 in a code file —
 # the total breaches SMALL_MAX_LINES=150, the counted sum does not.
 $t2 = New-Repo 'tier-weighted-lines' $CFG @('docs/huge.md', 'api/small.py')
-& git -C $t2 add -A 2>$null; & git -C $t2 commit -q -m base 2>$null
+Invoke-FixtureCommit $t2 'base'
 Set-Content -LiteralPath (Join-Path $t2 'docs/huge.md') -Value ((1..300 | ForEach-Object { "doc line $_" }) -join "`n") -NoNewline
 Set-Content -LiteralPath (Join-Path $t2 'api/small.py') -Value ((1..5 | ForEach-Object { "code = $_" }) -join "`n") -NoNewline
 $rT2 = Invoke-Gates $t2 @()
@@ -694,7 +737,7 @@ $ok = (Assert-True 'T4 with no docs files in the diff the wording stays unweight
 # under the regex-on-raw-record form.
 $t5 = New-Repo 'tier-rename' $CFG @('docs/a.md')
 Set-Content -LiteralPath (Join-Path $t5 'docs/a.md') -Value ((1..200 | ForEach-Object { "doc line $_" }) -join "`n") -NoNewline
-& git -C $t5 add -A 2>$null; & git -C $t5 commit -q -m base 2>$null
+Invoke-FixtureCommit $t5 'base'
 New-Item -ItemType Directory -Force -Path (Join-Path $t5 'api') | Out-Null
 & git -C $t5 mv docs/a.md api/big.py 2>$null
 Add-Content -LiteralPath (Join-Path $t5 'api/big.py') -Value ("`n" + ((1..160 | ForEach-Object { "code = $_" }) -join "`n")) -NoNewline
@@ -792,7 +835,7 @@ $ok = (Assert-True 'W2 no suppression is claimed' ($rW2.Out -notmatch 'criticali
 $w3 = New-Repo 'derived-prop' $CFG_DER @()
 New-Item -ItemType Directory -Force -Path (Join-Path $w3 'src') | Out-Null
 Set-Content -LiteralPath (Join-Path $w3 'src/tool.py') -Value 'x' -NoNewline
-& git -C $w3 add -A 2>$null; & git -C $w3 commit -q -m src 2>$null
+Invoke-FixtureCommit $w3 'src'
 New-Item -ItemType Directory -Force -Path (Join-Path $w3 'placed') | Out-Null
 Set-Content -LiteralPath (Join-Path $w3 'placed/tool.py') -Value 'x' -NoNewline
 $rW3 = Invoke-Gates $w3 @()
@@ -980,11 +1023,8 @@ foreach ($f in @('docs/AWS 조직통합_경영보고.html', '메모.rb')) {
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
     Set-Content -LiteralPath $full -Value 'x' -NoNewline
 }
-Push-Location $y7
-try {
-    & git config core.quotepath true 2>$null
-    & git add -A 2>$null; & git commit -q -m 'non-ascii paths' 2>$null
-} finally { Pop-Location }
+& git -C $y7 config core.quotepath true 2>$null
+Invoke-FixtureCommit $y7 'non-ascii paths'
 $rY7 = Invoke-Gates $y7 @('--all')
 $ok = (Assert-True 'Y7 --all exits 0 with non-ASCII tracked paths' ($rY7.Code -eq 0) "exit=$($rY7.Code) out=$($rY7.Out)") -and $ok
 $ok = (Assert-True 'Y7 the non-ASCII file is claimed by its group, not ungrouped' ($rY7.Out -match '\[docs\] 1 file') $rY7.Out) -and $ok
@@ -1378,6 +1418,7 @@ $ok = (Assert-True 'AB9 a source-less item emits no check and stays ok, never a 
 
 Remove-FixtureRoot $fxBase
 
+Restore-GitPath
 if (-not $ok) { Write-Host 'harness_gates selftest: FAILED' -ForegroundColor Red; exit 1 }
 Write-Host 'harness_gates selftest: all cases green' -ForegroundColor Green
 exit 0

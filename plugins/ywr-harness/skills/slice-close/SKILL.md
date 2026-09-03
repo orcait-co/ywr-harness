@@ -120,6 +120,24 @@ finding's own lines, or touches a `critical` group the original scope did not �
 re-review over the fix diff and name that criterion in the close. That re-review's findings are
 dispositioned under this same rule; there is never a third pass.
 
+**A rebase or merge after the review re-arms it only over the overlap (ADR 0072).** When the
+slice is rebased onto, or merges, a base that other commits advanced after the review ran: re-run
+stage 1 over the rebased tree (always — the tree is new, the gates are cheap), then compute the
+overlap with the merge-base before and after the rebase:
+
+```
+git diff --name-only <old-base> <new-base> -- <every file in the reviewed scope>
+```
+
+Empty output and no hand-resolved conflict → the review stands; record
+`review basis: reviewed at <sha>, rebased onto <sha>, overlap: none` in the close, command
+quoted. Any listed file, or any file whose conflict was resolved by hand (in the reviewed scope or
+not — resolved conflict text is code nobody reviewed) → run ONE review over exactly those files
+(scope object as above, `context` naming the incoming range, tier from the emitter over that
+scope). That review becomes the slice's review: its fix diffs close under the rule above, and a
+later rebase applies this paragraph again. The overlap is file-level on purpose — a foreign change
+to an unrelated function in a reviewed file re-arms too; that is the cheaper error.
+
 ## 3. Verify
 
 Invoke `/ywr-harness:verify` (it forks, so only the report returns). Its verdict is quoted into the

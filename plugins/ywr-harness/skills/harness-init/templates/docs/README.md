@@ -34,6 +34,10 @@ Commit `index.json` and `INDEX.md` alongside your source change. A CI drift gate
 regenerated output against the committed copies will fail the PR otherwise — that is the point:
 it makes a stale index impossible to merge rather than merely discouraged.
 
+When a merge conflicts inside `index.json` or `INDEX.md`, never hand-merge them: take either
+side, re-run the build, and commit the regenerated output. They are derived from the `.md`
+sources, which are the only thing to reconcile.
+
 ## Writing a new record
 
 1. Copy `docs/adr/0000-template.md` (or `docs/spec/0000-template.md`) to

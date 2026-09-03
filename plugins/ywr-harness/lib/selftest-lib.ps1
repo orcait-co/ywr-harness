@@ -1,7 +1,8 @@
-# Shared selftest core. Four things live here, added in the order the duplication justified
+# Shared selftest core. Five things live here, added in the order the duplication justified
 # them: the ADR 0116 empty-MustNotMatch guard with the match loops it protects (ADR 0125), the
-# fixture lifecycle (ADR 0126), and — on their third copy / first measured failure — the boolean
-# `Assert-True` verdict and the child-output decoding pin (ADR 0128).
+# fixture lifecycle (ADR 0126), — on their third copy / first measured failure — the boolean
+# `Assert-True` verdict and the child-output decoding pin (ADR 0128), and the in-process script
+# runner that replaced the per-case child pwsh in the spawn-bound suites (ADR 0071 option E).
 #
 # The guard half (ADR 0125) is the single owner of the ADR 0116 empty-MustNotMatch rule.
 #
@@ -55,6 +56,71 @@ Set-StrictMode -Off
 # process-global and dies with the process; the console still RENDERS non-ASCII per its own code
 # page, which is a display concern and not what an assertion reads.
 try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch { }
+
+# --- in-process script runner (ADR 0071 option E, 2026-09-02) ------------------------------------
+# Runs a .ps1 by path in a NEW RUNSPACE of this process: no pwsh cold start (~0.8 s on Windows, paid
+# once per case by the spawn-bound suites), and the isolation a child process had — default
+# preference variables (a caller's `$ErrorActionPreference = 'Stop'` never leaks in), a fresh
+# $LASTEXITCODE, no dynamic-scope resolution into the caller's variables.
+#
+# `& <path>` in the CALLER's runspace was the first shape and was measured and rejected the same
+# day (review of the manifest-gate suite): any try/catch or trap around it turns the callee's
+# STATEMENT-terminating errors — CommandNotFound, parameter binding — into an abort of the whole
+# callee, where a child prints the error and runs on; without a handler a `throw` in the callee
+# tears down the suite; and the callee inherits the caller's preferences. A runspace has none of
+# these and costs ~50–120 ms per call on the owner's box.
+#
+# Contract:
+#   Code    — what `pwsh -File <script>` would have returned, measured row by row against a real
+#             child (2026-09-02): `exit N` → N; completing without `exit` → 0, INCLUDING when the
+#             script's last native command failed (a child says 0 there; the runspace's
+#             $LASTEXITCODE would say 128) and when its last statement wrote a non-terminating error.
+#             The observable that tells these apart is `$?` right after the invocation: $true means
+#             the script completed (0), $false with a $LASTEXITCODE means it exited non-zero (N).
+#   Aborted — $true with Code -1 when the script never ran or did not finish: file missing, the
+#             invocation itself refused (a parameter-binding failure against a [CmdletBinding()]
+#             script — `$?` $false, no $LASTEXITCODE, the error in the runspace's own stream), or a
+#             script-terminating error (`throw`, or a non-terminating error under the script's OWN
+#             'Stop'). A child said 1 for all of these; -1 is a value no `exit` produces, so a
+#             negative suite whose PASS is "exit 1" can never record an abort as a catch.
+#   Out     — every stream the script wrote, in order (SIX streams, where a child's console capture
+#             saw stdout+stderr — pin a callee to Write-Host when a `-notmatch` depends on it), then
+#             the runspace's own error records (raised outside the callee's redirect: binding).
+# Caution, not reproduced: a script whose LAST statement fails non-terminatingly after an earlier
+# failing native command, with no `exit`, was expected to report that command's code where a child
+# says 0 — in measurement `$?` came back $true across the script boundary for every non-terminating
+# failure and Code was 0, matching the child. The scripts run here end in an explicit `exit` anyway;
+# their suites pin that, so the verdict never depends on this edge.
+# NOT a child in one respect: `[Environment]::Exit()` / `$host.SetShouldExit()` inside the script
+# ends THIS process — a child confined them. The suites pin that their scripts call neither.
+# Arguments splat as a HASHTABLE — an array splat binds positionally ('-Target' would become the
+# target). Long lines are not wrapped (measured: 300-char Write-Host and Write-Output survive).
+function Invoke-ScriptInRunspace([string]$Path, [hashtable]$Arguments = @{}) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @{ Out = "script not found: $Path"; Code = -1; Aborted = $true }
+    }
+    $ps = $null
+    try {
+        $ps = [PowerShell]::Create()
+        # `$?` is read on the very next statement — a pipeline stage after `&` (Out-String) would
+        # report ITS success, so the string is built afterwards.
+        [void]$ps.AddScript('param($p, $a) $o = & $p @a *>&1; $q = $?; [pscustomobject]@{ Out = ($o | Out-String); Ok = $q; Code = $LASTEXITCODE }').AddArgument($Path).AddArgument($Arguments)
+        $res = @($ps.Invoke())
+        $err = ($ps.Streams.Error | Out-String)
+        $r = $res[-1]
+        if ($null -eq $r -or $null -eq $r.PSObject.Properties['Ok']) {
+            return @{ Out = "runner produced no result`n$err"; Code = -1; Aborted = $true }
+        }
+        $out = [string]$r.Out + $err
+        if ($r.Ok) { return @{ Out = $out; Code = 0; Aborted = $false } }
+        if ($null -ne $r.Code) { return @{ Out = $out; Code = [int]$r.Code; Aborted = $false } }
+        if ($ps.Streams.Error.Count) { return @{ Out = $out; Code = -1; Aborted = $true } }
+        return @{ Out = $out; Code = 0; Aborted = $false }   # ended on a non-terminating error record, no `exit`
+    } catch {
+        $err = if ($ps) { ($ps.Streams.Error | Out-String) } else { '' }
+        return @{ Out = (($_ | Out-String) + $err); Code = -1; Aborted = $true }
+    } finally { if ($ps) { $ps.Dispose() } }
+}
 
 function Get-AssertionFailure {
     # Returns the failure reasons for one case as [string[]] — empty array when clean.
