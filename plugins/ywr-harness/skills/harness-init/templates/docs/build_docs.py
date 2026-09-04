@@ -1795,7 +1795,20 @@ def build_customer_artifact(programs, cfg, panels):
                     (" " + badge_html) if badge_html else "")
                 for idx, date, rtitle, badge_html, p in entries))
         for ym, entries in sorted(months.items(), reverse=True))
-    first_id = programs[0]["program"] if programs else ""
+    # 초기 기사 = '최근 업데이트' 그룹의 머리(릴리즈 최신 날짜; 같은 날짜는 정렬 순서 유지) —
+    # 그 그룹이 열린 채 첫 화면이 뜨므로 선택도 거기서 시작한다. 이전의 programs[0] 은
+    # os.listdir 정렬의 ASCII 첫 디렉터리(대문자 우선)였다(dist upstream-report #4,
+    # 2026-09-04). 릴리즈 이력이 하나도 없으면 programs[0] 으로 되돌아간다. 기사와 사이드바
+    # aria-current 는 같은 first_id 를 본다 — i == 0 과 first_id 가 갈라지던 두 기준을 하나로.
+    groups = customer_sidebar_groups(programs, cfg)
+    recent = next((members for label, members in groups if label == RECENT_GROUP_LABEL), None)
+    first_id = (recent[0] if recent else programs[0])["program"] if programs else ""
+    # 열린 그룹 = 최근 그룹; 최근 그룹이 없는 폴백에서는 first_id 가 속한 그룹을 연다 —
+    # 아니면 aria-current 항목이 접힌(display:none) 그룹 안에 숨는다(리뷰 2026-09-04, low).
+    def _opened(label, members):
+        if recent:
+            return label == RECENT_GROUP_LABEL
+        return any(p["program"] == first_id for p in members)
     items = "".join(
         '<section class="pgroup"><button type="button" class="pghead" aria-expanded="%s">'
         '<span class="pgarrow">▸</span>%s<span class="pgcount">%d</span></button>'
@@ -1803,9 +1816,9 @@ def build_customer_artifact(programs, cfg, panels):
             "true" if opened else "false", esc(label), len(members),
             " on" if opened else "",
             "".join(customer_doc_item(cfg, p, first=(p["program"] == first_id)) for p in members))
-        for label, members in customer_sidebar_groups(programs, cfg)
-        for opened in [label == RECENT_GROUP_LABEL])
-    articles = "".join(customer_program_article(cfg, p, first=(i == 0)) for i, p in enumerate(programs))
+        for label, members in groups
+        for opened in [_opened(label, members)])
+    articles = "".join(customer_program_article(cfg, p, first=(p["program"] == first_id)) for p in programs)
     # 푸터 날짜 = 코퍼스 updated 와 패널 UPDATED 의 최댓값(ADR 0061; 여전히 시계 없음).
     max_updated = max([str(p.get("updated") or "") for p in programs]
                       + [pl["updated"] for pl in panels if pl["updated"]], default="")

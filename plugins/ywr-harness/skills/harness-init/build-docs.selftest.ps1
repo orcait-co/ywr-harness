@@ -348,6 +348,53 @@ $ok = (Assert-True 'I5 PROJECTS.md names the P1 project' ($projText -match '## #
 $ok = (Assert-True 'I5 PROJECTS.md lists xgglbsrp with its chip + title' `
     ($projText -match '- xgglbsrp \(`xgglbsrp\.p`\) — xgglbsrp spec') $projText) -and $ok
 
+# I5b: the INITIAL article is the head of the recency group — the program with the newest release
+# entry (xgglbsrp, 2026-08-20), NOT the ASCII-first directory (batchjob) that `programs[0]` names.
+# dist upstream-report #4 (client-pjems, 173 programs, 2026-09-04): the page opened on
+# `FA-Posting-Description` because uppercase sorts first. Article `.on` and every sidebar
+# `aria-current="true"` (the program sits in the recency group AND its declared group) must
+# agree on the same id; no other program may carry either.
+$onArticles = [regex]::Matches($custText, '<article class="prog on" id="prog-([^"]+)">')
+$onIds = @($onArticles | ForEach-Object { $_.Groups[1].Value })
+$ok = (Assert-True 'I5b exactly one article opens, and it is the newest-release program (xgglbsrp), not the ASCII-first one' `
+    ($onIds.Count -eq 1 -and $onIds[0] -eq 'xgglbsrp') "on-articles=$($onIds -join ',')") -and $ok
+$curItems = [regex]::Matches($custText, '<button type="button" class="progitem" data-prog="([^"]+)"[^>]*aria-current="true"')
+$curIds = @($curItems | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+$ok = (Assert-True 'I5b every aria-current sidebar item names xgglbsrp (recency + declared group), no other program' `
+    ($curItems.Count -ge 1 -and $curIds.Count -eq 1 -and $curIds[0] -eq 'xgglbsrp') "current=$($curIds -join ',') n=$($curItems.Count)") -and $ok
+$ok = (Assert-True 'I5b batchjob article is NOT opened and its sidebar item is not current' `
+    ($custText -match '<article class="prog" id="prog-batchjob">' `
+     -and $custText -notmatch 'data-prog="batchjob"[^>]*aria-current="true"') $rI1.Out) -and $ok
+
+# I5c: FALLBACK — no program has release history (both release-notes.md bodies without an entry
+# heading) → no recency group → the initial article is programs[0] (batchjob, sort order).
+$rnXg = Join-Path $custI 'xgglbsrp/release-notes.md'
+$rnBj = Join-Path $custI 'batchjob/release-notes.md'
+$rnXgBody = Get-Content -LiteralPath $rnXg -Raw -Encoding UTF8
+$rnBjBody = Get-Content -LiteralPath $rnBj -Raw -Encoding UTF8
+Write-IDoc 'customer/xgglbsrp/release-notes.md' "---`nprogram: xgglbsrp`ntitle: `"xgglbsrp release notes`"`nupdated: 2026-08-20`n---`n아직 릴리즈 이력이 없습니다.`n"
+Write-IDoc 'customer/batchjob/release-notes.md' "---`nprogram: batchjob`ntitle: `"batchjob release notes`"`nupdated: 2026-08-10`n---`n아직 릴리즈 이력이 없습니다.`n"
+$rI5c = Invoke-IBuild
+$ok = (Assert-True 'I5c a corpus with no release history still builds' ($rI5c.Code -eq 0) $rI5c.Out) -and $ok
+$noRelText = Get-Content -LiteralPath $custHtml -Raw -Encoding UTF8
+$noRelOn = @([regex]::Matches($noRelText, '<article class="prog on" id="prog-([^"]+)">') | ForEach-Object { $_.Groups[1].Value })
+$ok = (Assert-True 'I5c with no release history the initial article falls back to programs[0] (batchjob), exactly one' `
+    ($noRelOn.Count -eq 1 -and $noRelOn[0] -eq 'batchjob' -and $noRelText -notmatch '최근 업데이트') "on-articles=$($noRelOn -join ',')") -and $ok
+$ok = (Assert-True 'I5c the fallback sidebar item is batchjob and only batchjob' `
+    ($noRelText -match 'data-prog="batchjob"[^>]*aria-current="true"' `
+     -and $noRelText -notmatch 'data-prog="xgglbsrp"[^>]*aria-current="true"') $rI5c.Out) -and $ok
+# Review 2026-09-04 (low): with no recency group, nothing used to be expanded, so the current
+# item sat inside a collapsed (display:none) group. The group holding first_id must open; the
+# other declared group stays collapsed.
+$bjSection = [regex]::Match($noRelText, '<section class="pgroup"><button type="button" class="pghead" aria-expanded="([^"]+)">[^<]*<span class="pgarrow">▸</span>배치·인터페이스·자동화[\s\S]*?<div class="pgitems([^"]*)">').Groups
+$xgSection = [regex]::Match($noRelText, '<section class="pgroup"><button type="button" class="pghead" aria-expanded="([^"]+)">[^<]*<span class="pgarrow">▸</span>재무회계 \(25\.x\)[\s\S]*?<div class="pgitems([^"]*)">').Groups
+$ok = (Assert-True 'I5c the fallback opens the group that holds the current item (aria-expanded + pgitems on)' `
+    ($bjSection[1].Value -eq 'true' -and $bjSection[2].Value -eq ' on') "expanded=$($bjSection[1].Value) pgitems='$($bjSection[2].Value)'") -and $ok
+$ok = (Assert-True 'I5c the other declared group stays collapsed in the fallback' `
+    ($xgSection[1].Value -eq 'false' -and $xgSection[2].Value -eq '') "expanded=$($xgSection[1].Value) pgitems='$($xgSection[2].Value)'") -and $ok
+[IO.File]::WriteAllText($rnXg, ($rnXgBody -replace "`r`n", "`n"))
+[IO.File]::WriteAllText($rnBj, ($rnBjBody -replace "`r`n", "`n"))
+
 # I6: "customer": null -> exit 0, NO customer.artifact.html/PROJECTS.md, 4 surfaces listed.
 Remove-Item $custHtml, $projMd -ErrorAction SilentlyContinue
 [IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), '{ "docs": { "customer": null } }')
