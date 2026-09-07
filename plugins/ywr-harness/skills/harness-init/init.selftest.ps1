@@ -387,6 +387,111 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $rO = Invoke-Init @('-Target', $o)
     $ok = (Assert-True 'O subdirectory target refuses to wire' ($rO.Out -match 'not the repository root') $rO.Out) -and $ok
     $ok = (Assert-True 'O parent repo hooksPath is untouched' ((Get-HooksPath $k) -eq '.githooks') "parent value='$(Get-HooksPath $k)'") -and $ok
+
+    # Y: the SAME directory in another spelling is "already wired", never REFUSED — and the value is
+    # left byte-identical: the scaffold does not rewrite it even to its own spelling, because it did
+    # not write this one. The literal compare against '.githooks' REFUSED an absolute value (the
+    # canon's own clone, 2026-09-02), a './' prefix, the Git-Bash-on-Windows MSYS form and a
+    # '~/'-wired clone, and told the reader the placed hooks were inert while they ran on every
+    # commit. The emitter's hooks: line got the resolved-path compare on 2026-09-02
+    # (harness_gates.selftest K6–K6e); this is the scaffold's half of the same rule. Mutation
+    # anchor: the literal compare fails Y1/Y2/Y3, a `--get` read (no tilde expansion) fails Y4.
+    # Y5 is the control — a DIFFERENT absolute directory stays REFUSED and untouched.
+    # Assertions read the `hooks:` LINE, not the whole run: the summary line's `refused=0` matches a
+    # case-insensitive 'REFUSED', which turned the first cut of Y1 red on a correct run.
+    function Get-HooksLine($Run) { return (($Run.Out -split "`n" | Where-Object { $_ -match '\bhooks:' }) -join ' ') }
+    $y = New-GitTarget 'wire-spelling'
+    $absY = Join-Path $y '.githooks'
+    & git -C $y config --local core.hooksPath $absY 2>$null
+    $rY1 = Invoke-Init @('-Target', $y)
+    $hY1 = Get-HooksLine $rY1
+    $ok = (Assert-True 'Y1 an absolute path to .githooks is already wired, not REFUSED' ($hY1 -match 'already wired' -and $hY1 -cnotmatch 'REFUSED' -and $hY1 -notmatch 'inert') $hY1) -and $ok
+    $ok = (Assert-True 'Y1 the absolute value survives byte-identical (never rewritten to .githooks)' ((Get-HooksPath $y) -eq $absY) "value='$(Get-HooksPath $y)'") -and $ok
+    $ok = (Assert-True 'Y1 run exits 0' ($rY1.Code -eq 0) "exit=$($rY1.Code)") -and $ok
+    & git -C $y config --local core.hooksPath './.githooks' 2>$null
+    $rY2 = Invoke-Init @('-Target', $y)
+    $hY2 = Get-HooksLine $rY2
+    $ok = (Assert-True 'Y2 ./.githooks is already wired' ($hY2 -match 'already wired' -and $hY2 -cnotmatch 'REFUSED') $hY2) -and $ok
+    $ok = (Assert-True 'Y2 the ./ spelling survives' ((Get-HooksPath $y) -eq './.githooks') "value='$(Get-HooksPath $y)'") -and $ok
+    if ($IsWindows -and $absY -match '^([A-Za-z]):\\(.*)$') {
+        $msysY = '/' + $Matches[1].ToLower() + '/' + ($Matches[2] -replace '\\', '/')
+        & git -C $y config --local core.hooksPath $msysY 2>$null
+        $rY3 = Invoke-Init @('-Target', $y)
+        $hY3 = Get-HooksLine $rY3
+        $ok = (Assert-True 'Y3 the MSYS /c/... form is already wired on Windows' ($hY3 -match 'already wired' -and $hY3 -cnotmatch 'REFUSED') $hY3) -and $ok
+        $ok = (Assert-True 'Y3 the MSYS spelling survives' ((Get-HooksPath $y) -eq $msysY) "value='$(Get-HooksPath $y)'") -and $ok
+    } else {
+        Write-Host 'SKIP [Y3 MSYS form] not Windows — the /c/ rewrite is Windows-only by design' -ForegroundColor Yellow
+    }
+    # Y4: git expands `~/` when it RUNS hooks; the scaffold must read the value the same way
+    # (`git config --path`), or a tilde-wired clone reads as foreign. HOME is pinned to the fixture
+    # so `~/.githooks` resolves there on every platform (git prefers HOME over USERPROFILE on
+    # Windows too). The value MUST be a single-quoted literal — PowerShell tilde-expands a computed
+    # argument before git ever sees it (harness_gates.selftest K6e, measured). The survival check
+    # compares against the value git stored, whatever form that took on this platform.
+    $savedHomeY = $env:HOME
+    try {
+        $env:HOME = $y
+        & git -C $y config --local core.hooksPath '~/.githooks' 2>$null
+        $storedY4 = Get-HooksPath $y
+        $rY4 = Invoke-Init @('-Target', $y)
+        $afterY4 = Get-HooksPath $y
+    } finally {
+        if ($null -eq $savedHomeY) { Remove-Item Env:HOME -ErrorAction SilentlyContinue } else { $env:HOME = $savedHomeY }
+    }
+    $hY4 = Get-HooksLine $rY4
+    $ok = (Assert-True 'Y4 a ~/ hooksPath (git tilde expansion) is already wired' ($hY4 -match 'already wired' -and $hY4 -cnotmatch 'REFUSED') $hY4) -and $ok
+    $ok = (Assert-True 'Y4 the stored value survives byte-identical' ($afterY4 -eq $storedY4 -and $storedY4 -ne '') "before='$storedY4' after='$afterY4'") -and $ok
+    $otherY = Join-Path $y '.other-hooks'
+    & git -C $y config --local core.hooksPath $otherY 2>$null
+    $rY5 = Invoke-Init @('-Target', $y)
+    $hY5 = Get-HooksLine $rY5
+    $ok = (Assert-True 'Y5 an absolute path to a DIFFERENT directory is still REFUSED' ($hY5 -cmatch 'REFUSED' -and $hY5 -notmatch 'already wired') $hY5) -and $ok
+    $ok = (Assert-True 'Y5 the foreign value survives byte-identical' ((Get-HooksPath $y) -eq $otherY) "value='$(Get-HooksPath $y)'") -and $ok
+
+    # Y6: `.githooks` reached THROUGH a link — an NTFS junction on Windows (no privilege needed; a
+    # symlink needs admin there), a symlink on POSIX — and core.hooksPath written as the link's REAL
+    # target. Git runs the hooks the scaffold placed (it opens the target directory), the emitter's
+    # `_hooks_path_is` says wired (Python `resolve()` follows the link), and a lexical GetFullPath
+    # compare said REFUSED (review 2026-09-07, medium). Mutation anchor: drop Resolve-RealPath from
+    # Test-HooksPathNames and Y6 goes red. SKIP is reported when the link cannot be made.
+    $y6 = New-GitTarget 'wire-linked'
+    $y6real = Join-Path $fxBase 'wire-linked-real-hooks'
+    New-Item -ItemType Directory -Force -Path $y6real | Out-Null
+    $y6link = Join-Path $y6 '.githooks'
+    $y6made = $false
+    $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+    try {
+        New-Item -ItemType $linkType -Path $y6link -Target $y6real -ErrorAction Stop | Out-Null
+        $y6made = $true
+    } catch { Write-Host "SKIP [Y6 linked .githooks] cannot create a $linkType here (reported, not silent): $($_.Exception.Message.Split([char]10)[0])" -ForegroundColor Yellow }
+    if ($y6made) {
+        & git -C $y6 config --local core.hooksPath $y6real 2>$null
+        $rY6 = Invoke-Init @('-Target', $y6)
+        $hY6 = Get-HooksLine $rY6
+        $ok = (Assert-True 'Y6 the REAL target of a linked .githooks is already wired (realpath compare — emitter parity)' ($hY6 -match 'already wired' -and $hY6 -cnotmatch 'REFUSED') $hY6) -and $ok
+        $ok = (Assert-True 'Y6 the real-target value survives byte-identical' ((Get-HooksPath $y6) -eq $y6real) "value='$(Get-HooksPath $y6)'") -and $ok
+        $ok = (Assert-True 'Y6 the hooks were placed through the link' (Test-Path -LiteralPath (Join-Path $y6real 'pre-commit') -PathType Leaf) 'pre-commit missing in the real directory') -and $ok
+    }
+
+    # Y7: a WORKTREE-scoped core.hooksPath (`extensions.worktreeConfig`) outranks `.git/config`. A
+    # `--local`-only read called this clone "already wired" while git ran hooks from `.elsewhere`
+    # (review 2026-09-07, medium). Nothing is written at either scope on that branch. Y7b: the
+    # worktree value naming `.githooks` is wired.
+    $y7 = New-GitTarget 'wire-worktree-scope'
+    & git -C $y7 config --local core.hooksPath '.githooks' 2>$null
+    & git -C $y7 config extensions.worktreeConfig true 2>$null
+    & git -C $y7 config --worktree core.hooksPath '.elsewhere' 2>$null
+    $rY7 = Invoke-Init @('-Target', $y7)
+    $hY7 = Get-HooksLine $rY7
+    $ok = (Assert-True 'Y7 a foreign worktree-scoped value is reported as outranking — not "already wired"' ($hY7 -match 'WORKTREE scope' -and $hY7 -match 'do not run' -and $hY7 -notmatch 'already wired') $hY7) -and $ok
+    $ok = (Assert-True 'Y7 the worktree value survives' (((& git -C $y7 config --worktree --get core.hooksPath 2>$null) | Out-String).Trim() -eq '.elsewhere') 'worktree value changed') -and $ok
+    $ok = (Assert-True 'Y7 the local value survives' ((Get-HooksPath $y7) -eq '.githooks') "local='$(Get-HooksPath $y7)'") -and $ok
+    $ok = (Assert-True 'Y7 run exits 0' ($rY7.Code -eq 0) "exit=$($rY7.Code)") -and $ok
+    & git -C $y7 config --worktree core.hooksPath (Join-Path $y7 '.githooks') 2>$null
+    $rY7b = Invoke-Init @('-Target', $y7)
+    $hY7b = Get-HooksLine $rY7b
+    $ok = (Assert-True 'Y7b a worktree-scoped value naming .githooks is already wired' ($hY7b -match 'worktree scope' -and $hY7b -match 'already wired') $hY7b) -and $ok
 }
 
 # --- Q: GUARDED placement — post-commit is the one filename repos already use -------------------

@@ -250,6 +250,39 @@ $ok = (Assert-True 'K6e a ~/ hooksPath (git tilde expansion) is wired' ($rK6e.Ou
 & git -C $k config --local core.hooksPath (Join-Path $k '.other-hooks') 2>$null
 $rK6d = Invoke-Gates $k @()
 $ok = (Assert-True 'K6d an absolute path to a DIFFERENT dir stays foreign' ($rK6d.Out -match 'do not run in this clone') $rK6d.Out) -and $ok
+
+# K6f: `.githooks` reached THROUGH a link (an NTFS junction on Windows — a symlink needs admin there;
+# a symlink on POSIX) with core.hooksPath written as the REAL target. `resolve()` follows the link, so
+# this is wired — pinned here because the scaffold's compare (init.ps1 Test-HooksPathNames) was made
+# to match THIS rule on 2026-09-07 after a lexical compare said REFUSED for the same state; a
+# regression on either side breaks the parity. SKIP is reported when the link cannot be made.
+$k6f = New-Repo 'hooks-linked' $CFG @('api/app.py')
+$k6fReal = Join-Path $fxBase 'hooks-linked-real'
+New-Item -ItemType Directory -Force -Path $k6fReal | Out-Null
+Set-Content -LiteralPath (Join-Path $k6fReal 'pre-commit') -Value '#!/bin/sh' -NoNewline
+$k6fType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+try {
+    New-Item -ItemType $k6fType -Path (Join-Path $k6f '.githooks') -Target $k6fReal -ErrorAction Stop | Out-Null
+    & git -C $k6f config --local core.hooksPath $k6fReal 2>$null
+    $rK6f = Invoke-Gates $k6f @()
+    $ok = (Assert-True 'K6f the REAL target of a linked .githooks is wired (resolve() follows the link)' ($rK6f.Out -match 'hooks: \.githooks/ wired' -and $rK6f.Out -notmatch 'do not run') $rK6f.Out) -and $ok
+} catch {
+    Write-Host "SKIP [K6f linked .githooks] cannot create a $k6fType here (reported, not silent): $($_.Exception.Message.Split([char]10)[0])" -ForegroundColor Yellow
+}
+
+# K7: a WORKTREE-scoped core.hooksPath (`extensions.worktreeConfig`) outranks `.git/config`. The
+# `--local` read alone called this clone wired while git ran hooks from `.elsewhere` (review
+# 2026-09-07, medium). K7b: the worktree value naming `.githooks` is wired, and says the scope.
+& git -C $k config --local core.hooksPath '.githooks' 2>$null
+& git -C $k config extensions.worktreeConfig true 2>$null
+& git -C $k config --worktree core.hooksPath '.elsewhere' 2>$null
+$rK7 = Invoke-Gates $k @()
+$ok = (Assert-True 'K7 a foreign WORKTREE-scoped value outranks a wired local one — reported, never called wired' ($rK7.Out -match 'WORKTREE scope' -and $rK7.Out -match 'do not run in this worktree' -and $rK7.Out -notmatch 'hooks: \.githooks/ wired') $rK7.Out) -and $ok
+& git -C $k config --worktree core.hooksPath (Join-Path $k '.githooks') 2>$null
+$rK7b = Invoke-Gates $k @()
+$ok = (Assert-True 'K7b a worktree-scoped value naming .githooks is wired, scope named' ($rK7b.Out -match 'hooks: \.githooks/ wired \(core\.hooksPath at worktree scope\)') $rK7b.Out) -and $ok
+& git -C $k config --worktree --unset core.hooksPath 2>$null
+& git -C $k config --unset extensions.worktreeConfig 2>$null
 & git -C $k config --local core.hooksPath '.elsewhere' 2>$null
 
 # The hook's output parser stops at `review tier:`; if the hooks line ever moved above it, a

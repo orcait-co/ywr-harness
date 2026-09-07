@@ -604,6 +604,58 @@ function Compare-RepoPath([string]$A, [string]$B) {
     return $x.Equals($y, $cmp)
 }
 
+function Resolve-RealPath([string]$P) {
+    # realpath: every component's reparse point — an NTFS junction or a directory symlink — followed
+    # to its final target, lexical from the first component that does not exist. GetFullPath alone
+    # is lexical, while the emitter's `_hooks_path_is` compares Python `Path.resolve()`, which DOES
+    # follow links — so a `.githooks` reached through a junction (or a repo root mounted through one)
+    # with core.hooksPath written as the real target made the scaffold say REFUSED where the emitter
+    # said wired (review 2026-09-07, medium). ResolveLinkTarget is .NET 6+ (pwsh 7.2+); an older
+    # runtime falls through the catch to the lexical form.
+    try { $full = [IO.Path]::GetFullPath($P) } catch { return $P }
+    $base = [IO.Path]::GetPathRoot($full)
+    $rest = $full.Substring($base.Length).Trim([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $cur = $base
+    if ($rest -eq '') { return $cur }
+    foreach ($seg in ($rest -split '[\\/]+')) {
+        if ($seg -eq '') { continue }
+        $cur = Join-Path $cur $seg
+        try {
+            $info = [IO.DirectoryInfo]::new($cur)
+            if ($info.Exists) {
+                $t = $info.ResolveLinkTarget($true)
+                if ($null -ne $t) { $cur = $t.FullName }
+            }
+        } catch { }
+    }
+    return $cur
+}
+
+function Test-HooksPathNames([string]$Cur, [string]$Root, [string]$Rel) {
+    # True when the clone's `core.hooksPath` names `$Root/$Rel` in WHATEVER spelling it was written
+    # — the same rule as the emitter's hooks: line (harness_gates._hooks_path_is, 2026-09-02).
+    # `.githooks` is this scaffold's spelling, but a hand-wired clone may hold `./.githooks`, an
+    # absolute path (`C:\…\.githooks`, `/home/…/.githooks`) or — from Git Bash on Windows — the MSYS
+    # form `/c/…/.githooks`, which git for Windows honours but no .NET path API does. The literal
+    # compare this replaces REFUSED every one of those as "points its hooks elsewhere" and told the
+    # reader the placed hooks were inert while they ran on every commit (the canon's own clone).
+    # Git resolves a relative value against the work tree's top level, so that is the base here;
+    # `~/`, `~user/` and `%(prefix)/` are expanded by the caller's `git config --path` read — the
+    # same expansion the hook runner applies. Both rewrites are Windows-only: a POSIX name may
+    # legitimately contain a backslash or start `/c/`. Both sides are compared as REAL paths
+    # (Resolve-RealPath), the emitter's `resolve()` semantics.
+    if ([string]::IsNullOrWhiteSpace($Cur)) { return $false }
+    $c = $Cur
+    if ($IsWindows) {
+        if ($c -match '^/([A-Za-z])/(.*)$') { $c = $Matches[1] + ':/' + $Matches[2] }
+        $c = $c -replace '\\', '/'
+    }
+    try {
+        if (-not [IO.Path]::IsPathRooted($c)) { $c = Join-Path $Root $c }
+    } catch { return $false }
+    return (Compare-RepoPath (Resolve-RealPath $c) (Resolve-RealPath (Join-Path $Root $Rel)))
+}
+
 $wire = ''
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $wire = 'git not on PATH — core.hooksPath NOT set; the hooks are placed but will not run'
@@ -617,11 +669,38 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         # re-run there if that is what they meant.
         $wire = "target is not the repository root ($(([string]$top).Trim())) — core.hooksPath NOT set, because setting it here would reconfigure the entire repository"
     } else {
-        $cur = & git -C $root config --local --get core.hooksPath 2>$null
+        # `--path`: git's own pathname expansion (`~/`, `%(prefix)/`) — the value the hook runner
+        # applies. A plain `--get` returns the raw text, and a tilde-wired clone read as foreign.
+        # `--show-scope` names the scope that WINS: a core.hooksPath set at the worktree scope
+        # (`extensions.worktreeConfig`) outranks `.git/config`, so a `--local` read alone could call
+        # the clone "already wired" while git ran hooks from elsewhere, or set a local value that
+        # never took effect (review 2026-09-07, medium). Output is `<scope>\t<value>`; git prints
+        # nothing and exits 1 when the key is unset at every scope.
+        $scoped = & git -C $root config --show-scope --path --get core.hooksPath 2>$null
+        $effScope = ''; $effVal = ''
+        if ($LASTEXITCODE -eq 0 -and $scoped) {
+            $last = [string](@($scoped)[-1])
+            $tab = $last.IndexOf("`t")
+            if ($tab -gt 0) { $effScope = $last.Substring(0, $tab).Trim(); $effVal = $last.Substring($tab + 1).Trim() }
+        }
+        $cur = & git -C $root config --local --path --get core.hooksPath 2>$null
         if ($LASTEXITCODE -ne 0) { $cur = '' }
         $cur = ([string]$cur).Trim()
-        if ($cur -eq $HOOKS_DIR) {
+        if ($effScope -eq 'worktree' -and $effVal -ne '') {
+            # The worktree scope decides, whatever `.git/config` says. Nothing is written at either
+            # scope on this branch: the scaffold did not write the worktree value and a local write
+            # would be a no-op that reads as success.
+            if (Test-HooksPathNames $effVal $root $HOOKS_DIR) {
+                $wire = "core.hooksPath at worktree scope is '$effVal', which names '$HOOKS_DIR' (left as written) — already wired"
+            } else {
+                $wire = "core.hooksPath at WORKTREE scope is '$effVal' — it outranks the local value, so the placed hooks do not run in this worktree; REFUSED to change it. Set it yourself if that is what you meant: git config --worktree core.hooksPath $HOOKS_DIR"
+            }
+        } elseif ($cur -eq $HOOKS_DIR) {
             $wire = "core.hooksPath already '$HOOKS_DIR' — already wired"
+        } elseif (Test-HooksPathNames $cur $root $HOOKS_DIR) {
+            # The same directory in another spelling. Wired — and the value stays byte-identical:
+            # the scaffold did not write this spelling, so it does not rewrite it, not even to its own.
+            $wire = "core.hooksPath is '$cur', which names '$HOOKS_DIR' (left as written) — already wired"
         } elseif ($cur -ne '') {
             $wire = "core.hooksPath is '$cur' — REFUSED to change it; this repo points its hooks elsewhere deliberately. The placed hooks stay inert until you merge them into '$cur' or set the value yourself"
         } elseif ($DryRun) {

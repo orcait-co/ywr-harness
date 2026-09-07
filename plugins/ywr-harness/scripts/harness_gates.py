@@ -196,13 +196,25 @@ def hooks_status(root: Path) -> str | None:
     """
     if not (root / ".githooks").is_dir():
         return None
+    # `--show-scope` names the scope that WINS. A core.hooksPath set at the worktree scope
+    # (`extensions.worktreeConfig`) outranks `.git/config`, so the `--local` read below alone
+    # called a clone wired while git ran hooks from elsewhere (review 2026-09-07, medium). The
+    # output is `<scope>\t<value>`; nothing and exit 1 when the key is unset at every scope.
+    # Encoding pinned on both reads — a hooksPath is a path (the issue #40 boundary).
+    git_text = dict(cwd=root, capture_output=True, text=True, encoding="utf-8", errors="backslashreplace")
     try:
-        out = subprocess.run(
-            ["git", "config", "--local", "--path", "--get", "core.hooksPath"],
-            cwd=root, capture_output=True, text=True,
-        )
+        scoped = subprocess.run(["git", "config", "--show-scope", "--path", "--get", "core.hooksPath"], **git_text)
+        out = subprocess.run(["git", "config", "--local", "--path", "--get", "core.hooksPath"], **git_text)
     except OSError:
         return ".githooks/ present, but git could not be run here — wiring unknown"
+    if scoped.returncode == 0 and scoped.stdout.strip():
+        scope, _, value = scoped.stdout.strip().splitlines()[-1].partition("\t")
+        if scope.strip() == "worktree" and value.strip():
+            if _hooks_path_is(root, value.strip(), ".githooks"):
+                return ".githooks/ wired (core.hooksPath at worktree scope)" + exec_bit_gap(root)
+            return (f".githooks/ present but core.hooksPath at WORKTREE scope points at "
+                    f"'{hc.one_line(value.strip())}' — it outranks the local value; the harness hooks "
+                    "do not run in this worktree")
     cur = (out.stdout or "").strip()
     if out.returncode != 0 or not cur:
         return (".githooks/ present but core.hooksPath is UNSET — NO git hook runs in this clone\n"
