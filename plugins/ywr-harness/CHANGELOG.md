@@ -11,6 +11,31 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.47.0 — 2026-09-07
+
+- **문서 빌더에 `--check` 모드가 생기고, 스캐폴드가 `docs/check_docs.py` 를 놓습니다 (ADR 0074).**
+  `python docs/build_docs.py --check` 는 빌드와 같은 조립을 메모리에서 하고, 쓰는 대신 표면별 UTF-8 바이트를 디스크와
+  비교합니다 — 표면마다 `OK`·`DRIFT`·`MISSING`·`ABSENT` 한 줄, 아무것도 쓰지 않습니다. 종료 코드 0 = 있는 표면 전부
+  일치 · 1 = 드리프트 또는 커밋 대상 표면(`index.json`·`INDEX.md`·선언 시 `PROJECTS.md`)이 없음(MISSING) — 재생성 후
+  커밋 · 2 = 거부(REFUSED) — `--check --customer`(레거시 `customer.html` 은 오늘 날짜를 박아 바이트 검사 불가), 또는
+  빌드 자체가 거부하는 코퍼스/선언(id 중복·빈 코퍼스·잘못된 `docs.customer`·패널 모듈 실패): 빌더 메시지를 ASCII 로
+  풀어 한 줄 보이고 2 로 끝나므로 "재생성하면 되는 1" 과 섞이지 않습니다. gitignore 되는 HTML 렌더가 없으면 ABSENT 로
+  보고만 하고(정본 자신의 CI 체크아웃이 그 상태), autocrlf 체크아웃의 CR 은 전부 접어 드리프트로 보지 않습니다.
+  **스탬프된 레포에 이미 같은 이름의 자기 파일이 있으면** 다음 `harness-init` 이 그 파일을 덮어쓰지 않고 REFUSED 로
+  보고합니다(ADR 0055 의 첫 실행 충돌 규칙을 "경로의 첫 등장" 으로 확장 — `init.ps1` 의 `$INTRODUCED_IN`); 바꾸려면
+  `-Force`.
+  `docs/check_docs.py` 는 인수 없는 기본 모드가 곧 검사라서 ADR 0068 의 `check` 계약(기본 모드 = 드리프트 검사 · exit 1 ·
+  무기록)을 그대로 만족합니다 — 생성된 문서 Artifact 에는 `.harness.json` `artifacts.items[]` 에
+  `check: {"runner": "python", "script": "docs/check_docs.py"}` 한 줄만 선언하면 됩니다. 빌더를 import 해 `main()` 을
+  미러링하고 SHA-256 핀과 write guard 로 지키던 소비 레포(client-pjems ADR 0020)는 다음 `harness-init` 뒤 그 스크립트를
+  내리고 선언만 바꾸면 됩니다. 셀프테스트 CK1–CK8(깨끗 · 드리프트+무기록 · 렌더 부재 건너뜀/index 부재 실패 · CRLF·
+  단독 CR 허용 · `--customer` 거부 · 래퍼 종료 코드 · 빌드 거부 → 2, ASCII) + `init.selftest` AA1–AA5(새 경로 충돌 거부 ·
+  `-Force` · 동일 바이트 · 상위 스탬프 컨트롤 · `-DryRun`). 정본은 `docs.yml` 과 `docs-corpus`/`docs-generated` 게이트
+  그룹에서 같은 스크립트로 dogfood 합니다.
+- **`/ywr-harness:artifact-publish` 문구 두 곳**(첫 멤버 실행에서 나온 관찰): 드리프트 시 "check 스크립트의 `--write`"
+  대신 "레포의 재생성 명령(`pwsh docs/build.ps1`)" 을 안내하고, Artifact 도구의 첫 발행 거부가 두 가지 모양(작은 페이지는
+  저장본의 줄 단위 전체 Read 를 요구 — 약 125줄 단위, 큰 페이지는 Read 없이 열람 처리)임을 한 문장으로 적었습니다.
+
 ## v0.46.0 — 2026-09-07
 
 - **`harness-init` 의 `hooks:` 줄이 `.githooks` 를 가리키는 다른 표기의 `core.hooksPath` 를 더는 REFUSED 로 읽지 않습니다.**

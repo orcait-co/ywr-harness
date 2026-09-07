@@ -81,7 +81,7 @@ function New-Target([string]$Name) {
 $EXPECT = @(
     'docs/README.md', 'docs/adr/README.md', 'docs/adr/0000-template.md',
     'docs/spec/README.md', 'docs/spec/0000-template.md',
-    'docs/build.ps1', 'docs/build.sh', 'docs/build_docs.py',
+    'docs/build.ps1', 'docs/build.sh', 'docs/build_docs.py', 'docs/check_docs.py',
     'CLAUDE.md', '.gitattributes', '.harness.json',
     # Root ignore seed (ADR 0053) + starter review canon seed (ADR 0054).
     '.gitignore', 'REVIEW.md',
@@ -732,6 +732,106 @@ if ($IsWindows) {
     $ok = (Assert-True 'U6 a hook this run PLACED is still made executable' `
         (([IO.File]::GetUnixFileMode((Join-Path $u6 '.githooks/pre-push')) -band [IO.UnixFileMode]::UserExecute) -ne 0) $rU6.Out) -and $ok
 }
+
+# --- AA: first-appearance TOOLCHAIN collision guard (ADR 0074, extending ADR 0055) --------------
+# The measured gap in case U's guard: it fires only when $script:isFirstRun — computed ONCE from
+# whether ANY .harness-version stamp exists. A repo already stamped by an EARLIER plugin version
+# (e.g. 0.46.0) is not first-run overall, but for a path this scaffold started shipping LATER
+# (docs/check_docs.py, added in 0.47.0 — ADR 0074) it IS a first appearance: that repo may well
+# have independently created its own file at the same plausible name (client-pjems's own
+# scripts/check_docs_drift.py is the real-world example) and nothing here has ever proven the
+# canon's file is what's there. Case U's guard would silently overwrite it and report
+# "refreshed" — exactly the ADR 0055 data loss, just missed because the guard only ever asked
+# "has this REPO run before", never "has this PATH been offered to this repo before".
+# Letter note: every single letter A-Z is already a case in this file (Z0 included) — "AA" is the
+# first unused, alphabetically-next name, not a reuse of the unrelated bare "N" (hooksPath dry run).
+$aa = New-Target 'introduced-later'
+$rAA0 = Invoke-Init @('-Target', $aa)
+$ok = (Assert-True 'AA setup run exits 0' ($rAA0.Code -eq 0) "exit=$($rAA0.Code)") -and $ok
+# Roll the stamp back to BEFORE the path's introduction, and drop in a plausible foreign file at
+# the SAME name the canon uses (the collision the guard exists for is same-name, not same-content).
+Set-Content -LiteralPath (Join-Path $aa '.harness-version') -Value '0.46.0' -NoNewline
+$aaForeign = "# my own drift check`n"
+Set-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Value $aaForeign -NoNewline
+# Perturb an OLD-path toolchain file too (no $INTRODUCED_IN entry): a 0.46.0 stamp is a normal
+# back-version update for this one, so it must still refresh in the SAME run that refuses
+# check_docs.py — proving the guard is scoped per path, not per repo.
+$aaBuilder = Join-Path $aa 'docs/build_docs.py'
+Set-Content -LiteralPath $aaBuilder -Value '# locally hacked, old-path file' -NoNewline
+
+# AA1: re-run without -Force refuses, names both versions, leaves the foreign file untouched, and
+# still refreshes the old-path file in the same run.
+$rAA1 = Invoke-Init @('-Target', $aa)
+$ok = (Assert-True 'AA1 run exits 0' ($rAA1.Code -eq 0) "exit=$($rAA1.Code)") -and $ok
+$ok = (Assert-True 'AA1 REFUSED names the path' ($rAA1.Out -match 'docs/check_docs\.py REFUSED') $rAA1.Out) -and $ok
+$ok = (Assert-True 'AA1 the introducing version is named' ($rAA1.Out -match "new in $([regex]::Escape($manifestVer))") $rAA1.Out) -and $ok
+$ok = (Assert-True 'AA1 the repo''s stamped version is named' ($rAA1.Out -match 'stamped 0\.46\.0') $rAA1.Out) -and $ok
+$ok = (Assert-True 'AA1 refused is counted' ($rAA1.Out -match 'refused=1') $rAA1.Out) -and $ok
+$ok = (Assert-True 'AA1 the foreign bytes are unchanged on disk' `
+    ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Raw) -eq $aaForeign) 'foreign check_docs.py was overwritten') -and $ok
+$ok = (Assert-True 'AA1 the stamp is untouched (still the pre-refusal value)' `
+    (((Get-Content -LiteralPath (Join-Path $aa '.harness-version') -Raw).Trim()) -eq '0.46.0') 'refusal rewrote the stamp') -and $ok
+$ok = (Assert-True 'AA1 an OLD-path file still refreshes in the same run (guard is per-path)' `
+    ((Get-Content -LiteralPath $aaBuilder -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/build_docs.py') -Raw)) 'old-path file did not refresh alongside the refusal') -and $ok
+
+# AA2: -Force replaces it, labeled truthfully (never "refreshed"), counted as replaced=1, and the
+# stamp then advances now that nothing stands refused.
+$rAA2 = Invoke-Init @('-Target', $aa, '-Force')
+$ok = (Assert-True 'AA2 -Force replaces, run exits 0' ($rAA2.Code -eq 0) "exit=$($rAA2.Code)") -and $ok
+$ok = (Assert-True 'AA2 the truthful REPLACED label is used' ($rAA2.Out -match 'docs/check_docs\.py \(REPLACED') $rAA2.Out) -and $ok
+$ok = (Assert-True 'AA2 replaced is counted' ($rAA2.Out -match 'replaced=1') $rAA2.Out) -and $ok
+$ok = (Assert-True 'AA2 the canon copy is placed' `
+    ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/check_docs.py') -Raw)) 'forced run did not place the canon copy') -and $ok
+$ok = (Assert-True 'AA2 the stamp advances once resolved' `
+    (((Get-Content -LiteralPath (Join-Path $aa '.harness-version') -Raw).Trim()) -eq $manifestVer) 'stamp did not advance') -and $ok
+
+# AA3: byte-identical foreign content at the same stale stamp is a silent no-op, never a
+# refusal — a repo that happens to already hold the canon's own bytes must not be told to merge
+# with itself.
+$aa3 = New-Target 'introduced-later-identical'
+Invoke-Init @('-Target', $aa3) | Out-Null
+Set-Content -LiteralPath (Join-Path $aa3 '.harness-version') -Value '0.46.0' -NoNewline
+Copy-Item -LiteralPath (Join-Path $templates 'docs/check_docs.py') -Destination (Join-Path $aa3 'docs/check_docs.py') -Force
+$rAA3 = Invoke-Init @('-Target', $aa3)
+$ok = (Assert-True 'AA3 identical content is a no-op, not a refusal' `
+    ($rAA3.Code -eq 0 -and $rAA3.Out -notmatch 'docs/check_docs\.py REFUSED' -and $rAA3.Out -match 'refused=0') $rAA3.Out) -and $ok
+
+# AA4 (control): a repo already stamped AT the path's introducing version follows TODAY's
+# same-version-drift semantics (ADR 0067) — no "new in" refusal at all, just the existing
+# revert-and-report path Test-PathIntroducedAfterStamp never reaches (introduced -gt stamp is
+# false when they're equal).
+$aa4 = New-Target 'introduced-later-control'
+Invoke-Init @('-Target', $aa4) | Out-Null
+Set-Content -LiteralPath (Join-Path $aa4 'docs/check_docs.py') -Value '# hand edit at the current version' -NoNewline
+$rAA4 = Invoke-Init @('-Target', $aa4)
+$ok = (Assert-True 'AA4 no "new in" refusal when already stamped at the introducing version' `
+    ($rAA4.Out -notmatch 'docs/check_docs\.py REFUSED') $rAA4.Out) -and $ok
+$ok = (Assert-True 'AA4 today''s same-version drift semantics still apply (revert + upstream note)' `
+    ($rAA4.Out -match 'refreshed=1' -and $rAA4.Out -match 'upstream: SAME-VERSION drift') $rAA4.Out) -and $ok
+if ($rAA4.Out -match 'pre-revert copies: (.+)') {
+    $aa4Dir = $Matches[1].Trim()
+    if ($aa4Dir -and (Test-Path -LiteralPath $aa4Dir)) { Remove-Item -LiteralPath $aa4Dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+# AA5: -DryRun reports the would-be refusal identically, writing nothing.
+$aa5 = New-Target 'introduced-later-dryrun'
+Invoke-Init @('-Target', $aa5) | Out-Null
+Set-Content -LiteralPath (Join-Path $aa5 '.harness-version') -Value '0.46.0' -NoNewline
+$aa5Foreign = "# my own drift check (dry run fixture)`n"
+Set-Content -LiteralPath (Join-Path $aa5 'docs/check_docs.py') -Value $aa5Foreign -NoNewline
+$rAA5 = Invoke-Init @('-Target', $aa5, '-DryRun')
+$ok = (Assert-True 'AA5 dry run reports the would-be refusal' ($rAA5.Out -match 'docs/check_docs\.py REFUSED') $rAA5.Out) -and $ok
+$ok = (Assert-True 'AA5 dry run writes nothing to the foreign file' `
+    ((Get-Content -LiteralPath (Join-Path $aa5 'docs/check_docs.py') -Raw) -eq $aa5Foreign) 'dry run modified the foreign file') -and $ok
+$ok = (Assert-True 'AA5 dry run leaves the stamp untouched' `
+    (((Get-Content -LiteralPath (Join-Path $aa5 '.harness-version') -Raw).Trim()) -eq '0.46.0') 'dry run rewrote the stamp') -and $ok
+
+# Mutation anchor: removing the $INTRODUCED_IN comparison from Test-PathIntroducedAfterStamp (or
+# hardcoding it to $false) turns AA1 and AA5 red — the refusal never fires, so check_docs.py is
+# silently "refreshed" instead of refused. AA3 and AA4 stay green either way: AA3 never reaches the
+# collision check (the identical-content return is earlier in Place()), and AA4's equal-version
+# stamp already fails "introduced -gt stamp" on its own, so it exercises the EXISTING
+# same-version-drift branch regardless of this change — both are the controls.
 
 # --- V: the install→init E2E the #47/#48 issues measured — a fresh scaffold must pass its OWN
 # full-tree audit (ADR 0041) after the first commit, html surfaces and ledger ignored (ADR 0052/

@@ -49,8 +49,11 @@ like any code about to run on their machine — and its contract ("default mode 
 that writes nothing") is that contract, not a verified property.
 
 Exit 0 = the committed source matches its generator. Exit 1 = DRIFT: stop, tell the member to
-regenerate with the repo's own regeneration command (the check script's `--write` mode or
-whatever the repo documents), commit, and re-invoke. Never publish a drifted source, and never
+regenerate with the repo's own regeneration command (whatever the repo documents — `pwsh
+docs/build.ps1` for the docs surfaces; a check script has no write mode by contract, the
+generator does), commit, and re-invoke. Exit 2 = REFUSED: misuse, or a corpus/declaration the
+generator itself refuses — regeneration will not help; fix the cause the check names, then
+re-invoke. Never publish a drifted source, and never
 regenerate on your own initiative — the regeneration is a tree change the member commits.
 
 ## 3. ONE confirmation
@@ -73,6 +76,13 @@ that is the contract, not an error (ywr-harness fact 43). The sequence that work
    (succeeds). Keep the favicon; label per the repo's convention (e.g. `v<version>-rn`).
 4. Do not fight a refusal with `force`, and do not read the served copy into context for the
    comparison — the hash is the proof (fact 38).
+
+The refusal has two shapes, both normal. For a small page the tool demands a line-complete Read
+of the saved copy before the second publish — size the slices to the per-call TOKEN cap, not to
+a line count: denser lines need smaller slices (measured once, 2026-09-07, on a ~2,000-line
+page: 250-line reads exceeded the cap past the middle of the file, ~125-line slices did not).
+For a large page (megabytes) the saved copy counts as viewed and no Read is demanded. Neither
+is an error; step 2's hash is what proves nothing is lost either way.
 
 A publish refused for OWNERSHIP is final for this machine: only the account that owns the URL
 can redeploy it. Report which account owns it and stop — never work around it.

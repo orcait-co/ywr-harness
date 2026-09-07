@@ -116,6 +116,7 @@ SCAFFOLD_CLAIMS: frozenset = frozenset({
     "docs/build.ps1",
     "docs/build.sh",
     "docs/build_docs.py",
+    "docs/check_docs.py",
     "scripts/harness/harness_config.py",
     "scripts/harness/harness_gates.py",
     "scripts/harness/harness_retro.py",

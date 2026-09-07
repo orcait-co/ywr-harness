@@ -158,6 +158,7 @@ $TOOLCHAIN = [ordered]@{
     'docs/build.ps1'             = 'docs/build.ps1'
     'docs/build.sh'              = 'docs/build.sh'
     'docs/build_docs.py'         = 'docs/build_docs.py'
+    'docs/check_docs.py'         = 'docs/check_docs.py'
     # Vendored so CI needs no access to the canon repo. `${CLAUDE_PLUGIN_ROOT}` is substituted when
     # Claude Code spawns a hook and does not exist in a CI step, and the canon is private with
     # cross-repo Actions access closed — a reusable workflow would require widening that. Byte
@@ -174,6 +175,24 @@ $TOOLCHAIN = [ordered]@{
     # hook that stops being the same gate everywhere, which is the divergence ADR 0010 forbids.
     'githooks/pre-commit'                    = '.githooks/pre-commit'
     'githooks/pre-push'                      = '.githooks/pre-push'
+}
+# Paths whose $TOOLCHAIN entry was added to this scaffold AFTER repos could already be stamped by
+# an earlier plugin version. The ADR 0055 first-run collision guard below is scoped to the REPO's
+# first run — but a path introduced later has its OWN first appearance the moment it enters
+# $TOOLCHAIN: a repo stamped BEFORE that version is not first-run overall, yet has never received
+# this path from the canon, so an existing foreign file there is exactly the ADR 0055 collision,
+# not a normal refresh (ADR 0074 extends ADR 0055 to a path's first appearance).
+#
+# NOT named `$TOOLCHAIN*` — manifest-gate.ps1's Get-PlacementMap regex-parses only `$TOOLCHAIN` and
+# `$GUARDED` out of this file's text; a prefixed name risks a future accidental match there.
+#
+#   destination path (as it appears as a $TOOLCHAIN value) -> plugin version that FIRST shipped it.
+#
+# Rule for future additions: every NEW $TOOLCHAIN path gets an entry here naming the version it
+# ships in, so a stamped repo's pre-existing file at that new path is guarded the same as a
+# first-run collision instead of being silently overwritten and reported as "refreshed".
+$INTRODUCED_IN = [ordered]@{
+    'docs/check_docs.py' = '0.47.0'
 }
 # GUARDED — the third mode, and it exists for exactly one file. `post-commit` is a filename repos
 # commonly already use (this canon's own repo uses it to republish the docs artifact), so blind
@@ -218,8 +237,28 @@ $SEED_CORPUS = [ordered]@{
 
 $created = @(); $refreshed = @(); $preserved = @(); $failed = @(); $skippedSeed = @(); $refused = @()
 # ADR 0055's two buckets: first-run TOOLCHAIN collisions refused (differing content, no stamp,
-# no -Force), and the -Force replacements — labeled truthfully, never as "refreshed".
-$firstRunRefused = @(); $replaced = @()
+# no -Force), and the -Force replacements — labeled truthfully, never as "refreshed". ADR 0074
+# adds a third refusal bucket: a re-run (stamped) that collides on a path $INTRODUCED_IN says this
+# repo's stamp predates — same refusal shape, counted and reported separately because the cause
+# ("this path is new since your stamp") differs from "this repo was never scaffolded".
+$firstRunRefused = @(); $replaced = @(); $introducedRefused = @()
+
+function Test-PathIntroducedAfterStamp([string]$Dest) {
+    # True when $Dest has an $INTRODUCED_IN entry whose version is STRICTLY NEWER than this repo's
+    # stamp — i.e. the path did not exist in the plugin version that last scaffolded this repo, so
+    # an existing foreign file there is the PATH's first appearance here, not an ordinary re-run
+    # collision (ADR 0074). An unparsable or missing repo stamp treats every introduced path as
+    # "introduced later" — refusing is the safe side (the same fail-safe direction as the ADR 0042
+    # downgrade guard's absent-stamp case is fail-OPEN; this one is deliberately the opposite,
+    # because here failing open would silently overwrite a file that never went through this
+    # guard). A malformed $INTRODUCED_IN value (should never happen — reviewed at the one call
+    # site that adds entries) reads as "not gated", never as "unsafe", so it can't jam placement.
+    if (-not $INTRODUCED_IN.Contains($Dest)) { return $false }
+    $introduced = ConvertTo-VersionOrNull $INTRODUCED_IN[$Dest]
+    if (-not $introduced) { return $false }
+    if (-not $script:repoStamp) { return $true }
+    return $introduced -gt $script:repoStamp
+}
 
 function Place([string]$Rel, [string]$Dest, [bool]$Overwrite, [bool]$OwnershipKnown = $false) {
     $src = Join-Path $templates $Rel
@@ -259,10 +298,17 @@ function Place([string]$Rel, [string]$Dest, [bool]$Overwrite, [bool]$OwnershipKn
     # not the canon's output and overwriting it is data loss, not an update. Refused unless
     # -Force; a GUARDED caller that already proved ownership by marker passes $OwnershipKnown.
     # Applies under -DryRun too: the dry run must show the same refusals the real run makes.
+    #
+    # ADR 0074 extends the same refusal to a RE-run: $Dest may be a path this repo's stamp
+    # predates (Test-PathIntroducedAfterStamp) — that repo is not first-run overall, but for
+    # THIS path it is, so a foreign file there is the identical data-loss shape, just counted and
+    # reported under its own reason (bucket picked by which condition actually fired).
     $isReplacement = $false
-    if ($exists -and $Overwrite -and $script:isFirstRun -and -not $OwnershipKnown) {
+    $introducedLater = Test-PathIntroducedAfterStamp $Dest
+    if ($exists -and $Overwrite -and -not $OwnershipKnown -and ($script:isFirstRun -or $introducedLater)) {
         if ($Force) { $isReplacement = $true }
-        else { $script:firstRunRefused += $Dest; return }
+        elseif ($script:isFirstRun) { $script:firstRunRefused += $Dest; return }
+        else { $script:introducedRefused += $Dest; return }
     }
 
     # Same-version drift (ADR 0067): reaching here with an existing overwrite-mode file on a
@@ -478,7 +524,7 @@ function Get-SeedDriftNote([string]$Rel, [string]$Dest) {
 
 $mode = if ($DryRun) { ' (dry run — nothing written)' } else { '' }
 Write-Host "harness-init -> $root$mode"
-$refusedTotal = $refused.Count + $firstRunRefused.Count
+$refusedTotal = $refused.Count + $firstRunRefused.Count + $introducedRefused.Count
 Write-Host "  created=$($created.Count) refreshed=$($refreshed.Count) replaced=$($replaced.Count) preserved=$($preserved.Count) refused=$refusedTotal unchanged=$($considered - $created.Count - $refreshed.Count - $replaced.Count - $preserved.Count - $refusedTotal)"
 foreach ($f in $created) { Write-Host "  + $f" -ForegroundColor Green }
 foreach ($f in $refreshed) { Write-Host "  ~ $f (toolchain refreshed from canon)" -ForegroundColor Cyan }
@@ -499,6 +545,12 @@ if ($firstRunRefused.Count) {
     Write-Host "      (No $STAMP_FILE stamp was found, so this run treated the repo as never scaffolded. If it WAS" -ForegroundColor Yellow
     Write-Host "      scaffolded and only the stamp is missing, -Force IS the normal re-run: toolchain files return" -ForegroundColor Yellow
     Write-Host "      to canon, and seeds are never touched either way.)" -ForegroundColor Yellow
+}
+foreach ($f in $introducedRefused) {
+    # ADR 0074: this repo IS stamped (unlike the block above), but $f entered $TOOLCHAIN in a
+    # plugin version newer than that stamp — so for this one path it is still a first appearance,
+    # and an existing foreign file there is the same data loss ADR 0055 refuses, not a refresh.
+    Write-Host "  ! $f REFUSED — this TOOLCHAIN path is new in $($INTRODUCED_IN[$f]) (repo stamped $repoStampRaw) and a different file already exists there; not the canon's output — re-run with -Force to replace it (ADR 0074, extends the first-run guard ADR 0055)" -ForegroundColor Yellow
 }
 foreach ($f in $preserved) {
     $note = ''
@@ -547,10 +599,12 @@ if ($failed.Count) {
 # refresh nudge reads this AFTER byte drift is found, to orient its advice; it is never the
 # trigger. In no placement map on purpose: manifest-gate's map-driven sweep and the nudge's
 # template comparison must never see it, so it can never itself count as drift.
-if ($firstRunRefused.Count) {
-    # A stamp means "scaffolded": writing it now would make the very next run a re-run that
-    # silently overwrites exactly the files the refusals above just protected (ADR 0055).
-    Write-Host "  stamp: NOT written — $($firstRunRefused.Count) first-run toolchain collision(s) above are unresolved; a stamped repo re-runs with overwrite semantics (ADR 0055)" -ForegroundColor Yellow
+if ($firstRunRefused.Count -or $introducedRefused.Count) {
+    # A stamp means "scaffolded" (and, per-path, "scaffolded at least at this version") — writing
+    # it now would make the very next run believe these paths were already resolved, silently
+    # overwriting exactly the files the refusals above just protected (ADR 0055/0074).
+    $unresolved = $firstRunRefused.Count + $introducedRefused.Count
+    Write-Host "  stamp: NOT written — $unresolved toolchain collision(s) above are unresolved; a stamped repo re-runs with overwrite semantics (ADR 0055/0074)" -ForegroundColor Yellow
 } elseif ($ownVersionRaw) {
     if ($DryRun) {
         Write-Host "  stamp: would write $STAMP_FILE = $ownVersionRaw (dry run)" -ForegroundColor Cyan

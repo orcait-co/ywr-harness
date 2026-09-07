@@ -18,6 +18,13 @@ docs-as-code 생성기 — docs/adr/*.md + docs/spec/*.md (YAML frontmatter + �
 사용:
   python docs/build_docs.py [YYYY-MM-DD]   (또는 pwsh docs/build.ps1 / bash docs/build.sh)
   python docs/build_docs.py --customer [--version <라벨>]   (고객 배포용 표면만 생성)
+  python docs/build_docs.py --check   (ADR 0074 — 아무 것도 쓰지 않고 생성 표면의 drift만 확인;
+                                        docs/check_docs.py 래퍼가 이 모드를 감싼다. --customer 와는
+                                        병용 불가 — customer.html 은 date.today() 를 품어 바이트
+                                        비교가 원천 불가능하다. exit 코드: 0=존재하는 표면 전부
+                                        일치 · 1=DRIFT 또는 MISSING(커밋 대상 표면 부재) ·
+                                        2=REFUSED(오용, 또는 조립 자체가 거부하는 코퍼스/선언 —
+                                        재빌드로 고쳐지지 않는 결함이라 drift 와 구분한다))
 
 브랜딩(선택):
   상단 제목의 정식 소스는 .harness.json 의 docs.site_title 선언이다(ADR 0050) — 레포별 값은
@@ -1912,29 +1919,35 @@ def _selfcheck_release_helpers():
         "기본 어휘의 배지 클래스는 rs-uat/rs-prod 그대로, PROD 라벨은 COMPLETE (포크와 바이트 동일)"
 
 
-# --------------------------------------------------------------- main
-def main():
-    # 단순 sys.argv 스캔 — argparse 불필요(플래그 2종 + 값 1개뿐, 파일 전체가 stdlib 미니멀 스타일).
-    argv = sys.argv[1:]
-    customer_mode = "--customer" in argv
-    version = None
-    if "--version" in argv:
-        vi = argv.index("--version")
-        if vi + 1 < len(argv):
-            version = argv[vi + 1]
+# --------------------------------------------------------------- check mode (ADR 0074)
+def _repo_root():
+    """ROOT(=docs/) 의 부모 — <rel> 계산의 기준(repo-root-relative, forward slash)."""
+    return os.path.dirname(ROOT)
 
+
+# REQUIRED: docs-as-code 계약이 커밋을 요구하는 표면 — 스캐폴드의 gitignore 템플릿도 이
+# 셋(+ projects_md 선언 시 PROJECTS.md)은 무시하지 않고, docs.yml 과 모든 소비자가 이들의
+# 존재를 전제한다. 부재는 MISSING(실패 집계, exit 1) — 삭제된 커밋 표면을 조용히 통과시키지
+# 않는다(Finding 6). OPTIONAL: 템플릿이 gitignore 하는 렌더 — 부재는 지금처럼 ABSENT(스킵).
+REQUIRED_OUTPUTS = (OUT_JSON, OUT_INDEX_MD, OUT_PROJECTS)
+OPTIONAL_OUTPUTS = (OUT_HTML, OUT_ARTIFACT, OUT_CUSTOMER_ARTIFACT)
+
+
+def _assemble():
+    """build 경로와 --check 가 공유하는 단일 조립: collect·빈 코퍼스 가드·고객 코퍼스(선언시)
+    ·outputs 리스트. 두 경로가 각자 조립을 복제하면 그 자체가 조용한 drift 원인이 된다(서로
+    다른 표면 목록을 비교/생성) — 그래서 한 곳에서만 만든다. 실패는 모두 sys.exit(<한국어
+    메시지>) 로 알린다: 기본 빌드 경로는 그대로 프로세스를 끝내고, --check 경로(_run_check)는
+    이를 캐치해 DRIFT 와 구분되는 REFUSED 로 보고한다(Finding 1/4)."""
     adrs = collect(ADR_DIR)
     specs = collect(SPEC_DIR)
     if not adrs and not specs:
         sys.exit("adr/·spec/ 에서 frontmatter 포함 .md 를 찾지 못했습니다.")
 
-    if customer_mode:
-        build_customer(adrs, specs, version)
-        return
-
-    # 모든 표면을 메모리에서 먼저 만든다 — 고객 표면의 거부(exit 1)가 4-표면만 새로 쓰인 반쪽
-    # 산출물을 남기면, 종료 코드를 보지 않는 호출자는 "내부 문서 최신 · 고객 문서 stale" 을
-    # 그대로 커밋한다(리뷰 2026-08-27 medium). 검증을 전부 통과한 뒤에만 파일을 쓴다.
+    # 모든 표면을 메모리에서 먼저 만든다 — 고객 표면의 거부(sys.exit)가 4-표면만 새로 쓰인
+    # 반쪽 산출물을 남기면, 종료 코드를 보지 않는 호출자는 "내부 문서 최신 · 고객 문서 stale"
+    # 을 그대로 커밋한다(리뷰 2026-08-27 medium). 검증을 전부 통과한 뒤에만 파일을 쓴다(디스크
+    # 쓰기는 main() 의 build 경로만 한다 — --check 는 애초에 쓰지 않는다).
     outputs = [
         (OUT_JSON, json.dumps(build_json(adrs, specs, fm_digest()), ensure_ascii=False, indent=2)),
         (OUT_INDEX_MD, build_index_md(adrs, specs)),
@@ -1953,6 +1966,121 @@ def main():
         if cust.get("projects_md"):
             outputs.append((OUT_PROJECTS, build_projects_md(programs, cust)))
         cust_count = len(programs)
+
+    return adrs, specs, outputs, cust, cust_count
+
+
+def _report_refused(message):
+    """--check 조립 실패 공용 출력 — REFUSED(exit 2), ASCII 전용(Finding 1/4). 재빌드로
+    고쳐지지 않는 결함(중복 id, 빈 코퍼스, 고객 선언/코퍼스 결함, 패널 모듈 예외 등 _assemble()
+    이 던지는 모든 거부)을 DRIFT(exit 1)와 구분해야, "재빌드하면 고쳐진다"는 신호로 exit 1을
+    읽는 CI/운영자가 고칠 수 없는 결함에 재빌드를 반복하지 않는다. builder 의 원 메시지(한국어
+    포함)는 backslashreplace 로 ASCII-safe 하게 한 줄 더 붙인다 — 원문 자체를 버리지 않는다."""
+    print("[check] REFUSED - the build itself refuses this corpus/declaration "
+          "(regeneration will not help; run 'pwsh docs/build.ps1' locally to see "
+          "the builder's message)")
+    safe = message.encode("ascii", "backslashreplace").decode("ascii")
+    print("[check]   builder: %s" % safe)
+    sys.exit(2)
+
+
+def _run_check():
+    """--check (ADR 0074): 디스크와 바이트 비교만 하고 아무 것도 쓰지 않는다.
+
+    조립(collect·빈 코퍼스 가드·고객 선언 로드·collect_customer_docs·_load_panels)은 build
+    경로와 정확히 같은 _assemble() 을 공유한다 — main() 이 오늘 쓰는 것과 다른 목록을
+    비교하면 그 자체가 조용한 drift 다. _assemble() 이 던지는 sys.exit(SystemExit) 뿐 아니라
+    (패널 모듈 등 아직 감싸지 못한 코드 경로가 낼 수 있는) 잡은 Exception 도 동일하게
+    REFUSED 로 본다 — 둘 다 "이 코퍼스/선언으로는 애초에 빌드가 안 된다"는 같은 사실이다.
+
+    표면은 REQUIRED(위 REQUIRED_OUTPUTS — index.json·INDEX.md·선언시 PROJECTS.md, 커밋을
+    요구하는 표면)와 OPTIONAL(OPTIONAL_OUTPUTS — 템플릿이 gitignore 하는 렌더)로 나뉜다.
+    REQUIRED 표면의 부재는 MISSING 으로 찍고 실패 집계에 더한다(exit 1); OPTIONAL 표면의
+    부재는 지금처럼 ABSENT 로 건너뛴다(Finding 6).
+
+    바이트 비교는, expected 에 CR 이 전혀 없을 때(빌더는 항상 LF 로 쓴다) 디스크 쪽의 CR을
+    쌍 여부와 무관하게 전부 제거하고 비교한다 — init.ps1/manifest-gate.ps1 이 인용하는
+    ADR 0033 규칙(모든 0x0D 를 그대로 버림)과 맞춘다(Finding 7; 이전에는 \\r\\n 쌍만 접었다).
+
+    출력은 ASCII 전용(기본 빌드 출력은 한국어 그대로 유지) — 소비자 CI 로그의 인코딩 걱정을
+    없앤다.
+    """
+    try:
+        _adrs, _specs, outputs, _cust, _cust_count = _assemble()
+    except SystemExit as e:
+        _report_refused(e.code if isinstance(e.code, str) else str(e.code))
+        return
+    except Exception as e:
+        _report_refused("%s: %s" % (type(e).__name__, e))
+        return
+
+    root = _repo_root()
+    total = len(outputs)
+    absent = 0
+    failing = 0
+    for path, text in outputs:
+        rel = os.path.relpath(path, root).replace("\\", "/")
+        expected = text.encode("utf-8")
+        required = path in REQUIRED_OUTPUTS
+        if not os.path.isfile(path):
+            if required:
+                print("[check] MISSING %s (required surface not present)" % rel)
+                failing += 1
+            else:
+                print("[check] ABSENT  %s (not present - skipped)" % rel)
+                absent += 1
+            continue
+        with open(path, "rb") as f:
+            actual = f.read()
+        if b"\r" not in expected:
+            actual = actual.replace(b"\r", b"")
+        if actual == expected:
+            print("[check] OK      %s" % rel)
+        else:
+            print("[check] DRIFT   %s" % rel)
+            failing += 1
+    if failing:
+        print("[check] DRIFT - %d of %d surface(s) differ or are missing - run "
+              "'pwsh docs/build.ps1' (or 'bash docs/build.sh') and commit the result"
+              % (failing, total))
+        sys.exit(1)
+    tail = "" if absent == 0 else " (%d absent, skipped)" % absent
+    print("[check] OK - %d generated surface(s) match%s" % (total, tail))
+
+
+# --------------------------------------------------------------- main
+def main():
+    # 단순 sys.argv 스캔 — argparse 불필요(플래그 3종 + 값 1개뿐, 파일 전체가 stdlib 미니멀 스타일).
+    argv = sys.argv[1:]
+    customer_mode = "--customer" in argv
+    check_mode = "--check" in argv
+    version = None
+    if "--version" in argv:
+        vi = argv.index("--version")
+        if vi + 1 < len(argv):
+            version = argv[vi + 1]
+
+    # --check 는 legacy --customer 표면(docs/customer.html)과 병용 불가: 그 표면은
+    # date.today() 를 헤더에 품어서 바이트 비교가 절대 성립하지 않는다(ADR 0074). exit 2 —
+    # 1 은 "drift" 전용이므로 오용은 다른 코드로 구분한다.
+    if check_mode and customer_mode:
+        print("[check] refused: --check cannot be combined with --customer "
+              "(docs/customer.html embeds date.today() and can never be byte-checked)")
+        sys.exit(2)
+
+    if customer_mode:
+        adrs = collect(ADR_DIR)
+        specs = collect(SPEC_DIR)
+        if not adrs and not specs:
+            sys.exit("adr/·spec/ 에서 frontmatter 포함 .md 를 찾지 못했습니다.")
+        build_customer(adrs, specs, version)
+        return
+
+    if check_mode:
+        _run_check()
+        return
+
+    adrs, specs, outputs, cust, cust_count = _assemble()
 
     for path, text in outputs:
         with open(path, "w", encoding="utf-8", newline="\n") as f:

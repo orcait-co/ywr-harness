@@ -665,6 +665,146 @@ $rFinal = Invoke-IBuild
 $ok = (Assert-True 'I18 the fixture builds clean again after the failure cases (all 6 surfaces)' `
     ($rFinal.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $docsI 'index.json')) -and (Test-Path -LiteralPath $custHtml)) $rFinal.Out) -and $ok
 
+# --- CK: --check mode (ADR 0074) — same corpus assembly as a normal build, compare-only, and
+# the check_docs.py wrapper that runs it with no consumer-side mirror of the builder. A fresh,
+# minimal fixture (no customer declaration) keeps the 4-surface set the cases below reason about.
+$repoCK = Join-Path $fx 'repo-check'
+$docsCK = Join-Path $repoCK 'docs'
+New-Item -ItemType Directory -Force -Path (Join-Path $docsCK 'adr'), (Join-Path $docsCK 'spec') | Out-Null
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsCK 'build_docs.py')
+$checkDocsTemplate = Join-Path $PSScriptRoot 'templates/docs/check_docs.py'
+
+function Write-CKDoc([string]$Rel, [string]$Body) {
+    [IO.File]::WriteAllText((Join-Path $docsCK $Rel), ($Body -replace "`r`n", "`n"))
+}
+function Invoke-CKBuild {
+    $out = & $py.Source (Join-Path $docsCK 'build_docs.py') 2>&1 | Out-String
+    return @{ Out = $out; Code = $LASTEXITCODE }
+}
+function Invoke-CKCheck {
+    $out = & $py.Source (Join-Path $docsCK 'build_docs.py') '--check' 2>&1 | Out-String
+    return @{ Out = $out; Code = $LASTEXITCODE }
+}
+
+Write-CKDoc 'adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`ntitle: `"a`"`nstatus: accepted`n---`n# 0001`nbody`n"
+$null = Invoke-CKBuild
+
+# CK1: a clean corpus checks clean — exit 0, the OK summary line.
+$rCK1 = Invoke-CKCheck
+$ok = (Assert-True 'CK1 a clean corpus checks clean (exit 0, OK summary)' `
+    ($rCK1.Code -eq 0 -and $rCK1.Out -match '\[check\] OK - ' -and $rCK1.Out -match 'surface\(s\) match') $rCK1.Out) -and $ok
+
+# CK2: drift is reported and the check writes NOTHING. Mutation anchor: if the write loop ran
+# on the check path instead of only comparing, $hashAfter would differ from $hashBefore here.
+$idxCK = Join-Path $docsCK 'index.json'
+Add-Content -LiteralPath $idxCK -Value 'x' -NoNewline
+$hashBefore = (Get-FileHash -LiteralPath $idxCK -Algorithm SHA256).Hash
+$rCK2 = Invoke-CKCheck
+$hashAfter = (Get-FileHash -LiteralPath $idxCK -Algorithm SHA256).Hash
+$ok = (Assert-True 'CK2 drift in index.json exits 1 and names it DRIFT' `
+    ($rCK2.Code -eq 1 -and $rCK2.Out -match '\[check\] DRIFT\s+docs/index\.json') $rCK2.Out) -and $ok
+$ok = (Assert-True 'CK2 the check wrote NOTHING — hash unchanged across the --check call' `
+    ($hashBefore -eq $hashAfter) "before=$hashBefore after=$hashAfter") -and $ok
+$ok = (Assert-True 'CK2 the other surfaces still report OK' `
+    ($rCK2.Out -match '\[check\] OK\s+docs/INDEX\.md' -and $rCK2.Out -match '\[check\] OK\s+docs/docs\.html' `
+     -and $rCK2.Out -match '\[check\] OK\s+docs/docs\.artifact\.html') $rCK2.Out) -and $ok
+$ok = (Assert-True 'CK2 the summary line words the failing count as "differ or are missing" (DRIFT + MISSING share one wording)' `
+    ($rCK2.Out -match 'differ or are missing') $rCK2.Out) -and $ok
+$null = Invoke-CKBuild   # restore index.json to a clean state
+
+# CK3: an ABSENT OPTIONAL surface (docs.html — the templates' gitignore does not track it, so
+# the canon itself commits only index.json/INDEX.md, ADR 0003) is reported but does not fail
+# the check. Control for CK3b: a REQUIRED surface missing DOES fail.
+$docsHtmlCK = Join-Path $docsCK 'docs.html'
+Remove-Item -LiteralPath $docsHtmlCK
+$rCK3 = Invoke-CKCheck
+$ok = (Assert-True 'CK3 an absent OPTIONAL generated surface is ABSENT, not a failure (exit 0)' `
+    ($rCK3.Code -eq 0 -and $rCK3.Out -match '\[check\] ABSENT\s+docs/docs\.html') $rCK3.Out) -and $ok
+$null = Invoke-CKBuild   # restore docs.html
+
+# CK3b: docs/index.json is REQUIRED (the docs-as-code contract commits it — docs.yml and every
+# consumer rely on it, the scaffold's gitignore template does not ignore it) — its absence is
+# MISSING and FAILS the check (exit 1), unlike CK3's gitignored OPTIONAL docs.html control
+# (Finding 6). Mutation anchor: treating every absent surface as ABSENT (today's pre-fix
+# behavior) flips this case to exit 0.
+$idxCK = Join-Path $docsCK 'index.json'
+Remove-Item -LiteralPath $idxCK
+$rCK3b = Invoke-CKCheck
+$ok = (Assert-True 'CK3b a missing REQUIRED docs/index.json is MISSING and fails the check (exit 1)' `
+    ($rCK3b.Code -eq 1 -and $rCK3b.Out -match '\[check\] MISSING\s+docs/index\.json \(required surface not present\)') $rCK3b.Out) -and $ok
+$ok = (Assert-True 'CK3b the summary line words the failing count as "differ or are missing"' `
+    ($rCK3b.Out -match 'differ or are missing') $rCK3b.Out) -and $ok
+$null = Invoke-CKBuild   # restore index.json
+
+# CK4: a core.autocrlf checkout (paired CRLF line endings, bytes otherwise identical) is NOT
+# drift. Mutation anchor: removing the CR normalization on the check path flips this to DRIFT.
+$indexMdCK = Join-Path $docsCK 'INDEX.md'
+$indexMdText = [IO.File]::ReadAllText($indexMdCK)
+[IO.File]::WriteAllText($indexMdCK, ($indexMdText -replace "`n", "`r`n"))
+$rCK4 = Invoke-CKCheck
+$ok = (Assert-True 'CK4 a CRLF checkout of a generated surface is tolerated (not DRIFT)' `
+    ($rCK4.Code -eq 0 -and $rCK4.Out -notmatch 'DRIFT') $rCK4.Out) -and $ok
+[IO.File]::WriteAllText($indexMdCK, $indexMdText)
+
+# CK4b: a LONE 0x0D (appended at end of file, so it is not followed by 0x0A) must also fold —
+# init.ps1/manifest-gate.ps1's ADR 0033 rule drops EVERY 0x0D verbatim, paired or not, and the
+# check must match that rule rather than a narrower CRLF-pair-only fold (Finding 7). Mutation
+# anchor: a pair-only fold (`.replace(b"\r\n", b"\n")`) leaves this trailing byte in place and
+# flips the case to DRIFT.
+$indexMdBytesCK = [IO.File]::ReadAllBytes($indexMdCK)
+[IO.File]::WriteAllBytes($indexMdCK, ($indexMdBytesCK + [byte]0x0D))
+$rCK4b = Invoke-CKCheck
+$ok = (Assert-True 'CK4b a lone (unpaired) trailing CR in a generated surface is still folded, not DRIFT' `
+    ($rCK4b.Code -eq 0 -and $rCK4b.Out -notmatch 'DRIFT') $rCK4b.Out) -and $ok
+[IO.File]::WriteAllBytes($indexMdCK, $indexMdBytesCK)
+
+# CK5: --check together with --customer is refused — docs/customer.html embeds date.today() and
+# can never be byte-checked. Exit 2, distinct from drift's exit 1.
+$rCK5 = & $py.Source (Join-Path $docsCK 'build_docs.py') '--check' '--customer' 2>&1 | Out-String
+$ck5Code = $LASTEXITCODE
+$ok = (Assert-True 'CK5 --check --customer is refused with exit 2 (not 1 — 1 means drift)' `
+    ($ck5Code -eq 2 -and $rCK5 -match 'customer') $rCK5) -and $ok
+
+# CK7: a duplicate ADR id makes the SHARED assembly (_assemble(), the same one the build path
+# uses) refuse before any surface comparison happens — REFUSED (exit 2), never DRIFT: the corpus
+# defect cannot be fixed by regenerating, so a caller that reads exit 1 as "rebuild and re-run"
+# must not loop on it (Finding 1/4). Mutation anchor: letting _assemble()'s SystemExit propagate
+# uncaught would exit 1 with a raw Korean message on stderr instead of this ASCII exit-2 report.
+Write-CKDoc 'adr/0002-rival.md' "---`nid: `"0001`"`ntype: adr`ntitle: `"rival`"`nstatus: proposed`n---`n# rival`n"
+$rCK7 = Invoke-CKCheck
+$ck7Bytes = [Text.Encoding]::UTF8.GetBytes($rCK7.Out)
+$ck7Ascii = -not ($ck7Bytes | Where-Object { $_ -ge 0x80 })
+$ok = (Assert-True 'CK7 a duplicate id makes the assembly refuse: exit 2, REFUSED + builder line, pure ASCII stdout' `
+    ($rCK7.Code -eq 2 -and $rCK7.Out -match '\[check\] REFUSED' -and $rCK7.Out -match '\[check\]\s+builder:' `
+     -and $ck7Ascii) $rCK7.Out) -and $ok
+Remove-Item -LiteralPath (Join-Path $docsCK 'adr/0002-rival.md')
+$null = Invoke-CKBuild   # restore a clean build after the refusal fixture
+
+# CK8: an empty corpus (no frontmatter'd .md anywhere in adr/ or spec/) is the same REFUSED
+# class as CK7 — exit 2, ASCII-only, never DRIFT (a caller must not try to "fix" this by
+# re-running the same regeneration that produced nothing to compare).
+Rename-Item -LiteralPath (Join-Path $docsCK 'adr/0001-a.md') -NewName '0001-a.md.bak'
+$rCK8 = Invoke-CKCheck
+$ck8Bytes = [Text.Encoding]::UTF8.GetBytes($rCK8.Out)
+$ck8Ascii = -not ($ck8Bytes | Where-Object { $_ -ge 0x80 })
+$ok = (Assert-True 'CK8 an empty corpus makes the assembly refuse: exit 2, REFUSED, pure ASCII stdout' `
+    ($rCK8.Code -eq 2 -and $rCK8.Out -match '\[check\] REFUSED' -and $ck8Ascii) $rCK8.Out) -and $ok
+Rename-Item -LiteralPath (Join-Path $docsCK 'adr/0001-a.md.bak') -NewName '0001-a.md'
+$null = Invoke-CKBuild   # restore a clean build after the empty-corpus fixture
+
+# CK6: the check_docs.py wrapper — no args runs the check; any argument is a usage refusal.
+Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $docsCK 'check_docs.py')
+$rCK6a = & $py.Source (Join-Path $docsCK 'check_docs.py') 2>&1 | Out-String
+$ok = (Assert-True 'CK6 wrapper, clean fixture, no args: exit 0 with the [check] OK line' `
+    ($LASTEXITCODE -eq 0 -and $rCK6a -match '\[check\] OK') $rCK6a) -and $ok
+Add-Content -LiteralPath $idxCK -Value 'x' -NoNewline
+$rCK6b = & $py.Source (Join-Path $docsCK 'check_docs.py') 2>&1 | Out-String
+$ok = (Assert-True 'CK6 wrapper on the drifted fixture: exit 1' ($LASTEXITCODE -eq 1) $rCK6b) -and $ok
+$null = Invoke-CKBuild
+$rCK6c = & $py.Source (Join-Path $docsCK 'check_docs.py') 'extra-arg' 2>&1 | Out-String
+$ok = (Assert-True 'CK6 wrapper with an argument: exit 2 (usage refusal — the check is the only mode)' `
+    ($LASTEXITCODE -eq 2) $rCK6c) -and $ok
+
 Remove-FixtureRoot $fx
 
 if (-not $ok) { Write-Host 'build-docs selftest: FAILED' -ForegroundColor Red; exit 1 }
