@@ -213,10 +213,36 @@ commit ships as a new version to every consumer), a hook path that does not reso
 regression from exec form to shell form where a path placeholder is used, and a release-notes
 canon that lies (top `CHANGELOG.md` entry ≠ `plugin.json` version, or the artifact link
 diverging between the CHANGELOG and the announce hook — ADR 0030).
-`manifest-gate.selftest.ps1` proves it can fail — seventeen mutations plus an unmutated control,
-because a suite that only ever passes and a gate that fails on everything score identically
-without the control. The control has earned its place: it caught a broken identity gate while
-the negative suite was reporting every mutation caught.
+`manifest-gate.selftest.ps1` proves it can fail — one or more mutations per check class (the
+suite prints the count) plus an unmutated control, because a suite that only ever passes and a
+gate that fails on everything score identically without the control. The control has earned its
+place: it caught a broken identity gate while the negative suite was reporting every mutation
+caught.
+
+### Eval suite (host-coupled behavioral probes)
+
+`evals/` is a `claude plugin eval` suite (Claude Code ≥ 2.1.269; ADR 0076, spec 0014). Where the
+selftests above are hermetic — they call the scripts and never the host — each eval case runs a
+fresh, isolated `claude -p` child with ONLY this plugin loaded and grades what came out: a
+SessionStart hook's `additionalContext` reaching the model, `ywr-harness:verify` triggering on
+natural phrasing, the five `disable-model-invocation` skills staying uninvoked, and
+`ywr-harness:reviewer` resolving by its namespaced name with a `SubagentStop` ledger line behind
+it. Every case pins `model:` to a worker model (sonnet), and `manifest-gate.ps1` refuses a case
+that does not (or that carries an unknown frontmatter key or grader type — refusals the runner
+would otherwise deliver only after the paid run).
+
+```
+claude plugin eval . --no-publish                              # from the plugin root: two arms, 3 runs per case
+claude plugin eval . --case <name> --runs 1 --ablation none     # iterate on one grader cheaply
+claude plugin eval ywr-harness@ywrlabs                          # the INSTALLED copy — a member self-check
+```
+
+Every run is a paid model call on the operator's own plan. Native Windows has no sandbox backend,
+so cases that would grant `Bash` are refused there — the suite is read-only cases only, and the
+shell-needing skills, the review workflow, the `DirectoryAdded`/`ConfigChange` hooks and the two
+scaffold nudges are NOT in it (their selftests and hand runs stay the verification). Results land
+in `evals/results/` and are never committed. The suite is run by hand at each compat sweep
+(spec 0012) and before a release; the ledger of what it measured is spec 0014.
 
 `claude plugin validate --strict` is the richer manifest check but needs the CLI installed, so
 it stays a local pre-commit habit rather than a CI step.

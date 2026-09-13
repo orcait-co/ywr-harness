@@ -11,6 +11,28 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.48.0 — 2026-09-14
+
+- **플러그인 평가 스위트 `evals/` 가 함께 배포됩니다 (ADR 0076 · spec 0014).** Claude Code 2.1.269 의 `claude plugin eval` 은
+  격리된 세션에 플러그인만 로드해 프롬프트를 던지고 grader 로 채점하며, 플러그인 없이 같은 케이스를 다시 돌려 차이(Δ)를
+  보여줍니다. 하네스는 셀프테스트가 닿지 못하던 호스트 결합 동작을 4 케이스로 자동 프로브합니다 — 세션 시작 훅의
+  `additionalContext` 가 모델에 도달하는지 · `ywr-harness:verify` 가 자연어로 트리거되는지 · `disable-model-invocation`
+  스킬 5개가 모델에 의해 호출되지 않는지 · `ywr-harness:reviewer` 가 네임스페이스로 해석되고 SubagentStop 원장이 남는지.
+  모든 케이스는 `model: claude-sonnet-5` 고정(세션 기본 모델·Fable 주간 한도를 쓰지 않음). **실행은 유료 모델 호출**(실행한
+  사람의 플랜 사용량): 플러그인 루트에서 `claude plugin eval . --no-publish`(2-arm 기본), 반복 조정은
+  `--case <이름> --runs 1 --ablation none`. 설치본을 대상으로는 `claude plugin eval ywr-harness@ywrlabs` — 멤버 머신에서
+  훅이 죽은 것 같을 때 자가 점검용(본인 사용량 소모). Windows 네이티브는 샌드박스 백엔드가 없어 Bash 허용 케이스를 거부하므로
+  읽기 전용 케이스만 들어 있습니다; 셸이 필요한 5개 스킬·리뷰 워크플로·DirectoryAdded/ConfigChange 훅·스캐폴드 넛지는
+  미포함(셀프테스트와 수동 검증이 그대로 담당). 결과 `evals/results/` 는 커밋 대상이 아닙니다.
+- **`manifest-gate.ps1` 에 평가 스위트 구조 검사가 추가되었습니다(spec 0008 §3.2 항목 10).** prompt.md 의 미문서 키 ·
+  `model` 미고정 또는 비워커(sonnet/haiku 외) 모델 · 미문서 grader `type` · grader 없는 케이스를 유료 실행 전에 거부합니다.
+  셀프테스트 변이 5개 추가, 컨트롤은 케이스 수가 찍힌 PASS 줄을 단언합니다.
+- 훅·스킬·에이전트·워크플로의 동작 변경은 없습니다. Claude Code **2.1.270** 호환성 스윕 #7(spec 0012): 설치본 기준 Workflow
+  by-name 프로브 통과 · `claude plugin validate --strict` 통과 · 평가 스위트 첫 실행이 훅 3종 발화와 SubagentStop 원장을
+  샌드박스에서 실측(실제 `~/.claude` 무접촉). 셀프테스트 수정 1건: `init.selftest` AA1 이 "새 경로의 도입 버전" 을 플러그인
+  현재 버전과 같다고 단언해 첫 버전 범프에서 정상 REFUSED 를 빨갛게 읽었습니다 — 이제 `init.ps1` 의 `$INTRODUCED_IN` 값을 읽어
+  단언합니다.
+
 ## v0.47.0 — 2026-09-07
 
 - **문서 빌더에 `--check` 모드가 생기고, 스캐폴드가 `docs/check_docs.py` 를 놓습니다 (ADR 0074).**

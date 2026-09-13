@@ -764,7 +764,15 @@ Set-Content -LiteralPath $aaBuilder -Value '# locally hacked, old-path file' -No
 $rAA1 = Invoke-Init @('-Target', $aa)
 $ok = (Assert-True 'AA1 run exits 0' ($rAA1.Code -eq 0) "exit=$($rAA1.Code)") -and $ok
 $ok = (Assert-True 'AA1 REFUSED names the path' ($rAA1.Out -match 'docs/check_docs\.py REFUSED') $rAA1.Out) -and $ok
-$ok = (Assert-True 'AA1 the introducing version is named' ($rAA1.Out -match "new in $([regex]::Escape($manifestVer))") $rAA1.Out) -and $ok
+# The introducing version is the $INTRODUCED_IN entry for the path, read from init.ps1 itself —
+# NOT the manifest version. The first cut asserted `new in $manifestVer`, which was true only while
+# the plugin version still equalled the version that introduced the path; the first bump after
+# 0.47.0 (0.48.0, 2026-09-14) turned AA1 red on a correct refusal. A missing entry fails loudly
+# here rather than letting the assertion pass on an empty pattern.
+$aaIntroducedM = [regex]::Match((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'init.ps1') -Raw), "'docs/check_docs\.py'\s*=\s*'(\d+\.\d+\.\d+)'")
+$ok = (Assert-True 'AA1 init.ps1 carries an $INTRODUCED_IN entry for docs/check_docs.py' $aaIntroducedM.Success 'no entry parsed — the guard under test has no version to name') -and $ok
+$aaIntroduced = if ($aaIntroducedM.Success) { $aaIntroducedM.Groups[1].Value } else { 'NO-ENTRY-PARSED' }
+$ok = (Assert-True 'AA1 the introducing version is named' ($rAA1.Out -match "new in $([regex]::Escape($aaIntroduced))") "want 'new in $aaIntroduced' in: $($rAA1.Out)") -and $ok
 $ok = (Assert-True 'AA1 the repo''s stamped version is named' ($rAA1.Out -match 'stamped 0\.46\.0') $rAA1.Out) -and $ok
 $ok = (Assert-True 'AA1 refused is counted' ($rAA1.Out -match 'refused=1') $rAA1.Out) -and $ok
 $ok = (Assert-True 'AA1 the foreign bytes are unchanged on disk' `

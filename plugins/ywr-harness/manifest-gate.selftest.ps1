@@ -437,16 +437,70 @@ $r = New-CanonShape 'lockstep-not-a-repo-skips'
 $g = Run-GateAt $r
 Record 'lockstep-not-a-repo-skips' ($g.rc -eq 0 -and $g.out -match 'release lockstep: skipped — ') "exit=$($g.rc) skip-said=$([bool]($g.out -match 'release lockstep: skipped'))"
 
+# --- eval suite structure (ADR 0076 / spec 0014) -------------------------------------------------
+# Four refusals the runner would otherwise deliver only after a PAID run (unknown prompt.md key ·
+# unknown grader type · grader-less case) or never (an unpinned or non-worker model — the host has
+# no such rule). Each mutation edits ONE case of the shipped suite; the control below proves the
+# unmutated suite passes the same section.
+$evalCase = Join-Path $src 'evals/hook-version-announce-reaches-context'
+if (-not (Test-Path -LiteralPath (Join-Path $evalCase 'prompt.md') -PathType Leaf)) {
+    Write-Host 'FAIL [eval-suite] fixture case evals/hook-version-announce-reaches-context/prompt.md missing — the eval mutations have nothing to mutate' -ForegroundColor Red
+    $results += [pscustomobject]@{ case = 'eval-suite-fixture-missing'; exit = 0 }
+} else {
+    Try-Case 'eval-unknown-prompt-key' {
+        param($d)
+        $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:', "max_turn: 5`nmodel:" | Set-Content -LiteralPath $p -NoNewline
+    }
+    # A key the parser cannot read (dashed) must be refused as UNPARSED, not silently skipped past
+    # the unknown-key loop — the review's high finding: the first cut printed PASS over it while
+    # the runner still rejects the file (ADR 0125 class).
+    Try-Case 'eval-unparsed-frontmatter-line' {
+        param($d)
+        $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:', "max-turns: 5`nmodel:" | Set-Content -LiteralPath $p -NoNewline
+    }
+    # haiku IS a worker model, so only the one-suite-one-model rule can catch this — the mutation
+    # proves that branch and nothing else.
+    Try-Case 'eval-model-mixed-across-cases' {
+        param($d)
+        $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:.*$', 'model: claude-haiku-4-5' | Set-Content -LiteralPath $p -NoNewline
+    }
+    Try-Case 'eval-model-unpinned' {
+        param($d)
+        $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:.*\r?\n', '' | Set-Content -LiteralPath $p -NoNewline
+    }
+    Try-Case 'eval-model-not-a-worker' {
+        param($d)
+        $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:.*$', 'model: claude-fable-5-1' | Set-Content -LiteralPath $p -NoNewline
+    }
+    Try-Case 'eval-unknown-grader-type' {
+        param($d)
+        $p = Join-Path $d 'evals/hook-version-announce-reaches-context/graders/says-first-recorded-run.md'
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^type:.*$', 'type: custom_script' | Set-Content -LiteralPath $p -NoNewline
+    }
+    Try-Case 'eval-case-without-graders' {
+        param($d)
+        Remove-Item -LiteralPath (Join-Path $d 'evals/hook-version-announce-reaches-context/graders') -Recurse -Force
+    }
+}
+
 # A POSITIVE control: the unmutated copy must still pass. Without it a gate that fails on
 # everything (a broken gate) would score a perfect negative suite. The copy sits with no repo
-# above it, so the placement sweep must also SAY it skipped (never a silent no-op).
+# above it, so the placement sweep must also SAY it skipped (never a silent no-op). The eval
+# section must SAY it ran over the shipped suite (a PASS line with a case count): a section that
+# silently did nothing would let every eval mutation above be caught by some other check and
+# still read as covered.
 $ok = Join-Path $base 'unmutated-control'
 Copy-Item -LiteralPath $src -Destination $ok -Recurse -Force
 $gc = Invoke-Gate (Join-Path $ok 'manifest-gate.ps1')
 $ctlOut = $gc.Out
 $ctl = $gc.Code
-if ($ctl -eq 0 -and $ctlOut -match 'dogfood placements: skipped' -and $ctlOut -match 'release lockstep: skipped — not the canon dogfood shape') { Write-Host 'PASS [unmutated-control] gate exited 0, placement sweep and release lockstep both reported their skip' -ForegroundColor Green }
-else { Write-Host "FAIL [unmutated-control] exit=$ctl skip-said=$([bool]($ctlOut -match 'dogfood placements: skipped')) lockstep-skip-said=$([bool]($ctlOut -match 'release lockstep: skipped'))" -ForegroundColor Red; $ctl = 1 }
+if ($ctl -eq 0 -and $ctlOut -match 'dogfood placements: skipped' -and $ctlOut -match 'release lockstep: skipped — not the canon dogfood shape' -and $ctlOut -match 'PASS  eval suite: [1-9]\d* case\(s\)') { Write-Host 'PASS [unmutated-control] gate exited 0, placement sweep and release lockstep both reported their skip, eval suite checked with a case count' -ForegroundColor Green }
+else { Write-Host "FAIL [unmutated-control] exit=$ctl skip-said=$([bool]($ctlOut -match 'dogfood placements: skipped')) lockstep-skip-said=$([bool]($ctlOut -match 'release lockstep: skipped')) eval-suite-counted=$([bool]($ctlOut -match 'PASS  eval suite: [1-9]\d* case\(s\)'))" -ForegroundColor Red; $ctl = 1 }
 
 # --- the contracts the in-process runner rests on (review 2026-09-02: a negative suite must never
 # --- score an abort as a catch) --------------------------------------------------------------------

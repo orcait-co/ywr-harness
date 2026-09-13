@@ -398,6 +398,123 @@ if (-not $inTree) {
     }
 }
 
+# --- eval suite structure (ADR 0076 / spec 0014) -------------------------------------------------
+# `claude plugin eval` runs the cases under evals/ as PAID model calls, and three of its refusals
+# surface only at run time: an unknown prompt.md frontmatter key is an error, a grader with an
+# unknown `type` fails to load, and a case with no grader scores nothing. Each costs a run to
+# find. This section refuses them here, plus the one house rule the host cannot know: every case
+# pins `model:` to a WORKER model (sonnet or haiku). An unpinned case runs on the operator's
+# session default — on a Premium seat that is the Fable weekly cap — and two operators with
+# different defaults get incomparable scores (org guide: workers never inherit the session model).
+# The key and type sets are the documented ones (plugin-evals reference, read 2026-09-14). A
+# documented key this list lacks fails loudly here and is added in the same reviewed commit —
+# the alternative is a silent list that lets an unknown key through to a paid run.
+# Scope: prompt.md frontmatter and graders/*.md frontmatter only. A case.yaml-only case is
+# accepted as-is (its `execution:`/`context:` nesting is not parsed here). `results/` is the
+# runner's output tree, never a case. No eval dir → reported, not failed: a plugin without a
+# suite is not broken, but a suite the gate cannot see is said so, never passed over.
+$evalDirName = 'evals'
+if ($mf -and $mf.experimental -and $mf.experimental.evals) { $evalDirName = [string]$mf.experimental.evals }
+$evalDir = Join-Path $root $evalDirName
+if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
+    Write-Host "eval suite: none — no $evalDirName/ directory in this plugin (reported, not failed)" -ForegroundColor Yellow
+} else {
+    $promptKeys = @('schema_version', 'name', 'description', 'tags', 'plugins', 'runs', 'expected_outcome',
+                    'model', 'max_turns', 'timeout_seconds', 'allowed_tools', 'append_system_prompt', 'env')
+    $graderTypes = @('regex', 'tool_used', 'tool_order', 'file_exists', 'llm', 'baseline')
+    $workerModelRx = '^(claude-)?(sonnet|haiku)'
+    # Top-level keys only (`^name:`): nested YAML lines are indented and stay out of the key set,
+    # so an inline map value such as `target: { source: file, path: x }` counts as ONE key.
+    # Every OTHER column-0 line inside the block is returned as UNPARSED and refused by the caller:
+    # a key the regex cannot read (`max-turns:`, a stray list item, a typo) is exactly a key the
+    # unknown-key loop would otherwise never see — the check would print PASS over a file the
+    # runner still rejects (review 2026-09-14, high; the ADR 0125 class — a validator that only
+    # sees what it parsed). Comments (`#`) and blank lines are the only column-0 lines let through.
+    function Get-FrontmatterKeys([string]$Path) {
+        $lines = @(Get-Content -LiteralPath $Path)
+        $keys = [ordered]@{}
+        $unparsed = @()
+        if ($lines.Count -eq 0 -or $lines[0].Trim() -ne '---') { return $null }
+        for ($i = 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i].Trim() -eq '---') { return [pscustomobject]@{ Map = $keys; Unparsed = $unparsed } }
+            if ($lines[$i] -match '^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$') { $keys[$Matches[1]] = $Matches[2].Trim() }
+            elseif ($lines[$i] -match '^\S' -and $lines[$i] -notmatch '^#') { $unparsed += ,("$($i + 1): $($lines[$i].Trim())") }
+        }
+        return $null   # opened, never closed
+    }
+    $evalBad = 0
+    $cases = @(Get-ChildItem -LiteralPath $evalDir -Recurse -File -Filter 'prompt.md' -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '[\\/]results[\\/]' })
+    $graderCount = 0
+    $models = @()
+    foreach ($c in $cases) {
+        $caseDir = $c.Directory
+        $caseName = $caseDir.FullName.Substring($evalDir.Length).TrimStart('\', '/').Replace('\', '/')
+        $fm = Get-FrontmatterKeys $c.FullName
+        if ($null -eq $fm) {
+            Bad "eval case $caseName : prompt.md has no closed frontmatter block — run limits and the model pin are unreadable"
+            $evalBad++
+            continue
+        }
+        foreach ($u in $fm.Unparsed) {
+            Bad "eval case $caseName : prompt.md frontmatter line $u is not a readable 'key: value' — the gate cannot tell a typo from a nested block here, and the runner refuses it after the run is paid for"
+            $evalBad++
+        }
+        foreach ($k in @($fm.Map.Keys)) {
+            if ($promptKeys -notcontains $k) {
+                Bad "eval case $caseName : unknown prompt.md key '$k' — the runner refuses it at run time, after the run is paid for"
+                $evalBad++
+            }
+        }
+        # `model` may also be quoted in YAML; strip one pair of quotes before matching.
+        $model = if ($fm.Map.Contains('model')) { ([string]$fm.Map['model']).Trim("'", '"') } else { '' }
+        if (-not $model) {
+            Bad "eval case $caseName : model not pinned — the case would run on the operator's session default (org guide: workers never inherit the session model; ADR 0076)"
+            $evalBad++
+        } elseif ($model -notmatch $workerModelRx) {
+            Bad "eval case $caseName : model '$model' is not a worker model (sonnet/haiku) — scores must be comparable across operators and never draw the Fable weekly cap (ADR 0076)"
+            $evalBad++
+        } else {
+            $models += $model
+        }
+        $graders = @(Get-ChildItem -LiteralPath (Join-Path $caseDir.FullName 'graders') -File -Filter '*.md' -ErrorAction SilentlyContinue)
+        if ($graders.Count -eq 0) {
+            Bad "eval case $caseName : no graders/*.md — a case with nothing to grade scores nothing and still costs its runs"
+            $evalBad++
+        }
+        foreach ($g in $graders) {
+            $graderCount++
+            $gfm = Get-FrontmatterKeys $g.FullName
+            foreach ($u in @(if ($gfm) { $gfm.Unparsed } else { @() })) {
+                Bad "eval case $caseName : grader $($g.Name) frontmatter line $u is not a readable 'key: value'"
+                $evalBad++
+            }
+            $gtype = if ($gfm -and $gfm.Map.Contains('type')) { ([string]$gfm.Map['type']).Trim("'", '"') } else { '' }
+            if (-not $gtype) {
+                Bad "eval case $caseName : grader $($g.Name) has no readable 'type' in its frontmatter"
+                $evalBad++
+            } elseif ($graderTypes -notcontains $gtype) {
+                Bad "eval case $caseName : grader $($g.Name) type '$gtype' is not one of $($graderTypes -join '/') — it fails to load at run time"
+                $evalBad++
+            }
+        }
+    }
+    # One suite, one model. The pin is what makes ledger rows comparable across runs and
+    # operators; a model rollover is therefore ALL the cases in one commit, and a partial
+    # rollover — three cases moved, one forgotten — must fail here rather than quietly grade two
+    # models under one ledger (review 2026-09-14, medium).
+    $distinctModels = @($models | Sort-Object -Unique)
+    if ($distinctModels.Count -gt 1) {
+        Bad "eval suite: cases pin DIFFERENT models ($($distinctModels -join ', ')) — one suite, one model: move every case's model: in the same commit so the ledger rows stay comparable (ADR 0076)"
+        $evalBad++
+    }
+    if ($cases.Count -eq 0) {
+        Bad "eval suite: $evalDirName/ exists but holds no <case>/prompt.md — an empty suite is not a pass (a case.yaml-only suite is out of this gate's scope; say so here if that is intended)"
+    } elseif ($evalBad -eq 0) {
+        Good "eval suite: $($cases.Count) case(s), $graderCount grader(s) — frontmatter keys, grader types and worker-model pins valid (model: $($distinctModels -join '/'))"
+    }
+}
+
 # --- coverage report (visible every run, never a silent cap) --------------------------------
 # Nothing is excluded but the selftests themselves. Excluding the runner, the gate, or the
 # shared lib would be the ADR 0125 miscount: a coverage number narrowed by an undeclared
