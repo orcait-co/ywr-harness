@@ -26,8 +26,9 @@ if (-not $py) {
 # --- spawn budget (ADR 0071 option E, third suite — 2026-09-02) ---------------------------------
 # This suite is spawn-bound like init's and manifest-gate's, but the spawn is GIT, not python:
 # measured per case on the owner's box, python cold start + stdlib imports is ~80 ms while each git
-# call is ~60 ms — and a case pays 3 git calls inside the emitter (`diff --name-only HEAD`,
-# `ls-files --others`, `diff --numstat`) plus what its fixture build pays here. So the runspace
+# call is ~60 ms — and a case pays 6 git calls inside the emitter (`diff --name-only HEAD`,
+# `ls-files --others`, `diff --numstat`, and since ADR 0077 the trailer's `ls-files --ignored`,
+# `ls-files -- .gitignore`, `check-ignore --stdin`) plus what its fixture build pays here. So the runspace
 # runner the other two suites adopted does not apply (nothing here is a .ps1 under test), and a
 # persistent interpreter would recover ~18% (~8 s of 45) at the cost of a request/response driver
 # that could not carry the per-run environment cases J (PYTHONIOENCODING) and K (HOME) need. Two
@@ -1448,6 +1449,110 @@ $ab9 = New-Ab 'ab9-handpub' ('{ "url": "' + $SURL + '", "title": "ab9-handpub ·
 $rAB9 = Invoke-Gates $ab9 @()
 $ok = (Assert-True 'AB9 a source-less item names the hand-published shape on the ok line' ($rAB9.Out -match 'artifact: ok — .*· no source declared — hand-published page \(ADR 0032 shape\); not publishable via /ywr-harness:artifact-publish') $rAB9.Out) -and $ok
 $ok = (Assert-True 'AB9 a source-less item emits no check and stays ok, never a VIOLATION' ($rAB9.Out -notmatch '\[artifacts\]' -and $rAB9.Out -notmatch 'artifact: VIOLATION') $rAB9.Out) -and $ok
+
+# --- AC: ignored-tree claims (ADR 0077) — a group whose match also claims gitignored paths ------
+# The class slice 15's review found in the canon's own `evals` group: a gitignored UNTRACKED file
+# never reaches the emitter (`ls-files --others --exclude-standard`), so a group regex that
+# overlaps an ignored tree is invisible right up to a force-add — and then the file is claimed and
+# gated as an ordinary member, never flagged as ungrouped. The trailer report names the group, the
+# count, and the DECIDING .gitignore rule (`source:line `pattern``) so the fix — narrow the match
+# or a lookahead — is one edit away. Report only: CI does not grep it (ADR 0077 names the
+# promotion trigger). The report is a function of the COMMIT, not the clone: per-clone exclusion
+# sources (`core.excludesFile`, `.git/info/exclude`) are filtered out (AC5).
+function New-IgnRepo([string]$Name, [string]$Config, [string]$Ignore, [string[]]$IgnoredFiles, [string[]]$Changed) {
+    $p = New-Repo $Name $Config @()
+    if ($Ignore) {
+        Set-Content -LiteralPath (Join-Path $p '.gitignore') -Value $Ignore -NoNewline
+        Invoke-FixtureCommit $p 'ignore'   # commits .gitignore alone — the ignored files are written after
+    }
+    foreach ($f in @($IgnoredFiles) + @($Changed)) {
+        $full = Join-Path $p $f
+        $dir = Split-Path -Parent $full
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        Set-Content -LiteralPath $full -Value 'x' -NoNewline
+    }
+    return $p
+}
+# One changed, claimed file (web/main.ts) in every fixture: the per-slice path returns before the
+# trailer when the scope is empty, so the report needs a scope to ride on (the --all audit does not).
+function New-AcConfig([string]$GroupsJson) {
+    return '{ "review": { "canon": "REVIEW.md", "docs_only": ["^docs/"], "harness_layer": [], "critical": [] }, "groups": [ ' + $GroupsJson + ', { "name": "web", "match": "^web/.*\\.ts$", "cwd": "", "strip_prefix": "", "gates": [] } ] }'
+}
+$CFG_AC = New-AcConfig '{ "name": "build", "match": "^out/.*\\.js$", "cwd": "", "strip_prefix": "", "gates": [] }'
+
+# AC1: a directory rule claimed — count, deciding rule, consequence, fix shape; below the tier line.
+$ac1 = New-IgnRepo 'ac1-claim' $CFG_AC "out/`nnotes.tmp`n" @('out/a.js', 'out/b.js', 'out/deep/c.js', 'notes.tmp') @('web/main.ts')
+$rAC1 = Invoke-Gates $ac1 @()
+$ok = (Assert-True 'AC1 a group claiming a gitignored tree is reported with the count and the deciding rule' ($rAC1.Out -match '(?m)^ignored-tree claims \(1 group\(s\)' -and $rAC1.Out -match '(?m)^  groups\[build\] claims 3 file\(s\) ignored by \.gitignore:1 `out/`') $rAC1.Out) -and $ok
+$ok = (Assert-True 'AC1 an ignored path no group claims is not reported (notes.tmp)' ($rAC1.Out -notmatch 'notes\.tmp') $rAC1.Out) -and $ok
+$ok = (Assert-True 'AC1 the header names the consequence and the fix shape' ($rAC1.Out -match 'ungrouped backstop is blind' -and $rAC1.Out -match '\(\?!results/\) lookahead') $rAC1.Out) -and $ok
+$ok = (Assert-True 'AC1 still advisory (exit 0)' ($rAC1.Code -eq 0) "exit=$($rAC1.Code)") -and $ok
+$ok = (Assert-True 'AC1 the report sits below the tier line — outside both output parsers'' window' ((($rAC1.Out -split 'review tier:').Count -eq 2) -and (($rAC1.Out -split 'review tier:')[1] -match 'ignored-tree claims')) $rAC1.Out) -and $ok
+$ok = (Assert-True 'AC1 the detail line is not a gates-window group header shape (no 2-space `[name]`)' ($rAC1.Out -notmatch '(?m)^  \[build\]') $rAC1.Out) -and $ok
+# AC2: the full-tree audit (CI's push-to-main shape) carries the same report — a tree fact.
+$rAC2 = Invoke-Gates $ac1 @('--all')
+$ok = (Assert-True 'AC2 the --all audit carries the same report' ($rAC2.Out -match 'groups\[build\] claims 3 file\(s\) ignored by \.gitignore:1 `out/`') $rAC2.Out) -and $ok
+# AC3: gitignored paths exist, no group claims them — the clean line states what was checked.
+$ac3 = New-IgnRepo 'ac3-clean' ($CFG_AC.Replace('^out/', '^src/')) "out/`nnotes.tmp`n" @('out/a.js', 'out/b.js', 'out/deep/c.js', 'notes.tmp') @('web/main.ts')
+$rAC3 = Invoke-Gates $ac3 @()
+$ok = (Assert-True 'AC3 no claim — the clean line states how many gitignored paths were checked' ($rAC3.Out -match 'ignored-tree claims: none — 4 gitignored path\(s\) checked against 2 group\(s\)') $rAC3.Out) -and $ok
+# AC4: nothing gitignored in the checkout (CI's fresh clone before any build) — said, never read as clean.
+$ac4 = New-IgnRepo 'ac4-none' $CFG_AC '' @() @('web/main.ts')
+$rAC4 = Invoke-Gates $ac4 @()
+$ok = (Assert-True 'AC4 nothing gitignored in this checkout is stated as none CHECKED, not none found' ($rAC4.Out -match 'ignored-tree claims: none checked — no path in this checkout is excluded by the repo''s committed \.gitignore files') $rAC4.Out) -and $ok
+# AC5: per-clone exclusion sources are NOT the repo's policy. `out/` is excluded only through
+# core.excludesFile and `*.tmp` only through .git/info/exclude — both exclude the paths from the
+# emitter's scope exactly as .gitignore would, so the listing sees them; the report must not.
+$ac5 = New-IgnRepo 'ac5-perclone' $CFG_AC '' @('out/a.js', 'out/b.js') @('web/main.ts')
+Set-Content -LiteralPath (Join-Path $ac5 'my-excludes') -Value "out/`nmy-excludes`n" -NoNewline
+& git -C $ac5 config core.excludesFile (Join-Path $ac5 'my-excludes')
+New-Item -ItemType Directory -Force -Path (Join-Path $ac5 '.git/info') | Out-Null
+Set-Content -LiteralPath (Join-Path $ac5 '.git/info/exclude') -Value "*.tmp`n" -NoNewline
+Set-Content -LiteralPath (Join-Path $ac5 'scratch.tmp') -Value 'x' -NoNewline
+$rAC5 = Invoke-Gates $ac5 @()
+$ok = (Assert-True 'AC5 paths excluded only by core.excludesFile / .git/info/exclude are per-clone and not counted' ($rAC5.Out -match 'ignored-tree claims: none checked' -and $rAC5.Out -notmatch 'groups\[build\]') $rAC5.Out) -and $ok
+$ok = (Assert-True 'AC5 those paths still stayed out of the scope (the listing did see them)' ($rAC5.Out -notmatch 'out/a\.js' -and $rAC5.Out -notmatch 'scratch\.tmp') $rAC5.Out) -and $ok
+# AC5b: the same per-clone mechanism in its RELATIVE shape (review 2026-09-14, high): core.excludesFile
+# set to an in-tree path that is NAMED `.gitignore` but is untracked prints in `check-ignore -v` as
+# `local/.gitignore` — byte-for-byte the shape of a committed nested .gitignore — and an untracked
+# `sub/.gitignore` dropped into the tree is per-clone too. Only a TRACKED .gitignore is the repo's
+# policy: the tracked set (`git ls-files -- .gitignore **/.gitignore`) decides, not the path's shape.
+$ac5b = New-IgnRepo 'ac5b-relative' $CFG_AC '' @('out/a.js') @('web/main.ts')
+New-Item -ItemType Directory -Force -Path (Join-Path $ac5b 'local') | Out-Null
+Set-Content -LiteralPath (Join-Path $ac5b 'local/.gitignore') -Value "out/`nlocal/`n" -NoNewline
+& git -C $ac5b config core.excludesFile 'local/.gitignore'
+New-Item -ItemType Directory -Force -Path (Join-Path $ac5b 'sub') | Out-Null
+Set-Content -LiteralPath (Join-Path $ac5b 'sub/.gitignore') -Value "*.log`n" -NoNewline
+Set-Content -LiteralPath (Join-Path $ac5b 'sub/run.log') -Value 'x' -NoNewline
+$rAC5b = Invoke-Gates $ac5b @()
+$ok = (Assert-True 'AC5b a RELATIVE core.excludesFile named .gitignore and an untracked nested .gitignore are per-clone — not counted' ($rAC5b.Out -match 'ignored-tree claims: none checked' -and $rAC5b.Out -notmatch 'groups\[build\]') $rAC5b.Out) -and $ok
+# AC5c: the positive twin — commit the nested .gitignore and the same rule COUNTS (the tracked set is
+# what flipped, nothing else): mutation anchor for a tracked-set check that silently read nothing.
+Invoke-FixtureCommit $ac5b 'track sub/.gitignore'
+$rAC5c = Invoke-Gates $ac5b @('--all')
+$ok = (Assert-True 'AC5c once tracked, the nested .gitignore rule counts (1 path checked, still no claim)' ($rAC5c.Out -match 'ignored-tree claims: none — 1 gitignored path\(s\) checked against 2 group\(s\)') $rAC5c.Out) -and $ok
+# AC6: a nested .gitignore is named as the source; an EXACT-NAME rule is the CRLF regression anchor —
+# a newline-separated `--stdin` list reaches git as `notes.tmp\r` through Windows' text-mode pipe,
+# which no exact-name rule matches while directory rules still match their prefix (measured
+# 2026-09-14 on the canon: docs/docs.html and claude/managed-settings.dist.json vanished from the
+# report). NUL records (`-z`) are what keeps this assertion green on Windows.
+$ac6 = New-IgnRepo 'ac6-nested' (New-AcConfig '{ "name": "logs", "match": "^out/.*\\.log$", "cwd": "", "strip_prefix": "", "gates": [] }, { "name": "tmp", "match": "^notes\\.tmp$", "cwd": "", "strip_prefix": "", "gates": [] }') "notes.tmp`n" @() @()
+New-Item -ItemType Directory -Force -Path (Join-Path $ac6 'out') | Out-Null
+Set-Content -LiteralPath (Join-Path $ac6 'out/.gitignore') -Value "*.log`n" -NoNewline
+Invoke-FixtureCommit $ac6 'nested ignore'
+foreach ($f in @('out/run.log', 'notes.tmp', 'web/main.ts')) {
+    $full = Join-Path $ac6 $f; $dir = Split-Path -Parent $full
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    Set-Content -LiteralPath $full -Value 'x' -NoNewline
+}
+$rAC6 = Invoke-Gates $ac6 @()
+$ok = (Assert-True 'AC6 a nested .gitignore is the named source' ($rAC6.Out -match 'groups\[logs\] claims 1 file\(s\) ignored by out/\.gitignore:1 `\*\.log`') $rAC6.Out) -and $ok
+$ok = (Assert-True 'AC6 an exact-name rule is matched (CRLF --stdin regression anchor)' ($rAC6.Out -match 'groups\[tmp\] claims 1 file\(s\) ignored by \.gitignore:1 `notes\.tmp`') $rAC6.Out) -and $ok
+$ok = (Assert-True 'AC6 both claims count in the header' ($rAC6.Out -match 'ignored-tree claims \(2 group\(s\)') $rAC6.Out) -and $ok
+# AC7: more deciding rules than the line names — the cap is SAID, never applied silently.
+$ac7 = New-IgnRepo 'ac7-cap' (New-AcConfig '{ "name": "tmp4", "match": "^t[0-9]\\.tmp$", "cwd": "", "strip_prefix": "", "gates": [] }') "t1.tmp`nt2.tmp`nt3.tmp`nt4.tmp`n" @('t1.tmp', 't2.tmp', 't3.tmp', 't4.tmp') @('web/main.ts')
+$rAC7 = Invoke-Gates $ac7 @()
+$ok = (Assert-True 'AC7 rules beyond the cap are counted on the line (+1 more rule(s))' ($rAC7.Out -match 'groups\[tmp4\] claims 4 file\(s\) ignored by \.gitignore:1 `t1\.tmp`, \.gitignore:2 `t2\.tmp`, \.gitignore:3 `t3\.tmp` … \+1 more rule\(s\)') $rAC7.Out) -and $ok
 
 Remove-FixtureRoot $fxBase
 

@@ -11,6 +11,24 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.49.0 — 2026-09-14
+
+- **게이트 에미터가 `.gitignore` 로 제외되는 경로를 청구하는 그룹을 보고합니다 (ADR 0077).** `harness_gates.py` 의
+  트레일러(`review tier:` 아래, `hooks:` 다음)에 `ignored-tree claims:` 줄이 추가됩니다. 어떤 그룹의 `match` 정규식이
+  레포 자체 `.gitignore` 규칙이 제외하는 경로까지 매치하면 — 빌드 산출물·평가 결과·붙여넣기 블롭 트리 — 그 그룹 이름,
+  파일 수, 결정 규칙(예: `.gitignore` 46행의 `plugins/ywr-harness/evals/results/`)을 한 줄로 적습니다. 그런 트리에서는 ungrouped
+  백스톱이 보이지 않습니다: `git add -f` 로 강제 추가된 결과 파일이 그룹의 평범한 멤버로 게이트되고 CI 의 ungrouped 실패에
+  걸리지 않기 때문입니다(슬라이스 15 리뷰가 정본의 `evals` 그룹에서 찾은 클래스). 판정은 git 이 합니다 — `ls-files
+  --ignored -z` + `check-ignore -v -n --stdin -z` — 그리고 커밋된(추적되는) `.gitignore` 파일의 규칙만 정책으로 칩니다
+  (`core.excludesFile` · `.git/info/exclude` · 추적되지 않는 `.gitignore` 는 머신별이라 제외). 체크아웃에 실제로 존재하는 경로만 봅니다: CI 의 새 클론은 빌드 전이라
+  `none checked` 로 그 사실을 말하고, 슬라이스 마감 시 로컬 실행이 이 줄이 실제로 울리는 자리입니다. **보고만 합니다** —
+  CI 는 이 줄에 실패하지 않습니다(승격 트리거는 ADR 0077). 정본 자체의 첫 실행에서 두 그룹(`docs-generated` ·
+  `config`)이 잡혀 같은 커밋에서 좁혔습니다. 셀프테스트 AC1–AC7(디렉터리 규칙 · `--all` · 클린 줄 · none checked ·
+  머신별 소스 제외(절대경로 · 상대경로 `.gitignore` · 미추적 중첩 `.gitignore`) · 중첩 `.gitignore` + 정확명 규칙 ·
+  규칙 개수 캡 표기). Windows 주의: subprocess 텍스트 모드는 stdin 의 `\n` 을 `\r\n` 으로 바꾸고 읽는 쪽의 `\r` 도
+  `\n` 으로 바꿉니다 — 정확명 규칙이 전부 빠졌던 첫 시도(`docs/docs.html\r`)가 그 증거이고, git 경계
+  `harness_config.git_run` 은 이제 바이트 파이프 + 명시적 UTF-8 디코드 한 번이며 경로 목록은 양방향 NUL(`-z`)로 오갑니다.
+
 ## v0.48.0 — 2026-09-14
 
 - **플러그인 평가 스위트 `evals/` 가 함께 배포됩니다 (ADR 0076 · spec 0014).** Claude Code 2.1.269 의 `claude plugin eval` 은

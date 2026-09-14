@@ -8,7 +8,10 @@ stdout, and no ungrouped marker + no artifact line + no gate commands is indisti
 ("unknown is not small"). It prints the commands a slice close should run BEFORE any LLM review,
 and the review tier those files earn. It also checks any declared claude.ai Artifact against the
 README — link present, title starts with the repo name (ADR 0032); the emitter only reports, and
-the vendored CI fails on `artifact: VIOLATION`.
+the vendored CI fails on `artifact: VIOLATION`. After the tier it also reports every declared group
+whose `match` claims a path the repo's own `.gitignore` rules exclude (`ignored-tree claims:`,
+ADR 0077) — there the ungrouped backstop is blind: a force-added output file would be gated as an
+ordinary member of the group instead of surfacing as ungrouped. Report only; CI does not fail on it.
 
 Usage:
   python harness_gates.py                       # working tree vs HEAD + untracked
@@ -86,9 +89,9 @@ def decl_changed_keys(root: Path, rev_range: str | None) -> list[str] | None:
         if left:
             base = left
     try:
-        out = subprocess.run(["git", "show", f"{base}:{DECL_FILE}"],
-                             cwd=root, capture_output=True, check=True)
-        old = json.loads(out.stdout.decode("utf-8"))
+        # Through the pinned boundary (issue #40 / ADR 0077 review): a non-UTF-8 byte arrives
+        # backslash-escaped and fails json.loads as before (ValueError → undeterminable → critical).
+        old = json.loads(hc.git_run(root, "show", f"{base}:{DECL_FILE}"))
         new = json.loads((root / DECL_FILE).read_text(encoding="utf-8"))
     except (OSError, subprocess.CalledProcessError, ValueError):
         # ValueError covers json.JSONDecodeError and UnicodeDecodeError — both are subclasses.
@@ -200,7 +203,10 @@ def hooks_status(root: Path) -> str | None:
     # (`extensions.worktreeConfig`) outranks `.git/config`, so the `--local` read below alone
     # called a clone wired while git ran hooks from elsewhere (review 2026-09-07, medium). The
     # output is `<scope>\t<value>`; nothing and exit 1 when the key is unset at every scope.
-    # Encoding pinned on both reads — a hooksPath is a path (the issue #40 boundary).
+    # Encoding pinned on both reads — a hooksPath is a path (the issue #40 boundary). Deliberately
+    # NOT through hc.git_run: exit 1 here means the key is unset at that scope — a normal state
+    # read from `returncode`, not a failure to raise on — so these two reads carry the same pins
+    # inline; CLAUDE.md and spec 0007 §3.1 name them as the boundary's one stated exception.
     git_text = dict(cwd=root, capture_output=True, text=True, encoding="utf-8", errors="backslashreplace")
     try:
         scoped = subprocess.run(["git", "config", "--show-scope", "--path", "--get", "core.hooksPath"], **git_text)
@@ -244,14 +250,14 @@ def repo_name(root: Path) -> tuple[str, str]:
     source is always reported: a title judged against a name the reader did not expect must be
     diagnosable from the output alone."""
     try:
-        out = subprocess.run(["git", "remote", "get-url", "origin"],
-                             cwd=root, capture_output=True, text=True)
-        if out.returncode == 0:
-            tail = re.split(r"[/:]", out.stdout.strip().replace("\\", "/").rstrip("/"))[-1]
-            tail = tail[:-4] if tail.endswith(".git") else tail
-            if tail:
-                return tail, "origin remote"
-    except OSError:
+        # Through the pinned boundary (issue #40 / ADR 0077 review): `text=True` alone decoded a
+        # non-ASCII remote URL with the console codepage. No origin → exit 2 → the fallback.
+        url = hc.git_run(root, "remote", "get-url", "origin")
+        tail = re.split(r"[/:]", url.strip().replace("\\", "/").rstrip("/"))[-1]
+        tail = tail[:-4] if tail.endswith(".git") else tail
+        if tail:
+            return tail, "origin remote"
+    except (OSError, subprocess.CalledProcessError):
         pass
     return root.name, "directory name"
 
@@ -400,6 +406,131 @@ def match_any(patterns: list[str], path: str, warns: list[str], field: str) -> b
     return False
 
 
+# --- ignored-tree claims (ADR 0077) ------------------------------------------------------------
+# Rules named per group line before the "+N more" note. The cap is SAID on the line, never
+# applied silently (org guide: a capped report surfaces its cap).
+IGNORED_CLAIMS_MAX_RULES = 3
+
+
+def tracked_ignore_files(root: Path) -> set[str]:
+    """The `.gitignore` files that are part of the COMMIT — root and nested — as `git ls-files`
+    reports them. Membership in this set, not a path-shape test, is what makes a `check-ignore -v`
+    source "the repo's own": every other source git consults is per-clone — `.git/info/exclude`,
+    `core.excludesFile` (absolute, `~`-expanded, or RELATIVE and pointing at an untracked in-tree
+    file that happens to be named `.gitignore`: reproduced 2026-09-14, the source prints as
+    `local/.gitignore`, byte-for-byte like a committed one — review high), and an untracked
+    `.gitignore` a member dropped into the tree. Measured 2026-09-14: the owner's global ignore
+    excludes `.claude/settings.local.json`, a path the canon's `config` group claims on purpose —
+    counted, the line would fire on this box and never in CI. NUL-separated, paths verbatim."""
+    raw = hc.git_run(root, "ls-files", "-z", "--", ".gitignore", ":(glob)**/.gitignore")
+    return {hc.norm(p) for p in raw.split("\0") if p}
+
+
+def ignored_claims(root: Path, cfg: dict, warns: list[str]) -> list[str]:
+    """Report every declared group whose `match` also claims a path the repo's `.gitignore` rules
+    exclude (ADR 0077). Where a group claims an ignored tree the ungrouped backstop is blind: a
+    result or build file that is force-added (`git add -f`) is claimed, gated as an ordinary
+    member of the group, and never surfaces as ungrouped — the shape slice 15's review found in
+    the canon's own `evals` group (`evals/results/**/*.md` swallowed until a `(?!results/)`
+    lookahead). A gitignored UNTRACKED file never reaches the emitter (`ls-files --others
+    --exclude-standard`), so this is the only place the overlap is visible before the force-add.
+
+    Three git calls through the pinned `hc.git_run`, all `-z` so paths travel verbatim (the
+    line-shaped forms C-quote a control character, and a newline-separated `--stdin` list is not
+    a shape this boundary should ever send — the first cut did, and Windows' text-mode pipe
+    turned it into `path\\r`; the boundary is bytes now, `-z` stays for the verbatim paths):
+    `ls-files --others --ignored --exclude-standard` for the set git excludes (every source, so
+    it is exactly what the partition never sees); `ls-files -- .gitignore **/.gitignore` for the
+    COMMITTED policy (`tracked_ignore_files`); `check-ignore -v -n --no-index --stdin` over the
+    ignored list for the DECIDING rule per path — `-n` so a path git listed as ignored but does
+    not re-confirm (a `.gitignore` edited or a file removed between the two calls) yields an
+    empty-source record and is COUNTED as unconfirmed instead of vanishing from a fixed-stride
+    parse (review 2026-09-14, low). A rule counts only when its source is a TRACKED `.gitignore`,
+    read as it stands in the working tree (an uncommitted edit to one counts but shows in `git
+    status`, unlike the invisible per-clone sources this filter removes), so the RULE side of
+    this report follows the commit's policy files; the PATH side is what exists in this
+    checkout — a CI clone that never produced the output tree checks nothing and says so,
+    the owner's slice-close run after a build or an eval is where this fires. "Claims" is the
+    partition's own test (`rx.match` on the same compiled group regex), so the word means
+    exactly what it means in the `gates:` window. Never raises, never silent — a git failure
+    prints NOT CHECKED. `warns` is the caller's sink for a group regex that does not compile,
+    deduplicated against what the gates loop already queued (on the `--all` empty-tree path
+    that loop never runs, so this is the only place such a pattern is named). Returns lines; the
+    caller prints them through `hc.say` (column-0 header, 2-space `groups[…]` detail lines —
+    neither shape is a group header or a command to either output parser, and on every path
+    that prints a trailer they sit after `hooks:`; a `review tier:` line precedes them whenever
+    a tier was computed — the `--all` empty-tree trailer has none, and no `gates:` window
+    either, so no parser range is open there)."""
+    try:
+        raw = hc.git_run(root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+        tracked = tracked_ignore_files(root)
+    except subprocess.CalledProcessError as e:
+        return ["ignored-tree claims: NOT CHECKED — git ls-files failed: "
+                f"{(e.stderr or '').strip()} (not a pass)"]
+    ignored = [hc.norm(p) for p in raw.split("\0") if p]
+    rule_of: dict[str, tuple[str, int, str]] = {}   # path -> (source, line, pattern), committed rules only
+    unconfirmed = 0
+    if ignored:
+        try:
+            out = hc.git_run(root, "check-ignore", "-v", "-n", "--no-index", "--stdin", "-z",
+                             stdin="\0".join(ignored) + "\0")
+        except subprocess.CalledProcessError as e:
+            # Exit 1 is check-ignore's "no path was ignored" — a verdict, not a failure; with
+            # `-n` its records are still on stdout (every one empty-source). Anything else is.
+            if e.returncode != 1:
+                return ["ignored-tree claims: NOT CHECKED — git check-ignore failed: "
+                        f"{(e.stderr or '').strip()} (not a pass)"]
+            out = e.stdout or ""
+        # `-v -n -z` records are four NUL-terminated fields: source · linenum · pattern · pathname,
+        # nothing quoted; a non-matching path carries three EMPTY fields before its name.
+        fields = out.split("\0")
+        records = 0
+        for i in range(0, len(fields) - 3, 4):
+            src, num, pat, path = fields[i:i + 4]
+            records += 1
+            if not src:
+                unconfirmed += 1
+                continue
+            src = hc.norm(src)
+            if num.isdigit() and src in tracked:
+                rule_of[hc.norm(path)] = (src, int(num), pat)
+        unconfirmed += max(0, len(ignored) - records)
+    note = (f" · {unconfirmed} path(s) git listed as ignored but check-ignore did not re-confirm — "
+            "not checked (a .gitignore or the tree changed between the two calls; re-run)") if unconfirmed else ""
+    checked = sorted(rule_of)
+    if not checked:
+        return ["ignored-tree claims: none checked — no path in this checkout is excluded by the "
+                "repo's committed .gitignore files (a CI checkout sees only what its own steps "
+                f"produced; run after a build or an eval to check the output trees){note}"]
+    lines: list[str] = []
+    for g in cfg["groups"]:
+        fresh: list[str] = []
+        rx = hc.compile_re(g["match"], f"groups[{g['name']}].match", fresh)
+        warns.extend(w for w in fresh if w not in warns)
+        hits = [p for p in checked if rx and rx.match(p)]
+        if not hits:
+            continue
+        counts: dict[tuple[str, int, str], int] = {}
+        for p in hits:
+            counts[rule_of[p]] = counts.get(rule_of[p], 0) + 1
+        rules = sorted(counts)
+        # A pattern is repo-supplied text: a backtick inside one would close the code span this
+        # line opens around it (cosmetic; control characters are one_line's job at the exit).
+        shown = ", ".join(f"{src}:{num} `{pat.replace('`', chr(39))}`"
+                          for src, num, pat in rules[:IGNORED_CLAIMS_MAX_RULES])
+        more = len(rules) - IGNORED_CLAIMS_MAX_RULES
+        tail = f" … +{more} more rule(s)" if more > 0 else ""
+        lines.append(f"  groups[{g['name']}] claims {len(hits)} file(s) ignored by {shown}{tail}")
+    if not lines:
+        return [f"ignored-tree claims: none — {len(checked)} gitignored path(s) checked against "
+                f"{len(cfg['groups'])} group(s){note}"]
+    head = (f"ignored-tree claims ({len(lines)} group(s) whose match also claims paths the repo's "
+            ".gitignore excludes — the ungrouped backstop is blind there: a force-added file under "
+            "such a rule is gated as an ordinary member of the group, never flagged; narrow the "
+            f"match or exclude the tree, e.g. a (?!results/) lookahead — ADR 0077{note}):")
+    return [head] + lines
+
+
 def emit_tail(root: Path, cfg: dict, warns: list[str], late: list[str]) -> int:
     """The common trailer after the tier line — review canon, handoff, hooks, queued warnings.
     Shared by the per-slice path and the full-tree audit path (ADR 0041) so the two can never
@@ -417,6 +548,16 @@ def emit_tail(root: Path, cfg: dict, warns: list[str], late: list[str]) -> int:
     hooks = hooks_status(root)
     if hooks:
         print(f"hooks: {hooks}")
+
+    # A tree fact like `hooks:` — a declaration-vs-.gitignore overlap is not a diff property —
+    # so it rides the trailer wherever one prints: a per-slice run with a NON-EMPTY scope, and
+    # the `--all` audit even over an empty tree. The per-slice empty-scope path prints no trailer
+    # at all (no `hooks:` either, by the same long-standing design — a clean tree is not a slice;
+    # `--all` is the tree audit), so the report is ABSENT there rather than silent about a
+    # checked state (review 2026-09-14, medium — spec 0007 §3.2 and the slice-close skill say
+    # so). Report only (ADR 0077); CI does not grep it. `late` is the compile-warning sink.
+    for line in ignored_claims(root, cfg, late):
+        hc.say(line)
 
     for w in warns + late:
         hc.warn(w)

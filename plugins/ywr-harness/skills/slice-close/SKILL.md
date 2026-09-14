@@ -25,7 +25,7 @@ One exit-code exception to know (ADR 0041): if git cannot resolve the changed-fi
 **non-zero** — nothing below it was computed, and that run must never be quoted as a pass. Fix
 the scope and re-run; do not proceed to review on a FAILED scope.
 
-The emitter prints five things, all of which belong in the close:
+The emitter prints six things, all of which belong in the close:
 
 - **`scope:`** — where the file list came from. An empty commit range is called out by name;
   quote that line. A range that matched nothing means everything below rests on the working tree.
@@ -39,6 +39,18 @@ The emitter prints five things, all of which belong in the close:
 - **`ungrouped:`** — files no declared group claims, so **no deterministic gate covers them**.
   Either add a group to `.harness.json` or say plainly that those files went ungated.
 - **`review tier:`** with its reason — used by stage 2.
+- **`ignored-tree claims:`** (in the trailer after `hooks:`, ADR 0077) — a declared group whose
+  `match` also claims paths the repo's COMMITTED `.gitignore` files exclude, named with the
+  deciding rule (`source:line`). There the `ungrouped:` backstop is blind (a force-added output
+  file is gated as an ordinary member, never flagged). Report-only: narrow the match or add a
+  lookahead in `.harness.json` in this slice, or say plainly why the overlap stays. Three other
+  forms, each quoted in the close as-is: `none — N … checked` is the clean verdict; `none checked`
+  means no gitignored path exists in this checkout — run after a build or an eval before reading
+  it as clean; **`NOT CHECKED — git … failed`** is a failure, never a pass — treat it like
+  `scope: FAILED` (fix, re-run, do not proceed on it). An `… did not re-confirm` tail means the
+  tree or a `.gitignore` changed between the two git calls — re-run. The line rides the trailer,
+  so an EMPTY per-slice scope prints no trailer and no report at all (as with `hooks:`); a clean
+  tree is audited with `--all`.
 
 **Run every emitted command and fix failures now.** Record the exact commands and their results
 verbatim; they go into the review scope's passed-gates block. Mechanical defects must never reach
@@ -103,9 +115,10 @@ slice.
 **The fix diff does not re-enter the review.** The review runs once per slice, over the slice
 scope. Close each fix by:
 
-1. **Gates**: re-run the emitter over the fix diff and run every emitted command. Its gate and
-   `ungrouped:` output are consumed exactly as in stage 1 — a fix that adds or touches a file no
-   group claims is called out, never silently passed. Its `review tier:` line is **not** an input
+1. **Gates**: re-run the emitter over the fix diff and run every emitted command. Its gate,
+   `ungrouped:` and `ignored-tree claims:` output are consumed exactly as in stage 1 — a fix that
+   adds or touches a file no group claims, or widens a group `match` into a gitignored tree, is
+   called out, never silently passed. Its `review tier:` line is **not** an input
    to the table above; a fix diff never earns a review by tier.
 2. **Per-finding fix check**: read the fix against the finding's own claim and failure scenario.
    For a **high or medium** finding, spawn ONE skeptic leg on the plugin's pinned worker agent
@@ -161,9 +174,11 @@ Product files the mapper flags as having no spec owner are spec debt. Register t
 - Regenerate doc surfaces if any ADR/spec source changed: `pwsh docs/build.ps1`, and commit
   `index.json` + `INDEX.md` with the change.
 - Commit. State in the close: the scope line, the gates that passed, the tier **and its reason**,
-  the review outcome (confirmed / rejected counts), the fix disposition (gate re-runs + per-finding
-  fix checks; the triggering criterion, if a re-review ran), the verify verdict, and anything left
-  ungated or unverified.
+  the `ignored-tree claims:` line as printed (a claim left standing is named with its reason;
+  `none checked` and `NOT CHECKED` are quoted, never summarised as clean), the review outcome
+  (confirmed / rejected counts), the fix disposition (gate re-runs + per-finding fix checks; the
+  triggering criterion, if a re-review ran), the verify verdict, and anything left ungated or
+  unverified.
 
 The last item is the point of the whole ritual: a close that does not say what it did *not* cover
 reads as complete coverage.

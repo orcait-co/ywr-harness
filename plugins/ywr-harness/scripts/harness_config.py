@@ -935,7 +935,22 @@ def load(root: Path) -> tuple[dict, list[str]]:
 # answer "which files is this slice" the SAME way, and two implementations of that question would
 # let a slice pass one gate on a different file set than the other saw.
 # ---------------------------------------------------------------------------------------------
-def git_lines(root: Path, *args: str) -> list[str]:
+def git_run(root: Path, *args: str, stdin: str | None = None) -> str:
+    """Run one git command and return its stdout as str. THE git subprocess boundary for every
+    parsed call (CLAUDE.md, issue #40): the quotepath and encoding pins below live here and
+    nowhere else — `git_lines` is the line-shaped reading of this, and a `-z` consumer splits the
+    return on NUL itself. `stdin` feeds a `--stdin`-shaped command (check-ignore, ADR 0077).
+
+    The pipes are BYTES, decoded here explicitly, never subprocess's text mode: text mode wraps
+    both directions in universal-newline translation — `\\n` written becomes `\\r\\n` on Windows
+    (measured 2026-09-14: a newline-separated `--stdin` list made git look up `docs/docs.html\\r`,
+    no exact-name .gitignore rule matched while every directory rule still matched its prefix,
+    and the report silently lost exactly the files it existed to find) and any `\\r` READ back
+    becomes `\\n` before the caller sees it (review 2026-09-14, medium: a literal CR inside a
+    `-z` record would be rewritten, not framed). Bytes in, bytes out, one decode; `-z` stays the
+    shape for any path LIST in either direction because it also carries paths verbatim. The
+    failure path re-raises `CalledProcessError` with `stderr`/`stdout` as str, so the ADR 0041
+    fail-loud diagnostic prints legible git text, not a bytes repr."""
     import subprocess
     # `-c core.quotepath=false`: git's default octal-escapes non-ASCII paths
     # (`"docs/AWS \354..."`), which no anchored group pattern matches — every such file reads as
@@ -943,20 +958,31 @@ def git_lines(root: Path, *args: str) -> list[str]:
     # (issue #40). The raw bytes are UTF-8, so the decode is pinned as well: text=True alone
     # decodes with the console codepage on Windows, where cp949 pairs a hangul trail byte with
     # the following ASCII byte and raises — the decl_changed_keys constraint, applied here.
-    # The pin goes through subprocess's OWN encoding args, not a manual .decode(): check=True
-    # raises CalledProcessError, and both scope-path consumers print e.stderr into the ADR 0041
-    # fail-loud diagnostic — a manual success-path decode left that str on the happy path and
-    # bytes-repr on the one path that exists to be read (review 2026-08-12, medium).
+    # Both streams are decoded with the SAME pin before the exit-code check, and the failure path
+    # re-raises with the decoded str: the 2026-08-12 defect (review, medium) was a success-path
+    # decode that left `e.stderr` as bytes on the one path that exists to be read — the ADR 0041
+    # fail-loud diagnostic printed a bytes repr. Text mode was the fix then; it is replaced by an
+    # explicit decode now because its newline translation corrupted `-z` payloads (ADR 0077).
     # errors="backslashreplace", not "replace": a path that is not UTF-8 must surface visibly
     # mangled (likely ungrouped), never kill the run — and DISTINCT byte sequences must stay
     # distinct, because U+FFFD-merged paths collapse into one set entry and silently shrink the
     # audit scope (review 2026-08-12, medium).
-    out = subprocess.run(
+    proc = subprocess.run(
         ["git", "-c", "core.quotepath=false", *args],
-        cwd=root, capture_output=True, check=True,
-        encoding="utf-8", errors="backslashreplace",
-    ).stdout
-    return [norm(line) for line in out.splitlines() if line.strip()]
+        cwd=root, capture_output=True,
+        input=None if stdin is None else stdin.encode("utf-8"),
+    )
+    out = proc.stdout.decode("utf-8", errors="backslashreplace")
+    err = proc.stderr.decode("utf-8", errors="backslashreplace")
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args, output=out, stderr=err)
+    return out
+
+
+def git_lines(root: Path, *args: str) -> list[str]:
+    """`git_run`, read as non-blank, path-normalised lines — the shape every scope and
+    partition consumer parses."""
+    return [norm(line) for line in git_run(root, *args).splitlines() if line.strip()]
 
 
 def changed_files(root: Path, rev_range: str | None, explicit: list[str],
