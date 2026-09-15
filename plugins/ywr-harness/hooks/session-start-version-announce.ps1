@@ -100,8 +100,8 @@ if (-not $stored -and -not $stateExists) {
     # speak, inverted from the update path on purpose: the update announcement protects news,
     # this protects nothing the dist README does not already carry, so a failed seed is silent.
     if (Write-State $currentRaw) {
-        $sys = "[hook:version-announce] ywr-harness v$currentRaw 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 전체 변경 이력: $rnUrl (claude.ai Team 좌석 로그인 필요)"
-        $ctx = "The ywr-harness plugin v$currentRaw is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first) and the artifact release-notes tab at $rnUrl. This welcome appears once per machine; do not repeat it unprompted."
+        $sys = "[hook:version-announce] ywr-harness v$currentRaw 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 변경 이력: 플러그인의 CHANGELOG.md · 릴리스 노트 탭(가이드 개정 시 갱신) $rnUrl (claude.ai Team 좌석 로그인 필요)"
+        $ctx = "The ywr-harness plugin v$currentRaw is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the artifact release-notes tab at $rnUrl (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ADR 0078). This welcome appears once per machine; do not repeat it unprompted."
         @{
             systemMessage      = $sys
             hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = $ctx }
@@ -159,17 +159,17 @@ if ($shown.Count) {
     $body += " 주요 변경:`n" + (($shown | ForEach-Object { "  • $_" }) -join "`n")
     # ${more} braced on purpose: Korean letters are legal in a variable name, so "$more건"
     # would interpolate an undefined variable named more건 as empty (caught by the selftest).
-    if ($more -gt 0) { $body += "`n  • …외 ${more}건 — 전체는 릴리스 노트 탭에서." }
+    if ($more -gt 0) { $body += "`n  • …외 ${more}건 — 전체는 플러그인의 CHANGELOG.md 에서." }
     $body += "`n"
 }
 else { $body += ' ' }
-$body += "전체 릴리스 노트: $rnUrl (claude.ai Team 좌석 로그인 필요)"
+$body += "릴리스 노트 탭(가이드 개정 시 갱신 — 이 버전 항목은 CHANGELOG.md 에 먼저 실립니다): $rnUrl (claude.ai Team 좌석 로그인 필요)"
 
 if (-not (Write-State $currentRaw)) {
     $body += "`n(안내 기록 실패: $stateFile 에 쓸 수 없어 이 안내가 반복될 수 있습니다 — ~/.claude 권한을 확인하세요.)"
 }
 
-$ctx = "The ywr-harness plugin loaded in this session is v$currentRaw; the last version announced on this machine was v$storedRaw (marketplace auto-update, ADR 0026 — updates land at session start, never mid-session). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first) and the onboarding artifact's release-notes tab at $rnUrl. If the user asks what changed, read the CHANGELOG entry for v$currentRaw rather than answering from memory. This announcement is once-per-version (ADR 0030); do not repeat it unprompted."
+$ctx = "The ywr-harness plugin loaded in this session is v$currentRaw; the last version announced on this machine was v$storedRaw (marketplace auto-update, ADR 0026 — updates land at session start, never mid-session). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at $rnUrl (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ADR 0078). If the user asks what changed, read the CHANGELOG entry for v$currentRaw rather than answering from memory. This announcement is once-per-version (ADR 0030); do not repeat it unprompted."
 @{
     systemMessage      = $body
     hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = $ctx }
