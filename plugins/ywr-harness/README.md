@@ -252,13 +252,16 @@ writes into the host repository, and it runs unchanged against a read-only mount
 discovery set exits 1, and a skipped gate is reported as skipped rather than folded into the
 pass count: both would otherwise be a gate judged from the wrong observable.
 
-CI runs the same entry point on both OSes for any change under `plugins/**`, once each (ADR
-0071): `.github/workflows/plugin.yml` runs it on `windows-latest` as a 4-shard matrix
-(`selftest.ps1 -Shard i/N` — the runner deals the discovered suites round-robin, so the shards
-partition the set by construction and no suite list lives in the yaml), and the Linux run is
-the script gate `harness-gates.yml` executes on `ubuntu-latest` (the gate of record, ADR 0024).
-Both matter: hooks run on member machines (Windows) while a consuming repo's gates run on
-Linux, and the same `.ps1` serves both.
+CI runs the same entry point on both OSes (ADR 0071), on different triggers since ADR 0080. The
+Linux run is the script gate `harness-gates.yml` executes on `ubuntu-latest` on every push to
+main and every pull request (the gate of record, ADR 0024). `.github/workflows/plugin.yml` runs
+it on `windows-latest` as a 4-shard matrix (`selftest.ps1 -Shard i/N` — the runner deals the
+discovered suites round-robin, so the shards partition the set by construction and no suite
+list lives in the yaml) on the release tag (`ywr-harness--v*`), on pull requests that touch
+`plugins/**` or the yaml, on a change to its own yaml and on dispatch — not on a plain
+`plugins/**` push to main, where the Windows evidence is the owner's local run of the same entry
+point before the slice closes. Both OSes matter: hooks run on member machines (Windows) while a
+consuming repo's gates run on Linux, and the same `.ps1` serves both.
 
 A consuming repo's CI cannot reach these scripts through the plugin — `${CLAUDE_PLUGIN_ROOT}`
 is substituted when Claude Code spawns a hook, not in an arbitrary CI step. So the scaffold

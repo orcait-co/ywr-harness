@@ -99,8 +99,10 @@ refusals came anyway, +45k tokens). `read_file` never satisfies it (measured). T
 exactly as measured:
 
 1. `Artifact publish` of `source` to `url`. It is REFUSED — the contract, not an error: the tool
-   saves the served page to a local file and demands it be Read line by line. Keep the favicon;
-   label per the repo's convention (e.g. `v<version>-rn`).
+   saves the served page to a local file and demands it be Read line by line. On Claude Code
+   ≥ 2.1.274 the refusal arrives before any approval prompt; older hosts asked for approval and
+   refused after it — the same sequence, one prompt fewer. Keep the favicon; label per the
+   repo's convention (e.g. `v<version>-rn`).
 2. Read that saved file line-complete. Size the slices to the per-call TOKEN cap, not to a line
    count — denser lines need smaller slices (measured 2026-09-07 on a ~2,000-line page: 250-line
    reads exceeded the cap past the middle of the file, ~125-line slices did not). ~50k tokens at
@@ -140,15 +142,17 @@ item the gate layer cannot perform (it cannot see claude.ai — ADR 0032).
 
 The wrapper is the Artifact HOST's skeleton, not the repo's: the tool wraps every published file in
 the same doctype/head/body frame (its own contract), so the slice points above are the same for
-every repo's page — but they were MEASURED on ywr-harness's page (2026-09-01 and 2026-09-14), and a
-host change would move them. If `<body>\n` or the closing pair is not found, or the body matches
+every repo's page — but they were MEASURED on ywr-harness's page (2026-09-01, 2026-09-14 and
+2026-09-15), and a host change would move them — one already moved the head's size (below). If `<body>\n` or the closing pair is not found, or the body matches
 neither form, print the first ~400 and last ~40 bytes of the saved copy, adapt the slice points to
 what the host now serves, and record the new shape in the close — an unrecognised wrapper is a host
 change to report, never drift to declare.
 
-Measured 2026-09-14 (v0.49.0 and v0.50.0 republishes, 134–136 KB pages): the head through
-`<body>\n` was 355 bytes and served == head + committed + LF + `</body></html>` byte for byte.
-The two `read_file` proofs are one result line each at that size (below the tool's small-file
+Measured on three republishes (v0.49.0 and v0.50.0 on 2026-09-14, v0.51.0 on 2026-09-15; 134–140 KB
+pages): served == head + committed + LF + `</body></html>` byte for byte every time, but the head
+through `<body>\n` VARIES by host serve — 355 bytes on the first two serves, 537 bytes on the
+v0.51.0 serve, with no changelog entry naming the change. Slice at the marker, never at a byte
+offset; a head of a new size is a host change to record, not drift. The two `read_file` proofs are one result line each at that size (below the tool's small-file
 band the echo makes them cost the page size again); the served page enters context twice per
 republish (§4 steps 2 and 4, ≈95k tokens at 136 KB) and not at all when §3 finds the page already
 live.
