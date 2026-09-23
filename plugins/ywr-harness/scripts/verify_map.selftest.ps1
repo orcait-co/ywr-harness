@@ -189,6 +189,33 @@ $ok = (Assert-True 'K the value IS echoed in a warning (the reader must see what
 $ok = (Assert-True 'K the warning survives to the end of the run (not swallowed by the drained list)' ($rK.Out -match 'no run line was composed for it') $rK.Out) -and $ok
 $ok = (Assert-True 'K still exits 0 (advisory)' ($rK.Code -eq 0) "exit=$($rK.Code)") -and $ok
 
+# --- L: an implements_in that is not a list must not crash the mapper (dist issue #6) -----------
+# Builders before 0.54.0 indexed a block list as null and a multi-line flow list as the string "[".
+# The null crashed this script (TypeError, exit 1 — the vendored CI's verify step has no `|| true`)
+# and the "[" iterated character by character into an empty mapping, SILENTLY. Both now read as
+# "owns nothing" with a warning that names the spec and the rebuild; a non-string entry is skipped
+# with its own warning; well-formed specs in the SAME index still map; an absent key stays silent.
+$L_INDEX = @'
+{ "spec": [
+  { "id": "0004", "title": "Block", "implements_in": null },
+  { "id": "0005", "title": "Flow", "implements_in": "[" },
+  { "id": "0006", "title": "Mixed", "implements_in": [7, "apps/api/app/pipeline.py"] },
+  { "id": "0001", "title": "Pipeline", "implements_in": ["apps/api/app/pipeline.py"] },
+  { "id": "0007", "title": "Absent" }
+] }
+'@
+$l = New-Repo 'non-list-implements' $GOOD_CFG $L_INDEX
+$rL = Invoke-Map $l @('apps/api/app/pipeline.py')
+$ok = (Assert-True 'L a null / string implements_in does not crash (exit 0, no traceback)' ($rL.Code -eq 0 -and $rL.Out -notmatch 'Traceback') "exit=$($rL.Code): $($rL.Out)") -and $ok
+$ok = (Assert-True 'L the null is warned, naming the spec and the rebuild' ($rL.Out -match 'spec 0004: implements_in in the index is null, not a list' -and $rL.Out -match 'rebuild the index \(pwsh docs/build\.ps1\)') $rL.Out) -and $ok
+$ok = (Assert-True 'L the "[" string is warned too (it used to map nothing silently)' ($rL.Out -match 'spec 0005: implements_in in the index is str "\[", not a list') $rL.Out) -and $ok
+# A current builder writes the same null for an empty or comment-only value (and the same "[" for an
+# unterminated list), which a rebuild reproduces — the warning must also name the fix that clears it.
+$ok = (Assert-True 'L the warning names the source-side remedy a rebuild cannot replace ([a, b] or [])' ($rL.Out -match 'If a rebuilt index still shows this, the value itself is not a list — write it as \[a, b\], or \[\] for a spec that owns nothing yet') $rL.Out) -and $ok
+$ok = (Assert-True 'L a non-string entry is skipped with a warning; the spec still maps its paths' ($rL.Out -match 'spec 0006: 1 non-string implements_in entry in the index skipped' -and $rL.Out -match 'spec 0006 — Mixed') $rL.Out) -and $ok
+$ok = (Assert-True 'L a well-formed spec in the same index still maps' ($rL.Out -match 'spec 0001 — Pipeline') $rL.Out) -and $ok
+$ok = (Assert-True 'L an ABSENT implements_in is an honest empty list — no warning' ($rL.Out -notmatch 'spec 0007:') $rL.Out) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'verify_map selftest: FAILED' -ForegroundColor Red; exit 1 }

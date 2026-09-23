@@ -117,7 +117,9 @@ $a = New-Repo 'compose' $CFG @('api/app.py', 'web/main.ts')
 $rA = Invoke-Gates $a @()
 $ok = (Assert-True 'A exits 0 (advisory)' ($rA.Code -eq 0) "exit=$($rA.Code)") -and $ok
 $ok = (Assert-True 'A file-scoped gate gets the file list, prefix stripped' ($rA.Out -match 'cd api && uv run ruff check app\.py') $rA.Out) -and $ok
-$ok = (Assert-True 'A whole-program gate gets NO file list' ($rA.Out -match 'cd api && uv run pytest -m not db -q') $rA.Out) -and $ok
+# `'not db'` is ONE argv element and must reach `sh -c` quoted (dist issue #6: the space-joined
+# `-m not db` made pytest read `db` as a path and exit 4). Case AD proves it through sh.
+$ok = (Assert-True 'A whole-program gate gets NO file list' ($rA.Out -match 'cd api && uv run pytest -m ''not db'' -q') $rA.Out) -and $ok
 $ok = (Assert-True 'A whole-program gate is labelled as such' ($rA.Out -match 'whole-program: gate on slice files') $rA.Out) -and $ok
 $ok = (Assert-True 'A second group composes independently' ($rA.Out -match 'cd web && npx eslint main\.ts') $rA.Out) -and $ok
 
@@ -483,7 +485,7 @@ $ok = (Assert-True 'P3 with a whole-program gate present the exclusion is NOT ca
 $ok = (Assert-True 'P3 the note says the whole-program gate still covers the excluded file' ($rP3.Out -match "whole-program gate still covers them") $rP3.Out) -and $ok
 $ok = (Assert-True 'P3 the warn names the real loss — file-scoped coverage only' ($rP3.Out -match 'could not be\s+passed as file-scoped gate arguments' -and $rP3.Out -match 'rename them to restore file-scoped coverage') $rP3.Out) -and $ok
 $ok = (Assert-True 'P3 the excluded file is still named' ($rP3.Out -match 'excluded: src/a b\.py') $rP3.Out) -and $ok
-$ok = (Assert-True 'P3 the whole-program gate actually emits (the claim rests on it running)' ($rP3.Out -match 'uv run pytest -m not db -q') $rP3.Out) -and $ok
+$ok = (Assert-True 'P3 the whole-program gate actually emits (the claim rests on it running)' ($rP3.Out -match 'uv run pytest -m ''not db'' -q') $rP3.Out) -and $ok
 
 # --- Q: excluding EVERY file must not escalate the gate to the whole tree -----------------------
 # A file-scoped gate with no file list is a whole-tree run (`ruff check` lints everything). So a
@@ -1553,6 +1555,183 @@ $ok = (Assert-True 'AC6 both claims count in the header' ($rAC6.Out -match 'igno
 $ac7 = New-IgnRepo 'ac7-cap' (New-AcConfig '{ "name": "tmp4", "match": "^t[0-9]\\.tmp$", "cwd": "", "strip_prefix": "", "gates": [] }') "t1.tmp`nt2.tmp`nt3.tmp`nt4.tmp`n" @('t1.tmp', 't2.tmp', 't3.tmp', 't4.tmp') @('web/main.ts')
 $rAC7 = Invoke-Gates $ac7 @()
 $ok = (Assert-True 'AC7 rules beyond the cap are counted on the line (+1 more rule(s))' ($rAC7.Out -match 'groups\[tmp4\] claims 4 file\(s\) ignored by \.gitignore:1 `t1\.tmp`, \.gitignore:2 `t2\.tmp`, \.gitignore:3 `t3\.tmp` … \+1 more rule\(s\)') $rAC7.Out) -and $ok
+
+# --- AD: compose() shell-quotes each argv element (dist issue #6) --------------------------------
+# The closed set's `pytest-nondb` carries `-m "not db"` — ONE element with a space. compose()
+# space-joined argv, so `sh -c` received `-m not db` and pytest read `db` as a path (exit 4) on
+# every run; case A's literal asserted the broken string, locking the defect in. AD1 is the class
+# check that replaces literals: every GATES and RUNNERS entry — and a synthetic hostile argv —
+# round-trips through shlex.split with and without a cwd, and every all-SAFE_TOKEN entry keeps
+# its exact bytes (the fix must not re-quote what was already one inert word).
+# The shlex round-trip is compose()'s property, NOT the consumers': the CI extraction (sed) and the
+# pre-commit hook (awk) cut every line at its first `#` — they must, to drop the emitter's
+# `# whole-program` trailer — and read commands one per line, so a `#`, CR or LF inside quotes
+# survives shlex and still breaks there (`'#c'` leaves an unbalanced `'` for `sh -c`). The synthetic
+# row proves the quoting only. What makes the consumers safe is that no composed command can carry
+# one of those characters, and AD1 asserts both halves: no GATES/RUNNERS element holds one, and
+# the token gate every repo-supplied value passes (files, cwd, script paths) refuses them
+# (review 2026-09-23, nit).
+$adScript = Join-Path $fxBase 'compose_roundtrip.py'
+Set-Content -LiteralPath $adScript -NoNewline -Value @'
+import shlex, sys
+sys.path.insert(0, sys.argv[1])
+import harness_config as hc
+fails = []
+entries = [("GATES." + k, list(g["cmd"])) for k, g in hc.GATES.items()]
+entries += [("RUNNERS." + k, list(r)) for k, r in hc.RUNNERS.items()]
+entries.append(("synthetic", ["tool", "a b", "it's", "x;y", "$HOME", "*", "#c"]))
+for name, argv in entries:
+    for cwd in ("", "api"):
+        s = hc.compose(argv, cwd)
+        want = argv if not cwd else ["cd", cwd, "&&", *argv]
+        try:
+            got = shlex.split(s)
+        except ValueError as e:   # an unquoted `'` — sh would refuse the line outright
+            got = f"<unparseable: {e}>"
+        if got != want:
+            fails.append(f"{name} cwd={cwd!r}: {s!r} splits to {got!r}")
+    if name != "synthetic" and all(hc.token_ok(p) for p in argv) and hc.compose(argv, "") != " ".join(argv):
+        fails.append(f"{name}: an all-safe argv changed bytes: {hc.compose(argv, '')!r}")
+if not any(not all(hc.token_ok(p) for p in g["cmd"]) for g in hc.GATES.values()):
+    fails.append("no GATES entry needs quoting any more — retarget case AD2 at one that does")
+# The consumers' line parse: a comment cut at the first '#' and one command per line.
+LINE_BREAKERS = ("#", "\r", "\n")
+for name, argv in entries:
+    if name == "synthetic":
+        continue
+    bad = [p for p in argv if any(c in p for c in LINE_BREAKERS)]
+    if bad:
+        fails.append(f"{name}: element(s) {bad!r} carry '#'/CR/LF — the CI sed and pre-commit awk "
+                     "comment cut or line split would break the composed command")
+for tok in ("a#b", "#c", "a\nb", "a\rb", "a.py\n"):
+    if hc.token_ok(tok):
+        fails.append(f"token_ok accepts {tok!r} — a repo-supplied value could carry it to a consumer's line parse")
+print("AD-OK" if not fails else "AD-FAIL: " + " | ".join(fails))
+'@
+$rAD1 = (& $py.Source $adScript $PSScriptRoot 2>&1 | Out-String)
+$ok = (Assert-True 'AD1 every GATES/RUNNERS argv (and a hostile synthetic one) round-trips through shlex.split; safe ones keep their bytes; no composed command can carry a # / CR / LF (closed set + token gate)' ($rAD1 -match 'AD-OK') $rAD1) -and $ok
+
+# AD2: END TO END through the consumer that actually parses the string — the vendored CI's own
+# `Extract the gate commands` and `Run the emitted gate commands` step scripts, lifted verbatim out
+# of the template (never a transcription that could drift from it), run by bash over this
+# emitter's stdout, with a stub `uv` first on PATH that prints the argv it RECEIVED. The awk
+# runner table must still read the runner and cwd around the quoted element, and the `sh -c` in
+# the run step must hand pytest `not db` as one argument. pre-commit's awk never runs a
+# whole-program gate (it defers them), and every file-scoped GATES entry is all-safe (AD1).
+function Find-Bash {
+    if (-not $IsWindows) { return (Get-Command bash -ErrorAction SilentlyContinue).Source }
+    # Git's own bash, found from the git executable — never PATH's first `bash`, which on Windows
+    # can be WSL (another filesystem namespace; githooks.selftest.ps1 measured it). The PATH lever
+    # above may have moved `git` to mingw64\bin, so walk up until a Git root is found.
+    $dir = Split-Path -Parent (Get-Command git -ErrorAction SilentlyContinue).Source
+    for ($n = 0; $n -lt 3 -and $dir; $n++) {
+        foreach ($rel in @('usr\bin\bash.exe', 'bin\bash.exe')) {
+            $cand = Join-Path $dir $rel
+            if (Test-Path -LiteralPath $cand -PathType Leaf) { return $cand }
+        }
+        $dir = Split-Path -Parent $dir
+    }
+    return $null
+}
+function Get-RunBlock([string[]]$Lines, [string]$StepName) {
+    $at = [Array]::FindIndex($Lines, [Predicate[string]]{ param($l) $l -match "^\s*- name: $([regex]::Escape($StepName))\s*$" })
+    if ($at -lt 0) { return $null }
+    for ($i = $at + 1; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match '^(\s*)run: \|\s*$') {
+            $keyIndent = $Matches[1].Length
+            $body = New-Object System.Collections.Generic.List[string]
+            for ($j = $i + 1; $j -lt $Lines.Count; $j++) {
+                $l = $Lines[$j]
+                if ($l.Trim() -and ($l.Length - $l.TrimStart().Length) -le $keyIndent) { break }
+                $body.Add($(if ($l.Length -gt $keyIndent + 2) { $l.Substring($keyIndent + 2) } else { '' }))
+            }
+            return ($body -join "`n") + "`n"
+        }
+        if ($Lines[$i] -match '^\s*- name: ') { return $null }
+    }
+    return $null
+}
+$bashExe = Find-Bash
+$ciTemplate = Join-Path $PSScriptRoot '../skills/harness-init/templates/.github/workflows/harness-gates.yml'
+if (-not $bashExe) {
+    if ($env:CI) { $ok = (Assert-True 'AD2 bash is available on CI' $false 'no bash found — the end-to-end quoting case cannot run') -and $ok }
+    else { Write-Host 'SKIP [harness_gates AD2] no bash found (reported, not silent) — CI runs this case' -ForegroundColor Yellow }
+} else {
+    $ciLines = (Get-Content -LiteralPath $ciTemplate -Raw) -replace "`r", '' -split "`n"
+    $extractSh = Get-RunBlock $ciLines 'Extract the gate commands and their runners'
+    $runSh = Get-RunBlock $ciLines 'Run the emitted gate commands'
+    $ok = (Assert-True 'AD2 both CI step scripts are found in the template' ($extractSh -and $runSh -and $extractSh -match 'cmds\.txt' -and $runSh -match 'sh -c "\$c"') "extract=[$extractSh] run=[$runSh]") -and $ok
+    $CFG_AD = $CFG.Replace('    { "name": "web",', '    { "name": "lib", "match": "^lib/.*\\.py$", "cwd": "", "strip_prefix": "", "gates": ["pytest-nondb"] },' + "`n" + '    { "name": "web",')
+    $ad = New-Repo 'ad-quoting' $CFG_AD @('api/app.py', 'lib/x.py')
+    $adWork = Join-Path $fxBase 'ad-work'           # outside the fixture repo: the emitter must not see it
+    $adStub = Join-Path $adWork 'stub'
+    New-Item -ItemType Directory -Force -Path $adStub | Out-Null
+    [IO.File]::WriteAllText((Join-Path $adStub 'uv'), "#!/bin/sh`nprintf 'STUB uv %s ' `"`$(basename `"`$PWD`")`"`nfor a in `"`$@`"; do printf '<%s>' `"`$a`"; done`nprintf '\n'`n")
+    # stdout ONLY into gates.txt, as CI's `tee` takes it; CRs dropped — Windows python writes CRLF,
+    # the ubuntu runner does not, and the pipeline under test is the ubuntu one.
+    $adOut = (& $py.Source $gates --repo $ad 2>$null | Out-String) -replace "`r", ''
+    [IO.File]::WriteAllText((Join-Path $adWork 'gates.txt'), $adOut)
+    [IO.File]::WriteAllText((Join-Path $adWork 'extract.sh'), $extractSh)
+    [IO.File]::WriteAllText((Join-Path $adWork 'run.sh'), $runSh)
+    function ConvertTo-Fwd([string]$P) { return ([IO.Path]::GetFullPath($P) -replace '\\', '/') }
+    $w = ConvertTo-Fwd $adWork
+    $driver = @"
+set -e
+cd '$(ConvertTo-Fwd $ad)'
+chmod +x '$w/stub/uv' 2>/dev/null || true
+PATH="`$(cd '$w/stub' && pwd):/usr/bin:/bin:`$PATH"
+export PATH
+export RUNNER_TEMP='$w'
+export GITHUB_OUTPUT='$w/github_output'
+: > "`$GITHUB_OUTPUT"
+bash '$w/extract.sh'
+RUNNERS=`$(sed -n 's/^runners=//p' "`$GITHUB_OUTPUT")
+export RUNNERS
+bash '$w/run.sh'
+"@
+    [IO.File]::WriteAllText((Join-Path $adWork 'driver.sh'), ($driver -replace "`r", ''))
+    $rAD2 = (& $bashExe "$w/driver.sh" 2>&1 | Out-String) -replace "`r", ''
+    $adCode = $LASTEXITCODE
+    $adCmds = if (Test-Path -LiteralPath (Join-Path $adWork 'cmds.txt')) { [IO.File]::ReadAllText((Join-Path $adWork 'cmds.txt')) } else { '' }
+    $adGho = if (Test-Path -LiteralPath (Join-Path $adWork 'github_output')) { [IO.File]::ReadAllText((Join-Path $adWork 'github_output')) } else { '' }
+    $ok = (Assert-True 'AD2 the CI extraction keeps the quoted element intact in cmds.txt (trailer stripped)' ($adCmds -match "(?m)^cd api && uv run pytest -m 'not db' -q$" -and $adCmds -match "(?m)^uv run pytest -m 'not db' -q$") "cmds.txt=[$adCmds] gates.txt=[$adOut]") -and $ok
+    $ok = (Assert-True 'AD2 the awk runner table still reads runner + cwd around the quoted element' ($adGho -match '(?m)^runners= uv $' -and $adGho -match '(?m)^uv_dirs= \. api $') "github_output=[$adGho]") -and $ok
+    $ok = (Assert-True 'AD2 the CI run step exits 0 over the extracted commands' ($adCode -eq 0) "exit=$adCode`n$rAD2") -and $ok
+    $ok = (Assert-True 'AD2 sh -c hands pytest `not db` as ONE argument — from the cwd group and from the root' ($rAD2 -match 'STUB uv api <run><pytest><-m><not db><-q>' -and $rAD2 -match 'STUB uv ad-quoting <run><pytest><-m><not db><-q>') $rAD2) -and $ok
+    $ok = (Assert-True 'AD2 the file-scoped gate still receives its file as one argument' ($rAD2 -match 'STUB uv api <run><ruff><check><app\.py>') $rAD2) -and $ok
+    $ok = (Assert-True 'AD2 no split element reaches the runner (the issue #6 shape: <not><db>)' ($rAD2 -notmatch '<not><db>') $rAD2) -and $ok
+}
+
+# --- AE: the seeded .harness.json names every selector of the closed sets (dist issue #6, D10) ---
+# The groups comment is the only place a member reads which `gates` selectors exist; it had
+# omitted `shellcheck` since issue #57 added it. Set EQUALITY, both directions: a missing selector
+# hides one, a stale one names a gate the reader would see dropped. Same for verify.runner.
+$aeScript = Join-Path $fxBase 'seed_selectors.py'
+Set-Content -LiteralPath $aeScript -NoNewline -Value @'
+import json, re, sys
+sys.path.insert(0, sys.argv[1])
+import harness_config as hc
+seed = json.load(open(sys.argv[2], encoding="utf-8"))
+fails = []
+for label, text, rx, closed in (
+    ("groups[0]['//']", seed["groups"][0]["//"], r"'gates' are SELECTORS: ([^.]+)\.", hc.GATES),
+    ("verify['//runner']", seed["verify"]["//runner"], r"SELECTOR: ([^.]+)\.", hc.RUNNERS),
+):
+    m = re.search(rx, text)
+    if not m:
+        fails.append(f"{label}: no 'a | b | c.' selector list found")
+        continue
+    listed = {s.strip() for s in m.group(1).split("|")}
+    missing, stale = sorted(set(closed) - listed), sorted(listed - set(closed))
+    if missing:
+        fails.append(f"{label} omits {missing}")
+    if stale:
+        fails.append(f"{label} names {stale}, not in the closed set")
+print("AE-OK" if not fails else "AE-FAIL: " + " | ".join(fails))
+'@
+$seedCfg = Join-Path $PSScriptRoot '../skills/harness-init/templates/harness.json'
+$rAE = (& $py.Source $aeScript $PSScriptRoot $seedCfg 2>&1 | Out-String)
+$ok = (Assert-True 'AE the seeded groups comment lists exactly the GATES selectors, verify.runner exactly the RUNNERS' ($rAE -match 'AE-OK') $rAE) -and $ok
 
 Remove-FixtureRoot $fxBase
 

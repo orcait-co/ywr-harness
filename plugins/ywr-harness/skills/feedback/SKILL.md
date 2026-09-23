@@ -1,15 +1,16 @@
 ---
 name: feedback
-description: Report a ywr-harness defect or request upstream. Drafts an issue body (running and installed plugin versions, Claude Code version, repo and .harness-version stamp, the scaffold-refresh nudge's verdict, what a harness-init re-run would change, the local commit history of those files — never file contents or diffs), shows it, and after ONE confirmation files it on the public dist repo orcait-co/ywr-harness with label upstream-report via gh; without gh it keeps the body and prints where to file by hand. Use when something in the harness is wrong or missing, or when a repo had to patch a vendored toolchain file locally.
+description: Report a ywr-harness defect or request upstream. Drafts an issue body (running and installed plugin versions, Claude Code version, repo and .harness-version stamp, the scaffold-refresh nudge's verdict, what a harness-init re-run would change, the local commit history of those files — never file contents or diffs), shows it, and after ONE confirmation files it on the public dist repo orcait-co/ywr-harness via gh; without gh it keeps the body and prints where to file by hand. Use when something in the harness is wrong or missing, or when a repo had to patch a vendored toolchain file locally.
 disable-model-invocation: true
 ---
 
 # feedback — send a defect or request to the canon
 
 Harness defects are fixed in the canon and never patched in a consuming repo (ADR 0010). This
-skill is how a member gets a defect there: the canon `ywrlabs/ywr-harness` is private, so reports
-go to the PUBLIC dist repo's issue tracker (`orcait-co/ywr-harness`, label `upstream-report`),
-where the canon's session start picks them up (ADR 0064).
+skill is how a member gets a defect there: the canon `ywrlabs/ywr-harness` is private, so the
+report is filed on the PUBLIC dist tracker (`orcait-co/ywr-harness`), and the canon's session-start
+inbox lists every open dist issue (ADR 0064, ADR 0085). The script sets no label: GitHub silently
+drops a label set by a filer without push access, so the inbox does not depend on one.
 
 Invoke: `/ywr-harness:feedback <description>`. `$ARGUMENTS` is the member's description. Two
 script runs, one confirmation between them — **never skip the review step**: the body goes to a
@@ -63,7 +64,6 @@ The script files the reviewed file (title line stripped) with `gh issue create` 
 - `NOT FILED — …` (exit 2) — `gh` is absent or not logged in, or the create failed. The body is
   kept and the by-hand URL (`https://github.com/orcait-co/ywr-harness/issues/new`) is printed.
   Relay both verbatim. Do not retry, do not install or authenticate `gh` on the member's behalf.
-- `label: 'upstream-report' is absent …` — the report was still filed, without the label; say so.
 
 ## What this skill never does
 

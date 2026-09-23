@@ -38,14 +38,17 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
+      # ADR 0087 (dist issue #6). 모든 uses: 는 40-hex 커밋 SHA 고정 + `# vX.Y.Z` 주석이다 — 떠다니는
+      # 메이저 태그는 이 파일을 리뷰한 적 없는 코드로 옮겨갈 수 있다. 갱신은 정본이 손으로 한다
+      # (spec 0012 스윕·릴리스 준비), 소비 레포는 harness-init 재실행으로 받는다.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # 0 = 전체 히스토리. emitter 가 --range 로 슬라이스 범위를 계산할 수 있어야 한다.
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
@@ -80,20 +83,27 @@ jobs:
       # 머지는 통과가 아니다. push: before 가 0(브랜치 생성)이거나 도달 불가(force push)면 훅의
       # new-branch 분기로 떨어져 리모트에 없는 커밋을 스캔한다. 훅은 스캔한 커밋 수를 출력하고,
       # 범위에 커밋이 0개면 조용히 exit 0 하므로 아래서 빈 출력을 보고로 바꾼다(무음 아님).
+      # 값은 env 로만 받는다 — 이 파일의 규칙(표현식을 run: 텍스트에 전개하지 않는다)이 이 스텝에도
+      # 적용된다(dist issue #6: semgrep run-shell-injection). 변수 이름은 resolve-base.sh 의 env 계약
+      # (EVENT_NAME · BASE_REF · EVENT_BEFORE)과 같다 — 한 값에 한 이름.
       - name: Secret scan over this run's commits (backstop)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_BEFORE: ${{ github.event.before }}
         run: |
           if [ ! -f .githooks/pre-push ]; then
             echo "::warning::.githooks/pre-push 없음 — 시크릿 스캔 백스톱 생략(보고됨, 무음 아님). /ywr-harness:harness-init 재실행으로 배치하세요."
             exit 0
           fi
           ZERO=0000000000000000000000000000000000000000
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE=$(git rev-parse "origin/${{ github.base_ref }}") || {
-              echo "::error::secret scan: origin/${{ github.base_ref }} 를 해석할 수 없습니다 — 스캔이 돌지 않은 머지는 통과가 아닙니다(ADR 0041)."
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE=$(git rev-parse "origin/$BASE_REF") || {
+              echo "::error::secret scan: origin/$BASE_REF 를 해석할 수 없습니다 — 스캔이 돌지 않은 머지는 통과가 아닙니다(ADR 0041)."
               exit 1
             }
           else
-            BASE="${{ github.event.before }}"
+            BASE="$EVENT_BEFORE"
             case "$BASE" in
               *[!0]* ) git cat-file -e "$BASE^{commit}" 2>/dev/null || BASE=$ZERO ;;
               * ) BASE=$ZERO ;;
@@ -258,7 +268,7 @@ jobs:
       # 고르는 문자열이 아니다(ADR 0012) — 그래서 .harness.json 에 러너 접두를 선언하게 하지 않는다.
       - name: Setup uv (the emitted gates use it)
         if: contains(steps.cmds.outputs.runners, ' uv ')
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       # 설치는 게이트가 실행되는 디렉터리마다 한 번이다 — 레포 루트에서 한 번만 돌리면 `groups[].cwd` 로
       # 분리된 서브프로젝트(`backend/pyproject.toml`)는 설치되지 않은 채 게이트가 돈다(리뷰 2026-08-28
@@ -281,7 +291,12 @@ jobs:
 
       # npx 게이트(eslint · prettier · tsc · vitest): node 는 러너 이미지에 있지만 프로젝트의 도구는
       # node_modules 에 있어야 한다 — 디렉터리마다 lockfile 이 있을 때만 `npm ci`, 없으면 보고하고
-      # 넘어간다(무음 아님). 아직 npx 게이트를 선언한 소비 레포가 없어 실측되지 않은 경로다(ADR 0062 잔여 위험).
+      # 넘어간다(무음 아님). 그 생략이 "도구를 못 찾고 실패한다"는 뜻은 아니다: npm exec 문서대로 stdin 이
+      # TTY 가 아니거나 CI 가 감지되면 npx 는 `--yes` 를 가정하고(아래 실행 스텝은 CI=true · </dev/null),
+      # node_modules 에 없는 도구는 — lockfile 이 없거나 lock 에 그 도구가 없으면 — 그 런 시점의 레지스트리
+      # 최신판을 내려받아 실행한다. ADR 0087 이 uses: 에서 막은 것과 같은 부류(리뷰한 적 없는 코드)이고,
+      # 막을지(`NPM_CONFIG_YES=false` 등)는 열린 항목이다(spec 0007 §3.6). 아직 npx 게이트를 선언한 소비
+      # 레포가 없어 실측되지 않은 경로다(ADR 0062 잔여 위험).
       - name: Install node dependencies (once per directory the npx gates run in)
         if: contains(steps.cmds.outputs.runners, ' npx ')
         env:
@@ -294,7 +309,7 @@ jobs:
               (cd "$d" && npm ci)
               echo "::endgroup::"
             else
-              echo "$d/package-lock.json 없음 — npm ci 생략(보고됨, 무음 아님); 그 디렉터리의 npx 게이트는 이미 설치된 도구만 찾습니다."
+              echo "::warning::$d/package-lock.json 없음 — npm ci 생략(보고됨, 무음 아님). CI 에서 npx 는 --yes 를 가정하므로 그 디렉터리의 npx 게이트는 로컬에 없는 도구를 실행 시점의 레지스트리 최신판으로 내려받아 실행합니다(고정되지 않은 코드) — lockfile 을 커밋하세요."
             fi
           done
 

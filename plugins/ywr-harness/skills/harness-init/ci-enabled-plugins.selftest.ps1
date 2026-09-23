@@ -19,9 +19,318 @@ if (-not (Test-Path -LiteralPath $yml -PathType Leaf)) {
     Write-Host "FAIL — workflow template missing: $yml" -ForegroundColor Red
     exit 1
 }
+$ok = $true
+
+# --- WS: static classes over the workflow TEXT (dist issue #6, ADR 0087) --------------------------
+# Two finding classes earlier reviews had to find by hand, made deterministic so they cost no review
+# tokens: (1) a `${{ }}` expression spliced into `run:` text — the shell-injection surface this
+# file's own rule (values reach a script through `env:` only) exists to close, and which the
+# secret-scan step carried until dist issue #6; (2) a `uses:` that is not a full 40-hex commit SHA
+# with its `# vX.Y.Z` comment (ADR 0087). They need neither git nor python, so they run ahead of
+# the SKIP exits below, and those exits carry their verdict instead of dropping it.
+# Scope: the shipped template, plus the canon's own .github/workflows when this plugin sits in the
+# canon dogfood shape (the manifest gate's test: plugins/ywr-harness under a root holding both
+# .harness.json and .claude-plugin/marketplace.json) — a marketplace cache, the dist, and the Linux
+# parity container have no canon workflows, and that is reported, not silent.
+# What is guaranteed, exactly: WS1/WS2 are LINE readers of `run:` / `uses:` written as plain block
+# keys, and WS3 refuses every other YAML spelling of a key or value (below) — so the guarantee is
+# "for a workflow in the shape WS3 enforces", not "for any YAML GitHub accepts". No YAML parser runs.
+function Get-RunExpressionHits([string[]]$Lines) {
+    # A `run:` value is its key line plus every following line indented deeper than the key (blank
+    # lines included) — whatever the scalar style: a `|`/`>` block, a plain scalar continued on the
+    # next lines (`run:` + `  echo …`, or `run: echo a` + `  …`), or a quoted scalar spanning lines.
+    # YAML puts every continuation line of a block-mapping value deeper than its key, so one rule
+    # reads them all; reading only `|`/`>` bodies missed the plain and quoted multi-line forms
+    # (review 2026-09-23, low). A DOUBLE-quoted value holding a backslash is a hit on its own: its
+    # escapes (`\x24`, a 4-hex `\u` escape of `$`, an escaped line break joining `$` to `{{`) spell
+    # `${{` without the literal text a line reader looks for. `env:`/`if:`/`with:` values are the
+    # sanctioned place for an expression and are never scanned.
+    $hits = New-Object System.Collections.Generic.List[string]
+    $blocks = 0
+    $keyCol = -1
+    $dq = $false
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        $l = $Lines[$i]
+        if ($keyCol -ge 0) {
+            if ($l.Trim().Length -eq 0) { continue }
+            if (($l.Length - $l.TrimStart().Length) -gt $keyCol) {
+                if ($l.Contains('${{') -or ($dq -and $l.Contains('\'))) { $hits.Add("line $($i + 1): $($l.Trim())") }
+                continue
+            }
+            $keyCol = -1
+        }
+        if ($l -match '^(\s*)(-\s+)?run:(\s+(.*))?$') {
+            $col = $Matches[1].Length + $(if ($Matches[2]) { $Matches[2].Length } else { 0 })
+            $val = "$($Matches[4])"
+            $blocks++
+            $keyCol = $col
+            $dq = $val.StartsWith('"')
+            if ($val -notmatch '^[|>][-+0-9]*\s*(#.*)?$' -and ($val.Contains('${{') -or ($dq -and $val.Contains('\')))) {
+                $hits.Add("line $($i + 1): $($l.Trim())")
+            }
+        }
+    }
+    return @{ Hits = @($hits); Blocks = $blocks }
+}
+function Get-ShapeHits([string[]]$Lines) {
+    # The shape rule WS1/WS2's guarantee rests on. Outside a scalar's own text (a block body or a
+    # multi-line scalar's continuation — deeper than its key, the rule Get-RunExpressionHits reads)
+    # and comment lines, every line must be a plain `key:` line or a `- item` line, and no value may
+    # open a flow mapping, an anchor, an alias, a tag or an explicit key. Each refused construct is
+    # a spelling GitHub accepts and the line readers cannot see: `- { uses: a/b@v1 }`, `steps:
+    # [ {run: …} ]`, a quoted, tagged or spaced key (`"run":`, `!!str run:`, `uses :`), `? run`,
+    # `run: *script` with `&script` under another key, `<<: *defaults`. The flow forms allowed hold
+    # no key: an empty flow mapping (`permissions: {}`) and a flow sequence of plain scalars closed
+    # on its line (`branches: [main, master]`).
+    $hits = New-Object System.Collections.Generic.List[string]
+    $bodyCol = -1
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        $l = $Lines[$i]
+        $ind = $l.Length - $l.TrimStart().Length
+        if ($bodyCol -ge 0) {
+            if ($l.Trim().Length -eq 0 -or $ind -gt $bodyCol) { continue }
+            $bodyCol = -1
+        }
+        $t = $l.Trim()
+        if ($t.Length -eq 0 -or $t.StartsWith('#') -or $t -eq '-') { continue }
+        $why = $null
+        if ($l -match '^(\s*)(-\s+)?([A-Za-z_][A-Za-z0-9_-]*):(\s+(.*))?$') {
+            $key = $Matches[3]
+            $col = $Matches[1].Length + $(if ($Matches[2]) { $Matches[2].Length } else { 0 })
+            $v = "$($Matches[5])".Trim()
+            if ($v.StartsWith('#')) { $v = '' }
+            $isItem = $false
+        } elseif ($l -match '^(\s*)-\s+(.*)$') {
+            $key = $null; $col = $Matches[1].Length; $v = $Matches[2].Trim(); $isItem = $true
+        } else {
+            $hits.Add("line $($i + 1): not a plain key or item line: $t"); continue
+        }
+        if ($v.Length -eq 0) {
+            # A nested block follows — except under run:, whose value is always a string, so the
+            # deeper lines are its plain multi-line text.
+            if ($key -eq 'run') { $bodyCol = $col }
+            continue
+        }
+        $c0 = $v[0]
+        if ($v -match '^\{\s*\}\s*(#.*)?$') { }   # `permissions: {}` — an EMPTY flow mapping holds no key
+        elseif ('{&*!?@`%'.IndexOf($c0) -ge 0) { $why = "value opens a flow mapping, anchor, alias, tag or reserved indicator ('$c0')" }
+        elseif ($c0 -eq '[') {
+            if ($v -notmatch '^\[([^\[\]{}:]*)\]\s*(#.*)?$' -or $Matches[1] -match '(^|,)\s*[&*!]') {
+                $why = 'a flow sequence that is not plain scalars closed on this line'
+            }
+        }
+        elseif ($isItem -and $v -match '^-(\s|$)') { $why = 'a nested sequence in compact form' }
+        elseif ($isItem -and $v -match '^("(?:[^"\\]|\\.)*"|''(?:[^'']|'''')*'')\s*:(\s|$)') { $why = 'a quoted key' }
+        elseif ($isItem -and $c0 -ne '"' -and $c0 -ne "'" -and ($v -replace '\s+#.*$', '') -match ':(\s|$)') { $why = 'a key that is not a plain `name:`' }
+        if ($why) { $hits.Add("line $($i + 1): ${why}: $t"); continue }
+        # A scalar value: any deeper line that follows is its own continuation (text, not structure).
+        $bodyCol = $col
+    }
+    return @{ Hits = @($hits) }
+}
+function Get-WorkflowVerdict([string[]]$Lines, [bool]$IsTemplate) {
+    # The vacuity halves bind the TEMPLATE only: its run: blocks and uses: steps are the point, so a
+    # reader that finds none there is broken. A canon workflow made only of uses: steps (a labeler,
+    # an upload job) has no run: text to inject into, and one with no uses: has nothing to pin —
+    # each passes on the property itself. WS1 once demanded a run: block of every file, so such a
+    # workflow failed under the injection rule it cannot violate (review 2026-09-23, nit).
+    $rx = Get-RunExpressionHits $Lines
+    $ux = Get-UsesPinHits $Lines
+    $sx = Get-ShapeHits $Lines
+    return @{
+        Run = $rx; Uses = $ux; Shape = $sx
+        WS1 = ($rx.Hits.Count -eq 0 -and (-not $IsTemplate -or $rx.Blocks -gt 0))
+        WS2 = ($ux.Hits.Count -eq 0 -and (-not $IsTemplate -or $ux.Count -gt 0))
+        WS3 = ($sx.Hits.Count -eq 0)
+    }
+}
+function Get-UsesPinHits([string[]]$Lines) {
+    # Case-SENSITIVE (-cnotmatch): a SHA is lowercase hex, and PowerShell's default -match would
+    # accept an uppercase spelling git never prints.
+    $hits = New-Object System.Collections.Generic.List[string]
+    $count = 0
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -notmatch '^\s*(-\s+)?uses:') { continue }
+        $count++
+        if ($Lines[$i] -cnotmatch '^\s*(- )?uses: [\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$') {
+            $hits.Add("line $($i + 1): $($Lines[$i].Trim())")
+        }
+    }
+    return @{ Hits = @($hits); Count = $count }
+}
+
+# WS0: the detectors themselves, on synthetic text — so a detector that finds nothing cannot make
+# the per-file cases below pass vacuously. Hits are asserted by LINE, not only by count.
+$synthRun = @(
+    'jobs:',
+    '  j:',
+    '    steps:',
+    '      - name: a',
+    '        env:',
+    '          X: ${{ github.base_ref }}',
+    '        run: |',
+    '          echo "$X"',
+    '          echo "${{ github.base_ref }}"',
+    '      - run: echo ${{ github.event.before }}',
+    '      - name: b',
+    '        if: ${{ github.event_name == ''push'' }}',
+    '        run: >-',
+    '          echo ok',
+    '',
+    '          echo ${{ x }}',
+    '      - name: c',
+    '        with:',
+    '          k: ${{ y }}'
+)
+$sr = Get-RunExpressionHits $synthRun
+$srLines = @($sr.Hits | ForEach-Object { ($_ -split ':')[0] }) -join ','
+$ok = (Assert-True 'WS0 the run: detector flags a block line, an inline run and a folded block — and no env:/if:/with: value' ($sr.Blocks -eq 3 -and $srLines -eq 'line 9,line 10,line 16') "blocks=$($sr.Blocks) hits=$($sr.Hits -join ' | ')") -and $ok
+$synthUses = @(
+    '        uses: actions/checkout@v5',
+    '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0',
+    '      - uses: a/b@FBC6F3992D24B796D5A048FF273F7FCC4A7B6C09 # v5.1.0',
+    '        uses: a/b@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09',
+    '        uses: a/b/sub@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v1.2.3',
+    '        # uses: a/b@v1'
+)
+$su = Get-UsesPinHits $synthUses
+$suLines = @($su.Hits | ForEach-Object { ($_ -split ':')[0] }) -join ','
+$ok = (Assert-True 'WS0 the uses: detector flags a tag, an uppercase SHA and a missing comment — not a pin, a sub-path pin or a comment' ($su.Count -eq 5 -and $suLines -eq 'line 1,line 3,line 4') "count=$($su.Count) hits=$($su.Hits -join ' | ')") -and $ok
+# WS0b: every multi-line scalar style under run: is read — plain after an empty value, a quoted
+# scalar spanning lines, a plain value continued — and a double-quoted escape that spells `${{`.
+# A single-quoted value (no escapes in YAML) and an env: value stay clean.
+$synthRunMulti = @(
+    'jobs:',
+    '  j:',
+    '    steps:',
+    '      - name: d',
+    '        run:',
+    '          echo ${{ github.head_ref }}',
+    '      - name: e',
+    '        run: "echo ok',
+    '          ${{ github.head_ref }}"',
+    '      - name: f',
+    '        run: echo a',
+    '          ${{ x }}',
+    '      - name: g',
+    '        run: "echo \x24{{ github.head_ref }}"',
+    '      - name: h',
+    '        run: ''echo it''''s fine''',
+    '        env:',
+    '          Y: ${{ z }}'
+)
+$srm = Get-RunExpressionHits $synthRunMulti
+$srmLines = @($srm.Hits | ForEach-Object { ($_ -split ':')[0] }) -join ','
+$ok = (Assert-True 'WS0b the run: detector reads plain, quoted and continued multi-line values and a double-quoted escape — not a single-quoted value or env:' ($srm.Blocks -eq 5 -and $srmLines -eq 'line 6,line 9,line 12,line 14') "blocks=$($srm.Blocks) hits=$($srm.Hits -join ' | ')") -and $ok
+# WS0c: the shape rule. Every accepted form the canon files use passes; each spelling the line
+# readers cannot see is refused BY LINE — lines 4 and 5 are the flow-mapping steps the uses: reader
+# does not even count (review 2026-09-23, low).
+$synthShapeOk = @(
+    'name: ok',
+    'on:',
+    '  push:',
+    '    branches: [main, master]',
+    '    paths:',
+    '      - "docs/**"',
+    '      - ''plugins/**''',
+    'permissions: {}',
+    'jobs:',
+    '  j:',
+    '    runs-on: ubuntu-latest',
+    '    strategy:',
+    '      matrix:',
+    '        shard: ["1/4", "2/4"]',
+    '    steps:',
+    '      # a comment { with * & ! }',
+    '      - name: Checkout',
+    '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0',
+    '      - name: a',
+    '        if: github.event_name == ''push''',
+    '        run: |',
+    '          { echo "x: y"; } && echo *',
+    '          - not an item',
+    '      - run:',
+    '          echo plain multi-line',
+    '      -',
+    '        name: bare dash',
+    '        run: echo "k: v" # trailing'
+)
+$ssOk = Get-ShapeHits $synthShapeOk
+$ok = (Assert-True 'WS0c the shape rule accepts every form the canon workflows use (flow scalar lists, quoted items, block and multi-line run: text)' ($ssOk.Hits.Count -eq 0) "hits=$($ssOk.Hits -join ' | ')") -and $ok
+$synthShapeBad = @(
+    'jobs:',
+    '  j:',
+    '    steps:',
+    '      - { uses: actions/checkout@v5 }',
+    '      - {name: x, uses: a/b@main}',
+    '      - name: q',
+    '        "run": echo ${{ x }}',
+    '      - "uses": a/b@v1',
+    '      - name: s',
+    '        uses : a/b@v1',
+    '        run: *script',
+    '        x-script: &script echo ${{ x }}',
+    '        <<: *defaults',
+    '        ? run',
+    '        : echo ${{ x }}',
+    '        !!str run: echo',
+    '    other: [ {run: echo x} ]',
+    '    more: [uses: a/b@v1]'
+)
+$ssBad = Get-ShapeHits $synthShapeBad
+$ssBadLines = @($ssBad.Hits | ForEach-Object { ($_ -split ':')[0] }) -join ','
+$ok = (Assert-True 'WS0c the shape rule refuses flow-mapping steps, quoted/spaced/tagged/explicit keys, anchors, aliases, merge keys and flow pairs — by line' ($ssBadLines -eq 'line 4,line 5,line 7,line 8,line 10,line 11,line 12,line 13,line 14,line 15,line 16,line 17,line 18') "hits=$($ssBad.Hits -join ' | ')") -and $ok
+$suFlow = Get-UsesPinHits $synthShapeBad
+$ok = (Assert-True 'WS0c control: the uses: line reader alone counts none of those four uses: spellings (why the shape rule exists)' ($suFlow.Count -eq 0) "count=$($suFlow.Count) hits=$($suFlow.Hits -join ' | ')") -and $ok
+# WS0d: the vacuity halves bind the template only (review 2026-09-23, nit). A uses-only canon
+# workflow passes WS1 and a run-only one passes WS2; the same texts as the TEMPLATE fail them.
+$usesOnly = @(
+    'name: labeler',
+    'on: [pull_request]',
+    'jobs:',
+    '  l:',
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    '      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0'
+)
+$runOnly = @('jobs:', '  r:', '    runs-on: ubuntu-latest', '    steps:', '      - run: echo ok')
+$vU = Get-WorkflowVerdict $usesOnly $false; $vUt = Get-WorkflowVerdict $usesOnly $true
+$vR = Get-WorkflowVerdict $runOnly $false; $vRt = Get-WorkflowVerdict $runOnly $true
+$ok = (Assert-True 'WS0d a uses-only canon workflow passes WS1, a run-only one passes WS2 — nothing to inject into or to pin is not a defect' ($vU.WS1 -and $vU.WS2 -and $vU.WS3 -and $vR.WS1 -and $vR.WS2 -and $vR.WS3) "usesOnly WS1=$($vU.WS1) WS2=$($vU.WS2) WS3=$($vU.WS3); runOnly WS1=$($vR.WS1) WS2=$($vR.WS2) WS3=$($vR.WS3)") -and $ok
+$ok = (Assert-True 'WS0d control: as the TEMPLATE, the same texts fail the vacuity halves (a reader that finds nothing there is broken)' (-not $vUt.WS1 -and $vUt.WS2 -and $vRt.WS1 -and -not $vRt.WS2) "usesOnly-as-template WS1=$($vUt.WS1) WS2=$($vUt.WS2); runOnly-as-template WS1=$($vRt.WS1) WS2=$($vRt.WS2)") -and $ok
+
+$wfFiles = @($yml)
+# Each step only after the previous one held: in the Linux parity container the plugin root IS the
+# mount (`/repo`), whose grandparent does not exist — an eager Split-Path chain threw there
+# (measured on the first parity run of this case).
+$pluginRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+$pluginsDir = Split-Path -Parent $pluginRoot
+$canonRoot = if ($pluginsDir) { Split-Path -Parent $pluginsDir } else { '' }
+$isCanon = ((Split-Path $pluginRoot -Leaf) -eq 'ywr-harness') -and
+           $pluginsDir -and ((Split-Path $pluginsDir -Leaf) -eq 'plugins') -and $canonRoot -and
+           (Test-Path -LiteralPath (Join-Path $canonRoot '.harness.json') -PathType Leaf) -and
+           (Test-Path -LiteralPath (Join-Path $canonRoot '.claude-plugin/marketplace.json') -PathType Leaf)
+if ($isCanon) {
+    $canonWf = Join-Path $canonRoot '.github/workflows'
+    $canonFiles = @(Get-ChildItem -LiteralPath $canonWf -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in '.yml', '.yaml' } | Sort-Object Name | ForEach-Object { $_.FullName })
+    $ok = (Assert-True 'WS canon shape: .github/workflows holds workflows to scan (an empty scan is not a pass)' ($canonFiles.Count -gt 0) "no *.yml under $canonWf") -and $ok
+    $wfFiles += $canonFiles
+} else {
+    Write-Host "SKIP [WS canon workflows] not the canon dogfood shape — template only (reported, not silent)" -ForegroundColor Yellow
+}
+foreach ($wf in $wfFiles) {
+    $wfLines = [IO.File]::ReadAllLines($wf)
+    $label = if ($wf -eq $yml) { 'template harness-gates.yml' } else { ".github/workflows/$(Split-Path $wf -Leaf)" }
+    $v = Get-WorkflowVerdict $wfLines ($wf -eq $yml)
+    $ok = (Assert-True "WS1 no `${{ }} expression inside a run: value — $label ($($v.Run.Blocks) run: key(s))" $v.WS1 "blocks=$($v.Run.Blocks); pass values through env: — $($v.Run.Hits -join ' | ')") -and $ok
+    $ok = (Assert-True "WS2 every uses: is a 40-hex SHA pin with a # vX.Y.Z comment — $label ($($v.Uses.Count) uses:)" $v.WS2 "count=$($v.Uses.Count); ADR 0087 — $($v.Uses.Hits -join ' | ')") -and $ok
+    $ok = (Assert-True "WS3 the workflow is in the shape WS1/WS2 read (plain block keys; no flow mapping, anchor, alias, tag or non-plain key) — $label" $v.WS3 "rewrite in plain block form — $($v.Shape.Hits -join ' | ')") -and $ok
+}
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host 'SKIP [ci-enabled-plugins] git absent (reported, not silent) — CI has git' -ForegroundColor Yellow
+    if (-not $ok) { Write-Host 'ci-enabled-plugins selftest: FAILED (static WS cases)' -ForegroundColor Red; exit 1 }
     exit 0
 }
 $py = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
@@ -31,6 +340,7 @@ if (-not $py) {
         exit 1
     }
     Write-Host 'SKIP [ci-enabled-plugins] python absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
+    if (-not $ok) { Write-Host 'ci-enabled-plugins selftest: FAILED (static WS cases)' -ForegroundColor Red; exit 1 }
     exit 0
 }
 
@@ -86,7 +396,6 @@ foreach ($must in @('json.loads', 'git', 'ls-files', 'enabledPlugins')) {
 
 $fxBase = New-FixtureRoot 'ci-enabled-plugins-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
-$ok = $true
 
 $stepFile = Join-Path $fxBase 'enabled_plugins_step.py'
 [IO.File]::WriteAllText($stepFile, $stepText, [Text.UTF8Encoding]::new($false))

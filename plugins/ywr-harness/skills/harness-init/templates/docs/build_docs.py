@@ -171,24 +171,146 @@ def split_frontmatter(text):
     return None, text
 
 
+_FM_KEY_RE = re.compile(r"^([A-Za-z0-9_]+)\s*:\s*(.*)$")
+# 블록 리스트 항목 줄 — `  - item`(들여쓴 형태)과 `- item`(YAML 이 허용하는 무들여쓰기 형태).
+# `-` 뒤에 공백이나 줄 끝이 와야 한다: `-1` · `--x` · `---` 는 항목이 아니다.
+_FM_ITEM_RE = re.compile(r"^[ \t]*-(?:[ \t]+(.*))?$")
+
+
 def parse_frontmatter(text):
     """파일 선두의 --- ... --- YAML 서브셋을 dict로. (meta, body) 반환.
 
     템플릿 복사본이 frontmatter 앞에 설명용 <!-- ... --> 주석을 남겨도 동작하도록,
     블록 추출 규칙은 split_frontmatter 가 단독 소유한다.
+
+    리스트는 세 모양 모두 같은 리스트가 된다(dist issue #6 — 한 줄 형태만 읽던 시절 블록
+    리스트는 null, 여러 줄 flow 리스트는 문자열 '[' 로 index 에 들어가 verify_map 이 죽었다):
+      key: [a, b]            한 줄 flow
+      key:                   블록 — 값이 비었거나 주석뿐이고 다음 줄들이 `- 항목`
+        - a
+        - b
+      key: [                 여러 줄 flow — 제 줄에서 균형이 맞지 않는 '[' 로 열고, 괄호
+        a,                   균형(_flow_depth — 인용 항목 밖에서만 센다)이 0 이 되는 뒤 줄에서
+        app/[slug]           닫는다. 따옴표 없는 `app/[slug]` 항목은 스스로 균형이라 리스트를
+      ]                      열지도 닫지도 않는다.
+    블록 항목이 뒤따르지 않는 빈 값, 다음 0열 키나 블록 끝 전에 닫히지 않는(또는 닫는 ']'
+    뒤에 글자가 남는) '[' 는 예전 규칙(_parse_value) 그대로다 — 이 문법이 넓어져도 기존 한 줄
+    코퍼스의 파싱 결과는 바뀌지 않는다. 유일한 예외는 주석뿐인 값(`key:   # 메모`)으로, 문법
+    (spec 0001 §3: 공백 + '#' 부터 주석, 빈 값은 null)대로 null 이 된다 — 예전엔 주석 텍스트
+    '# 메모' 가 값이 됐다.
     """
     block, rest = split_frontmatter(text)
     if block is None:
         return {}, rest
     meta = {}
-    for line in block.split("\n"):
+    lines = block.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        m = re.match(r"^([A-Za-z0-9_]+)\s*:\s*(.*)$", line)
+        m = _FM_KEY_RE.match(line)
         if not m:
             continue
-        meta[m.group(1)] = _parse_value(m.group(2).strip())
+        key, raw = m.group(1), m.group(2).strip()
+        head = _cut_comment(raw)
+        if head == "":
+            items, nxt = _block_items(lines, i)
+            if items is not None:
+                meta[key], i = items, nxt
+                continue
+        elif head.startswith("[") and _flow_depth(head) > 0:
+            joined, nxt = _flow_lines(lines, i, head)
+            if joined is not None:
+                meta[key], i = _parse_value(joined), nxt
+                continue
+        meta[key] = _parse_value(raw)
     return meta, rest
+
+
+def _cut_comment(v):
+    # 인라인 주석 컷 — 공백 뒤의 '#'만 주석으로 본다(값에 포함된 '#'은 보존: URL#frag 등).
+    # 맨 앞의 '#' 도 주석이다: `key:   # 메모` 의 공백은 _FM_KEY_RE 의 `\s*` 가 이미 먹었고,
+    # 호출자는 모두 공백을 벗긴 값(또는 줄)을 넘긴다 — 주석 규칙의 유일한 구현.
+    cm = re.search(r"(?:^|\s)#", v)
+    return (v[:cm.start()] if cm else v).strip()
+
+
+def _flow_depth(text):
+    """flow 리스트의 괄호 균형 — '[' 는 +1, ']' 는 -1. 인용 항목(항목 머리의 따옴표부터 같은
+    따옴표까지 — _parse_item 이 인용으로 보는 모양) 안의 괄호는 세지 않는다. 항목 중간의
+    따옴표(`it's.md`)는 인용이 아니다. scripts/harness/harness_retro.py 의 _flow_depth 와 한 글자
+    다르지 않게 유지할 것 — 페어링 셀프테스트(harness_retro.selftest.ps1 G4)가 고정한다."""
+    depth, quote, at_item = 0, None, True
+    for ch in text:
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if at_item and ch in "\"'":
+            quote = ch
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        at_item = ch in "[," or (at_item and ch.isspace())
+    return depth
+
+
+def _block_items(lines, i):
+    """lines[i:] 의 `- 항목` 줄들 → (리스트, 다음 인덱스). 항목 줄이 하나도 없으면 (None, i).
+    빈 줄·주석 줄은 항목 사이에 끼어도 리스트를 끊지 않는다(YAML 과 같다)."""
+    items, j, end = [], i, None
+    while j < len(lines):
+        s = lines[j]
+        j += 1
+        if not s.strip() or s.lstrip().startswith("#"):
+            continue
+        im = _FM_ITEM_RE.match(s)
+        if not im:
+            break
+        end = j
+        text = (im.group(1) or "").strip()
+        q = text[:1]
+        if q in ('"', "'") and text.find(q, 1) != -1:
+            text = text[:text.find(q, 1) + 1]   # 인용 스칼라 — 닫는 따옴표 뒤는 주석
+        else:
+            text = _cut_comment(text)           # `- # 주석` 은 빈 항목
+        item = _parse_item(text)
+        if item is not None:
+            items.append(item)
+    return (items, end) if end is not None else (None, i)
+
+
+def _flow_lines(lines, i, head):
+    """균형이 맞지 않는 '[' 로 열린 값(head)을 괄호 균형이 0 이 되는 줄까지 이어 붙인다 →
+    (한 줄 문자열, 다음 인덱스). 닫는 줄의 끝이 ']' 가 아니거나, 닫히기 전에 0열 `key:` 줄이나
+    블록 끝을 만나면 (None, i) — 다음 키를 삼키지 않고 예전 규칙으로 돌아간다."""
+    parts, j = [head], i
+    while j < len(lines):
+        s = lines[j]
+        if _FM_KEY_RE.match(s):
+            return None, i
+        j += 1
+        seg = _cut_comment(s)
+        if seg:
+            parts.append(seg)
+            joined = " ".join(parts)
+            if _flow_depth(joined) <= 0:
+                return (joined, j) if joined.endswith("]") else (None, i)
+    return None, i
+
+
+def _parse_item(item):
+    # 리스트 항목 규칙(한 줄·블록·여러 줄 모양 공용). 빈 항목은 None(건너뜀).
+    item = item.strip()
+    if item == "":
+        return None
+    quoted = item[:1] in ('"', "'")
+    item = item.strip('"').strip("'")
+    # 따옴표 없는 순수 정수만 int로 (따옴표가 있으면 id 문자열로 보존: "0001")
+    return int(item) if (not quoted and re.fullmatch(r"-?\d+", item)) else item
 
 
 def _parse_value(v):
@@ -199,10 +321,7 @@ def _parse_value(v):
         if end != -1:
             return v[1:end]
         return v.strip(q)
-    # 인라인 주석 컷 — 공백 뒤의 '#'만 주석으로 본다(값에 포함된 '#'은 보존: URL#frag 등)
-    cm = re.search(r"\s#", v)
-    if cm:
-        v = v[:cm.start()].strip()
+    v = _cut_comment(v)
     if v == "" or v.lower() == "null" or v.lower() == "~":
         return None
     if v.startswith("[") and v.endswith("]"):
@@ -211,13 +330,9 @@ def _parse_value(v):
             return []
         out = []
         for item in inner.split(","):
-            item = item.strip()
-            if item == "":
-                continue
-            quoted = item[:1] in ('"', "'")
-            item = item.strip('"').strip("'")
-            # 따옴표 없는 순수 정수만 int로 (따옴표가 있으면 id 문자열로 보존: "0001")
-            out.append(int(item) if (not quoted and re.fullmatch(r"-?\d+", item)) else item)
+            item = _parse_item(item)
+            if item is not None:
+                out.append(item)
         return out
     if re.fullmatch(r"-?\d+", v):
         return int(v)

@@ -192,12 +192,143 @@ Commit $f4 'chore: add owned source'
 $rF4 = Invoke-Retro $f4 @()
 $ok = (Assert-True 'F4 a block-form implements_in owns the file (no UNMAPPED)' ($rF4.Out -notmatch 'UNMAPPED') $rF4.Out) -and $ok
 
+# F5: the MULTI-LINE flow form owns its files too (dist issue #6). Before 0.54.0 this parser read
+# nothing from it — `\[(.*?)\]` needs the `]` on the key's own line — so both files fired UNMAPPED
+# while the builder (after the same fix) indexed them as owned: the two parsers disagreed on one field.
+$f5 = New-Repo 'unmapped-owned-flow' $CFG
+Write-F $f5 'docs/spec/0001-s.md' "---`nid: `"0001`"`ntype: spec`nimplements_in: [`n  `"src/flow_a.py`",`n  src/flow_b.py,   # trailing comma`n]`ntags: [x]`n---`n# spec`n"
+Write-F $f5 'src/flow_a.py' "a = 1`n"
+Write-F $f5 'src/flow_b.py' "b = 1`n"
+Commit $f5 'chore: add flow-owned sources'
+$rF5 = Invoke-Retro $f5 @()
+$ok = (Assert-True 'F5 a multi-line flow implements_in owns both files (no UNMAPPED)' ($rF5.Out -notmatch 'UNMAPPED') $rF5.Out) -and $ok
+$ok = (Assert-True 'F5 and maps no junk path (no DEADMAP)' ($rF5.Out -notmatch 'DEADMAP') $rF5.Out) -and $ok
+
+# F6: a block list with a comment HEAD, a comment line between items and an inline comment on an
+# item — the builder's comment rule, applied item by item.
+$f6 = New-Repo 'unmapped-owned-block-comments' $CFG
+Write-F $f6 'docs/spec/0001-s.md' "---`nid: `"0001`"`ntype: spec`nimplements_in:   # owned files`n  - src/blk_a.py   # why`n`n  # between`n  - `"src/blk_b.py`"`n---`n# spec`n"
+Write-F $f6 'src/blk_a.py' "a = 1`n"
+Write-F $f6 'src/blk_b.py' "b = 1`n"
+Commit $f6 'chore: add block-owned sources'
+$rF6 = Invoke-Retro $f6 @()
+$ok = (Assert-True 'F6 a commented block list owns both files, comments cut (no UNMAPPED, no DEADMAP)' ($rF6.Out -notmatch 'UNMAPPED' -and $rF6.Out -notmatch 'DEADMAP') $rF6.Out) -and $ok
+
 # --- G: DEADMAP — implements_in points at a missing file -----------------------------------------
 $g = New-Repo 'deadmap' $CFG
 Write-F $g 'docs/spec/0001-s.md' (Spec '0001' @('src/gone.py'))
 Commit $g 'docs: map a file that does not exist'
 $rG = Invoke-Retro $g @()
 $ok = (Assert-True 'G DEADMAP fires' ($rG.Out -match 'DEADMAP:.*src/gone\.py') $rG.Out) -and $ok
+
+# G2: an item carrying ']' (the Next.js catch-all route) in a one-line list (dist issue #6). The
+# lazy `\[(.*?)\]` stopped at the FIRST ']': it mapped `app/api/auth/[...nextauth` — a false
+# DEADMAP on every commit — and dropped every later item, so src/c.py fired UNMAPPED as well.
+# Created with IO calls: '[' and ']' are wildcards to PowerShell's -Path parameters.
+$g2 = New-Repo 'deadmap-bracket-item' $CFG
+$g2route = Join-Path $g2 'app/api/auth/[...nextauth]'
+[IO.Directory]::CreateDirectory($g2route) | Out-Null
+[IO.File]::WriteAllText((Join-Path $g2route 'route.ts'), "export {}`n")
+Write-F $g2 'src/c.py' "c = 1`n"
+Write-F $g2 'docs/spec/0001-s.md' (Spec '0001' @('app/api/auth/[...nextauth]/route.ts', 'src/c.py'))
+Commit $g2 'chore: map a catch-all route'
+$rG2 = Invoke-Retro $g2 @()
+$ok = (Assert-True 'G2 an item containing ] is read whole — no false DEADMAP' ($rG2.Out -notmatch 'DEADMAP') $rG2.Out) -and $ok
+$ok = (Assert-True 'G2 the item AFTER it is still owned (no UNMAPPED for src/c.py)' ($rG2.Out -notmatch 'UNMAPPED') $rG2.Out) -and $ok
+
+# G3: the SHIPPED spec template, verbatim. Its `implements_in: [ ]` line carries an inline comment
+# whose example is itself a bracketed list (`예: ["docs/build_docs.py"]`), and `[0-9]*.md` DOES scan
+# 0000-template.md. A greedy `\[(.*)\]` — the obvious fix for G2 — reaches into that comment and
+# maps junk to the template: a DEADMAP on every repo carrying the template. The inline-comment cut
+# (whitespace + '#', the builder's rule) is what keeps both G2 and G3 green.
+$g3 = New-Repo 'deadmap-template-comment' $CFG
+$tmplSrc = Join-Path $PSScriptRoot '../skills/harness-init/templates/docs/spec/0000-template.md'
+Write-F $g3 'docs/spec/0000-template.md' ([IO.File]::ReadAllText($tmplSrc))
+Commit $g3 'docs: place the spec template'
+$rG3 = Invoke-Retro $g3 @()
+$ok = (Assert-True 'G3 the shipped template maps nothing out of its own comment (no DEADMAP)' ($rG3.Out -notmatch 'DEADMAP') $rG3.Out) -and $ok
+$rG3c = Invoke-Retro $g3 @('--coverage')
+$ok = (Assert-True 'G3 --coverage agrees: no dead mappings' ($rG3c.Out -match 'dead mappings: none') $rG3c.Out) -and $ok
+
+# G4: PAIRING — this parser against the docs builder's, shape by shape. They are two parsers of one
+# field by necessity (the retro reads committed sources, not an index that may not be rebuilt), and
+# until 0.54.0 they disagreed on three shapes (dist issue #6). The builder is the TEMPLATE copy the
+# plugin ships (byte-identical to the canon's docs/build_docs.py — manifest-gate's dogfood sweep).
+# Each shape carries the EXPECTED builder value, compared TYPED (type name + value, so an int 7 is
+# not a string '7'): the retro must equal it as a list, or [] where the builder indexes a non-list,
+# and the builder must equal it exactly — so a rule dropped from BOTH parsers (the column-0 key
+# guard, the bracket balance, the comment-only cut) still fails, which a bare pairing cannot see.
+# "flow unclosed before a key" is the guard's pin: without the guard both parsers swallow `next: 3`
+# into the list and close it at the stray `]`. The "ends in ]" shapes are the balance rule's pin: the
+# old rule (first line ending in `]` closes) truncated `app/[slug]` to `app/[slug` in both parsers.
+$g4Script = Join-Path $fxBase 'pairing.py'
+Set-Content -LiteralPath $g4Script -NoNewline -Value @'
+import importlib.util, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+import harness_retro as retro
+spec = importlib.util.spec_from_file_location("build_docs", sys.argv[2])
+bd = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bd)
+AB = ["src/a.py", "src/b.py"]
+shapes = {
+    "one-line": ('implements_in: ["src/a.py", "src/b.py"]', AB),
+    "one-line bracket item": ('implements_in: [app/api/auth/[...nextauth]/route.ts, src/c.py]',
+                              ["app/api/auth/[...nextauth]/route.ts", "src/c.py"]),
+    "one-line empty": ('implements_in: []', []),
+    "template comment": ('implements_in: [ ]         # x (예: ["docs/build_docs.py"]), y', []),
+    "block": ('implements_in:\n  - src/a.py\n  - "src/b.py"', AB),
+    "block compact": ('implements_in:\n- src/a.py\n- src/b.py', AB),
+    "block commented": ('implements_in:   # files\n  - src/a.py   # why\n\n  # between\n  - "src/b.py"  # quoted\n  -\n  - # empty\nnext: 1', AB),
+    "flow multi-line": ('implements_in: [\n  "src/a.py",\n  src/b.py,   # c\n]\nnext: 2', AB),
+    "flow first item inline": ('implements_in: ["src/a.py",\n  "src/b.py"]', AB),
+    "flow last item ends in ]": ('implements_in: [\n  src/a.py,\n  app/[slug]\n]\nnext: 5', ["src/a.py", "app/[slug]"]),
+    "flow head line ends in ]": ('implements_in: [src/a.py, app/[slug]\n]\nnext: 6', ["src/a.py", "app/[slug]"]),
+    "flow bracketed dir mid-path": ('implements_in: [\n  app/[slug]/page.tsx\n]', ["app/[slug]/page.tsx"]),
+    "flow quoted item carrying ]": ('implements_in: [\n  "src/x]y.py",\n  src/a.py\n]', ["src/x]y.py", "src/a.py"]),
+    "flow unterminated": ('implements_in: [\n  "src/a.py",\nnext: 3', "["),
+    "flow unclosed before a key": ('implements_in: [\n  "src/a.py",\nnext: 3\n]', "["),
+    "flow closed with trailing text": ('implements_in: [\n  src/a.py,\n] x\nnext: 7', "["),
+    "comment-only value": ('implements_in:   # TBD\nnext: 8', None),
+    "empty then key": ('implements_in:\nnext: 4', None),
+    "numeric items": ('implements_in: [7, "0001", 0002, src/a.py]', [7, "0001", 2, "src/a.py"]),
+    "block numeric items": ('implements_in:\n  - 7\n  - "8"', [7, "8"]),
+    "quoted empty item": ('implements_in: ["", src/a.py]', ["", "src/a.py"]),
+    "duplicate key, last wins": ('implements_in: [src/a.py]\nimplements_in:\n  - src/z.py', ["src/z.py"]),
+    "absent": ('title: x', None),
+}
+def typed(v):
+    return [(type(x).__name__, x) for x in v] if isinstance(v, list) else (type(v).__name__, v)
+fails = []
+for name, (block, want) in shapes.items():
+    meta, _ = bd.parse_frontmatter("---\n" + block + "\n---\n")
+    got = meta.get("implements_in")
+    if typed(got) != typed(want):
+        fails.append(f"{name}: builder {got!r} != expected {want!r}")
+    mine = retro.implements_in(block.split("\n"))
+    if typed(mine) != typed(want if isinstance(want, list) else []):
+        fails.append(f"{name}: retro {mine!r} != builder-as-list {want!r}")
+print("G4-OK" if not fails else "G4-FAIL: " + " | ".join(fails))
+'@
+$builderTmpl = Join-Path $PSScriptRoot '../skills/harness-init/templates/docs/build_docs.py'
+$rG4 = (& $py.Source $g4Script $PSScriptRoot $builderTmpl 2>&1 | Out-String)
+$ok = (Assert-True 'G4 the retro parser and the docs builder agree, typed, with the expected value of every implements_in shape' ($rG4 -match 'G4-OK') $rG4) -and $ok
+
+# G5: the multi-line form of G2's class, end to end — a last item ending in `]` (a Next.js dynamic
+# route DIRECTORY) with the closing `]` on its own line. The old close rule (first line ending in
+# `]`) cut it to `app/[slug` in both parsers alike, so the pairing passed while the retro fired a
+# false DEADMAP on every commit; the bracket balance reads the item whole.
+$g5 = New-Repo 'deadmap-bracket-dir-multiline' $CFG
+$g5dir = Join-Path $g5 'app/[slug]'
+[IO.Directory]::CreateDirectory($g5dir) | Out-Null
+[IO.File]::WriteAllText((Join-Path $g5dir 'page.tsx'), "export {}`n")
+Write-F $g5 'src/a.py' "a = 1`n"
+Write-F $g5 'docs/spec/0001-s.md' "---`nid: `"0001`"`ntype: spec`nimplements_in: [`n  src/a.py,`n  app/[slug]`n]`ntags: [x]`n---`n# spec`n"
+Commit $g5 'chore: map a dynamic-route directory in a multi-line list'
+$rG5 = Invoke-Retro $g5 @()
+$ok = (Assert-True 'G5 a multi-line list whose last item ends in ] maps it whole (no DEADMAP, no UNMAPPED)' ($rG5.Out -notmatch 'DEADMAP' -and $rG5.Out -notmatch 'UNMAPPED') $rG5.Out) -and $ok
+$rG5c = Invoke-Retro $g5 @('--coverage')
+$ok = (Assert-True 'G5 --coverage agrees: no dead mappings' ($rG5c.Out -match 'dead mappings: none') $rG5c.Out) -and $ok
 
 # --- H: a clean commit is completely silent -------------------------------------------------------
 # The property that makes an advisory gate readable at all.
@@ -291,6 +422,19 @@ $ok = (Assert-True 'K all three undeclared checks are named' ((($rK.Out | Select
 $rK2 = Invoke-Retro $g @('--coverage')
 $ok = (Assert-True 'K2 coverage lists dead mappings' ($rK2.Out -match 'dead mappings.*1') $rK2.Out) -and $ok
 $ok = (Assert-True 'K2 coverage names the ignore register' ($rK2.Out -match 'ignore register') $rK2.Out) -and $ok
+
+# K3: the report survives a console that cannot encode it (dist issue #6 claimed a cp949 crash;
+# not reproduced — `hc.pin_utf8()` has run at import since v0.9.0). This is the regression guard for
+# that pin: ascii:strict is the harshest stdout a member's console can hand Python, and the
+# DISABLED lines carry '—'. Removing the pin raises UnicodeEncodeError here and exits 1.
+$prevIoK = $env:PYTHONIOENCODING
+$env:PYTHONIOENCODING = 'ascii:strict'
+try { $rK3 = Invoke-Retro $k @('--coverage') }
+finally {
+    if ($null -eq $prevIoK) { Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue } else { $env:PYTHONIOENCODING = $prevIoK }
+}
+$ok = (Assert-True 'K3 --coverage on an ascii:strict console exits 0 with no UnicodeEncodeError' ($rK3.Code -eq 0 -and $rK3.Out -notmatch 'UnicodeEncodeError') "exit=$($rK3.Code): $($rK3.Out)") -and $ok
+$ok = (Assert-True 'K3 and the em dash arrives intact (UTF-8, not a replacement)' ($rK3.Out -match 'not declared — the checks it drives are DISABLED') $rK3.Out) -and $ok
 
 Remove-FixtureRoot $fxBase
 

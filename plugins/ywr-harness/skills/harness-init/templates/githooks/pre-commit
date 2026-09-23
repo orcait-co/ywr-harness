@@ -69,7 +69,17 @@ if [ ! -f "$EMITTER" ]; then
     exit 0
 fi
 
-STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+# `-c core.quotepath=false`: the list is handed to the emitter as explicit files, which it takes
+# verbatim. Unpinned, a clone with core.quotepath=true (Git for Windows' default) lists a non-ASCII
+# path as `"docs/\355\225\234...md"` — quoted and octal-escaped — so it matched no group and this
+# hook printed a FALSE "matched NO declared group — CI's harness-gates run FAILS" line for a file
+# CI (--all/--range, whose git reads carry the pin) groups correctly (dist issue #6; the issue #40
+# pin, ADR 0077). The pin fixes GROUP MATCHING only: a non-ASCII name still fails the emitter's
+# SAFE_TOKEN gate, so here exactly as in CI it is reported as excluded from file-scoped gate
+# arguments — no file-scoped gate (a linter) ever receives it. Git still C-quotes a path holding
+# `"`, `\` or a control character under this pin; only a NUL-separated list would carry those, and
+# this newline-delimited list cannot.
+STAGED=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMR)
 [ -n "$STAGED" ] || exit 0
 
 PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || command -v py 2>/dev/null)
@@ -169,16 +179,39 @@ echo "[harness] pre-commit gates on $STAGED_N staged file(s):"
 
 # Newline-delimited iteration. `set -f` disables globbing for the loop: a gate command carrying a
 # `*` would otherwise be expanded against the hook's working directory before it ever runs.
+#
+# Runner preflight (ADR 0015: "a missing interpreter is a reported skip, never a silent pass").
+# The runner is derived the way CI's extraction does it (harness-gates.yml `cmds` step): the first
+# token, or the 4th when compose() prefixed a `groups[].cwd` as `cd <dir> && …` — `cd` is a builtin
+# `command -v` accepts, so reading the first token there would wave every cwd gate through to a
+# 127. A runner missing HERE is a counted SKIP, never FAILED: a member without `uv` on PATH was
+# blocked on every commit, with --no-verify (which also skips the enabledPlugins refusal above) as
+# the only way out (dist issue #6). CI preflights the same runners and fails by name, so it stays
+# the authority. A runner that exists and fails still blocks.
 FAILED=0
+RAN=0
+SKIPPED=0
 OLD_IFS=$IFS
 set -f
 IFS='
 '
 for c in $CMDS; do
     [ -n "$c" ] || continue
+    IFS=' 	'
+    set -- $c
+    IFS='
+'
+    r=$1
+    if [ "$1" = "cd" ] && [ "$3" = "&&" ]; then r=$4; fi
+    if ! command -v "$r" >/dev/null 2>&1; then
+        echo "[harness]   SKIP (runner '$r' not on PATH — reported, not silent; CI still gates this commit): $c"
+        SKIPPED=$((SKIPPED + 1))
+        continue
+    fi
     echo "[harness]   \$ $c"
     ( cd "$ROOT" && sh -c "$c" )
     rc=$?
+    RAN=$((RAN + 1))
     if [ $rc -ne 0 ]; then
         echo "[harness]   FAIL ($rc): $c"
         FAILED=1
@@ -190,11 +223,19 @@ set +f
 if [ "$DEFERRED" -gt 0 ]; then
     echo "[harness]   $DEFERRED whole-program gate(s) NOT run here — deferred to CI (reported, not silent)."
 fi
+if [ "$SKIPPED" -gt 0 ]; then
+    echo "[harness]   $SKIPPED gate(s) SKIPPED — runner not on PATH here (reported, not silent); CI still gates this commit."
+fi
 
 if [ $FAILED -ne 0 ]; then
     echo "[harness] pre-commit: deterministic gates FAILED. Fix them, or commit with --no-verify if"
     echo "[harness]   you have a reason CI will accept."
     exit 1
+fi
+
+if [ "$SKIPPED" -gt 0 ]; then
+    echo "[harness] pre-commit: $RAN gate(s) passed, $SKIPPED SKIPPED (runner not on PATH) — skipped is not passed; CI still gates this commit."
+    exit 0
 fi
 
 echo "[harness] pre-commit: deterministic gates passed."

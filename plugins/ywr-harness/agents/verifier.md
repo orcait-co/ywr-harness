@@ -1,6 +1,6 @@
 ---
 name: verifier
-description: Delegate for procedure-following verification legs — runs the commands a declared procedure prints, exactly as printed, and reports results verbatim. Model and effort are PINNED (sonnet · effort medium), measured on the /verify fork's trap cases — a fully clause-specified procedure holds at medium. Not for implementation, research, or design legs — that is worker's job.
+description: Runs a declared verification procedure's commands exactly as printed and reports the results verbatim — pinned sonnet · effort medium. Not for implementation, research or design legs.
 model: sonnet
 effort: medium
 disallowedTools: Agent

@@ -22,8 +22,12 @@ function Pass([string]$Name) { Write-Host "PASS [$Name]" -ForegroundColor Green 
 function Get-LogLineCount([string]$Path) { if (Test-Path -LiteralPath $Path) { (Get-Content -LiteralPath $Path).Count } else { 0 } }
 
 $ok = $true
-# 1. valid SubagentStop -> one JSONL line, message text NOT persisted (length only)
-$out = Invoke-Hook '{"hook_event_name":"SubagentStop","session_id":"s1","agent_id":"a1","agent_type":"worker","parent_agent_type":"main","last_assistant_message":"SECRETISH finding text"}' $fx
+# 1. valid SubagentStop -> one JSONL line, message text NOT persisted (length only).
+#    The payload is the DOCUMENTED SubagentStop shape (hooks reference, read 2026-09-23: agent_id,
+#    agent_type, agent_transcript_path, last_assistant_message, stop_hook_active + common fields) —
+#    the former `parent_agent_type` fixture field is not in the reference and the host never sent it
+#    (empty in all 1,653 canon ledger rows), so asserting it tested a fake.
+$out = Invoke-Hook '{"hook_event_name":"SubagentStop","session_id":"s1","agent_id":"a1","agent_type":"worker","agent_transcript_path":"/tmp/agent-a1.jsonl","stop_hook_active":false,"last_assistant_message":"SECRETISH finding text"}' $fx
 if ($HookExit -ne 0) { Fail 'ledger write' "exit $HookExit" }
 elseif (-not (Test-Path -LiteralPath $log)) { Fail 'ledger write' 'no JSONL file created' }
 else {
@@ -32,6 +36,13 @@ else {
     elseif ($rec.PSObject.Properties.Name -contains 'last_assistant_message') { Fail 'ledger write' 'message text persisted — redaction contract broken' }
     elseif ($rec.last_message_chars -ne 22) { Fail 'ledger write' "length $($rec.last_message_chars) != 22" }
     else { Pass 'ledger write' }
+    # 1b. the row carries EXACTLY the documented-source columns — no parent_agent_type (never a
+    #     documented field), no model (the reference gives SubagentStop none — ADR 0086). A column
+    #     added from an undocumented field fails here, not in a reader months later.
+    $want = @('agent_id', 'agent_type', 'last_message_chars', 'session_id', 'ts')
+    $got = @($rec.PSObject.Properties.Name | Sort-Object)
+    if (($got -join ',') -ne ($want -join ',')) { Fail 'ledger columns are the documented set' "columns: $($got -join ',') (want $($want -join ','))" }
+    else { Pass 'ledger columns are the documented set' }
 }
 # 2. wrong event name -> no write
 $before = Get-LogLineCount $log
@@ -49,7 +60,7 @@ if ($HookExit -eq 0 -and -not $out.Trim()) { Pass 'missing root fail-open' } els
 # 5. contention spill: target locked exclusively -> line lands in the per-PID spill file
 #    (review med 2026-07-23: silent drop under parallel fan-out; spill = no lost lines)
 $handle = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
-try { $out = Invoke-Hook '{"hook_event_name":"SubagentStop","session_id":"s2","agent_id":"a5","agent_type":"locked","parent_agent_type":"main","last_assistant_message":"x"}' $fx }
+try { $out = Invoke-Hook '{"hook_event_name":"SubagentStop","session_id":"s2","agent_id":"a5","agent_type":"locked","last_assistant_message":"x"}' $fx }
 finally { $handle.Close() }
 $spill = @(Get-ChildItem (Join-Path $fx '.claude/telemetry') -Filter 'subagent-stops-spill-*.jsonl' -ErrorAction SilentlyContinue)
 if ($HookExit -eq 0 -and $spill.Count -ge 1 -and ((Get-Content -LiteralPath $spill[0].FullName -Raw) -match '"agent_type":"locked"')) { Pass 'contention spill' }
@@ -75,7 +86,7 @@ if ($HookExit -eq 0 -and -not $out.Trim()) { Pass 'empty root fail-open' } else 
 #    decode to garbage under the console's default codepage unless InputEncoding
 #    is set to UTF8 first)
 $before8 = Get-LogLineCount $log
-$out = Invoke-Hook ([char]0xFEFF + '{"hook_event_name":"SubagentStop","session_id":"s4","agent_id":"a8","agent_type":"worker","parent_agent_type":"main","last_assistant_message":"bom"}') $fx
+$out = Invoke-Hook ([char]0xFEFF + '{"hook_event_name":"SubagentStop","session_id":"s4","agent_id":"a8","agent_type":"worker","last_assistant_message":"bom"}') $fx
 $after8 = Get-LogLineCount $log
 if ($HookExit -eq 0 -and $after8 -eq ($before8 + 1)) {
     $rec8 = Get-Content -LiteralPath $log | Select-Object -Last 1 | ConvertFrom-Json

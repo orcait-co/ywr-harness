@@ -805,6 +805,77 @@ $rCK6c = & $py.Source (Join-Path $docsCK 'check_docs.py') 'extra-arg' 2>&1 | Out
 $ok = (Assert-True 'CK6 wrapper with an argument: exit 2 (usage refusal — the check is the only mode)' `
     ($LASTEXITCODE -eq 2) $rCK6c) -and $ok
 
+# --- FL: every YAML list shape a spec is written in indexes as the SAME list (dist issue #6) ----
+# The builder read only the one-line `[a, b]` form: a block list landed in index.json as null and a
+# multi-line flow list as the STRING "[" — and verify_map then crashed on the null (TypeError,
+# exit 1, CI's verify step red) and iterated the "[" into an empty mapping, silently. Each shape is
+# followed by another key so a parser that swallows past the list's end fails here too; FL3 is
+# the one-line control (it carries the ']'-in-an-item path the retro parser used to truncate).
+$repoFL = Join-Path $fx 'repo-lists'
+$docsFL = Join-Path $repoFL 'docs'
+New-Item -ItemType Directory -Force -Path (Join-Path $docsFL 'adr'), (Join-Path $docsFL 'spec') | Out-Null
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsFL 'build_docs.py')
+function Write-FLSpec([string]$Id, [string]$Lists) {
+    [IO.File]::WriteAllText((Join-Path $docsFL "spec/$Id-s.md"), ("---`nid: `"$Id`"`ntype: spec`ntitle: `"s$Id`"`nstatus: active`n$Lists`ntags: [x]`n---`n# $Id`n" -replace "`r`n", "`n"))
+}
+Write-FLSpec '0001' "implements_in:`n  - src/a.py`n  - `"src/b.py`"   # quoted, commented"
+Write-FLSpec '0002' "implements_in: [`n  `"src/a.py`",`n  src/b.py,   # trailing comma`n]"
+Write-FLSpec '0003' "implements_in: [`"app/api/auth/[...nextauth]/route.ts`", `"src/c.py`"]"
+Write-FLSpec '0004' "implements_in:   # compact block, a comment line between items`n- src/a.py`n`n# between`n- src/b.py"
+# FL6-FL9 pin the rules that keep a list from swallowing or truncating (review 2026-09-23). FL6: a
+# last item ending in ']' with the list's ']' on the next line — the old close rule (first line
+# ending in ']') cut it to 'app/[slug'. FL7: the column-0 key guard — a list left open before the
+# next key and a stray ']' after it; without the guard `note: kept` is swallowed into the list.
+# FL8: a comment-only value is null (it indexed as the comment's text, '# TBD'). FL9: a '['-led
+# title that is not a list keeps every key after it (the bracket balance closes it on its own line).
+Write-FLSpec '0006' "implements_in: [`n  src/a.py,`n  app/[slug]`n]"
+Write-FLSpec '0007' "implements_in: [`n  `"src/a.py`",`nnote: kept`n]"
+Write-FLSpec '0008' "implements_in:   # TBD — nothing owned yet`nsuperseded_by:   # none"
+[IO.File]::WriteAllText((Join-Path $docsFL 'spec/0009-s.md'), "---`nid: `"0009`"`ntype: spec`ntitle: [WIP] gate layer`nstatus: draft`nimplements_in: [src/w.py]`ntags: [x]`n---`n# 0009`n")
+$rFL = & $py.Source (Join-Path $docsFL 'build_docs.py') 2>&1 | Out-String
+$flCode = $LASTEXITCODE
+$flJson = $null
+try { $flJson = Get-Content -LiteralPath (Join-Path $docsFL 'index.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+function Get-FLImpl([string]$Id) {
+    $e = @($flJson.spec | Where-Object { $_.id -eq $Id })
+    if ($e.Count -ne 1) { return '<no entry>' }
+    $v = $e[0].implements_in
+    if ($null -eq $v) { return '<null>' }
+    if ($v -is [string]) { return "<string '$v'>" }
+    return (@($v) -join ',') + " | tags=$(@($e[0].tags) -join ',')"
+}
+$ok = (Assert-True 'FL the list-shape corpus builds (exit 0)' ($flCode -eq 0 -and $flJson) "exit=${flCode}: $rFL") -and $ok
+$ok = (Assert-True 'FL1 a block list indexes as the list (was null)' ((Get-FLImpl '0001') -eq 'src/a.py,src/b.py | tags=x') "got: $(Get-FLImpl '0001')") -and $ok
+$ok = (Assert-True 'FL2 a multi-line flow list indexes as the list (was the string "[")' ((Get-FLImpl '0002') -eq 'src/a.py,src/b.py | tags=x') "got: $(Get-FLImpl '0002')") -and $ok
+$ok = (Assert-True 'FL3 the one-line form is unchanged, an item carrying [...] included' ((Get-FLImpl '0003') -eq 'app/api/auth/[...nextauth]/route.ts,src/c.py | tags=x') "got: $(Get-FLImpl '0003')") -and $ok
+$ok = (Assert-True 'FL4 a compact block with a comment head and a comment line between items' ((Get-FLImpl '0004') -eq 'src/a.py,src/b.py | tags=x') "got: $(Get-FLImpl '0004')") -and $ok
+function Get-FLKey([string]$Id, [string]$Key) {
+    $e = @($flJson.spec | Where-Object { $_.id -eq $Id })
+    if ($e.Count -ne 1) { return '<no entry>' }
+    if (-not ($e[0].PSObject.Properties.Name -contains $Key)) { return '<absent>' }
+    $v = $e[0].$Key
+    if ($null -eq $v) { return '<null>' }
+    return "$v"
+}
+$ok = (Assert-True 'FL6 a multi-line flow list whose last item ends in ] keeps the item whole' ((Get-FLImpl '0006') -eq 'src/a.py,app/[slug] | tags=x') "got: $(Get-FLImpl '0006')") -and $ok
+$ok = (Assert-True 'FL7 a list left open before a column-0 key does not swallow it (old string reading, note kept)' `
+    ((Get-FLImpl '0007') -eq "<string '['>" -and (Get-FLKey '0007' 'note') -eq 'kept') "got: $(Get-FLImpl '0007') / note=$(Get-FLKey '0007' 'note')") -and $ok
+$ok = (Assert-True 'FL8 a comment-only value is null, never the comment text (implements_in and a scalar key)' `
+    ((Get-FLImpl '0008') -eq '<null>' -and (Get-FLKey '0008' 'superseded_by') -eq '<null>') "got: $(Get-FLImpl '0008') / superseded_by=$(Get-FLKey '0008' 'superseded_by')") -and $ok
+$ok = (Assert-True 'FL9 a [-led title that is not a list keeps the keys after it' `
+    ((Get-FLKey '0009' 'title') -eq '[WIP] gate layer' -and (Get-FLKey '0009' 'status') -eq 'draft' -and (Get-FLImpl '0009') -eq 'src/w.py | tags=x') `
+    "got: title=$(Get-FLKey '0009' 'title') status=$(Get-FLKey '0009' 'status') impl=$(Get-FLImpl '0009')") -and $ok
+# FL5: the consumer the null crashed — verify_map over the index this builder wrote now maps the
+# changed file to every spec that lists it, whatever shape the spec used.
+$rFL5 = & $py.Source $verifyMap --repo $repoFL 'src/b.py' 2>&1 | Out-String
+$fl5Code = $LASTEXITCODE
+$ok = (Assert-True 'FL5 verify_map maps src/b.py to the block, flow and compact specs (exit 0, no traceback)' `
+    ($fl5Code -eq 0 -and $rFL5 -notmatch 'Traceback' -and $rFL5 -match 'spec 0001 ' -and $rFL5 -match 'spec 0002 ' -and $rFL5 -match 'spec 0004 ' -and $rFL5 -notmatch 'spec 0003 ') "exit=${fl5Code}: $rFL5") -and $ok
+# FL10: the comment-only spec reaches verify_map as null — its warning must name a remedy that
+# clears it (`[]`), because a rebuild reproduces the null; the comment text never reaches it.
+$ok = (Assert-True 'FL10 verify_map warns the comment-only spec as null and names the [] remedy' `
+    ($rFL5 -match 'spec 0008: implements_in in the index is null' -and $rFL5 -match 'or \[\] for a spec that owns nothing yet' -and $rFL5 -notmatch '# TBD') $rFL5) -and $ok
+
 Remove-FixtureRoot $fx
 
 if (-not $ok) { Write-Host 'build-docs selftest: FAILED' -ForegroundColor Red; exit 1 }

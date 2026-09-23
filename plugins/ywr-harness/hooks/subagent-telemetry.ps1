@@ -1,10 +1,15 @@
 # SubagentStop — per-agent delegation ledger line (ADR #112). Complements the
 # in-workflow budget laps (which DO capture output tokens): SubagentStop input carries
 # NO token/duration fields (doc-verified 2026-07-23), so this ledger records who/what/
-# when — covering Agent-tool spawns the workflow laps never see. Whether workflow
-# agent() spawns also fire this event is undocumented; the ledger will answer that
-# empirically (agent_type column). last_assistant_message is deliberately NOT persisted
-# (secret-adjacent surface — ADR #110 redaction principle); only its length is kept.
+# when — covering Agent-tool spawns the workflow laps never see. Workflow agent()
+# spawns DO fire this event: the canon's own ledger answered the question this header
+# once left open — 584 of 1,653 rows (2026-07-28..09-23) carry agent_type
+# 'workflow-subagent'. Only DOCUMENTED SubagentStop fields are recorded: the former
+# parent_agent_type column read a field the hooks reference does not list and was empty
+# in all 1,653 rows, so it is gone; there is no model column either — the reference
+# gives SubagentStop no model field (ADR 0086). last_assistant_message is deliberately
+# NOT persisted (secret-adjacent surface — ADR #110 redaction principle); only its
+# length is kept.
 # Appends JSONL to .claude/telemetry/subagent-stops.jsonl (gitignored). Fail-open.
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
@@ -20,7 +25,6 @@ try {
         session_id         = [string]$payload.session_id
         agent_id           = [string]$payload.agent_id
         agent_type         = [string]$payload.agent_type
-        parent_agent_type  = [string]$payload.parent_agent_type
         last_message_chars = ([string]$payload.last_assistant_message).Length
     } | ConvertTo-Json -Compress
     # Parallel fan-out stops collide on Add-Content (Windows share-mode IOException) —

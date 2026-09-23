@@ -65,12 +65,123 @@ def git(root: Path, *args: str) -> str:
         return ""
 
 
+# The docs builder's frontmatter list grammar (docs/build_docs.py parse_frontmatter, spec 0001 §3),
+# mirrored for the one key this gate reads. A SECOND parser by necessity — the retro runs on the
+# committed sources, not on an index that may not be rebuilt yet — so it is held to the builder by
+# a pairing case (harness_retro.selftest.ps1 G4) instead of by hope: until 0.54.0 the two disagreed
+# on the same field (dist issue #6 — the builder read block lists as null, this one truncated an
+# item containing ']', and neither read a multi-line flow list the same way).
+_FM_KEY_RE = re.compile(r"^([A-Za-z0-9_]+)\s*:\s*(.*)$")
+_FM_ITEM_RE = re.compile(r"^[ \t]*-(?:[ \t]+(.*))?$")
+
+
+def _cut_comment(v: str) -> str:
+    """The builder's inline-comment rule: only a '#' AFTER whitespace starts a comment — or a '#'
+    that starts the text, since every caller passes a stripped value or a line and `key:   # x`
+    lost its whitespace to `_FM_KEY_RE`. A greedy `[...]` match would instead reach into the
+    comment — the shipped spec template's `implements_in: [ ]   # ... (예: ["docs/build_docs.py"])`
+    would then map a file to the template, and `[0-9]*.md` below does scan 0000-template.md."""
+    m = re.search(r"(?:^|\s)#", v)
+    return (v[:m.start()] if m else v).strip()
+
+
+def _flow_depth(text: str) -> int:
+    """The builder's flow-list bracket balance (`_flow_depth`, kept character for character): '['
+    +1, ']' -1, not counted inside a quoted item (a quote at an item's head up to the same quote —
+    what the item rule reads as quoted); a mid-item quote (`it's.md`) is not a quote. An unquoted
+    `app/[slug]` item is balanced, so it neither opens nor closes a list."""
+    depth, quote, at_item = 0, None, True
+    for ch in text:
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if at_item and ch in "\"'":
+            quote = ch
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        at_item = ch in "[," or (at_item and ch.isspace())
+    return depth
+
+
+def _item(text: str) -> str | int | None:
+    """The builder's item rule (`_parse_item`): blank → None (skipped); quotes stripped; an
+    UNQUOTED pure integer becomes an int, as the builder indexes it — verify_map then skips it as a
+    non-path, and `spec_map` drops it the same way, so the two consumers agree on who owns what."""
+    text = text.strip()
+    if text == "":
+        return None
+    quoted = text[:1] in ('"', "'")
+    text = text.strip('"').strip("'")
+    return int(text) if (not quoted and re.fullmatch(r"-?\d+", text)) else text
+
+
+def _flow_items(v: str) -> list[str | int]:
+    # `[a, b]` → items, split on ',' exactly as the builder splits; an item may contain ']'
+    # (Next.js `app/api/auth/[...nextauth]/route.ts`), which a lazy `\[(.*?)\]` truncated.
+    items = (_item(p) for p in v[1:-1].split(","))
+    return [p for p in items if p is not None]
+
+
+def implements_in(block: list[str]) -> list[str | int]:
+    """`implements_in` of one frontmatter block (its lines, fences excluded), typed exactly as the
+    builder indexes it: a one-line flow `[a, b]`, a block list (`key:` then `- item` lines, blank
+    and comment lines allowed between), or a multi-line flow (a `[` its own line leaves unbalanced,
+    closed on the first later line that balances it and ends in `]`). A later duplicate key wins,
+    as in the builder; a value of any other shape owns nothing (the builder indexes it as a
+    non-list)."""
+    found: list[str | int] = []
+    for i, line in enumerate(block):
+        m = _FM_KEY_RE.match(line)
+        if not m or m.group(1) != "implements_in":
+            continue
+        head = _cut_comment(m.group(2).strip())
+        found = []
+        if head == "":
+            for s in block[i + 1:]:
+                if not s.strip() or s.lstrip().startswith("#"):
+                    continue
+                im = _FM_ITEM_RE.match(s)
+                if not im:
+                    break
+                text = (im.group(1) or "").strip()
+                q = text[:1]
+                if q in ('"', "'") and text.find(q, 1) != -1:
+                    text = text[:text.find(q, 1) + 1]
+                else:
+                    text = _cut_comment(text)
+                item = _item(text)
+                if item is not None:
+                    found.append(item)
+        elif head.startswith("["):
+            flow = head
+            if _flow_depth(head) > 0:
+                parts = [head]
+                for s in block[i + 1:]:
+                    if _FM_KEY_RE.match(s):
+                        break  # never closed — the builder falls back to the key line's own reading
+                    seg = _cut_comment(s)
+                    if seg:
+                        parts.append(seg)
+                        joined = " ".join(parts)
+                        if _flow_depth(joined) <= 0:
+                            if joined.endswith("]"):
+                                flow = joined
+                            break
+            if flow.endswith("]"):
+                found = _flow_items(flow)
+    return found
+
+
 def spec_map(root: Path) -> list[tuple[str, str]]:
     """(spec_path, implemented_file) pairs from every living spec's `implements_in` frontmatter.
 
-    Both YAML shapes the corpus actually uses are accepted — inline `[a, b]` and a block list —
-    because a spec written either way is a valid spec, and a parser that silently understood only
-    one would drop half the mapping while reporting full coverage.
+    Every list shape the builder indexes is accepted (see `implements_in`), because a spec written
+    in any of them is a valid spec, and a parser that silently understood fewer would drop part of
+    the mapping while reporting full coverage. A non-string item (an unquoted number) owns nothing,
+    as verify_map reads the builder's index.
     """
     out: list[tuple[str, str]] = []
     specs = sorted((root / "docs" / "spec").glob("[0-9]*.md")) if (root / "docs" / "spec").is_dir() else []
@@ -80,34 +191,18 @@ def spec_map(root: Path) -> list[tuple[str, str]]:
             lines = sp.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        fm, in_list = 0, False
+        fm, block = 0, []
         for line in lines:
             if re.match(r"^---[ \t\r]*$", line):
                 fm += 1
                 if fm == 2:
                     break
                 continue
-            if fm != 1:
-                continue
-            m = re.match(r"^implements_in:[ \t]*\[(.*?)\]", line)
-            if m:
-                for p in m.group(1).split(","):
-                    p = p.strip().strip("\"'").strip()
-                    if p:
-                        out.append((rel, hc.norm(p)))
-                in_list = False
-                continue
-            if re.match(r"^implements_in:[ \t\r]*$", line):
-                in_list = True
-                continue
-            if in_list:
-                m2 = re.match(r"^[ \t]+-[ \t]+(.*)$", line)
-                if m2:
-                    p = m2.group(1).strip().strip("\"'").strip()
-                    if p:
-                        out.append((rel, hc.norm(p)))
-                    continue
-                in_list = False
+            if fm == 1:
+                block.append(line)
+        for p in implements_in(block):
+            if isinstance(p, str) and p:
+                out.append((rel, hc.norm(p)))
     return out
 
 

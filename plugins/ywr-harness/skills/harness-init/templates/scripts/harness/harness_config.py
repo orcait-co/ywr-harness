@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -406,7 +407,9 @@ def artifact_check(raw: dict, field: str, problems: list[str], warns: list[str],
     if not (root / script).is_file():
         warns.append(f"{field}: check script '{script}' does not exist — kept; the emitted "
                      "command will fail until it does")
-    return " ".join([*RUNNERS[runner], as_arg(script)])
+    # Through compose(), the one place argv becomes a command string — its quoting contract then
+    # covers this site too, instead of a second hand-rolled join that would silently diverge.
+    return compose([*RUNNERS[runner], as_arg(script)], "")
 
 
 def compile_re(pattern: str, field: str, warns: list[str]) -> re.Pattern | None:
@@ -1071,8 +1074,16 @@ def compose(parts: list[str], cwd: str, warns: list[str] | None = None) -> str:
 
     `warns` is threaded for the same reason `gate_command` threads one: this second-layer refusal
     is unreachable through `load()` today (`safe_cwd` already scrubbed the value), and a drop
-    with no warns channel is a silent drop waiting for a refactor (queued 2026-07-29)."""
-    cmd = " ".join(parts)
+    with no warns channel is a silent drop waiting for a refactor (queued 2026-07-29).
+
+    Every argv element is shell-quoted (`shlex.quote`), so ONE element reaches `sh -c` as ONE
+    argument. The closed set carries an element with a space — `pytest-nondb`'s `-m "not db"` —
+    and a plain space-join delivered it as `-m not db`: pytest took `db` as a path and exited 4
+    (dist issue #6). An element made only of SAFE_TOKEN characters is shlex-safe and comes out
+    unquoted, so every other command's bytes are unchanged; the round-trip property
+    (`shlex.split(compose(cmd, cwd))` gives back the argv) is pinned over every GATES and RUNNERS
+    entry by harness_gates.selftest.ps1 case AD."""
+    cmd = " ".join(shlex.quote(p) for p in parts)
     if cwd and token_ok(cwd):
         return f"cd {as_arg(cwd)} && {cmd}"
     if cwd and warns is not None:

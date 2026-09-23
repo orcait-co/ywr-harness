@@ -9,8 +9,13 @@
 #   DRAFT (default)        gather the report, write it to ONE scratch file, print where it is and
 #                          the exact command that files it. Nothing leaves the machine.
 #   FILE  (-File -BodyPath) file THAT file — the one the member has read — as an issue on the
-#                          public dist repo with the triage label. The body is never regenerated
-#                          here: what was shown is what is filed.
+#                          public dist repo. The body is never regenerated here: what was shown
+#                          is what is filed.
+#
+# No label is set, and none is searched for (ADR 0085): GitHub silently drops a label set at
+# creation by a filer without push access, and most dist collaborators are read-role, so a label
+# landed only for admins. The canon's session-start inbox lists EVERY open dist issue instead, and
+# the `[upstream-report]` title prefix stays as the human-readable marker.
 #
 # What the body carries is decided in ADR 0064: the member's description verbatim; the running
 # and registered plugin versions; `claude --version`; OS + pwsh; the repo as owner/repo (parsed
@@ -43,8 +48,6 @@ param(
     [string]$BodyPath = '',
     # Where reports go. A plugin constant — the plugin has one upstream — overridable for tests.
     [string]$Repo = 'orcait-co/ywr-harness',
-    # Triage label the canon inbox lists. Preflighted; dropped with a note when the repo lacks it.
-    [string]$Label = 'upstream-report',
     # DRAFT mode: directory for the body file. Default: the system temp directory.
     [string]$OutDir = ''
 )
@@ -93,7 +96,10 @@ function Fence([string]$Text) {
     $f = '`' * $n
     return "$f`n$Text`n$f"
 }
-function Inline([string]$Text) { return ((([string]$Text) -replace '[`\r\n]', ' ').Trim()) }
+# One value, one line, for every reader (harness_config.CONTROL's class plus the backtick): C0 controls, DEL,
+# NEL and the two Unicode line/paragraph separators all become spaces — a title from the PUBLIC dist tracker
+# (ANY account can open an issue there, ADR 0085) cannot break the summary line or carry a terminal escape.
+function Inline([string]$Text) { return ((([string]$Text) -replace '[\u0000-\u001F\u007F\u0085\u2028\u2029`]', ' ').Trim()) }
 
 # =================================================================================================
 # FILE mode
@@ -117,27 +123,17 @@ if ($File) {
     if (-not (Test-GhUsable)) {
         $why = if ($ghCmd) { 'gh is not authenticated (gh auth status failed)' } else { 'gh is not on PATH' }
         Say "  NOT FILED — $why. Body kept at: $BodyPath" Yellow
-        Say "  File it by hand: $issuesNew  (title: $fileTitle · label: $Label)" Yellow
+        Say "  File it by hand: $issuesNew  (title: $fileTitle)" Yellow
         exit 2
     }
-
-    # Label preflight — a missing label must never block a report; it is dropped and SAID.
-    $useLabel = $false
-    try {
-        $lj = & $ghCmd.Source label list -R $Repo --json name --limit 200 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $names = @(($lj | Out-String | ConvertFrom-Json) | ForEach-Object { [string]$_.name })
-            $useLabel = ($names -contains $Label)
-        }
-    } catch { $useLabel = $false }
-    if (-not $useLabel) { Say "  label: '$Label' is absent on $Repo (or the label list failed) — filing without it, said here so the inbox knows to look" Yellow }
 
     # The body handed to gh is the reviewed file minus its title line — written beside it so the
     # reviewed file itself stays untouched as the member's record.
     $filedPath = "$BodyPath.filed.md"
     Write-Utf8NoBom $filedPath ($body + "`n")
+    # No `-l` (ADR 0085): for a read-role filer GitHub drops it silently, so it never carried the
+    # report to the inbox — the inbox lists every open dist issue.
     $ghArgs = @('issue', 'create', '-R', $Repo, '-t', $fileTitle, '-F', $filedPath)
-    if ($useLabel) { $ghArgs += @('-l', $Label) }
     $out = @(& $ghCmd.Source @ghArgs 2>&1 | ForEach-Object { [string]$_ })
     $code = $LASTEXITCODE
     $url = @($out | Where-Object { $_ -match '^https://\S+/issues/\d+' } | Select-Object -Last 1)
@@ -146,7 +142,7 @@ if ($File) {
         exit 0
     }
     Say "  NOT FILED — gh issue create exited $code$(if ($out.Count) { ': ' + (($out | Select-Object -First 3) -join ' | ') })" Yellow
-    Say "  Body kept at: $BodyPath — file it by hand: $issuesNew  (title: $fileTitle · label: $Label)" Yellow
+    Say "  Body kept at: $BodyPath — file it by hand: $issuesNew  (title: $fileTitle)" Yellow
     exit 2
 }
 
@@ -367,9 +363,16 @@ $searchCap = 20
 if ($drifted.Count) {
     if (Test-GhUsable) {
         try {
-            $sj = & $ghCmd.Source issue list -R $Repo -l $Label --state open -S "`"$fingerprint`"" --json number,title --limit $searchCap 2>&1
+            # Every open dist issue, no label filter (ADR 0085): a read-role member's earlier report
+            # carries no label, and the quoted 12-char fingerprint is the discriminator.
+            # The author is named on every hit: without the label, ANY account's issue can carry a published
+            # fingerprint, so the member sees who filed the "similar" report before being steered to it.
+            $sj = & $ghCmd.Source issue list -R $Repo --state open -S "`"$fingerprint`"" --json number,title,author --limit $searchCap 2>&1
             if ($LASTEXITCODE -eq 0) {
-                $hits = @(($sj | Out-String | ConvertFrom-Json) | ForEach-Object { "#$($_.number) $(Inline $_.title)" })
+                $hits = @(($sj | Out-String | ConvertFrom-Json) | ForEach-Object {
+                    $who = Inline ([string]$_.author.login)
+                    "#$($_.number) $(Inline $_.title)" + $(if ($who) { " (by $who)" } else { '' })
+                })
                 # The search itself is capped; a full page says so (review 2026-08-28, low — never a silent cap).
                 $similar = if (-not $hits.Count) { 'none' } elseif ($hits.Count -ge $searchCap) { ($hits -join ' · ') + " (search capped at $searchCap — more may exist)" } else { $hits -join ' · ' }
             } else { $similar = "NOT CHECKED (gh issue list exited $LASTEXITCODE)" }

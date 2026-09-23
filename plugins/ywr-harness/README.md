@@ -27,12 +27,13 @@ calls the scripts directly and never goes through the host's component registry.
 
 | Hook | Event | Contract |
 |---|---|---|
+| `agent-model-warn.ps1` | `PreToolUse` (matcher `Agent`) | Warn-only (ADR 0086). Speaks exactly when an Agent-tool spawn passes an explicit `model` naming the opus or fable family (`opus`, `fable`, or a full id such as `claude-opus-5-5`): the member sees a Korean banner, the model gets the org-guide rule — opus only for a worker that demonstrably needs it, with the reason in the spawn's description; a per-call model overrides a pinned agent's frontmatter; ultracode lifts the pins (ADR 0084). Never returns a permission decision, never blocks, and is silent on an omitted model — ultracode's sanctioned spawn omits it, and a hook cannot tell ultracode is on. |
 | `config-change-audit.ps1` | `ConfigChange` | Visibility only. Surfaces mid-session permission/hook self-modification. Never blocks. |
 | `directory-added-guard.ps1` | `DirectoryAdded` | Visibility only by construction — the event carries no decision control and fires after the permission refresh. Speaks only when the added directory actually contributes loadable surfaces (`.claude/skills`, `.claude/agents`) or parses one of the two settings keys it can contribute; silence on a bare directory is correct behavior, not a missed hook. |
 | `session-start-githooks-nudge.ps1` | `SessionStart` | Suggest-only (ADR 0029). Speaks exactly when the work tree carries `.githooks/` and this clone's `core.hooksPath` is unset — the state where no git hook runs and nothing else says so until slice close or CI. Names the one-line fix; never sets it. A wired clone, a repo without `.githooks/`, and a deliberate foreign `hooksPath` are all silent. |
 | `session-start-scaffold-refresh-nudge.ps1` | `SessionStart` | Suggest-only (ADR 0033). Speaks exactly when the work tree carries a ywr-harness scaffold whose TOOLCHAIN placements differ from the installed plugin's templates — the stale-vendor state ADR 0014 recorded as undetected. Byte comparison, EOL-insensitive (the seed `.gitattributes` makes CRLF/LF checkout variance legitimate); the placement map is AST-extracted from `init.ps1` itself, so no second copy exists to drift. Names the count, the files (capped list, cap stated), and the remedy; writes nothing. Seeds are never compared; a marker-less `post-commit` is skipped exactly as the scaffold refuses it. The advice is DIRECTION-AWARE (ADR 0042) via the repo's `.harness-version` stamp (written by `harness-init` on every successful run): repo ahead of this install → update the plugin, `harness-init` forbidden; repo behind → refresh, direction stated as measured; same version → hand-edit named; no readable stamp → the direction-blind caveat on the human banner AND the model context (a canon working tree mid-slice, or a multi-writer repo refreshed by a newer plugin, is *newer* than the installed copy and a re-run would revert it). When the running copy is itself a superseded cache install (a session that outlived a plugin update — ADR 0039), the advice flips: same file list, but the basis is named STALE, `/reload-plugins` (or a restart) is instructed, and `harness-init` is forbidden from that session — the loaded skill would place the old templates. The registry probe is best-effort; any failure returns the normal nudge. |
 | `session-start-version-announce.ps1` | `SessionStart` | Announce-once-per-version (ADR 0030). At the first session that loads a new plugin version it says so once — old → new, up to three bullets from `CHANGELOG.md` (the member release-notes canon, Korean), and the onboarding artifact's release-notes tab — then records the version in `~/.claude/ywr-harness/announced-version`, the plugin's only user-scope write. A machine's very first run gets a one-time link-only welcome instead (ADR 0031) — "업데이트됨" is claimed only when a previous version was recorded. Steady state and downgrades are silent; `manifest-gate.ps1` refuses a release whose top CHANGELOG entry does not match `plugin.json`. |
-| `subagent-telemetry.ps1` | `SubagentStop` | Appends a per-agent JSONL ledger to `<project>/.claude/telemetry/`. Fail-open. |
+| `subagent-telemetry.ps1` | `SubagentStop` | Appends a per-agent JSONL ledger to `<project>/.claude/telemetry/` — documented SubagentStop fields only (no model: the event carries none). Fail-open. |
 
 ## Adversarial review (workflow)
 
@@ -41,8 +42,13 @@ verification. Invoke it as a workflow, or by name from the skill listing (a work
 `meta.whenToUse` is what surfaces there; there is no separate skill file).
 
 ```
-Workflow({ name: 'ywr-harness:adversarial-review', args: { scope: '<files + house invariants + passed gates>' } })
+Workflow({ name: 'ywr-harness:adversarial-review', args: { scope: {
+  files: [<the emitter's file list>], context: '<what the slice does>',
+  invariants: [<from REVIEW.md>], gates_passed: '<the gate commands and results, verbatim>' } } })
 ```
+
+`scope` is an object. A string scope still runs, but it loses sharding, the out-of-scope bucket,
+and skeptic #2's check against `gates_passed`, without saying so.
 
 Lens defaults are deliberately repo-agnostic. Two knobs keep them that way:
 
@@ -143,8 +149,9 @@ working state, 50% of a rate limit is already worth watching.
 ## Upstream feedback (skill)
 
 `/ywr-harness:feedback <description>` — send a defect or request to the canon (ADR 0064). The canon
-repo is private, so the report is filed as an issue on the PUBLIC dist repo `orcait-co/ywr-harness`
-with label `upstream-report`, which the canon's session start lists. The skill drafts the body
+repo is private, so the report is filed as an issue on the PUBLIC dist repo `orcait-co/ywr-harness`,
+and the canon's session-start inbox lists every open dist issue (ADR 0085 — no label is set, because
+GitHub drops one set by a filer without push access). The skill drafts the body
 (running + registered plugin versions, `claude --version`, OS, `owner/repo` + `.harness-version`,
 the refresh nudge's verdict and `init.ps1 -DryRun` output quoted verbatim, `git log --oneline -3`
 of every file a re-run would change, a dedupe fingerprint), shows it, and files it only after ONE
@@ -206,6 +213,12 @@ then every shipped PowerShell selftest:
 ```
 pwsh -NoProfile -File ./selftest.ps1
 ```
+
+The two gates run first; the suites then run side by side (`-Jobs N`, default the CPU count
+capped at 8; `-Jobs 1` runs them one at a time). Each finished suite prints one `done` line, then
+the results come back in discovery order: a failed suite in full, a passing suite as one line
+plus any `SKIP` lines. `-Full` prints every suite's whole output. To iterate on one component,
+run its own `*.selftest.ps1` directly.
 
 `manifest-gate.ps1` is deterministic and CLI-free. It fails on the defects with distribution
 blast radius: `version` missing (omitted `version` falls back to the git commit SHA, so every

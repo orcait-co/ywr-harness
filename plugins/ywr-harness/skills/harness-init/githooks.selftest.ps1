@@ -246,6 +246,41 @@ print("    false")'
     $ok = (Assert-True 'D the failing command is named' ($rD.Out -match 'FAIL \(\d+\): false') $rD.Out) -and $ok
     $ok = (Assert-True 'D the escape hatch is stated' ($rD.Out -match '--no-verify') $rD.Out) -and $ok
 
+    # D2: a gate whose RUNNER is not on PATH is a counted, reported SKIP — never FAILED (ADR 0015:
+    # "a missing interpreter is a reported skip"; dist issue #6: a member without uv was blocked on
+    # every commit and --no-verify, which also skips the enabledPlugins refusal, was the only way
+    # out). The `true` after it proves the loop continues past the skip; D above is the control that
+    # a runner which exists and fails still blocks.
+    $d2 = New-StubRepo 'pc-missing-runner' 'print("  [g] 1 file(s)")
+print("    ywr-no-such-runner check app.py")
+print("    true")'
+    $rD2 = Invoke-Hook $d2 $preCommit $null
+    $ok = (Assert-True 'D2 a missing runner does not block the commit' ($rD2.Code -eq 0) "exit=$($rD2.Code) out=$($rD2.Out)") -and $ok
+    $ok = (Assert-True 'D2 the skip names the runner and says CI still gates' ($rD2.Out -match "SKIP \(runner 'ywr-no-such-runner' not on PATH" -and $rD2.Out -match 'reported, not silent; CI still gates this commit\): ywr-no-such-runner check app\.py') $rD2.Out) -and $ok
+    $ok = (Assert-True 'D2 a missing runner is not reported as a FAIL' ($rD2.Out -notmatch 'FAIL \(' -and $rD2.Out -notmatch 'gates FAILED') $rD2.Out) -and $ok
+    $ok = (Assert-True 'D2 the loop continues past the skip' ($rD2.Out -match '\$ true') $rD2.Out) -and $ok
+    $ok = (Assert-True 'D2 the summary counts the skip and does not call it passed' ($rD2.Out -match '1 gate\(s\) passed, 1 SKIPPED' -and $rD2.Out -notmatch 'deterministic gates passed') $rD2.Out) -and $ok
+
+    # D2b: the `cd <cwd> && <runner> …` shape compose() gives a `groups[].cwd` gate. The runner is
+    # the 4th token, as in CI's extraction — reading the first would test `cd`, a builtin that is
+    # always found, and the gate would die 127 as a FAIL. `sub/` exists so that mutant's `cd`
+    # succeeds and the failure is the runner's, not the directory's.
+    $d2b = New-StubRepo 'pc-missing-runner-cwd' 'print("  [g] 1 file(s)")
+print("    cd sub && ywr-no-such-runner check x.txt")'
+    Write-File $d2b 'sub/x.txt' "x`n"
+    & git -C $d2b add -A 2>$null
+    $rD2b = Invoke-Hook $d2b $preCommit $null
+    $ok = (Assert-True 'D2b a cwd-composed gate derives its runner from the 4th token and skips it' ($rD2b.Code -eq 0 -and $rD2b.Out -match "SKIP \(runner 'ywr-no-such-runner'" -and $rD2b.Out -notmatch 'FAIL \(') "exit=$($rD2b.Code) out=$($rD2b.Out)") -and $ok
+
+    # D2c: the cwd shape with a runner that EXISTS and fails still blocks — the preflight must not
+    # swallow a real failure behind the `cd` prefix.
+    $d2c = New-StubRepo 'pc-cwd-fail' 'print("  [g] 1 file(s)")
+print("    cd sub && false")'
+    Write-File $d2c 'sub/x.txt' "x`n"
+    & git -C $d2c add -A 2>$null
+    $rD2c = Invoke-Hook $d2c $preCommit $null
+    $ok = (Assert-True 'D2c a cwd-composed gate whose runner exists and fails still BLOCKS' ($rD2c.Code -eq 1 -and $rD2c.Out -match 'FAIL \(\d+\): cd sub && false' -and $rD2c.Out -notmatch 'SKIP \(runner') "exit=$($rD2c.Code) out=$($rD2c.Out)") -and $ok
+
     # E: the "(no gate declared)" parenthetical must NOT be executed.
     # This is a real defect the shipped CI carried: the note is indented the same four spaces as a
     # command, so a naive parser hands `(no gate declared ...)` to sh, which opens a subshell and
@@ -342,6 +377,42 @@ print("    false   # whole-program: gate on slice files or newly introduced only
     $ok = (Assert-True 'G2 artifact-check e2e exits 0' ($rG2.Code -eq 0) "exit=$($rG2.Code) out=$($rG2.Out)") -and $ok
     $ok = (Assert-True 'G2 the matched-group report stays clean — the [artifacts] header is not spliced in' ($rG2.Out -match 'matched group\(s\) \[src\]' -and $rG2.Out -notmatch 'declared drift check\(s\).*\],|\[src, artifacts') $rG2.Out) -and $ok
     $ok = (Assert-True 'G2 the check is deferred to CI, not run by the hook' ($rG2.Out -notmatch 'CHECK-RAN' -and $rG2.Out -match 'whole-program gate\(s\) deferred to CI') $rG2.Out) -and $ok
+
+    # G3: END-TO-END, a non-ASCII staged path under core.quotepath=true (Git for Windows' default;
+    # dist issue #6). Unpinned, the hook's STAGED list carried `"docs/\355\225\234...md"` — quoted,
+    # octal-escaped — the real emitter reported it ungrouped, and the hook printed a FALSE
+    # "matched NO declared group — CI's harness-gates run FAILS" line for a file CI groups
+    # correctly (loud, not silent). The pin fixes group matching only; G3b pins what it does not
+    # change. The emitter and declaration are COMMITTED first so the Korean file is the
+    # only staged path; the name is built from code points (U+D55C U+AE00) so no editor or codepage
+    # can rewrite the fixture. The unpinned read is asserted quoted first — without that, a machine
+    # whose git never quotes would pass this case vacuously.
+    $g3 = New-Repo 'pc-e2e-quotepath'
+    New-Item -ItemType Directory -Force -Path (Join-Path $g3 'scripts/harness') | Out-Null
+    foreach ($n in @('harness_config.py', 'harness_gates.py')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "templates/scripts/harness/$n") -Destination (Join-Path $g3 "scripts/harness/$n") -Force
+    }
+    Write-File $g3 '.harness.json' '{ "groups": [ { "name": "docs", "match": "^docs/", "gates": [] } ] }'
+    & git -C $g3 add -A 2>$null
+    & git -C $g3 commit -q -m 'emitter + declaration' 2>$null
+    & git -C $g3 config core.quotepath true 2>$null
+    $kRel = 'docs/' + [string]::new([char[]]@([char]0xD55C, [char]0xAE00)) + '.md'
+    New-Item -ItemType Directory -Force -Path (Join-Path $g3 'docs') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $g3 $kRel), "# k`n", [Text.UTF8Encoding]::new($false))
+    & git -C $g3 add -A 2>$null
+    $g3Raw = "$(& git -C $g3 diff --cached --name-only 2>$null)".Trim()
+    $ok = (Assert-True 'G3 fixture: the UNPINNED staged list is quoted and octal-escaped (case is not vacuous)' ($g3Raw -match '^"docs/\\355\\225\\234\\352\\270\\200\.md"$') "raw=$g3Raw") -and $ok
+    $rG3 = Invoke-Hook $g3 $preCommit $null
+    $ok = (Assert-True 'G3 a non-ASCII staged path matches its group under core.quotepath=true' ($rG3.Code -eq 0 -and $rG3.Out -match 'matched group\(s\) \[docs\]') "exit=$($rG3.Code) out=$($rG3.Out)") -and $ok
+    $ok = (Assert-True 'G3 and it is not reported as ungrouped' ($rG3.Out -notmatch 'matched NO declared group') $rG3.Out) -and $ok
+    # G3b: what the pin does NOT change, pinned so the hook's comment cannot overclaim again
+    # (review 2026-09-23, nit). A non-ASCII name fails the emitter's SAFE_TOKEN gate, so even
+    # matched it never becomes a file-scoped gate argument — here exactly as in CI. The group gains
+    # a file-scoped gate (working tree only; the staged list is still the one Korean file): the
+    # exclusion is REPORTED and no gate command is composed or run for it.
+    Write-File $g3 '.harness.json' '{ "groups": [ { "name": "docs", "match": "^docs/", "gates": ["shellcheck"] } ] }'
+    $rG3b = Invoke-Hook $g3 $preCommit $null
+    $ok = (Assert-True 'G3b a matched non-ASCII path is still EXCLUDED from file-scoped gate arguments — reported, and no gate runs on it' ($rG3b.Code -eq 0 -and $rG3b.Out -match 'could not be passed' -and $rG3b.Out -match 'matched group\(s\) \[docs\], but none yields a runnable file-scoped gate' -and $rG3b.Out -notmatch 'shellcheck docs/') "exit=$($rG3b.Code) out=$($rG3b.Out)") -and $ok
 }
 
 # =================================================================================================
@@ -438,6 +509,96 @@ $nTip = Add-Commit $n 'settings.py' "api_key = 'zK3nQ8vR1tYw0pLmXs74'`n" 'generi
 $rN = Invoke-PrePush $n $nBase $nTip
 $ok = (Assert-True 'N a generic assigned secret is caught' ($rN.Code -eq 1) "exit=$($rN.Code) out=$($rN.Out)") -and $ok
 $ok = (Assert-True 'N labelled as the generic pattern' ($rN.Out -match 'generic-assigned-secret') $rN.Out) -and $ok
+
+# --- SS: the vendored CI's secret-scan step drives THIS pre-push over the run's range ------------
+# Dist issue #6 moved the step's three workflow values out of its run: text into env: (the file's
+# own env-only rule). ci-enabled-plugins WS1 proves no `${{` is left in run: text; this proves the
+# values still ARRIVE — a static check passes a step whose env: name and run: name disagree, and
+# then a push range silently degrades to the ZERO fallback. The step body AND its env: mapping are
+# EXTRACTED from the template by step name (what runs is what ships), and the fixture supplies
+# values per workflow context, under whatever names the step declares.
+$ssYml = Join-Path $PSScriptRoot 'templates/.github/workflows/harness-gates.yml'
+$ssName = "Secret scan over this run's commits (backstop)"
+$ssLines = [IO.File]::ReadAllLines($ssYml)
+$ssBody = $null; $ssEnv = @{}; $iSs = -1
+for ($i = 0; $i -lt $ssLines.Count; $i++) {
+    if ($ssLines[$i] -match "^\s*-\s+name:\s+$([regex]::Escape($ssName))\s*$") { $iSs = $i; break }
+}
+if ($iSs -ge 0) {
+    for ($i = $iSs + 1; $i -lt $ssLines.Count; $i++) {
+        if ($ssLines[$i] -match '^\s*-\s+name:') { break }
+        if ($ssLines[$i] -match '^\s+([A-Z_][A-Z0-9_]*):\s*\$\{\{\s*([\w.]+)\s*\}\}\s*$') { $ssEnv[$Matches[2]] = $Matches[1]; continue }
+        if ($ssLines[$i] -match '^(\s*)run:\s*\|\s*$') {
+            $keyCol = $Matches[1].Length; $bodyIndent = -1
+            $body = New-Object System.Collections.Generic.List[string]
+            for ($j = $i + 1; $j -lt $ssLines.Count; $j++) {
+                $l = $ssLines[$j]
+                if ($l.Trim().Length -eq 0) { $body.Add(''); continue }
+                $ind = $l.Length - $l.TrimStart().Length
+                if ($ind -le $keyCol) { break }
+                if ($bodyIndent -lt 0) { $bodyIndent = $ind }
+                $body.Add($l.Substring([Math]::Min($bodyIndent, $ind)))
+            }
+            $ssBody = ($body -join "`n") + "`n"
+            break
+        }
+    }
+}
+$ssCtx = @('github.event_name', 'github.base_ref', 'github.event.before')
+$ok = (Assert-True 'SS0 the secret-scan step and its env: mapping are extracted from the template by name' ($null -ne $ssBody -and $ssBody -match 'sh \.githooks/pre-push' -and @($ssCtx | Where-Object { -not $ssEnv.ContainsKey($_) }).Count -eq 0) "body=$([bool]$ssBody) env=$(($ssEnv.GetEnumerator() | ForEach-Object { "$($_.Value)=$($_.Key)" }) -join ',')") -and $ok
+if ($null -ne $ssBody -and @($ssCtx | Where-Object { -not $ssEnv.ContainsKey($_) }).Count -eq 0) {
+    $ssFile = Join-Path $fxBase 'secret-scan-step.sh'
+    [IO.File]::WriteAllText($ssFile, $ssBody, [Text.UTF8Encoding]::new($false))
+    function Invoke-SecretScanStep([string]$Repo, [hashtable]$Ctx) {
+        # `sh -e <file>`, the way the runner runs a run: block (`bash -e {0}`: the path as an
+        # ARGUMENT, errexit on). Not through Invoke-Hook: its [string]$StdIn binds $null as '', so
+        # it always executes its target directly, and this scratch file has no exec bit — the
+        # Linux parity run failed 126 on exactly that.
+        $prev = @{}; $prevPath = $env:PATH
+        foreach ($k in $ssCtx) { $n = $ssEnv[$k]; $prev[$n] = [Environment]::GetEnvironmentVariable($n); [Environment]::SetEnvironmentVariable($n, $Ctx[$k]) }
+        Push-Location $Repo
+        try {
+            if ($shExtraPath.Count) { $env:PATH = ($shExtraPath -join ';') + ';' + $prevPath }
+            $out = (& $shCmd.Source -e (ConvertTo-ShPath $ssFile) 2>&1) | Out-String
+            return @{ Out = $out; Code = $LASTEXITCODE }
+        } finally {
+            $env:PATH = $prevPath; Pop-Location
+            foreach ($n in $prev.Keys) { [Environment]::SetEnvironmentVariable($n, $prev[$n]) }
+        }
+    }
+    # One repo: a secret committed BEFORE the range, one clean commit inside it. A range that
+    # reaches the step scans 1 commit and passes; each value lost on the way fails here — a lost
+    # EVENT_BEFORE takes the ZERO fallback and blocks on the older secret (SS1), a lost BASE_REF
+    # leaves `origin/` unresolvable (SS2 exits 1), a lost EVENT_NAME takes the ZERO fallback and
+    # scans 0 commits once the PR head is a remote ref (SS2, with SS2c as its control).
+    $ss = New-PushRepo 'ss-range'
+    $ssOld = Add-Commit $ss 'old.txt' "aws_key = $fakeKey`n" 'secret before the range'
+    $null = Add-Commit $ss 'new.txt' "clean`n" 'clean commit in the range'
+    New-Item -ItemType Directory -Force -Path (Join-Path $ss '.githooks') | Out-Null
+    Copy-Item -LiteralPath $prePush -Destination (Join-Path $ss '.githooks/pre-push') -Force
+    $zero = '0' * 40
+    $rS1 = Invoke-SecretScanStep $ss @{ 'github.event_name' = 'push'; 'github.base_ref' = ''; 'github.event.before' = $ssOld }
+    $ok = (Assert-True 'SS1 push: the before SHA reaches the step through env: — only the range is scanned' ($rS1.Code -eq 0 -and $rS1.Out -match '\(1 commit\(s\) scanned\)') "exit=$($rS1.Code) out=$($rS1.Out)") -and $ok
+    $rS1c = Invoke-SecretScanStep $ss @{ 'github.event_name' = 'push'; 'github.base_ref' = ''; 'github.event.before' = $zero }
+    $ok = (Assert-True 'SS1c control: a ZERO before (branch creation) scans the history and BLOCKS on the older secret' ($rS1c.Code -eq 1 -and $rS1c.Out -match 'aws-access-key-id') "exit=$($rS1c.Code) out=$($rS1c.Out)") -and $ok
+    # The PR refs are remote-tracking refs, created only NOW: the ZERO path above scans
+    # `--not --remotes`, and an origin/main at the old commit would have hidden the control's secret.
+    # A real PR checkout has BOTH: the base (origin/<base_ref>) and the PR head itself
+    # (refs/remotes/pull/<n>/merge, HEAD here). The head ref is what makes EVENT_NAME observable:
+    # with it, the push/ZERO fallback — where a lost EVENT_NAME lands, since `$EVENT_NAME` is then
+    # not `pull_request` — finds 0 commits not on a remote, while the PR path scans
+    # origin/<base>..HEAD = 1. Without it both printed `(1 commit(s) scanned)`, so an env: name that
+    # disagreed with `$EVENT_NAME` passed SS2 — the mutant that kills the backstop on every real PR,
+    # whose head is always a remote ref (review 2026-09-23, medium).
+    & git -C $ss update-ref refs/remotes/origin/main $ssOld 2>$null
+    & git -C $ss update-ref refs/remotes/pull/1/merge HEAD 2>$null
+    $rS2 = Invoke-SecretScanStep $ss @{ 'github.event_name' = 'pull_request'; 'github.base_ref' = 'main'; 'github.event.before' = '' }
+    $ok = (Assert-True 'SS2 pull_request: the event name and base ref reach the step through env: — origin/<base>..HEAD is scanned' ($rS2.Code -eq 0 -and $rS2.Out -match '\(1 commit\(s\) scanned\)') "exit=$($rS2.Code) out=$($rS2.Out)") -and $ok
+    # SS2c: the control that makes SS2's observable unambiguous — the same refs with the event name
+    # LOST (the value a mismatched env: name delivers) take the fallback and scan nothing.
+    $rS2c = Invoke-SecretScanStep $ss @{ 'github.event_name' = ''; 'github.base_ref' = 'main'; 'github.event.before' = '' }
+    $ok = (Assert-True 'SS2c control: with EVENT_NAME lost, the same PR refs take the ZERO fallback and scan 0 commits — SS2''s count comes only from the PR path' ($rS2c.Code -eq 0 -and $rS2c.Out -notmatch 'commit\(s\) scanned' -and $rS2c.Out -match 'secret scan: ') "exit=$($rS2c.Code) out=$($rS2c.Out)") -and $ok
+}
 
 Remove-FixtureRoot $fxBase
 

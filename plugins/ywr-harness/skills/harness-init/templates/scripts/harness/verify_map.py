@@ -88,6 +88,40 @@ def fm_digest(docs_dir: Path) -> str:
     return h.hexdigest()
 
 
+def spec_files(spec: dict, warns: list[str]) -> list[str]:
+    """The normalized `implements_in` paths of one index entry — never a crash on its shape.
+
+    An index is a generated file, but the generator that wrote it may be older than this script:
+    builders before 0.54.0 parsed only the one-line `[a, b]` list, so a spec written as a block
+    list landed as `null` and a multi-line flow list as the string `"["` (dist issue #6). The null
+    crashed this script with a TypeError (exit 1 — and CI's verify step fails on it); the string
+    iterated character by character into an empty mapping, silently. Both now read as "this spec
+    owns nothing" and are WARNED, naming the spec, because either one is an ownership hole the
+    reader must see. An absent key is an honest empty list and stays silent.
+
+    A current builder also writes a non-list for a value that is not a list in the source — an
+    empty or comment-only `implements_in:` (null), an unterminated `[` (a string) — and a rebuild
+    reproduces it, so the warning names that remedy too: a warning whose only named fix cannot
+    clear it is the alarm fatigue this script exists to avoid."""
+    raw = spec.get("implements_in", [])
+    sid = spec.get("id", "?")   # repo-supplied, but these land in warn(), which escapes
+    if not isinstance(raw, list):
+        shown = "null" if raw is None else f"{type(raw).__name__} {json.dumps(raw)[:40]}"
+        warns.append(f"spec {sid}: implements_in in the index is {shown}, not a list "
+                     "— treated as owning NO files. If the spec declares a block or multi-line "
+                     "list, rebuild the index (pwsh docs/build.ps1): builders before 0.54.0 read "
+                     "only the one-line [a, b] form. If a rebuilt index still shows this, the "
+                     "value itself is not a list — write it as [a, b], or [] for a spec that "
+                     "owns nothing yet")
+        return []
+    bad = [p for p in raw if not isinstance(p, str)]
+    if bad:
+        warns.append(f"spec {sid}: {len(bad)} non-string implements_in "
+                     f"entr{'y' if len(bad) == 1 else 'ies'} in the index skipped — implements_in "
+                     "lists repo-relative paths (quote a path that looks like a number)")
+    return [hc.norm(p) for p in raw if isinstance(p, str)]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Map changed files to spec-owned verify scripts.")
     ap.add_argument("--range", dest="rev_range", default=None,
@@ -151,7 +185,7 @@ def main() -> int:
     hits: dict[str, dict] = {}
     owned: set[str] = set()
     for spec in specs:
-        impl = [hc.norm(p) for p in spec.get("implements_in", [])]
+        impl = spec_files(spec, refused)
         verify = sorted(p for p in impl if verify_re and verify_re.match(p))
         matched = sorted(f for f in files if f in impl)
         owned.update(impl)

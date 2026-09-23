@@ -1,7 +1,7 @@
 // 적대 코드리뷰 표준 워크플로 (ADR #50, 티어 #104) — 렌즈 파인더 + 시맨틱 중복제거 + 심각도 게이트 검증.
-// 호출: Workflow({name: 'ywr-harness:adversarial-review', args: {scope: '<리뷰 대상+하우스 컨텍스트 블록>',
+// 호출: Workflow({name: 'ywr-harness:adversarial-review', args: {scope: {files, invariants, gates_passed} | '<리뷰 대상+하우스 컨텍스트 블록>',
 //   tier?: 'small', root?: '<레포 루트>', lenses?: [{key, prompt}], lensExtra?: '<하우스 앵글>',
-//   shards?: 'auto' | n | [[files…], …]  (scope.files 필요 — 렌즈별 파인더를 파일 샤드로 분할, ADR 0070),
+//   shards?: 'auto' | n | [[files…], …]  (scope.files 필요 — 렌즈별 파인더를 파일 샤드로 분할, ywr-harness ADR 0070),
 //   ultracode?: true, effort?: 'low'|'medium'|'high'|'xhigh'|'max'  (ultracode 세션·키워드일 때만 — ywr-harness ADR 0084)}})
 //
 // 이 파일의 ADR 번호는 별도 표기가 없으면 ywrlabs/ywr-platform 의 것이다 — 이 워크플로가 자란 곳이고
@@ -11,17 +11,19 @@
 // tier 'small'(ADR #104: ≤150 diff 라인·≤5 파일·크리티컬 표면 무접촉 — RLS/수치코어/인가/
 // 마이그레이션/훅·CI 제외) = 병합 2렌즈·렌즈당 6건. 그 외 = 풀 3렌즈. skeptic 게이트는 동일.
 // 워커 모델은 전역 CLAUDE.md 규칙대로 sonnet 고정 · effort 는 상한 high(세션 effort 상속 금지,
-// 2026-07-13 — xhigh/max 딥워크 누수 차단; ultracode 예외는 ADR 0084 — 아래 ULTRA). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
+// 2026-07-13 — xhigh/max 딥워크 누수 차단; ultracode 예외는 ywr-harness ADR 0084 — 아래 ULTRA). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
 // 슬라이스당 1회가 기본(ywr-harness ADR 0028): 확정 지적의 수정 diff 는 재호출 대상이 아니다 —
 // 게이트 재실행 + 지적별 수정 대조로 닫는다. 새 메커니즘급 수정만 1회 한정 재리뷰(마감에 기준 명기).
 export const meta = {
   name: 'adversarial-review',
   description: '적대 코드리뷰 표준 — 렌즈 티어(풀3·small2)·시맨틱 dedupe·심각도 게이트(h/m=2·low=1·nit=0 skeptic)',
-  whenToUse: '슬라이스 마감 게이트 리뷰 — 슬라이스당 1회. args.scope 에 대상 파일 목록 + 하우스 불변식 + 이미 통과한 게이트를 넣는다(diff 슬라이스는 git diff 주입). 소형 비크리티컬 diff 는 args.tier:"small". 레포의 결정론 린트 게이트를 먼저 돌리고 통과 결과를 게이트 블록에 포함할 것. 하우스 고유 렌즈 앵글은 args.lensExtra 로 주입한다. 이 리뷰의 확정 지적을 고친 수정 diff 는 재호출 대상이 아니다 — 게이트 재실행 + 지적별 수정 대조로 닫고, 수정이 패치가 아니라 새 메커니즘일 때만 1회 한정 재리뷰. ultracode 세션이거나 호스트가 프롬프트의 ultracode 키워드 옵트인을 확인하면(단순 언급 제외) args.ultracode:true — 모든 워커(haiku dedupe 포함)가 모델·effort 핀 대신 세션 모델로 돈다 — args.effort 에 세션 effort(모르면 기본 xhigh).',
+  // whenToUse 는 모델만 읽는 목록 텍스트라 영어다(ywr-harness ADR 0045 의 분리 — 멤버 대상은 한국어, 모델 대상은 영어;
+  // ywr-harness ADR 0089). 매 턴 모든 세션의 프리픽스에 실린다. description 은 멤버 UI 에 보이므로 한국어 그대로.
+  whenToUse: 'Slice-close gate review, once per slice. args.scope = {files: [...], invariants, gates_passed} (plus the git diff for a diff slice); run the repo\'s deterministic lint gates first and list what passed in gates_passed. args.tier:"small" for a small non-critical diff; house-specific lens angles go in args.lensExtra. A fix diff for its confirmed findings is never re-reviewed: close it with re-run gates + per-finding fix checks; one bounded re-review only when the fix is a new mechanism, not a patch. Ultracode on, or the host-confirmed ultracode keyword opt-in (not a mere mention): args.ultracode:true (every worker, haiku dedupe included, runs on the session model) and args.effort = the session effort (xhigh if unknown).',
   phases: [
     { title: 'Canary', detail: '한도/게이트웨이 확인 1개 (sonnet · reviewer 에이전트)', model: 'sonnet' },
     { title: 'Find', detail: '렌즈 병렬 — 풀 3 · small 2 (sonnet·effort medium · reviewer 에이전트)', model: 'sonnet' },
-    { title: 'Dedupe', detail: 'file:line 키 + >12건이면 haiku 그룹핑(effort low · 기본 서브에이전트)', model: 'haiku' },
+    { title: 'Dedupe', detail: '정규화 file:line 키 + >12건이면 haiku 그룹핑(effort low · 기본 서브에이전트) — 묶인 위치는 also_at', model: 'haiku' },
     { title: 'Verify', detail: 'high/med=2 · low=1 skeptic(effort low · reviewer 에이전트) · nit=생략', model: 'sonnet' },
   ],
 }
@@ -127,6 +129,41 @@ const ROOT = _args.root ? String(_args.root) : null
 const ROOT_LINE = ROOT ? `(레포 루트: ${ROOT})` : ''
 const ROOT_LINE_PLAIN = ROOT ? `레포 루트: ${ROOT}\n` : ''
 
+// 경로 정규화(ywr-harness ADR 0089 — 1차 dedupe 키와 스코프 버킷이 같은 규칙을 쓴다). 파인더는 같은 파일을
+// 절대경로와 레포 상대경로로 섞어 보고한다(실측 slice 25: ywr-harness ADR 0084:54 · CLAUDE.md:113 의 절대경로 지적이
+// 상대경로 쌍둥이와 다른 키가 돼 skeptic 을 두 번 샀다; slice 22: 확정 5건이 결함 3개). 규칙: 역슬래시 → 슬래시, './' 제거,
+// 그리고 **실제 루트 접두만** 뗀다 — args.root(대소문자 무시, /c/… MSYS 형 포함)와 그 레포의 Claude Code 워크트리
+// 접두(<레포>/.claude/worktrees/<이름>/ — root 가 메인 체크아웃이든 그 아래 워크트리든 같은 레포로 식별된다; 다른 위치의
+// git 워크트리는 스크립트가 git 을 못 불러 식별할 수 없다; 상대경로의 .claude/worktrees/<이름>/ 접두도 같은 레포의
+// 워크트리라 뗀다). 루트로 풀리지 않는 절대경로는 보고된 그대로 둔다.
+// 접미 일치로 추정하지 않는다(리뷰 slice 26, medium): 스코프 밖 절대경로(사용자 전역 CLAUDE.md, 형제 클론의 README.md 나
+// 벤더 사본 scripts/harness/… — 이 하네스는 소비 레포에 같은 상대경로를 벤더링한다)가 스코프 파일로 옮겨져 1차 키를
+// 공유하고 다른 결함을 덮었다. 대가: args.root 없이는 절대경로 쌍둥이가 합쳐지지 않는다(skeptic 몇 레그 — 아래 log).
+const slash = (p) => String(p ?? '').replace(/\\/g, '/')
+const msys = (p) => p.replace(/^\/([A-Za-z])\//, (_, d) => `${d}:/`)
+const isAbs = (p) => p.startsWith('/') || /^[A-Za-z]:\//.test(p)
+const WORKTREE = /^\.claude\/worktrees\/[^/]+\//i
+const ROOT_NORM = ROOT ? msys(slash(ROOT)).replace(/\/+$/, '') : null
+const REPO_BASE = ROOT_NORM ? ROOT_NORM.replace(/\/\.claude\/worktrees\/[^/]+$/i, '') : null   // 워크트리 root → 메인 체크아웃
+const normPath = (file) => {
+  const p = slash(file)
+  if (REPO_BASE) {
+    const q = msys(p)
+    if (q.toLowerCase().startsWith(REPO_BASE.toLowerCase() + '/')) return q.slice(REPO_BASE.length + 1).replace(WORKTREE, '')
+  }
+  return isAbs(p) ? p : p.replace(/^\.\//, '').replace(WORKTREE, '')
+}
+// 스켑틱 #2 의 게이트 관점(ywr-harness ADR 0089): 검증 프롬프트에는 스코프가 없다 — 게이트를 두고 물으려면 게이트를
+// 보여줘야 한다(실측: 분할 판정 10건 중 8건을 #2 단독이 반증). 객체 스코프의 gates_passed 만 쓴다 — 문자열
+// 스코프에서는 뽑을 수 없으므로 그때는 그 절 자체를 뺀다(보지 못한 게이트를 묻지 않는다).
+const SCOPE_GATES = (() => {
+  if (typeof _args.scope !== 'object' || _args.scope === null) return null
+  const g = _args.scope.gates_passed
+  if (g === undefined || g === null) return null
+  const text = typeof g === 'string' ? g.trim() : JSON.stringify(g, null, 2)
+  return text && text !== '[]' && text !== '{}' ? text : null
+})()
+
 // 페이즈별 출력 토큰 계측(ADR 0086, 상한 표기로 교정 ADR 0129) — budget.spent() 는 메인 루프와
 // 공유 풀이라 워크플로 단독 비용이 아니다: 실행 중 오케스트레이터가 낸 출력이 그대로 랩에 얹힌다
 // (감사에서 카나리아 랩이 4,077 로 기록된 사례 — 실제 카나리아 응답은 한 단어다).
@@ -134,10 +171,15 @@ const ROOT_LINE_PLAIN = ROOT ? `레포 루트: ${ROOT}\n` : ''
 // 없고(0112 결정 2, doc-verified) 원장은 who/what/when 만 적는다. 그래서 여기서 하는 일은
 // 정확도를 올리는 게 아니라 **정확한 척하지 않게 만드는 것**이다:
 //   1) 이름을 upper bound 로 — exact 로 읽히는 이름이 결함이었다.
-//   2) 오염을 정량화 — 카나리아 응답은 한 단어 고정이므로 그 랩의 초과분이 메인 루프 유입의
-//      하한 추정치다. 0 이면 그 창에서는 유입이 없었다는 뜻이고, 크면 그 런의 모든 랩을 의심한다.
+//   2) 오염을 정량화 — 카나리아 랩에서 카나리아의 보이는 응답분을 뺀 초과분이 메인 루프 유입의
+//      추정치다(하한이 아니다: 카나리아 자신의 사고 토큰도 섞인다 — 리뷰 slice 26). 0 이면 그 창에서는 초과분이
+//      없었다는 뜻이고, 크면 그 런의 모든 랩을 의심한다.
+//      응답분은 실제 응답 길이에서 잰다(ywr-harness ADR 0089): max(8, ceil(글자수/3)). 고정 8 은 "ok" 한 단어를
+//      가정했는데, 2026-09-22 부터 호스트가 옛 한 단어 프롬프트를 프롬프트 인젝션으로 읽어 842–878 토큰짜리 거절문을
+//      냈다 — 그 거절문이 통째로 "메인 루프 유입"으로 집계돼 깨끗한 런을 의심 대상으로 만들었다.
+//      글자수/3 은 영어(≈4자/토큰)에서 과대 추정이라 보이는 응답은 넉넉히 빠진다 — 보이지 않는 사고분은 빠지지 않는다.
 //   3) 에이전트 수를 함께 — 이건 워크플로가 정확히 안다(공유 풀이 아니다). 토큰 상한의 분모.
-const CANARY_EXPECTED_OUT = 8   // "ok" 한 단어 + 오버헤드의 넉넉한 상한
+const CANARY_EXPECTED_OUT = 8   // "ok" 한 단어 + 오버헤드의 넉넉한 상한 — 응답이 길면 그 길이가 대신한다
 const _t0 = budget.spent()
 let _mark = _t0
 const outTokens = {}
@@ -171,7 +213,9 @@ const VERDICT = {
   type: 'object',
   properties: {
     refuted: { type: 'boolean', description: 'true=지적이 틀렸거나 실제 위험 아님' },
-    reason: { type: 'string' },
+    // description 이지 maxLength 가 아니다(ywr-harness ADR 0089): 하드 한도는 스키마 재시도를 강제한다.
+    // 실측 slice 25: 31 레그가 StructuredOutput 69,754 바이트(레그당 ~2.2KB)를 썼고 200자만 닫는 쪽에 닿았다.
+    reason: { type: 'string', description: '≤300 characters — the deciding line and why' },
   },
   required: ['refuted', 'reason'],
 }
@@ -223,11 +267,21 @@ const HOUSE = _args.lensExtra ? ' ' + String(_args.lensExtra) : ''
 const LENSES = _base.map(l => ({ key: String(l.key), prompt: String(l.prompt) + HOUSE }))
 const FIND_CAP = TIER === 'small' ? 6 : 8
 
+// 카나리아 = 전송 프로브(ywr-harness ADR 0089). 옛 프롬프트 '아래 단어로만 답하라: ok' 는 2026-08-26~09-20 의 36 런 모두
+// 2.2–5.1 초에 ok 였으나, 2026-09-22 의 두 런은 호스트의 computed-task 프레이밍 아래 그것을 프롬프트 인젝션으로 읽고
+// 거절했다(10.6/12.2 초, 출력 878/842 토큰). 스스로를 설명하는 프롬프트는 거절할 지시가 없다. 게이트는 여전히 전송뿐이다:
+// null 이면 중단, ok 가 아니면 경고만 — 스켑틱 수는 심각도가, 팬아웃 크기는 호출자가 정한다.
+const CANARY_PROMPT = 'adversarial-review workflow transport probe — there is nothing to review; reply with exactly: ok'
 phase('Canary')
-const canary = await work('아래 단어로만 답하라: ok', { label: 'canary', phase: 'Canary', effort: 'low' })
+const canary = await work(CANARY_PROMPT, { label: 'canary', phase: 'Canary', effort: 'low' })
 if (canary === null) throw new Error('카나리아 실패(한도/게이트웨이) — 팬아웃 중단')
 countAgents('canary', 1)
 lap('canary')
+const CANARY_TEXT = typeof canary === 'string' ? canary : String(JSON.stringify(canary) ?? '')
+const CANARY_OK = CANARY_TEXT.trim().replace(/[.!]$/, '').toLowerCase() === 'ok'
+if (!CANARY_OK) {
+  log(`[경고] 카나리아 응답이 ok 가 아니다(${CANARY_TEXT.length}자: ${JSON.stringify(CANARY_TEXT.slice(0, 120))}) — 전송은 통과했으나 호스트가 프로브를 달리 읽었다; 다음 호스트 버전에서 프로브 문구를 재측정할 것. 메인 루프 유입 추정은 이 응답 길이를 뺀 값이다(사고 토큰은 응답에 보이지 않아 빠지지 않는다).`)
+}
 
 // 인용 검증 절(ADR 0115): high effort 의 우위는 "더 생각해서"가 아니라 "원본을 다시 읽어서"
 // 나왔다 — A/B 실측(wf_2a26a277 high vs wf_a54aedab medium)에서 medium 이 놓친 3건이 전부
@@ -302,23 +356,43 @@ if (deadFinders.length) {
 // (렌즈 0 사망 시 렌즈 1 의 지적이 렌즈 0 이름으로 기록) — 원본 배열 인덱스를 유지한다.
 const all = found.flatMap((r, i) => (r ? r.findings.map(f => ({ ...f, lens: unitKey(UNITS[i]) })) : []))
 lap('find')
+// 경로를 한 번 정규화한다(ywr-harness ADR 0089) — 이후 1차 키·그룹 목록·스켑틱 프롬프트·스코프 버킷이 모두 같은 경로를 본다.
+for (const f of all) if (typeof f.file === 'string') f.file = normPath(f.file)
+const unresolvedAbs = all.filter(f => typeof f.file === 'string' && isAbs(f.file)).length
+if (unresolvedAbs) log(`[참고] 절대경로 지적 ${unresolvedAbs}건은 레포 상대경로로 풀지 않았다(${ROOT ? 'args.root 밖' : 'args.root 없음'}) — 접미 일치로 추정하지 않으므로 같은 파일의 상대경로 쌍둥이와는 합쳐지지 않는다`)
 
-// 1차 dedupe: file:line 키(라인 없으면 file+제목 앞 30자) — 심각도 최고 대표만 유지(ADR #50 §2).
+// 묶인 보고(also_at)는 멤버 자신의 주장을 들고 간다(리뷰 slice 26, low): 닫는 쪽은 위치마다 따로 처분하고 스켑틱은 멤버의
+// 주장까지 보고 판정한다 — 제목만으로는 둘 다 대표의 주장으로 그 위치를 처분하게 된다. 길이는 reason 과 같은 300자 상한.
+const CLAIM_CHARS = 300
+const siteOf = (f) => ({ file: f.file, line: f.line ?? null, lens: f.lens, severity: f.severity, title: f.title,
+  claim: String(f.claim ?? '').slice(0, CLAIM_CHARS) })
+
+// 1차 dedupe: 정규화된 file:line 키(라인 없으면 file+제목 앞 30자) — 심각도 최고가 대표(ADR #50 §2). 버려지는 쪽은 없다
+// (리뷰 slice 26, medium): 같은 키라도 렌즈마다 주장이 다를 수 있으므로(같은 줄의 다른 결함) 나머지는 대표의 also_at 으로
+// 간다 — 조용히 버리면 다른 결함이 사라진다. 동률이면 먼저 보고된 쪽이 대표.
 const rank = { high: 3, medium: 2, low: 1, nit: 0 }
 const byKey = new Map()
 for (const f of all) {
   const k = f.line ? `${f.file}:${f.line}` : `${f.file}|${(f.title || '').slice(0, 30)}`
   const prev = byKey.get(k)
-  if (!prev || rank[f.severity] > rank[prev.severity]) byKey.set(k, f)
+  if (!prev) byKey.set(k, { ...f, also_at: [] })
+  else if (rank[f.severity] > rank[prev.severity]) {
+    const { also_at, ...p } = prev
+    byKey.set(k, { ...f, also_at: [siteOf(p), ...also_at] })
+  } else prev.also_at.push(siteOf(f))
 }
 let deduped = [...byKey.values()]
 
-// 2차(선택): 12건 초과면 haiku 그룹핑 — 같은 근원의 다른 라인/제목 병합. ultracode 에서는 세션 모델 · ULTRA_EFFORT.
+// 2차(선택): 12건 초과면 haiku 그룹핑 — 같은 근원의 다른 라인/제목/파일 병합. ultracode 에서는 세션 모델 · ULTRA_EFFORT.
+// 묶인 항목은 버리지 않는다(ywr-harness ADR 0089 — ADR #50 §2 의 "대표만 유지"를 좁힌다): 대표가 나머지의 위치를
+// also_at 으로 들고 가서, 스켑틱은 전 위치를 보고 한 번 판정하고 닫는 쪽은 위치마다 고친다. 실측 slice 25: 그룹핑이
+// 네 위치를 조용히 버렸고(그중 low 하나는 HEAD 에 아직 남았다), 한 근원('워커가 xhigh 로 돈다')이 4 파일에 흩어져
+// 스켑틱 8 레그를 사고 판정이 갈렸다(3 확정 · 1 분할 반증).
 if (deduped.length > 12) {
   phase('Dedupe')
   const listing = deduped.map((f, i) => `${i}. [${f.severity}] ${f.file}:${f.line ?? '?'} ${f.title}`).join('\n')
   const groups = await agent(
-    `아래 코드리뷰 지적 목록에서 **같은 근원 결함**을 가리키는 항목들을 그룹으로 묶어라(같은 함수의 동일 원인, 동일 패턴의 중복 보고). 서로 다른 결함은 절대 묶지 마라. 그룹은 인덱스 배열의 배열로.\n${listing}`,
+    `아래 코드리뷰 지적 목록에서 **같은 근원 결함**을 가리키는 항목들을 그룹으로 묶어라: 같은 함수의 동일 원인, 동일 패턴의 중복 보고, 그리고 **같은 주장이 서로 다른 파일에 반복된 것**(한 결함이 여러 파일에 적혀 있으면 한 그룹이다 — 묶인 항목의 파일:라인은 전부 보존되고 검증만 한 번 한다). 서로 다른 결함은 절대 묶지 마라 — 같은 파일·같은 렌즈라도 주장이 다르면 따로다. 그룹은 인덱스 배열의 배열로.\n${listing}`,
     { label: ULTRA ? 'dedupe' : 'dedupe:haiku', phase: 'Dedupe',
       ...(ULTRA ? { effort: ULTRA_EFFORT } : { model: 'haiku', effort: 'low' }), schema: {
       type: 'object',
@@ -328,60 +402,119 @@ if (deduped.length > 12) {
   )
   countAgents('dedupe', 1)
   if (groups && Array.isArray(groups.groups)) {
-    const drop = new Set()
+    // 겹치는 그룹([[1,2],[2,3]])은 연결 성분으로 합친다 — 종전 drop 집합은 한 그룹의 대표가 다른 그룹에서 버려지면
+    // 그 대표가 흡수한 항목까지 같이 사라졌다. 성분마다 심각도 최고(동률이면 앞 인덱스)가 대표, 나머지는 also_at —
+    // 멤버가 1차 키에서 이미 들고 있던 also_at 도 대표에게 넘어간다(보존 법칙: 원지적 하나 = 대표 또는 also_at 한 항목).
+    const parent = deduped.map((_, i) => i)
+    const root = (i) => (parent[i] === i ? i : (parent[i] = root(parent[i])))
     for (const g of groups.groups) {
-      const valid = g.filter(i => Number.isInteger(i) && i >= 0 && i < deduped.length)
-      if (valid.length < 2) continue
-      const rep = valid.reduce((a, b) => (rank[deduped[a].severity] >= rank[deduped[b].severity] ? a : b))
-      for (const i of valid) if (i !== rep) drop.add(i)
+      const valid = [...new Set((Array.isArray(g) ? g : []).filter(i => Number.isInteger(i) && i >= 0 && i < deduped.length))]
+      for (let k = 1; k < valid.length; k++) parent[root(valid[k])] = root(valid[0])
     }
-    deduped = deduped.filter((_, i) => !drop.has(i))
+    const comps = new Map()
+    deduped.forEach((_, i) => { const r = root(i); if (!comps.has(r)) comps.set(r, []); comps.get(r).push(i) })
+    const merged = []
+    for (const members of comps.values()) {
+      const rep = members.reduce((a, b) => (rank[deduped[b].severity] > rank[deduped[a].severity] ? b : a))
+      merged.push({ at: rep, f: { ...deduped[rep], also_at: [...deduped[rep].also_at,
+        ...members.filter(i => i !== rep).flatMap(i => [siteOf(deduped[i]), ...deduped[i].also_at])] } })
+    }
+    deduped = merged.sort((a, b) => a.at - b.at).map(m => m.f)
   }
 }
 lap('dedupe') // haiku 그룹핑 미실행이면 0
-log(`[${TIER}] 파인더 ${found.filter(Boolean).length}/${UNITS.length} — 원지적 ${all.length} → 중복제거 후 ${deduped.length}`)
+const alsoAtSites = deduped.reduce((n, f) => n + f.also_at.length, 0)
+log(`[${TIER}] 파인더 ${found.filter(Boolean).length}/${UNITS.length} — 원지적 ${all.length} → 중복제거 후 ${deduped.length}${alsoAtSites ? ` (묶인 보고 ${alsoAtSites}건은 대표의 also_at 으로 보존)` : ''}`)
 
 // 심각도 게이트(ADR #50 §3): high/medium=2 skeptic · low=1 · nit=0(오케스트레이터 판정).
+// also_at 이 있으면 스켑틱은 묶인 보고 전부(위치 + 그 보고의 주장)를 본다 — 판정은 묶음 전체에 적용되므로, 한 곳에서라도
+// 주장이 참이면 유지다. #2 의 게이트 관점은 SCOPE_GATES 가 있을 때만 싣는다(ywr-harness ADR 0089) — 보지 못한 게이트를
+// 두고 반증하게 두지 않는다.
+const siteText = (a) => `${a.file}${a.line ? ':' + a.line : ''}`
+const alsoAtClause = (f) => f.also_at.length
+  ? `이 지적과 한 결함으로 묶인 보고가 더 있다(이 판정이 전부에 적용된다):\n${f.also_at.map(a => `- ${siteText(a)} [${a.severity}] ${a.title}: ${String(a.claim ?? '').replace(/\s+/g, ' ')}`).join('\n')}\n위 지적과 묶인 보고의 주장이 모든 위치에서 틀렸을 때만 refuted=true. 일부에서만 틀렸으면 refuted=false 로 두고 reason 에 틀린 위치를 적어라.\n`
+  : ''
+const GATES_CLAUSE = SCOPE_GATES
+  ? `추가 관점: 이 지적이 맞다면 아래 기존 통과 게이트를 왜 통과했는지 설명 가능해야 한다(게이트가 검사하지 않는 성질이면 그것이 설명이다) — 설명이 없으면 반증 근거다.\n기존 통과 게이트(스코프의 gates_passed):\n${SCOPE_GATES}`
+  : ''
 phase('Verify')
 const nits = deduped.filter(f => f.severity === 'nit')
 const toVerify = deduped.filter(f => f.severity !== 'nit')
-const verified = await parallel(toVerify.map(f => () => {
-  const n = rank[f.severity] >= 2 ? 2 : 1
-  countAgents('verify', n)
-  return parallel(Array.from({ length: n }, (_, v) => () =>
-    work(`너는 회의적 검증자 #${v + 1}이다. 아래 지적을 **반증**하라 — 실제 파일을 읽고 실패 시나리오가 재현 가능한지(코드 경로·가드·테스트) 추적. 확실히 틀렸거나 실제 위험이 없으면 refuted=true, 애매하면 refuted=false(보수적 유지).
+const legsOf = (f) => (rank[f.severity] >= 2 ? 2 : 1)
+const skeptic = (f, v) =>
+  work(`너는 회의적 검증자 #${v + 1}이다. 아래 지적을 **반증**하라 — 실제 파일을 읽고 실패 시나리오가 재현 가능한지(코드 경로·가드·테스트) 추적. 확실히 틀렸거나 실제 위험이 없으면 refuted=true, 애매하면 refuted=false(보수적 유지).
 ${ROOT_LINE_PLAIN}지적: [${f.severity}] ${f.title}
-파일: ${f.file}${f.line ? ':' + f.line : ''}
-주장: ${f.claim}
+파일: ${siteText(f)}
+${alsoAtClause(f)}주장: ${f.claim}
 근거: ${f.evidence}
-${v === 1 ? '추가 관점: 이 지적이 맞다면 스코프에 명시된 기존 통과 게이트를 왜 통과했는지 설명 가능해야 한다 — 설명이 없으면 반증 근거다.' : ''}`,
-      { label: `verify:${(f.title || '').slice(0, 24)}`, phase: 'Verify', schema: VERDICT, effort: 'low' })
-  )).then(votes => ({ ...f, votes: votes.filter(Boolean) }))
+${v === 1 ? GATES_CLAUSE : ''}`,
+  { label: `verify:${(f.title || '').slice(0, 24)}`, phase: 'Verify', schema: VERDICT, effort: 'low' })
+const votes = await parallel(toVerify.map(f => () => {
+  countAgents('verify', legsOf(f))
+  return parallel(Array.from({ length: legsOf(f) }, (_, v) => () => skeptic(f, v)))
 }))
 
+// 죽은 skeptic 레그는 조용히 버리지 않는다(리뷰 slice 26, medium). agent() 는 전송 사망에 null 을 준다 — 종전
+// filter(Boolean) 은 그것을 지워서, 표가 하나도 없는 지적이 confirmed 로(`[].every` 는 참) 검증된 것처럼 읽혔고, 한 레그가
+// 죽고 남은 한 표가 반증한 high/medium 은 1표짜리 rejected 로 닫는 쪽의 1–1 분할 규칙을 비껴갔다. 파인더처럼 1회
+// 재시도하고, 그래도 죽은 레그는 dead 표(refuted=false)로 votes 에 남긴다: 남은 한 표의 반증은 rejected[] 에서 1–1 분할로
+// 읽히고, 표가 전혀 없는 지적은 unverified: true 로 confirmed 에 남는다 — 확인 안 된 지적을 게이트 밖으로 빼지 않는 쪽이
+// 보수적이다("애매하면 유지"와 같은 방향; 닫는 쪽은 그 주장을 직접 읽는다). stats.dead_skeptics / unverified_by_death.
+const legs = votes.map((vs, i) => (Array.isArray(vs) ? vs : Array(legsOf(toVerify[i])).fill(null)))
+const deadLegs = legs.flatMap((vs, i) => vs.map((v, k) => (v ? null : [i, k])).filter(Boolean))
+if (deadLegs.length) {
+  log(`[경고] skeptic 레그 ${deadLegs.length}개 실패 — 1회 재시도`)
+  countAgents('verify', deadLegs.length)   // 재시도분도 스폰한 만큼이 비용이다
+  const retry = await parallel(deadLegs.map(([i, k]) => () => skeptic(toVerify[i], k)))
+  deadLegs.forEach(([i, k], j) => { if (retry[j]) legs[i][k] = retry[j] })
+}
+const DEAD_VOTE = { refuted: false, dead: true, reason: 'skeptic leg died twice (transport) — no verdict' }
+const verified = toVerify.map((f, i) => ({ ...f, votes: legs[i].map(v => v || DEAD_VOTE) }))
+const deadSkeptics = legs.reduce((n, vs) => n + vs.filter(v => !v).length, 0)
+const unverifiedByDeath = verified.filter(f => f.votes.every(v => v.dead)).length
+if (deadSkeptics) {
+  log(`[경고] 재시도 후에도 skeptic 레그 ${deadSkeptics}개 실패 — 표가 없는 지적 ${unverifiedByDeath}건은 confirmed 에 unverified:true 로, 죽은 레그는 votes 의 dead 표로 반환(stats.dead_skeptics / unverified_by_death)`)
+}
+
 lap('verify')
-const kept = verified.filter(Boolean).filter(f => f.votes.every(v => !v.refuted))
-const rejected = verified.filter(Boolean).length - kept.length
+const kept = verified.filter(f => f.votes.every(v => !v.refuted))
+// 반증된 지적도 이유와 함께 돌려준다(ywr-harness ADR 0089): 건수만 받던 닫는 쪽은 journal 을 뒤졌고, 그 턴마다 100k+
+// 오케스트레이터 프리픽스를 다시 읽었다. 1-1 분할로 떨어진 high/medium 은 닫는 쪽이 읽고 판단한다.
+const REASON_CHARS = 300
+const rejectedAll = verified.filter(f => !f.votes.every(v => !v.refuted))
+  .map(f => ({ severity: f.severity, title: f.title, file: f.file, line: f.line ?? null, also_at: f.also_at,
+    votes: f.votes.map(v => ({ refuted: v.refuted === true, reason: String(v.reason ?? '').slice(0, REASON_CHARS), ...(v.dead ? { dead: true } : {}) })) }))
+const rejected = rejectedAll.length
 outTokens.total = budget.spent() - _t0
-// 카나리아는 한 단어를 답한다 — 그 랩의 초과분은 이 창에서 메인 루프가 낸 출력이다(하한 추정).
-const bleed = Math.max(0, (outTokens.canary || 0) - CANARY_EXPECTED_OUT)
+// 카나리아 랩에서 카나리아의 보이는 응답분(max(8, ceil(글자수/3)))을 뺀 초과분 — 하한이 아니다(리뷰 slice 26, low): 카나리아
+// 자신의 사고 토큰은 응답 텍스트에 없어 빠지지 않고 초과분에 섞인다. 스크립트는 그것을 잴 수 없다(agent() 는 텍스트만 준다).
+const CANARY_OWN_OUT = Math.max(CANARY_EXPECTED_OUT, Math.ceil(CANARY_TEXT.length / 3))
+const bleed = Math.max(0, (outTokens.canary || 0) - CANARY_OWN_OUT)
 log(`출력 토큰(상한·메인 루프와 공유 풀): canary ${outTokens.canary} · find ${outTokens.find} · dedupe ${outTokens.dedupe} · verify ${outTokens.verify} · 합계 ${outTokens.total}`)
-log(`에이전트(정확): ${Object.entries(agentsPerPhase).map(([k, v]) => `${k} ${v}`).join(' · ')}${bleed ? ` — 메인 루프 유입 ≥${bleed} 추정(카나리아 랩 초과분): 이 런의 토큰 값은 전부 의심할 것` : ' — 카나리아 창에서는 유입 미검출(이후 페이즈의 청결을 뜻하지는 않는다)'}`)
+log(`에이전트(정확): ${Object.entries(agentsPerPhase).map(([k, v]) => `${k} ${v}`).join(' · ')}${bleed ? ` — 카나리아 랩 초과분 ${bleed}(메인 루프 유입 또는 카나리아 자신의 사고 토큰 — 둘을 가를 수 없는 추정치): 이 런의 토큰 값은 의심할 것` : ' — 카나리아 창에서는 초과분 없음(이후 페이즈의 청결을 뜻하지는 않는다)'}`)
 
 // 스코프 버킷 분리(2026-07-02 회고): 확정 지적 중 스코프 파일 밖은 out_of_scope_confirmed 로 —
 // 슬라이스 게이트(h/m 수정 의무)는 confirmed 에만 적용, 밖은 후속 슬라이스 후보로 보고.
-const isInScope = f => {
-  if (!SCOPE_FILES) return true
-  const p = String(f.file || '').replace(/\\/g, '/')
+// 묶인 지적은 대표 또는 also_at 의 어느 한 위치라도 스코프 안이면 스코프 안이다(ywr-harness ADR 0089): 대표가 심각도로
+// 뽑히므로 스코프 밖 참조 파일이 대표가 되면 스코프 안의 같은 결함이 게이트를 빠져나간다. 루트로 풀리지 않은 절대경로는
+// 여기서만 접미 일치로 판정한다 — 파일 표기는 보고된 절대경로 그대로라 닫는 쪽이 레포 밖임을 보고, 게이트는 넓히는 쪽으로 틀린다.
+const fileInScope = (file) => {
+  const p = normPath(file)
   return SCOPE_FILES.some(s => p === s || p.endsWith('/' + s) || s.endsWith('/' + p))
 }
-const confirmedAll = kept.map(({ votes, ...f }) => ({ ...f, verify_reasons: votes.map(v => v.reason.slice(0, 200)) }))
+const isInScope = f => !SCOPE_FILES || fileInScope(f.file) || (f.also_at || []).some(a => fileInScope(a.file))
+const confirmedAll = kept.map(({ votes, ...f }) => {
+  const dead = votes.filter(v => v.dead).length
+  return { ...f, verify_reasons: votes.filter(v => !v.dead).map(v => String(v.reason ?? '').slice(0, REASON_CHARS)),
+    ...(dead ? { dead_votes: dead } : {}), ...(dead === votes.length ? { unverified: true } : {}) }
+})
 
 return {
   confirmed: confirmedAll.filter(isInScope),
   out_of_scope_confirmed: SCOPE_FILES ? confirmedAll.filter(f => !isInScope(f)) : [],
   nits_unverified: nits, // skeptic 생략 — 오케스트레이터가 직접 판정(ADR #50 §3)
   rejected_count: rejected,
+  rejected: rejectedAll, // [{severity, title, file, line, also_at, votes: [{refuted, reason, dead?}]}] — ywr-harness ADR 0089
   // lenses/dead_lenses 는 반환값 노출이 목적이다(ADR 0115): 오케스트레이터가 log 를 못 봐도
   // 커버리지 축소를 알 수 있어야 한다. dead_lenses 가 비어있지 않으면 게이트는 부분 커버리지다.
   // output_tokens 라는 이름이 exact 로 읽히던 것이 결함이었다(ADR 0129) — 이름과 basis 로
@@ -391,10 +524,13 @@ return {
     worker_pins: ULTRA ? { mode: 'ultracode', model: 'session', effort: ULTRA_EFFORT }
       : { mode: 'pinned', model: 'sonnet · dedupe haiku', effort: 'canary low · find medium · verify low · dedupe low' },
     dead_lenses: deadLenses, dead_finders: deadFinders, raw: all.length,
-    deduped: deduped.length, verified: toVerify.length, nit_passthrough: nits.length,
+    // verified = 산 skeptic 표가 1개 이상인 지적 수(표가 전혀 없는 지적은 unverified_by_death 로 따로 — 검증된 척 세지 않는다).
+    deduped: deduped.length, verified: toVerify.length - unverifiedByDeath, nit_passthrough: nits.length,
+    dead_skeptics: deadSkeptics, unverified_by_death: unverifiedByDeath,
     output_tokens_upper_bound: outTokens,
     agents_per_phase: agentsPerPhase,
     main_loop_bleed_estimate: bleed,
-    telemetry_basis: 'budget.spent() is shared with the main loop, so every output_tokens_upper_bound figure is an UPPER BOUND, not this workflow\'s spend. SubagentStop cannot replace it — that event carries no token or duration fields (doc-verified). agents_per_phase is exact. main_loop_bleed_estimate is a FLOOR measured in the canary window ONLY (the canary answers with one word, so its lap\'s excess came from the main loop): a large value invalidates this run\'s token figures, but a zero does NOT prove the find/dedupe/verify laps are clean.',
+    canary_ok: CANARY_OK,
+    telemetry_basis: 'budget.spent() is shared with the main loop, so every output_tokens_upper_bound figure is an UPPER BOUND, not this workflow\'s spend. SubagentStop cannot replace it — that event carries no token or duration fields (doc-verified). agents_per_phase is exact. main_loop_bleed_estimate is an ESTIMATE, not a floor, measured in the canary window ONLY: the canary lap minus the canary\'s visible reply, estimated from its length as max(8, ceil(chars/3)). The excess includes the canary\'s own thinking tokens, which its reply does not show and this script cannot measure, so a nonzero value is main-loop output OR a thinking canary — either way this run\'s token figures are suspect. A zero does NOT prove the find/dedupe/verify laps are clean. canary_ok=false means the probe was answered with something other than ok (transport passed; the reply length is already subtracted).',
   },
 }

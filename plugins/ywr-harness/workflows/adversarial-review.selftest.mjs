@@ -43,6 +43,9 @@ const budgetStub = { total: null, spent: () => 0, remaining: () => Infinity };
 
 // Drives the script with a programmable agent(). `plan.find` maps a lens key to an array of
 // per-attempt outcomes: 'die' | 'ok'. Attempt 0 is the initial spawn, attempt 1 the retry.
+// ywr-harness ADR 0089 knobs: `plan.canaryReply` (the canary's text, default 'ok'),
+// `plan.findings(key)` (a finder's findings array — undefined falls back to the defaults),
+// `plan.groups` (the dedupe stage's groups) and `plan.verdict(prompt, label)` (a skeptic's vote).
 async function run(plan) {
   const logs = [];
   const attempts = {};
@@ -53,13 +56,15 @@ async function run(plan) {
   const spawns = [];
   const agent = async (prompt, opts = {}) => {
     const label = opts.label || '';
-    spawns.push({ label, phase: opts.phase, model: opts.model, effort: opts.effort, agentType: opts.agentType, prompt });
-    if (label === 'canary') return plan.canaryDies ? null : 'ok';
+    spawns.push({ label, phase: opts.phase, model: opts.model, effort: opts.effort, agentType: opts.agentType, schema: opts.schema, prompt });
+    if (label === 'canary') return plan.canaryDies ? null : (plan.canaryReply ?? 'ok');
     if (label.startsWith('find:')) {
       const key = label.slice('find:'.length);
       const n = (attempts[key] = (attempts[key] ?? -1) + 1);
       const outcome = (plan.find?.[key] ?? [])[n] ?? 'ok';
       if (outcome === 'die') return null;
+      const custom = plan.findings?.(key);
+      if (custom) return { findings: custom };
       // One finding per lens. The file MUST stay inside args.scope.files or the finding is
       // routed to out_of_scope_confirmed instead of confirmed; only the line varies, which is
       // enough to keep the first-pass `file:line` dedupe from merging the two lenses.
@@ -70,8 +75,8 @@ async function run(plan) {
       return { findings: [{ title: `t-${key}`, file: 'f.md', line: LINE[key] ?? 1,
                             severity: 'low', claim: 'c', evidence: 'e' }] };
     }
-    if (label.startsWith('verify:')) return { refuted: false, reason: 'r' };
-    if (label === 'dedupe:haiku' || label === 'dedupe') return { groups: [] };
+    if (label.startsWith('verify:')) return plan.verdict ? plan.verdict(prompt, label) : { refuted: false, reason: 'r' };
+    if (label === 'dedupe:haiku' || label === 'dedupe') return { groups: plan.groups ?? [] };
     throw new Error(`stub: unexpected label ${label}`);
   };
   const fn = compile(SCRIPT);
@@ -235,8 +240,11 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   const budget = { total: null, remaining: () => Infinity, spent: () => (n++ === 0 ? 0 : 4077) };
   const { result, logs } = await run({ budget });
   const s = result.stats;
+  const line = logs.find((l) => l.includes('카나리아 랩 초과분')) ?? '';
   if (s.main_loop_bleed_estimate !== 4069) fail(name, `bleed=${s.main_loop_bleed_estimate} (want 4077-8)`);
-  else if (!logs.some((l) => l.includes('의심'))) fail(name, 'contaminated run was not called out in the log');
+  else if (!line.includes('의심')) fail(name, 'contaminated run was not called out in the log');
+  // review slice 26: the excess also holds the canary's own thinking, so it is no floor — no '≥'.
+  else if (!line.includes('카나리아 자신의 사고 토큰') || line.includes('≥')) fail(name, `bleed log claims a floor or omits the canary's thinking: ${line}`);
   else pass(name);
 }
 
@@ -289,7 +297,7 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   const ultra = (await run({ many: 7, args: { tier: 'small', ultracode: true, scope: { files: ['f.md'], context: 'c' } } }))
     .spawns.filter((s) => s.phase === 'Dedupe' || /^dedupe/.test(s.label));
   if (pinned.length !== 1 || ultra.length !== 1) fail(name, `dedupe spawns pinned=${pinned.length} ultra=${ultra.length} (14 findings must cross >12)`);
-  else if (pinned[0].model !== 'haiku' || pinned[0].effort !== 'low') fail(name, `pinned dedupe=${JSON.stringify([pinned[0].model, pinned[0].effort])}`);
+  else if (pinned[0].model !== 'haiku' || pinned[0].effort !== 'low' || pinned[0].agentType !== undefined) fail(name, `pinned dedupe=${JSON.stringify([pinned[0].model, pinned[0].effort, pinned[0].agentType])}`);
   else if (ultra[0].model !== undefined || ultra[0].effort !== 'xhigh' || ultra[0].agentType) fail(name, `ultra dedupe=${JSON.stringify([ultra[0].model, ultra[0].effort, ultra[0].agentType])}`);
   else pass(name);
 }
@@ -311,16 +319,19 @@ await expectThrow('an unknown ultracode effort is refused',
 //     worker request re-reads, and it only takes effect through agentType. The name must be the
 //     NAMESPACED form (fact 1: a bare name does not resolve, and manifest-gate does not scan
 //     agentType strings — this assertion is the only gate on it). The dedupe grouping deliberately
-//     stays on the default subagent (haiku; a model override on top of agentType is unmeasured).
+//     stays on the default subagent (haiku; a model override on top of agentType is unmeasured —
+//     ywr-harness ADR 0089 candidate I). The dedupe half runs on plan.many (14 findings): run({}) has
+//     2, never crosses >12, and an agentType check over zero dedupe spawns is vacuous (review slice 26).
 {
   const name = 'canary/find/verify spawns run as the namespaced reviewer agent';
   const { spawns } = await run({});
   const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
   const wrong = workers.filter((s) => s.agentType !== 'ywr-harness:reviewer');
-  const dedupe = spawns.filter((s) => s.label === 'dedupe:haiku');
+  const dedupe = (await run({ many: 7 })).spawns.filter((s) => s.phase === 'Dedupe');
   if (!workers.length) fail(name, 'no worker spawns captured');
   else if (wrong.length) fail(name, `agentType drifted: ${JSON.stringify(wrong.map((s) => [s.label, s.agentType]))}`);
-  else if (dedupe.some((s) => s.agentType)) fail(name, 'dedupe should stay on the default subagent');
+  else if (dedupe.length !== 1) fail(name, `dedupe spawns=${dedupe.length} — the default-subagent check needs the >12 branch`);
+  else if (dedupe[0].agentType !== undefined) fail(name, `dedupe should stay on the default subagent (agentType=${dedupe[0].agentType})`);
   else pass(name);
 }
 
@@ -456,6 +467,286 @@ await expectThrow('11l explicit groups assigning one file twice throw naming it'
   if (!/부재/.test(p)) fail(name, 'no absence rule in the find prompt');
   else if (!/grep/.test(p) || !/curl/.test(p)) fail(name, 'absence rule names no raw-retrieval method');
   else if (!/확인 실패/.test(p)) fail(name, 'no "could not verify" escape — a finder with no method must not claim absence');
+  else pass(name);
+}
+
+// 12. review quality per token (ywr-harness ADR 0089). Every case below was mutation-proven when it
+//     landed: the named fix reverted turns it red.
+const F = (file, line, severity = 'low', title = `t-${file}-${line}`) => ({ title, file, line, severity, claim: 'c', evidence: 'e' });
+const fill = (file, n, from = 100) => Array.from({ length: n }, (_, i) => F(file, from + i));
+const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'));
+
+// 12a. one normPath() for the first-pass key: a finder that reports C:\repo\docs\a.md and one that
+//      reports docs/a.md name ONE site (slice 25: absolute-path twins bought a second skeptic each).
+//      Backslashes and the args.root prefix (case and the /c/… MSYS form) normalise; a path under
+//      root that no one reported relatively still loses the prefix. The lower twin is not discarded:
+//      it rides in the representative's also_at (review slice 26 — a same-key report can carry a
+//      different claim), so every raw report is a representative or an also_at entry.
+{
+  const name = '12a absolute, backslash, MSYS and relative twins merge on the first-pass key; the twin rides in also_at';
+  const { result } = await run({
+    args: { tier: 'small', root: 'c:\\repo\\', scope: { files: ['docs/a.md'], context: 'c' } },
+    findings: (k) => (k === 'correctness-pitfalls'
+      ? [F('C:\\repo\\docs\\a.md', 5), F('docs/a.md', 9), F('C:\\repo\\docs\\b.md', 2)]
+      : [F('docs\\a.md', 5), F('/c/repo/docs/a.md', 9)]),
+  });
+  const files = result.confirmed.map((f) => `${f.file}:${f.line}`).sort();
+  const twins = result.confirmed.map((f) => f.also_at.map((a) => `${a.file}:${a.line}:${a.lens}`).join()).sort();
+  if (result.stats.raw !== 5 || result.stats.deduped !== 3) fail(name, `raw=${result.stats.raw} deduped=${result.stats.deduped} (want 5 → 3)`);
+  else if (files.join(',') !== 'docs/a.md:5,docs/a.md:9') fail(name, `confirmed=${files.join(',')}`);
+  else if (twins.join('|') !== 'docs/a.md:5:boundary-ui-tests|docs/a.md:9:boundary-ui-tests') fail(name, `the merged twin was dropped, not kept in also_at: ${JSON.stringify(twins)}`);
+  else if (result.stats.agents_per_phase.verify !== 3) fail(name, `verify legs=${result.stats.agents_per_phase.verify} (want 3 — one per site)`);
+  else if (result.out_of_scope_confirmed.map((f) => f.file).join() !== 'docs/b.md') fail(name, `root prefix not stripped: ${JSON.stringify(result.out_of_scope_confirmed.map((f) => f.file))}`);
+  else pass(name);
+}
+{
+  const name = '12a2 without a root no absolute path is resolved by suffix: it stays as reported, still gates by suffix, and the log names it';
+  const obj = await run({
+    args: { tier: 'small', scope: { files: ['docs/a.md'], context: 'c' } },
+    findings: (k) => (k === 'correctness-pitfalls' ? [F('C:/work/clone/docs/a.md', 5), F('C:/x/unrelated.md', 1)] : [F('docs/a.md', 5)]),
+  });
+  const str = await run({
+    args: { tier: 'small', scope: 'free text scope' },
+    findings: (k) => (k === 'correctness-pitfalls' ? [F('D:/r/src/x.js', 3)] : [F('src/x.js', 3), F('./lib/y.js', 4)]),
+  });
+  const conf = obj.result.confirmed.map((f) => f.file).sort().join();
+  const strFiles = str.result.confirmed.map((f) => f.file).sort().join();
+  if (obj.result.stats.deduped !== 3) fail(name, `an absolute path was merged by suffix: deduped=${obj.result.stats.deduped} (want 3)`);
+  else if (conf !== 'C:/work/clone/docs/a.md,docs/a.md') fail(name, `absolute path rewritten, or its in-scope suffix no longer gates: confirmed=${conf}`);
+  else if (obj.result.out_of_scope_confirmed.map((f) => f.file).join() !== 'C:/x/unrelated.md') fail(name, `unmatched absolute path: ${JSON.stringify(obj.result.out_of_scope_confirmed)}`);
+  else if (!obj.logs.some((l) => l.includes('절대경로 지적 2건') && l.includes('args.root 없음'))) fail(name, `unresolved absolute paths not logged: ${obj.logs.join(' | ')}`);
+  else if (str.result.stats.deduped !== 3 || strFiles !== 'D:/r/src/x.js,lib/y.js,src/x.js') fail(name, `string scope (./ prefix stripped, no suffix merge): deduped=${str.result.stats.deduped} files=${strFiles}`);
+  else pass(name);
+}
+// 12a3. review slice 26 (F12): the suffix fallback moved an out-of-repo absolute path (the user-global
+//       CLAUDE.md) onto the in-scope CLAUDE.md, and the first-pass key then dropped the repo file's own
+//       defect. Only a real root prefix is stripped now — args.root, or a Claude Code worktree of the
+//       same repo (<repo>/.claude/worktrees/<name>/, whichever side root names); a sibling that merely
+//       shares a prefix (C:/repo2) is not under root. A same-key report with a different claim survives
+//       in also_at, claim included, and the skeptic sees it.
+{
+  const name = '12a3 an out-of-repo absolute path never lands on an in-scope file; worktree paths of the repo do; a same-key claim survives';
+  const clash = (k) => (k === 'correctness-pitfalls'
+    ? [F('C:/Users/me/.claude/CLAUDE.md', 12, 'medium', 'global-file defect')] : [F('CLAUDE.md', 12, 'low', 'repo-file defect')]);
+  const rooted = await run({ args: { tier: 'small', root: 'C:/Projects/repo', scope: { files: ['CLAUDE.md'], context: 'c' } }, findings: clash });
+  const bare = await run({ args: { tier: 'small', scope: { files: ['CLAUDE.md'], context: 'c' } }, findings: clash });
+  const same = await run({ findings: (k) => (k === 'correctness-pitfalls' ? [F('f.md', 7, 'low', 'defect A')] : [F('f.md', 7, 'medium', 'defect B')]) });
+  const wtMain = await run({ args: { tier: 'small', root: 'C:/repo', scope: { files: ['docs/a.md'], context: 'c' } },
+    findings: (k) => (k === 'correctness-pitfalls'
+      ? [F('C:\\repo\\.claude\\worktrees\\wt1\\docs\\a.md', 5, 'low', 'wt'), F('C:/repo2/docs/a.md', 6, 'low', 'sib')]
+      : [F('docs/a.md', 5, 'low', 'rel')]) });
+  const wtRoot = await run({ args: { tier: 'small', root: 'C:/repo/.claude/worktrees/wt1', scope: { files: ['docs/a.md'], context: 'c' } },
+    findings: (k) => (k === 'correctness-pitfalls'
+      ? [F('C:/repo/docs/a.md', 5, 'low', 'main'), F('/c/repo/.claude/worktrees/wt2/docs/a.md', 5, 'low', 'wt2')]
+      : [F('.claude/worktrees/wt1/docs/a.md', 5, 'low', 'rel-wt')]) });
+  const labels = (r) => r.result.confirmed.map((f) => `${f.file}:${f.line}=${f.title}`).sort().join(' | ');
+  const want = 'C:/Users/me/.claude/CLAUDE.md:12=global-file defect | CLAUDE.md:12=repo-file defect';
+  const rep = same.result.confirmed[0];
+  const legB = skeptics(same.spawns).find((s) => s.prompt.includes('지적: [medium] defect B'))?.prompt ?? '';
+  const wtr = wtRoot.result.confirmed;
+  if (labels(rooted) !== want) fail(name, `with root: ${labels(rooted)}`);
+  else if (labels(bare) !== want) fail(name, `without root: ${labels(bare)}`);
+  else if (same.result.stats.deduped !== 1 || rep?.title !== 'defect B' || JSON.stringify(rep?.also_at?.map((a) => [a.file, a.line, a.title, a.claim])) !== '[["f.md",7,"defect A","c"]]') fail(name, `same key, different claim: ${JSON.stringify(same.result.confirmed)}`);
+  else if (!/\n- f\.md:7 \[low\] defect A: c\n/.test(legB)) fail(name, 'the skeptic never saw the merged claim');
+  else if (labels(wtMain) !== 'C:/repo2/docs/a.md:6=sib | docs/a.md:5=wt' || wtMain.result.confirmed.find((f) => f.title === 'wt')?.also_at?.[0]?.title !== 'rel') fail(name, `root = main checkout: ${labels(wtMain)}`);
+  else if (wtr.length !== 1 || wtr[0].file !== 'docs/a.md' || wtr[0].also_at.map((a) => a.title).join() !== 'wt2,rel-wt') fail(name, `root = a worktree: ${JSON.stringify(wtr.map((f) => [f.file, f.title, f.also_at.map((a) => a.file)]))}`);
+  else pass(name);
+}
+
+// 12b. the grouping keeps its sites. Slice 25's grouping dropped four sites, one of them still a
+//      live defect in HEAD. Here a medium claim at a.md:1 repeats at b.md:1 (grouped: ONE verdict,
+//      two skeptics that see both sites), and two OVERLAPPING groups [[9,10],[8,9]] form one
+//      component — the old drop set lost the member a dropped representative had absorbed, and a
+//      shallow root() would leave 10 on its own. Conservation: every raw site is either a
+//      representative or an also_at entry. Each also_at entry carries its member's claim, cut at 300
+//      (review slice 26: the closer disposes each site on its own and needs more than a title), and a
+//      grouped member hands its own first-pass twin (the second c.md:101) on to the representative.
+{
+  const name = '12b a group keeps its members in also_at, each with its claim; overlapping groups merge without loss';
+  const { result, spawns } = await run({
+    args: { tier: 'small', scope: { files: ['a.md', 'b.md', 'c.md'], context: 'c' } },
+    findings: (k) => (k === 'correctness-pitfalls'
+      ? [F('a.md', 1, 'medium', 'claim X'), ...fill('a.md', 6)]
+      : [{ ...F('b.md', 1, 'low', 'claim X again'), claim: 'Y'.repeat(500) }, ...fill('c.md', 6), F('c.md', 101)]),
+    groups: [[7, 0], [9, 10], [8, 9]],
+  });
+  const all = [...result.confirmed, ...result.out_of_scope_confirmed, ...result.nits_unverified, ...(result.rejected ?? [])];
+  const rep = result.confirmed.find((f) => f.file === 'a.md' && f.line === 1);
+  const comp = result.confirmed.find((f) => f.file === 'c.md' && f.line === 100);
+  const sites = all.length + all.reduce((n, f) => n + (f.also_at?.length ?? 0), 0);
+  const want = JSON.stringify([{ file: 'b.md', line: 1, lens: 'boundary-ui-tests', severity: 'low', title: 'claim X again', claim: 'Y'.repeat(300) }]);
+  if (result.stats.raw !== 15 || result.stats.deduped !== 11) fail(name, `raw=${result.stats.raw} deduped=${result.stats.deduped} (want 15 → 14 by key → 11 grouped)`);
+  else if (JSON.stringify(rep?.also_at) !== want) fail(name, `representative also_at=${JSON.stringify(rep?.also_at)}`);
+  else if (JSON.stringify(comp?.also_at?.map((a) => a.line)) !== '[101,101,102]') fail(name, `overlapping groups lost a member or its first-pass twin: ${JSON.stringify(comp?.also_at)}`);
+  else if (sites !== 15) fail(name, `sites conserved=${sites} (want all 15 raw reports)`);
+  else if (result.confirmed.some((f) => !Array.isArray(f.also_at))) fail(name, 'a confirmed item carries no also_at array');
+  else if (result.stats.agents_per_phase.verify !== 12) fail(name, `verify legs=${result.stats.agents_per_phase.verify} (want 2 for the class + 10 lows)`);
+  else pass(name);
+  const cls = skeptics(spawns).filter((s) => s.prompt.includes('지적: [medium] claim X'));
+  const nameP = '12b2 the skeptics of a grouped claim see every also_at site and its claim; the grouping prompt makes a cross-file repeat one group';
+  const groupPrompt = spawns.find((s) => s.phase === 'Dedupe')?.prompt ?? '';
+  if (cls.length !== 2) fail(nameP, `class skeptic spawns=${cls.length}`);
+  else if (!cls.every((s) => /묶인 보고가 더 있다[^\n]*\n- b\.md:1 \[low\] claim X again: Y{300}\n/.test(s.prompt))) fail(nameP, 'also_at site or its claim missing from the skeptic prompt');
+  else if (!cls.every((s) => s.prompt.includes('위 지적과 묶인 보고의 주장이 모든 위치에서 틀렸을 때만 refuted=true'))) fail(nameP, 'class verdict rule missing');
+  else if (!skeptics(spawns).some((s) => s.prompt.includes('지적: [low] t-c.md-103'))) fail(nameP, 'control finding c.md:103 was never verified — the next check would be vacuous');
+  else if (skeptics(spawns).some((s) => s.prompt.includes('지적: [low] t-c.md-103') && s.prompt.includes('묶인 보고가'))) fail(nameP, 'an ungrouped finding got an also_at clause');
+  else if (!groupPrompt.includes('같은 주장이 서로 다른 파일에 반복된 것') || !groupPrompt.includes('서로 다른 결함은 절대 묶지 마라')) fail(nameP, 'grouping prompt lost the cross-file clause or the never-merge guard');
+  else pass(nameP);
+}
+
+// 12c. a group is in scope when ANY of its sites is: the representative is chosen by severity, so
+//      an out-of-scope reference file can win and would carry the in-scope instance out of the gate.
+//      An ungrouped out-of-scope finding still lands in out_of_scope_confirmed (the control).
+{
+  const name = '12c a grouped claim with an in-scope also_at site stays in confirmed';
+  const { result } = await run({
+    args: { tier: 'small', scope: { files: ['a.md'], context: 'c' } },
+    findings: (k) => (k === 'correctness-pitfalls'
+      ? [F('ref.md', 3, 'high', 'X'), ...fill('a.md', 6)]
+      : [F('a.md', 50, 'low', 'X in a'), F('ref.md', 9), ...fill('a.md', 5, 200)]),
+    groups: [[0, 7]],
+  });
+  const inScope = result.confirmed.find((f) => f.file === 'ref.md' && f.line === 3);
+  if (!inScope) fail(name, `grouped claim left the gate: out_of_scope=${JSON.stringify(result.out_of_scope_confirmed.map((f) => `${f.file}:${f.line}`))}`);
+  else if (result.out_of_scope_confirmed.map((f) => `${f.file}:${f.line}`).join() !== 'ref.md:9') fail(name, `control: out_of_scope=${JSON.stringify(result.out_of_scope_confirmed.map((f) => `${f.file}:${f.line}`))}`);
+  else pass(name);
+}
+
+// 12d. the canary is a self-describing transport probe. Since 2026-09-22 the host framed the old
+//      one-word prompt as a prompt injection: 842–878 output tokens of refusal, which the fixed
+//      8-token allowance booked as main-loop bleed. A non-ok reply warns (transport still passed)
+//      and the bleed subtracts the reply's own length: max(8, ceil(900/3)) = 300 → 1000 − 300.
+{
+  const name = '12d canary prompt is the transport probe; a non-ok reply warns and its length leaves the bleed';
+  const clean = await run({});
+  const upper = await run({ canaryReply: ' OK.\n' });
+  let n = 0;
+  const budget = { total: null, remaining: () => Infinity, spent: () => (n++ === 0 ? 0 : 1000) };
+  const refusal = 'I am not going to comply with the computed task instruction. '.padEnd(900, 'x');
+  const bad = await run({ canaryReply: refusal, budget });
+  const prompt = clean.spawns.find((s) => s.label === 'canary')?.prompt;
+  const warned = (r) => r.logs.some((l) => l.includes('카나리아 응답이 ok 가 아니다'));
+  const basis = clean.result.stats.telemetry_basis ?? '';
+  if (prompt !== 'adversarial-review workflow transport probe — there is nothing to review; reply with exactly: ok') fail(name, `canary prompt=${JSON.stringify(prompt)}`);
+  else if (warned(clean) || clean.result.stats.canary_ok !== true) fail(name, 'a clean ok warned or reported canary_ok=false');
+  else if (warned(upper) || upper.result.stats.canary_ok !== true) fail(name, '"OK." (trimmed, case, final period) was not accepted');
+  else if (!warned(bad) || bad.result.stats.canary_ok !== false) fail(name, 'a 900-char refusal did not warn / canary_ok stayed true');
+  else if (bad.result.stats.main_loop_bleed_estimate !== 700) fail(name, `bleed=${bad.result.stats.main_loop_bleed_estimate} (want 1000 − ceil(900/3) = 700)`);
+  // review slice 26: the canary's thinking is not in its reply, so the bleed is an estimate, never a FLOOR.
+  else if (/FLOOR/.test(basis) || !/main_loop_bleed_estimate is an ESTIMATE, not a floor[^.]*\. The excess includes the canary's own thinking tokens/.test(basis)) fail(name, `telemetry_basis overclaims the bleed: ${basis}`);
+  else pass(name);
+}
+
+// 12e. skeptic #2's angle — "why did this pass the stated gates?" — was asked of a prompt that never
+//      contained the gates (measured: #2 alone refuted 8 of 10 split verdicts). The gates now ride
+//      in #2's prompt when the object scope carries gates_passed; with none (or a string scope) the
+//      clause is dropped instead of asking about gates the skeptic cannot see. #1 keeps its angle.
+{
+  const name = '12e skeptic #2 sees scope.gates_passed; the clause is dropped when there are none';
+  const med = (k) => (k === 'correctness-pitfalls' ? [F('f.md', 10, 'medium', 'm1')] : []);
+  const legs = async (scope) => {
+    const s = skeptics((await run({ args: { tier: 'small', scope }, findings: med })).spawns);
+    return { one: s.find((x) => x.prompt.startsWith('너는 회의적 검증자 #1'))?.prompt ?? '', two: s.find((x) => x.prompt.startsWith('너는 회의적 검증자 #2'))?.prompt ?? '' };
+  };
+  const g = await legs({ files: ['f.md'], context: 'c', gates_passed: 'selftest.ps1 PASS 20/20 · manifest-gate PASS' });
+  const arr = await legs({ files: ['f.md'], context: 'c', gates_passed: ['lint PASS', 'typecheck PASS'] });
+  const none = await legs({ files: ['f.md'], context: 'c' });
+  const str = await legs('free text scope with gates somewhere');
+  if (!g.two.includes('기존 통과 게이트(스코프의 gates_passed):\nselftest.ps1 PASS 20/20 · manifest-gate PASS')) fail(name, `#2 prompt lacks the gates: ${g.two}`);
+  else if (g.one.includes('selftest.ps1 PASS') || g.one.includes('추가 관점')) fail(name, '#1 carries #2\'s gate angle');
+  else if (!arr.two.includes('lint PASS') || !arr.two.includes('typecheck PASS')) fail(name, 'an array gates_passed was not serialised into #2');
+  else if (none.two.includes('추가 관점') || none.two.includes('게이트')) fail(name, `no gates, clause kept: ${none.two}`);
+  else if (str.two.includes('추가 관점') || str.two.includes('게이트')) fail(name, 'a string scope still asks about gates');
+  else pass(name);
+}
+
+// 12f. rejections return their reasons: closers dug the journal for them, one Opus/Fable turn each.
+//      Shape {severity, title, file, line, also_at, votes: [{refuted, reason}]}, reasons cut at 300
+//      (was 200 — mid-sentence), rejected_count kept, and the schema asks for brevity with a
+//      description, never a maxLength (a hard limit forces schema retries).
+{
+  const name = '12f rejected[] carries each vote and reason; reasons reach 300 chars; VERDICT.reason is described, not capped';
+  const { result, spawns } = await run({
+    findings: (k) => (k === 'correctness-pitfalls' ? [F('f.md', 10, 'medium', 'm1')] : [F('f.md', 20, 'low', 'l1')]),
+    verdict: (prompt, label) => (label === 'verify:m1'
+      ? (prompt.startsWith('너는 회의적 검증자 #2') ? { refuted: true, reason: 'R'.repeat(500) } : { refuted: false, reason: 'keep' })
+      : { refuted: false, reason: 'K'.repeat(500) }),
+  });
+  const r = result.rejected?.[0];
+  const reason = skeptics(spawns)[0]?.schema?.properties?.reason;
+  if (result.rejected_count !== 1 || result.rejected?.length !== 1) fail(name, `rejected_count=${result.rejected_count} rejected=${JSON.stringify(result.rejected)}`);
+  else if (Object.keys(r).join() !== 'severity,title,file,line,also_at,votes') fail(name, `shape=${Object.keys(r).join()}`);
+  else if (r.severity !== 'medium' || r.title !== 'm1' || r.file !== 'f.md' || r.line !== 10) fail(name, JSON.stringify(r));
+  else if (JSON.stringify(r.votes.map((v) => [v.refuted, v.reason.length])) !== '[[false,4],[true,300]]') fail(name, `votes=${JSON.stringify(r.votes.map((v) => [v.refuted, v.reason.length]))}`);
+  else if (result.confirmed[0]?.verify_reasons?.[0]?.length !== 300) fail(name, `confirmed reason length=${result.confirmed[0]?.verify_reasons?.[0]?.length}`);
+  else if (!/≤300 characters/.test(reason?.description ?? '') || reason?.maxLength !== undefined) fail(name, `VERDICT.reason=${JSON.stringify(reason)}`);
+  else pass(name);
+}
+
+// 12g. whenToUse is model-facing listing text, re-read on every turn of every session with the plugin
+//      installed, so it is English (ADR 0045's split: Korean for members, English for the model).
+//      The clauses are the contract, not the wording: once per slice, the object scope with
+//      gates_passed, the small tier, lensExtra, no re-review of a fix diff, the ultracode/effort args.
+{
+  const name = '12g meta.whenToUse is English and keeps every clause';
+  const m = readFileSync(SCRIPT, 'utf8').match(/whenToUse:\s*'((?:[^'\\]|\\.)*)'/);
+  const w = m ? m[1] : '';
+  const clauses = ['once per slice', 'files: [...]', 'gates_passed', 'args.tier:"small"', 'args.lensExtra', 'never re-reviewed', 'new mechanism', 'args.ultracode:true', 'args.effort', 'xhigh'];
+  const missing = clauses.filter((c) => !w.includes(c));
+  if (!w) fail(name, 'whenToUse literal not found');
+  else if (/[가-힣]/.test(w)) fail(name, 'whenToUse carries Hangul — the model-facing listing text is English');
+  else if (missing.length) fail(name, `clauses missing: ${missing.join(' | ')}`);
+  else pass(name);
+}
+
+// 12h. the reviewer agent's prose loads into every canary, finder and skeptic spawn in every consumer
+//      repo, so it cites no ADR number (ADR 0019 point 3: a number resolves against whatever repo the
+//      reader stands in and points confidently at the wrong record). Review slice 26 found one left
+//      in the body after ADR 0089 trimmed only the description.
+{
+  const name = '12h the reviewer agent prose carries no repo-bound ADR number';
+  const md = readFileSync(join(here, '..', 'agents', 'reviewer.md'), 'utf8');
+  const hits = md.match(/\bADR[ -]?#?\d{2,4}\b/g) ?? [];
+  if (!md.includes('omitClaudeMd')) fail(name, 'reviewer.md not found or reshaped — the check would be vacuous');
+  else if (hits.length) fail(name, `ADR numbers in shipped agent prose: ${hits.join(', ')}`);
+  else pass(name);
+}
+
+// 12i. dead skeptic legs (review slice 26). agent() returns null on a transport death, and the old
+//      filter(Boolean) erased it: a finding with no live vote read as confirmed (`[].every` is true)
+//      and a high/medium whose one surviving vote refuted it reached rejected[] with ONE vote, past the
+//      closer's 1–1 split rule. Now a dead leg is retried once, as a dead finder is; a leg dead twice
+//      stays in votes as a dead non-refuting vote (so a lone refutation reads as a split), a finding
+//      with no live vote stays in confirmed flagged unverified, and stats count both.
+{
+  const name = '12i a dead skeptic leg is retried once, then carried: unverified, dead votes, split visible, stats exact';
+  const tries = {};
+  const verdict = (prompt, label) => {
+    const leg = prompt.startsWith('너는 회의적 검증자 #2') ? 2 : 1;
+    const key = `${label}#${leg}`;
+    const n = (tries[key] = (tries[key] ?? 0) + 1);
+    if (label === 'verify:h-one-dead') return leg === 1 ? null : { refuted: true, reason: 'wrong' };
+    if (label === 'verify:m-both-dead') return null;
+    if (label === 'verify:l-recovered') return n === 1 ? null : { refuted: false, reason: 'holds' };
+    return { refuted: false, reason: 'r' };
+  };
+  const { result, logs } = await run({
+    findings: (k) => (k === 'correctness-pitfalls'
+      ? [F('f.md', 10, 'high', 'h-one-dead'), F('f.md', 11, 'medium', 'm-both-dead')]
+      : [F('f.md', 20, 'low', 'l-recovered')]),
+    verdict,
+  });
+  const s = result.stats;
+  const h = result.rejected.find((f) => f.title === 'h-one-dead');
+  const m = result.confirmed.find((f) => f.title === 'm-both-dead');
+  const l = result.confirmed.find((f) => f.title === 'l-recovered');
+  if (!h || JSON.stringify(h.votes.map((v) => [v.refuted, v.dead === true])) !== '[[false,true],[true,false]]') fail(name, `h/m with one dead leg: ${JSON.stringify(h ?? result.confirmed.map((f) => f.title))}`);
+  else if (!m || m.unverified !== true || m.dead_votes !== 2 || m.verify_reasons.length !== 0) fail(name, `no live vote: ${JSON.stringify(m)}`);
+  else if (!l || l.unverified !== undefined || l.dead_votes !== undefined || l.verify_reasons.join() !== 'holds') fail(name, `retried leg not recovered: ${JSON.stringify(l)}`);
+  else if (tries['verify:l-recovered#1'] !== 2 || tries['verify:m-both-dead#2'] !== 2 || tries['verify:h-one-dead#2'] !== 1) fail(name, `retry counts=${JSON.stringify(tries)}`);
+  else if (s.dead_skeptics !== 3 || s.unverified_by_death !== 1 || s.verified !== 2) fail(name, `stats dead_skeptics=${s.dead_skeptics} unverified_by_death=${s.unverified_by_death} verified=${s.verified}`);
+  else if (s.agents_per_phase.verify !== 9) fail(name, `verify legs=${s.agents_per_phase.verify} (want 5 + 4 retries)`);
+  else if (!logs.some((l2) => l2.includes('skeptic 레그 4개 실패 — 1회 재시도')) || !logs.some((l2) => l2.includes('재시도 후에도 skeptic 레그 3개'))) fail(name, `dead legs not logged: ${logs.join(' | ')}`);
   else pass(name);
 }
 

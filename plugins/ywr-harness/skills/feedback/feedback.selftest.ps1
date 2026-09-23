@@ -55,9 +55,16 @@ if ($env:YWR_FAKE_GH_LOG) { Add-Content -LiteralPath $env:YWR_FAKE_GH_LOG -Value
 $sub = "$($Rest[0]) $($Rest[1])"
 switch ($sub) {
     'auth status'  { if ($mode -eq 'unauth') { [Console]::Error.WriteLine('You are not logged into any GitHub hosts. To log in, run: gh auth login'); exit 1 }; Write-Output 'github.com: Logged in'; exit 0 }
-    'label list'   { if ($mode -eq 'nolabel') { Write-Output '[{"name":"bug"}]' } else { Write-Output '[{"name":"bug"},{"name":"upstream-report"}]' }; exit 0 }
+    # Kept although feedback.ps1 no longer lists labels (ADR 0085): a regression that re-adds the
+    # preflight is then LOGGED (F2b reads the log) instead of dying on the unexpected-subcommand arm.
+    'label list'   { Write-Output '[{"name":"bug"},{"name":"upstream-report"}]'; exit 0 }
     'issue list'   {
         if ($mode -eq 'similar') { Write-Output '[{"number":12,"title":"[upstream-report] acme/widget: same drift"}]' }
+        # GitHub's server-side shape (ADR 0085): the earlier report was filed by a read-role member,
+        # so its label was dropped — a `-l upstream-report` search cannot see it, an unfiltered one can.
+        elseif ($mode -eq 'unlabelled') { if (@($Rest | Where-Object { $_ -eq '-l' -or $_ -like '--label*' }).Count) { Write-Output '[]' } else { Write-Output '[{"number":6,"title":"[upstream-report] acme/scaffolded: earlier read-role report","author":{"login":"member-a"}}]' } }
+        # A stranger's issue carrying a published fingerprint, with a hostile title: ESC, NEL, U+2028, CR/LF.
+        elseif ($mode -eq 'hostile') { Write-Output ('[{"number":7,"title":"fake\u001b[2Jreport\u0085line\u2028two\r\nthree","author":{"login":"stranger"}}]') }
         elseif ($mode -eq 'many') { Write-Output ('[' + ((1..20 | ForEach-Object { "{`"number`":$_,`"title`":`"dup $_`"}" }) -join ',') + ']') }
         else { Write-Output '[]' }
         exit 0
@@ -119,6 +126,12 @@ function Assert-Text([string]$Name, [string]$Text, [string[]]$MustMatch, [string
     return (Write-CaseVerdict -Name $Name -Fail $script:LastFails -Detail $Text)
 }
 function Get-GhCalls() { if (Test-Path -LiteralPath $ghLog) { return @(Get-Content -LiteralPath $ghLog -Encoding utf8) } return @() }
+# ADR 0085: no label in ANY spelling — the short `-l`, the long `--label` / `--label=<x>`, or a bare
+# `upstream-report` argv element (the title value after `-t` may CONTAIN the prefix; it is never the whole element).
+function Test-LabelArg([string]$Call) {
+    $el = @($Call -split [char]0x1F)
+    return [bool](@($el | Where-Object { $_ -eq '-l' -or $_ -like '--label*' -or $_ -eq 'upstream-report' }).Count)
+}
 function Reset-GhLog() { if (Test-Path -LiteralPath $ghLog) { Remove-Item -LiteralPath $ghLog -Force } }
 function Invoke-GitQ([string]$Repo, [string[]]$GitArgs) { & git -C $Repo @GitArgs 2>&1 | Out-Null }
 
@@ -212,8 +225,11 @@ if ($scaffReady) {
             @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }), $(if (-not $bodyB) { 'no body: line' }))) -and $ok
     $calls = Get-GhCalls
     $listCall = @($calls | Where-Object { $_ -match "^issue$([char]0x1F)list" })
-    $ok = (Assert-True 'B1b the fingerprint search asked gh for open upstream-report issues on the dist repo' `
-            ($listCall.Count -eq 1 -and $listCall[0] -match 'orcait-co/ywr-harness' -and $listCall[0] -match 'upstream-report' -and $listCall[0] -match '"fb[0-9a-f]{10}"' -and $listCall[0] -match "--state$([char]0x1F)open") "calls: $($calls -join ' | ')") -and $ok
+    # ADR 0085: the search covers EVERY open dist issue — no `-l` in the argv, the quoted fingerprint
+    # is the discriminator (a read-role member's earlier report carries no label).
+    $ok = (Assert-True 'B1b the fingerprint search asked gh for ALL open dist issues matching the quoted fingerprint — no -l label filter' `
+            ($listCall.Count -eq 1 -and $listCall[0] -match 'orcait-co/ywr-harness' -and $listCall[0] -match "-S$([char]0x1F)`"fb[0-9a-f]{10}`"" -and $listCall[0] -match "--state$([char]0x1F)open" `
+             -and -not (Test-LabelArg $listCall[0]) -and $listCall[0] -notmatch 'upstream-report') "calls: $($calls -join ' | ')") -and $ok
 
     # B2: a similar report exists -> named on the summary line (informational, exit still 0)
     $env:YWR_FAKE_GH_MODE = 'similar'; Reset-GhLog
@@ -221,6 +237,25 @@ if ($scaffReady) {
     $ok = (Assert-Text 'B2 a matching open report is named, drafting still succeeds' $out `
             @('similar open reports: #12 \[upstream-report\] acme/widget: same drift', '(?m)^\s*body:') @('NOT CHECKED') `
             @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }))) -and $ok
+
+    # B2b (ADR 0085): the earlier report was filed by a READ-ROLE member, so GitHub dropped its label;
+    # the fake answers a label-filtered search with [] and an unfiltered one with the hit — the dedupe
+    # must still find it (the dist #6 shape: fingerprint in the body, labels=[]).
+    $env:YWR_FAKE_GH_MODE = 'unlabelled'; Reset-GhLog
+    $out = Invoke-Feedback @('-Description', 'again', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh
+    $ok = (Assert-Text 'B2b an unlabelled earlier report (read-role filer) is still found by the fingerprint search' $out `
+            @('similar open reports: #6 \[upstream-report\] acme/scaffolded: earlier read-role report \(by member-a\)') @('similar open reports: none', 'NOT CHECKED') `
+            @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }))) -and $ok
+
+    # B2c: without the label ANY account's issue can carry a published fingerprint — its title renders on
+    # ONE line with no terminal escape (ESC, NEL, U+2028, CR/LF all become spaces) and names its author.
+    $env:YWR_FAKE_GH_MODE = 'hostile'; Reset-GhLog
+    $out = Invoke-Feedback @('-Description', 'again', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh
+    $simLine = @($out -split "`r?`n" | Where-Object { $_ -match 'similar open reports:' })
+    $ok = (Assert-True 'B2c a hostile stranger title renders on one line, control-free, with its author' `
+            ($simLine.Count -eq 1 -and $simLine[0] -match '#7 fake \[2Jreport line two  three \(by stranger\)' `
+             -and $simLine[0] -notmatch "[\u0000-\u0008\u000B-\u001F\u007F\u0085\u2028\u2029]" -and $out -notmatch "`e" `
+             -and @($out -split "`r?`n" | Where-Object { $_ -match '^\s*three' }).Count -eq 0) "line: $($simLine -join ' || ')") -and $ok
 
     # B3: gh absent -> the search is reported NOT CHECKED, never silently 'none'
     if ($noGhOk) {
@@ -292,33 +327,27 @@ Set-Content -LiteralPath $fileBody -Value "<!-- title: [upstream-report] acme/wi
 if ($noGhOk) {
     $out = Invoke-Feedback @('-File', '-BodyPath', $fileBody) $pathNoGh
     $ok = (Assert-Text 'F1 gh absent -> exit 2, NOT FILED, by-hand URL, body kept' $out `
-            @('NOT FILED — gh is not on PATH', 'https://github\.com/orcait-co/ywr-harness/issues/new', 'title: \[upstream-report\] acme/widget: reviewed title', 'label: upstream-report') `
-            @('filed: https') `
+            @('NOT FILED — gh is not on PATH', 'https://github\.com/orcait-co/ywr-harness/issues/new', 'title: \[upstream-report\] acme/widget: reviewed title') `
+            @('filed: https', 'label: upstream-report') `
             @($(if ($script:Exit -ne 2) { "exit $script:Exit (want 2)" }), $(if (-not (Test-Path -LiteralPath $fileBody)) { 'body file was removed' }))) -and $ok
 }
 
-# F2: gh ok -> filed with label; the create call carries repo, title, body file and label
+# F2: gh ok -> filed; the create call carries repo, title and body file — and NO label (ADR 0085)
 $env:YWR_FAKE_GH_MODE = 'ok'; Reset-GhLog
 $out = Invoke-Feedback @('-File', '-BodyPath', $fileBody) $pathWithGh
 $calls = Get-GhCalls
 $create = @($calls | Where-Object { $_ -match "^issue$([char]0x1F)create" })
 $filedCopy = "$fileBody.filed.md"
 $filedText = if (Test-Path -LiteralPath $filedCopy) { [IO.File]::ReadAllText($filedCopy) } else { '' }
-$ok = (Assert-Text 'F2 gh ok -> filed: URL, exit 0' $out @('filed: https://github\.com/orcait-co/ywr-harness/issues/999') @('NOT FILED', 'label: .* is absent') `
+$ok = (Assert-Text 'F2 gh ok -> filed: URL, exit 0, no label line' $out @('filed: https://github\.com/orcait-co/ywr-harness/issues/999') @('NOT FILED', '(?m)^\s*label:') `
         @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }))) -and $ok
-$ok = (Assert-True 'F2b the create call: -R orcait-co/ywr-harness, -t <title>, -F <reviewed>.filed.md, -l upstream-report; auth + label preflight ran first' `
+# ADR 0085: GitHub silently drops a label set by a filer without push access, so the member side
+# neither preflights one (`gh label list`) nor passes `-l`; the canon inbox lists every open issue.
+$ok = (Assert-True 'F2b the create call: -R orcait-co/ywr-harness, -t <title>, -F <reviewed>.filed.md, NO -l; auth ran first; no label list call' `
         ($create.Count -eq 1 -and $create[0] -match "-R$([char]0x1F)orcait-co/ywr-harness" -and $create[0] -match "-t$([char]0x1F)\[upstream-report\] acme/widget: reviewed title" `
-         -and $create[0] -match "-F$([char]0x1F)[^$([char]0x1F)]*reviewed\.md\.filed\.md" -and $create[0] -match "-l$([char]0x1F)upstream-report" `
-         -and ($calls[0] -match '^auth') -and (@($calls | Where-Object { $_ -match '^label' }).Count -eq 1)) "calls: $($calls -join ' | ')") -and $ok
+         -and $create[0] -match "-F$([char]0x1F)[^$([char]0x1F)]*reviewed\.md\.filed\.md" -and -not (Test-LabelArg $create[0]) `
+         -and ($calls[0] -match '^auth') -and (@($calls | Where-Object { $_ -match '^label' }).Count -eq 0)) "calls: $($calls -join ' | ')") -and $ok
 $ok = (Assert-Text 'F2c the filed body is the reviewed file minus the title line' $filedText @('^## Report', 'reviewed body text') @('<!-- title')) -and $ok
-
-# F3: label absent on the target -> filed WITHOUT -l, and said
-$env:YWR_FAKE_GH_MODE = 'nolabel'; Reset-GhLog
-$out = Invoke-Feedback @('-File', '-BodyPath', $fileBody) $pathWithGh
-$create = @((Get-GhCalls) | Where-Object { $_ -match "^issue$([char]0x1F)create" })
-$ok = (Assert-Text 'F3 label absent -> still filed, the absence is printed' $out @("label: 'upstream-report' is absent on orcait-co/ywr-harness", 'filed: https') @('NOT FILED') `
-        @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }))) -and $ok
-$ok = (Assert-True 'F3b the create call carries no -l when the label is absent' ($create.Count -eq 1 -and $create[0] -notmatch "-l$([char]0x1F)") "create: $($create -join ' | ')") -and $ok
 
 # F4: gh unauthenticated -> NOT FILED, exit 2, no create attempted
 $env:YWR_FAKE_GH_MODE = 'unauth'; Reset-GhLog
@@ -356,9 +385,12 @@ $ok = (Assert-Text 'F8 no title anywhere -> exit 1' $out @('FAIL — no title') 
 # S. SKILL.md contract lines
 # =================================================================================================
 $skill = Get-Content -LiteralPath $skillMd -Raw
-$ok = (Assert-Text 'S1 SKILL.md: user-invoked only, namespaced references, both script modes named, the never-list' $skill `
-        @('(?m)^disable-model-invocation: true', '/ywr-harness:feedback', 'feedback\.ps1" -Description', 'feedback\.ps1" -File -BodyPath', 'Never files without step 3', 'Never includes file contents or diffs', 'Never runs `/ywr-harness:harness-init`') `
-        @('`/feedback`', '`/harness-init`')) -and $ok
+# The label clauses (ADR 0085): the member is no longer told the report carries `upstream-report` —
+# for a read-role filer GitHub drops it — and IS told the canon inbox lists every open dist issue.
+$ok = (Assert-Text 'S1 SKILL.md: user-invoked only, namespaced references, both script modes named, the never-list, the no-label inbox claim' $skill `
+        @('(?m)^disable-model-invocation: true', '/ywr-harness:feedback', 'feedback\.ps1" -Description', 'feedback\.ps1" -File -BodyPath', 'Never files without step 3', 'Never includes file contents or diffs', 'Never runs `/ywr-harness:harness-init`',
+          'inbox lists every open dist issue', 'ADR 0085') `
+        @('`/feedback`', '`/harness-init`', 'label `upstream-report`', 'with label upstream-report', "label: 'upstream-report' is absent")) -and $ok
 
 # --- META: the harness itself must be able to fail ------------------------------------------------
 $meta = (Assert-Text 'META probe' 'abc' @('zzz') @() 6>$null)
