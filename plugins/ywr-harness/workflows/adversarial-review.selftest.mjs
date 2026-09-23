@@ -53,7 +53,7 @@ async function run(plan) {
   const spawns = [];
   const agent = async (prompt, opts = {}) => {
     const label = opts.label || '';
-    spawns.push({ label, model: opts.model, effort: opts.effort, agentType: opts.agentType, prompt });
+    spawns.push({ label, phase: opts.phase, model: opts.model, effort: opts.effort, agentType: opts.agentType, prompt });
     if (label === 'canary') return plan.canaryDies ? null : 'ok';
     if (label.startsWith('find:')) {
       const key = label.slice('find:'.length);
@@ -63,11 +63,15 @@ async function run(plan) {
       // One finding per lens. The file MUST stay inside args.scope.files or the finding is
       // routed to out_of_scope_confirmed instead of confirmed; only the line varies, which is
       // enough to keep the first-pass `file:line` dedupe from merging the two lenses.
+      // plan.many = n: n findings per finder on distinct lines — enough to cross the >12 grouping
+      // branch, which the one-finding default never reaches.
+      if (plan.many) return { findings: Array.from({ length: plan.many }, (_, i) => ({ title: `t-${key}-${i}`,
+        file: 'f.md', line: (LINE[key] ?? 1) * 100 + i, severity: 'low', claim: 'c', evidence: 'e' })) };
       return { findings: [{ title: `t-${key}`, file: 'f.md', line: LINE[key] ?? 1,
                             severity: 'low', claim: 'c', evidence: 'e' }] };
     }
     if (label.startsWith('verify:')) return { refuted: false, reason: 'r' };
-    if (label === 'dedupe:haiku') return { groups: [] };
+    if (label === 'dedupe:haiku' || label === 'dedupe') return { groups: [] };
     throw new Error(`stub: unexpected label ${label}`);
   };
   const fn = compile(SCRIPT);
@@ -253,6 +257,54 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   else if (byLabel(/^verify:/).some((s) => s.model !== 'sonnet' || s.effort !== 'low')) fail(name, 'verify pin drifted');
   else pass(name);
 }
+
+// 10u. the ultracode mode (ywr-harness ADR 0084). args.ultracode:true lifts BOTH sonnet-tier pins:
+//     every reviewer stage runs on the session model ('inherit' — measured to resolve on top of the
+//     reviewer agentType at 2.1.280) at ONE explicit effort, default 'xhigh' (an 'inherit' effort is
+//     silently dropped for the frontmatter's medium — measured, so the script never sends it). The
+//     haiku dedupe lifts too (owner follow-up, same day): no model (the default subagent inherits the
+//     session model — measured) and the same explicit effort. The agentType stays (the allowlist is
+//     the no-edit guarantee, not a cost lever only). The stats name the mode so a close can record it.
+{
+  const name = 'ultracode lifts the sonnet and effort pins, keeps agentType';
+  const { result, spawns, logs } = await run({ args: { tier: 'small', ultracode: true, scope: { files: ['f.md'], context: 'c' } } });
+  const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
+  const off = workers.filter((s) => s.model !== 'inherit' || s.effort !== 'xhigh' || s.agentType !== 'ywr-harness:reviewer');
+  if (!workers.length) fail(name, 'no worker spawns captured');
+  else if (off.length) fail(name, `pins not lifted: ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort, s.agentType]))}`);
+  else if (result.stats.worker_pins?.mode !== 'ultracode' || result.stats.worker_pins?.effort !== 'xhigh') fail(name, `stats.worker_pins=${JSON.stringify(result.stats.worker_pins)}`);
+  else if (!logs.some((l) => l.startsWith('[ultracode]'))) fail(name, 'mode not logged');
+  else pass(name);
+}
+{
+  const name = 'ultracode honours an explicit args.effort';
+  const { spawns } = await run({ args: { tier: 'small', ultracode: true, effort: 'max', scope: { files: ['f.md'], context: 'c' } } });
+  const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
+  if (workers.some((s) => s.effort !== 'max' || s.model !== 'inherit')) fail(name, JSON.stringify(workers.map((s) => [s.label, s.model, s.effort])));
+  else pass(name);
+}
+{
+  const name = 'dedupe grouping: haiku · low when pinned, session model at the ultracode effort otherwise';
+  const pinned = (await run({ many: 7 })).spawns.filter((s) => s.phase === 'Dedupe' || /^dedupe/.test(s.label));
+  const ultra = (await run({ many: 7, args: { tier: 'small', ultracode: true, scope: { files: ['f.md'], context: 'c' } } }))
+    .spawns.filter((s) => s.phase === 'Dedupe' || /^dedupe/.test(s.label));
+  if (pinned.length !== 1 || ultra.length !== 1) fail(name, `dedupe spawns pinned=${pinned.length} ultra=${ultra.length} (14 findings must cross >12)`);
+  else if (pinned[0].model !== 'haiku' || pinned[0].effort !== 'low') fail(name, `pinned dedupe=${JSON.stringify([pinned[0].model, pinned[0].effort])}`);
+  else if (ultra[0].model !== undefined || ultra[0].effort !== 'xhigh' || ultra[0].agentType) fail(name, `ultra dedupe=${JSON.stringify([ultra[0].model, ultra[0].effort, ultra[0].agentType])}`);
+  else pass(name);
+}
+{
+  const name = 'default mode reports the pinned worker_pins';
+  const { result } = await run({});
+  if (result.stats.worker_pins?.mode !== 'pinned' || !String(result.stats.worker_pins?.model).startsWith('sonnet')) fail(name, JSON.stringify(result.stats.worker_pins));
+  else pass(name);
+}
+await expectThrow('non-boolean args.ultracode is refused',
+  { args: { ultracode: 'true', scope: { files: ['f.md'], context: 'c' } } }, 'args.ultracode');
+await expectThrow('args.effort without ultracode is refused',
+  { args: { effort: 'xhigh', scope: { files: ['f.md'], context: 'c' } } }, 'args.effort');
+await expectThrow('an unknown ultracode effort is refused',
+  { args: { ultracode: true, effort: 'ultracode', scope: { files: ['f.md'], context: 'c' } } }, 'args.effort');
 
 // 10a. the worker identity (ywr-harness ADR 0069). Canary, finders and skeptics run as the plugin's
 //     tool-restricted reviewer agent — the allowlist is what removes ~half of the prefix every

@@ -1,7 +1,8 @@
 // 적대 코드리뷰 표준 워크플로 (ADR #50, 티어 #104) — 렌즈 파인더 + 시맨틱 중복제거 + 심각도 게이트 검증.
 // 호출: Workflow({name: 'ywr-harness:adversarial-review', args: {scope: '<리뷰 대상+하우스 컨텍스트 블록>',
 //   tier?: 'small', root?: '<레포 루트>', lenses?: [{key, prompt}], lensExtra?: '<하우스 앵글>',
-//   shards?: 'auto' | n | [[files…], …]  (scope.files 필요 — 렌즈별 파인더를 파일 샤드로 분할, ADR 0070)}})
+//   shards?: 'auto' | n | [[files…], …]  (scope.files 필요 — 렌즈별 파인더를 파일 샤드로 분할, ADR 0070),
+//   ultracode?: true, effort?: 'low'|'medium'|'high'|'xhigh'|'max'  (ultracode 세션·키워드일 때만 — ywr-harness ADR 0084)}})
 //
 // 이 파일의 ADR 번호는 별도 표기가 없으면 ywrlabs/ywr-platform 의 것이다 — 이 워크플로가 자란 곳이고
 // 근거 기록이 거기 있다. 렌즈 기본값은 레포 무관하게 일반화돼 있고, 하우스 고유 앵글(테넌시 격리
@@ -10,13 +11,13 @@
 // tier 'small'(ADR #104: ≤150 diff 라인·≤5 파일·크리티컬 표면 무접촉 — RLS/수치코어/인가/
 // 마이그레이션/훅·CI 제외) = 병합 2렌즈·렌즈당 6건. 그 외 = 풀 3렌즈. skeptic 게이트는 동일.
 // 워커 모델은 전역 CLAUDE.md 규칙대로 sonnet 고정 · effort 는 상한 high(세션 effort 상속 금지,
-// 2026-07-13 — xhigh/max 딥워크 누수 차단). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
+// 2026-07-13 — xhigh/max 딥워크 누수 차단; ultracode 예외는 ADR 0084 — 아래 ULTRA). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
 // 슬라이스당 1회가 기본(ywr-harness ADR 0028): 확정 지적의 수정 diff 는 재호출 대상이 아니다 —
 // 게이트 재실행 + 지적별 수정 대조로 닫는다. 새 메커니즘급 수정만 1회 한정 재리뷰(마감에 기준 명기).
 export const meta = {
   name: 'adversarial-review',
   description: '적대 코드리뷰 표준 — 렌즈 티어(풀3·small2)·시맨틱 dedupe·심각도 게이트(h/m=2·low=1·nit=0 skeptic)',
-  whenToUse: '슬라이스 마감 게이트 리뷰 — 슬라이스당 1회. args.scope 에 대상 파일 목록 + 하우스 불변식 + 이미 통과한 게이트를 넣는다(diff 슬라이스는 git diff 주입). 소형 비크리티컬 diff 는 args.tier:"small". 레포의 결정론 린트 게이트를 먼저 돌리고 통과 결과를 게이트 블록에 포함할 것. 하우스 고유 렌즈 앵글은 args.lensExtra 로 주입한다. 이 리뷰의 확정 지적을 고친 수정 diff 는 재호출 대상이 아니다 — 게이트 재실행 + 지적별 수정 대조로 닫고, 수정이 패치가 아니라 새 메커니즘일 때만 1회 한정 재리뷰.',
+  whenToUse: '슬라이스 마감 게이트 리뷰 — 슬라이스당 1회. args.scope 에 대상 파일 목록 + 하우스 불변식 + 이미 통과한 게이트를 넣는다(diff 슬라이스는 git diff 주입). 소형 비크리티컬 diff 는 args.tier:"small". 레포의 결정론 린트 게이트를 먼저 돌리고 통과 결과를 게이트 블록에 포함할 것. 하우스 고유 렌즈 앵글은 args.lensExtra 로 주입한다. 이 리뷰의 확정 지적을 고친 수정 diff 는 재호출 대상이 아니다 — 게이트 재실행 + 지적별 수정 대조로 닫고, 수정이 패치가 아니라 새 메커니즘일 때만 1회 한정 재리뷰. ultracode 세션이거나 호스트가 프롬프트의 ultracode 키워드 옵트인을 확인하면(단순 언급 제외) args.ultracode:true — 모든 워커(haiku dedupe 포함)가 모델·effort 핀 대신 세션 모델로 돈다 — args.effort 에 세션 effort(모르면 기본 xhigh).',
   phases: [
     { title: 'Canary', detail: '한도/게이트웨이 확인 1개 (sonnet · reviewer 에이전트)', model: 'sonnet' },
     { title: 'Find', detail: '렌즈 병렬 — 풀 3 · small 2 (sonnet·effort medium · reviewer 에이전트)', model: 'sonnet' },
@@ -35,8 +36,16 @@ export const meta = {
 // 59 요청 실측: 요청당 캐시 읽기 −29%, 총 컨텍스트 토큰 −26%). 이름은 네임스페이스 형(fact 1) — bare 이름은
 // 해석되지 않는다.
 // opts.effort 가 에이전트 정의의 effort 핀을 덮어쓰는 것은 실측됨(정의 medium · 호출 low → low).
+// ultracode(ywr-harness ADR 0084): args.ultracode === true 면 sonnet 고정과 스테이지별 effort 핀을 무시한다 —
+// 사용자가 ultracode(세션 설정 또는 호스트가 확인한 프롬프트 키워드)로 토큰 비용 제약을 해제했기 때문이다. 모델은
+// 'inherit'(세션 모델 — reviewer agentType 위에서 실측, 2.1.280), effort 는 명시값만 먹는다: 'inherit' 는
+// 조용히 무시되고 에이전트 정의의 medium 이 남는다(실측) → args.effort = 세션 effort(모르면 기본 'xhigh' =
+// ultracode 가 모델에 보내는 값; 키워드만의 옵트인은 세션 effort 를 바꾸지 않으므로 그보다 높을 수 있다 — docs). haiku dedupe 핀도 같이 푼다(owner 2026-09-23: "ultracode 사용중일 때는 haiku 도 사용할 필요 없어") —
+// 기본 서브에이전트라 model 을 생략하면 세션 모델을 상속한다(실측), effort 만 명시.
 const REVIEWER = 'ywr-harness:reviewer'
-const work = (prompt, opts = {}) => agent(prompt, { model: 'sonnet', effort: 'high', agentType: REVIEWER, ...opts })
+const work = (prompt, opts = {}) => agent(prompt, ULTRA
+  ? { agentType: REVIEWER, ...opts, model: 'inherit', effort: ULTRA_EFFORT }
+  : { model: 'sonnet', effort: 'high', agentType: REVIEWER, ...opts })
 
 // args 는 객체가 정석. 문자열이면 JSON 인코딩 → 파싱, 비JSON 평문 → scope 블록 자체로 수용
 // (2026-07-08 회고: 스킬 경유 호출이 "scope: ..." 평문을 넘겨 JSON.parse 즉사 — 어떤 형태든 죽지 않게).
@@ -50,6 +59,16 @@ const _args = (() => {
   }
 })()
 if (!_args.scope) throw new Error("args.scope 필요 — 리뷰 대상 파일 목록 + 하우스 컨텍스트 블록")
+if (_args.ultracode !== undefined && typeof _args.ultracode !== 'boolean') {
+  throw new Error(`args.ultracode 는 boolean 이어야 한다 (받은 값: ${JSON.stringify(_args.ultracode)}) — 문자열 "true" 를 조용히 핀 모드로 읽지 않는다`)
+}
+const ULTRA = _args.ultracode === true
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+if (_args.effort !== undefined && !(ULTRA && EFFORTS.includes(_args.effort))) {
+  throw new Error(`args.effort 는 args.ultracode:true 와 함께만, ${EFFORTS.join('|')} 중 하나로 (받은 값: ${JSON.stringify(_args.effort)}) — 기본 모드의 effort 는 스테이지별 핀이다`)
+}
+const ULTRA_EFFORT = ULTRA ? (_args.effort || 'xhigh') : null
+if (ULTRA) log(`[ultracode] canary/find/dedupe/verify 워커 = 세션 모델 · effort ${ULTRA_EFFORT} — meta.phases 의 sonnet/haiku 라벨은 기본 모드 표기다.`)
 // 스코프는 문자열 블록 또는 구조화 객체({files, invariants, ...}) — 객체는 직렬화해 프롬프트에 주입.
 // (2026-07-02 회고: 객체를 템플릿에 그대로 넣으면 "[object Object]" 로 스코프가 증발 → 파인더 드리프트 근원)
 const SCOPE = typeof _args.scope === 'string' ? _args.scope : JSON.stringify(_args.scope, null, 2)
@@ -294,13 +313,14 @@ for (const f of all) {
 }
 let deduped = [...byKey.values()]
 
-// 2차(선택): 12건 초과면 haiku 그룹핑 — 같은 근원의 다른 라인/제목 병합.
+// 2차(선택): 12건 초과면 haiku 그룹핑 — 같은 근원의 다른 라인/제목 병합. ultracode 에서는 세션 모델 · ULTRA_EFFORT.
 if (deduped.length > 12) {
   phase('Dedupe')
   const listing = deduped.map((f, i) => `${i}. [${f.severity}] ${f.file}:${f.line ?? '?'} ${f.title}`).join('\n')
   const groups = await agent(
     `아래 코드리뷰 지적 목록에서 **같은 근원 결함**을 가리키는 항목들을 그룹으로 묶어라(같은 함수의 동일 원인, 동일 패턴의 중복 보고). 서로 다른 결함은 절대 묶지 마라. 그룹은 인덱스 배열의 배열로.\n${listing}`,
-    { label: 'dedupe:haiku', phase: 'Dedupe', model: 'haiku', effort: 'low', schema: {
+    { label: ULTRA ? 'dedupe' : 'dedupe:haiku', phase: 'Dedupe',
+      ...(ULTRA ? { effort: ULTRA_EFFORT } : { model: 'haiku', effort: 'low' }), schema: {
       type: 'object',
       properties: { groups: { type: 'array', items: { type: 'array', items: { type: 'integer' } } } },
       required: ['groups'],
@@ -368,6 +388,8 @@ return {
   // 상한임을 구조적으로 못 박고, 공유 풀이 아닌 유일한 정확값(에이전트 수)을 옆에 둔다.
   stats: {
     tier: TIER, lenses: LENSES.length, shards: SHARDED ? SHARDS.length : 1, finders: UNITS.length,
+    worker_pins: ULTRA ? { mode: 'ultracode', model: 'session', effort: ULTRA_EFFORT }
+      : { mode: 'pinned', model: 'sonnet · dedupe haiku', effort: 'canary low · find medium · verify low · dedupe low' },
     dead_lenses: deadLenses, dead_finders: deadFinders, raw: all.length,
     deduped: deduped.length, verified: toVerify.length, nit_passthrough: nits.length,
     output_tokens_upper_bound: outTokens,

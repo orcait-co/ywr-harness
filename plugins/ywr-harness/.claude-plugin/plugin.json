@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "ywr-harness",
   "displayName": "YWR Labs Harness",
-  "version": "0.52.0",
+  "version": "0.53.0",
   "description": "Claude Code platform guards, the adversarial code-review standard, and a docs-as-code scaffold — portable across repos and stacks",
   "author": { "name": "YWR Labs Inc.", "email": "johnkim@ywrlabs.com" },
   "homepage": "https://github.com/ywrlabs/ywr-harness",

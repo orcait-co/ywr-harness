@@ -82,9 +82,16 @@ Workflow({name: 'ywr-harness:adversarial-review', args: {
     invariants: [<copied from the review canon the emitter named — never an inline list here>],
     gates_passed: '<stage-1 commands + results, verbatim>'
   },
-  lensExtra: '<house-specific review angles, if this repo has any>'
+  lensExtra: '<house-specific review angles, if this repo has any>',
+  ultracode: <true ONLY when the host says ultracode is on for the session or confirms the
+              prompt's `ultracode` keyword opt-in; a bare mention of the word is not it; omit otherwise>
 }})
 ```
+
+`ultracode: true` lifts every model and effort pin in the review (ADR 0084): canary, finders,
+the haiku dedupe (when it runs) and skeptics all run on the session model at ONE explicit effort.
+Pass `effort: '<the session's level>'` when you know it; the default is `xhigh`, the level
+ultracode itself sends — under a keyword-only opt-in that may be above the session's. The result's `stats.worker_pins` names the mode; record it in the close.
 
 `invariants` come from the canon file the emitter printed. If it said **NOT FOUND**, stop and
 resolve that first: a review whose invariants nobody can cite is a review nobody can audit.
@@ -153,7 +160,7 @@ to an unrelated function in a reviewed file re-arms too; that is the cheaper err
 
 ## 3. Verify
 
-Invoke `/ywr-harness:verify` (it forks, so only the report returns). Its verdict is quoted into the
+Invoke `/ywr-harness:verify` (it spawns one agent, so only the report returns). Its verdict is quoted into the
 close verbatim — including "no registered verify script maps to this diff", which is a scope
 statement and **not** a pass.
 

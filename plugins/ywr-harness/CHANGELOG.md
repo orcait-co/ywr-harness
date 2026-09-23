@@ -12,6 +12,20 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.53.0 — 2026-09-23
+
+- **ultracode 에서는 리뷰 워커의 모델 고정(sonnet·haiku)과 effort 고정이 풀립니다 (ADR 0084).** ultracode 가 켜진 세션(`/effort
+  ultracode`, `--effort ultracode`, `/model` 슬라이더, `ultracode` 설정)이거나 프롬프트의 `ultracode` 키워드가 옵트인으로 인식되면(호스트가 알림으로 확인해 줍니다 — 단어를 언급만 한 경우는 아닙니다),
+  `ywr-harness:adversarial-review` 를 `args.ultracode: true` 로 부르세요 — `slice-close` 는 알아서 넘깁니다. 그러면
+  카나리아·파인더·스켑틱과 haiku dedupe(지적이 12건을 넘을 때만 돕니다)가 모두 세션 모델로 돕니다. effort 는 한 값으로
+  명시해야 해서, 세션의 effort 를 `args.effort` 로 넘기고 모르면 기본값 `xhigh`(ultracode 가 모델에 보내는 값)로 돕니다 —
+  키워드만으로 옵트인한 경우에는 세션 effort 보다 높을 수 있습니다. 결과의 `stats.worker_pins` 가 어느 모드였는지 알려 줍니다. 기본
+  모드(sonnet · haiku dedupe · 스테이지별 effort)는 바뀌지 않았습니다.
+- **`/ywr-harness:verify` 도 ultracode 를 따릅니다 (ADR 0084).** 스킬이 포크(`context: fork`)에서 라우터로 바뀌었습니다:
+  평소에는 지금처럼 `ywr-harness:verifier`(sonnet · medium)를, ultracode 에서는 세션 모델과 effort 를 물려받는
+  `general-purpose` 에이전트를 띄우고 그 보고를 그대로 전합니다. 검증 절차 자체(`procedure.md`)와 보고 형식은 같고, 검증
+  도구 호출 로그가 메인 대화에 쌓이지 않는 것도 같습니다. 보고 끝에 어느 에이전트가 돌았는지 한 줄이 붙습니다.
+
 ## v0.52.0 — 2026-09-17
 
 - **`ywr-harness:reviewer` 에이전트도 프로젝트·사용자 CLAUDE.md 없이 돕니다 (`omitClaudeMd: true`, ADR 0081).** v0.51.0 에서
