@@ -486,6 +486,39 @@ if (-not (Test-Path -LiteralPath (Join-Path $evalCase 'prompt.md') -PathType Lea
         param($d)
         Remove-Item -LiteralPath (Join-Path $d 'evals/hook-version-announce-reaches-context/graders') -Recurse -Force
     }
+    # The disabled-skills guard's scope (spec 0014 §4.2): unscoped (the run #9 shape), a disabled
+    # skill the pattern does not name, and a pattern wide enough to match a model-invocable skill.
+    $guard = 'evals/disabled-skills-stay-user-invoked/graders/no-skill-invoked.md'
+    Try-Case 'eval-guard-unscoped' {
+        param($d)
+        $p = Join-Path $d $guard
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^input_match:.*\r?\n', '' | Set-Content -LiteralPath $p -NoNewline
+    }
+    Try-Case 'eval-guard-misses-a-disabled-skill' {
+        param($d)
+        $p = Join-Path $d 'skills/verify/SKILL.md'
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^name:', "disable-model-invocation: true`nname:" | Set-Content -LiteralPath $p -NoNewline
+    }
+    Try-Case 'eval-guard-matches-an-invocable-skill' {
+        param($d)
+        $p = Join-Path $d $guard
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^input_match:.*$', "input_match: '`"skill`"'" | Set-Content -LiteralPath $p -NoNewline
+    }
+    Try-Case 'eval-guard-pattern-does-not-compile' {
+        param($d)
+        $p = Join-Path $d $guard
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^input_match:.*$', "input_match: '(`"skill`"'" | Set-Content -LiteralPath $p -NoNewline
+    }
+    Try-Case 'eval-guard-pattern-engine-specific' {
+        param($d)
+        $p = Join-Path $d $guard
+        (Get-Content -LiteralPath $p -Raw) -replace "(?m)^input_match: '", "input_match: '(?i)" | Set-Content -LiteralPath $p -NoNewline
+    }
+    Try-Case 'eval-guard-flag-unreadable' {
+        param($d)
+        $p = Join-Path $d 'skills/update/SKILL.md'
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^disable-model-invocation:.*$', 'disable-model-invocation: yes' | Set-Content -LiteralPath $p -NoNewline
+    }
 }
 
 # A POSITIVE control: the unmutated copy must still pass. Without it a gate that fails on
@@ -499,8 +532,8 @@ Copy-Item -LiteralPath $src -Destination $ok -Recurse -Force
 $gc = Invoke-Gate (Join-Path $ok 'manifest-gate.ps1')
 $ctlOut = $gc.Out
 $ctl = $gc.Code
-if ($ctl -eq 0 -and $ctlOut -match 'dogfood placements: skipped' -and $ctlOut -match 'release lockstep: skipped — not the canon dogfood shape' -and $ctlOut -match 'PASS  eval suite: [1-9]\d* case\(s\)') { Write-Host 'PASS [unmutated-control] gate exited 0, placement sweep and release lockstep both reported their skip, eval suite checked with a case count' -ForegroundColor Green }
-else { Write-Host "FAIL [unmutated-control] exit=$ctl skip-said=$([bool]($ctlOut -match 'dogfood placements: skipped')) lockstep-skip-said=$([bool]($ctlOut -match 'release lockstep: skipped')) eval-suite-counted=$([bool]($ctlOut -match 'PASS  eval suite: [1-9]\d* case\(s\)'))" -ForegroundColor Red; $ctl = 1 }
+if ($ctl -eq 0 -and $ctlOut -match 'dogfood placements: skipped' -and $ctlOut -match 'release lockstep: skipped — not the canon dogfood shape' -and $ctlOut -match 'PASS  eval suite: [1-9]\d* case\(s\).*disabled-skills guard scoped to [1-9]\d* skill\(s\)') { Write-Host 'PASS [unmutated-control] gate exited 0, placement sweep and release lockstep both reported their skip, eval suite checked with a case count and the guard scope' -ForegroundColor Green }
+else { Write-Host "FAIL [unmutated-control] exit=$ctl skip-said=$([bool]($ctlOut -match 'dogfood placements: skipped')) lockstep-skip-said=$([bool]($ctlOut -match 'release lockstep: skipped')) eval-suite-counted=$([bool]($ctlOut -match 'PASS  eval suite: [1-9]\d* case\(s\)')) guard-scope-said=$([bool]($ctlOut -match 'disabled-skills guard scoped to [1-9]'))" -ForegroundColor Red; $ctl = 1 }
 
 # --- the contracts the in-process runner rests on (review 2026-09-02: a negative suite must never
 # --- score an abort as a catch) --------------------------------------------------------------------

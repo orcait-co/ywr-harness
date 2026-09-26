@@ -499,6 +499,70 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
             }
         }
     }
+    # The negative guard's scope (spec 0014 §4.2): its `input_match` counts only Skill calls naming
+    # a `disable-model-invocation` skill, and it lists those skills by hand — a sixth disabled skill
+    # would fall out of the guard with every run still green. Checked by MATCHING, not by parsing
+    # the pattern: each disabled skill's call input, bare and `<plugin name>:`-namespaced, must
+    # match, and each model-invocable skill's must not (a pattern widened to every Skill call is the
+    # run #9 shape back). The input is shaped as the runner JSON-encodes it. This gate matches with
+    # .NET, the runner with JS: a construct the two read differently (inline flags, named groups,
+    # lookaround, atomic/possessive, \p, \A \Z \z \G) is refused, so what passes here means the same there.
+    # A flag value other than true/false is refused rather than read as "not disabled" — a skill the
+    # parser misreads would drop out of the sweep with no line at all (the ADR 0125 class).
+    $guardName = 'disabled-skills-stay-user-invoked/graders/no-skill-invoked.md'
+    $guardPath = Join-Path $evalDir $guardName
+    $guardSkills = 0
+    $guardNote = ''
+    if (Test-Path -LiteralPath $guardPath -PathType Leaf) {
+        $gfm = Get-FrontmatterKeys $guardPath
+        $rx = if ($gfm -and $gfm.Map.Contains('input_match')) { [string]$gfm.Map['input_match'] } else { '' }
+        if ($rx.Length -ge 2 -and $rx.StartsWith("'") -and $rx.EndsWith("'")) { $rx = $rx.Substring(1, $rx.Length - 2).Replace("''", "'") }
+        $guardRx = $null
+        if (-not $rx) {
+            Bad "eval case $guardName : no input_match — the guard counts every Skill call, a subagent's built-in skill included (spec 0014 run #9)"
+            $evalBad++
+        } elseif ($rx -match '\(\?[<>=!a-zA-Z(]|\\[pPAZzG]|[*+?}]\+') {
+            Bad "eval case $guardName : input_match uses a construct .NET and JS read differently ('$rx') — this gate could not vouch for what the runner matches"
+            $evalBad++
+        } elseif (-not $pluginName) {
+            Bad "eval case $guardName : plugin.json has no name — the namespaced skill form is unknown, so the guard's scope is not checked"
+            $evalBad++
+        } else {
+            try { $guardRx = [regex]::new($rx) } catch {
+                Bad "eval case $guardName : input_match does not compile — $($_.Exception.InnerException.Message ?? $_.Exception.Message)"
+                $evalBad++
+            }
+        }
+        if ($guardRx) {
+            $skillDirs = @(Get-ChildItem -LiteralPath (Join-Path $root 'skills') -Directory -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'SKILL.md') -PathType Leaf })
+            foreach ($sd in $skillDirs) {
+                $raw = Get-Content -LiteralPath (Join-Path $sd.FullName 'SKILL.md') -Raw
+                $front = if ($raw -match '(?s)^---\r?\n(.*?)\r?\n---') { $Matches[1] } else { '' }
+                $flag = if ($front -match '(?m)^disable-model-invocation:[ \t]*(.*?)[ \t]*$') { ($Matches[1] -replace '\s+#.*$', '').Trim("'", '"') } else { 'false' }
+                if ($flag -notin @('true', 'false')) {
+                    Bad "skill $($sd.Name) : disable-model-invocation value '$flag' is not true/false — the guard-scope check cannot tell whether the model may invoke it"
+                    $evalBad++
+                    continue
+                }
+                $disabled = $flag -eq 'true'
+                if ($disabled) { $guardSkills++ }
+                foreach ($form in @($sd.Name, "${pluginName}:$($sd.Name)")) {
+                    $hit = $guardRx.IsMatch('{"skill":"' + $form + '"}')
+                    if ($disabled -and -not $hit) {
+                        Bad "eval case $guardName : input_match misses '$form' — a disable-model-invocation skill the guard no longer watches"
+                        $evalBad++
+                    } elseif (-not $disabled -and $hit) {
+                        Bad "eval case $guardName : input_match matches '$form' — a model-invocable skill, so the guard fails on a call it was never about"
+                        $evalBad++
+                    }
+                }
+            }
+            $guardNote = "; disabled-skills guard scoped to $guardSkills skill(s)"
+        }
+    } else {
+        Write-Host "eval suite: $guardName absent — the disabled-skills guard's scope is not checked (reported, not failed)" -ForegroundColor Yellow
+    }
     # One suite, one model. The pin is what makes ledger rows comparable across runs and
     # operators; a model rollover is therefore ALL the cases in one commit, and a partial
     # rollover — three cases moved, one forgotten — must fail here rather than quietly grade two
@@ -511,7 +575,7 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
     if ($cases.Count -eq 0) {
         Bad "eval suite: $evalDirName/ exists but holds no <case>/prompt.md — an empty suite is not a pass (a case.yaml-only suite is out of this gate's scope; say so here if that is intended)"
     } elseif ($evalBad -eq 0) {
-        Good "eval suite: $($cases.Count) case(s), $graderCount grader(s) — frontmatter keys, grader types and worker-model pins valid (model: $($distinctModels -join '/'))"
+        Good "eval suite: $($cases.Count) case(s), $graderCount grader(s) — frontmatter keys, grader types and worker-model pins valid (model: $($distinctModels -join '/'))$guardNote"
     }
 }
 
