@@ -24,8 +24,8 @@
     "//": "Regexes. They select and report — they cannot name an executable, so free strings are safe here.",
     "canon": "REVIEW.md",
 
-    "//docs_only": "Surfaces that carry no executable meaning. When EVERY changed file matches, the review tier is 'skip' and deterministic gates suffice.",
-    "docs_only": ["^docs/", "^[^/]*\\.md$"],
+    "//docs_only": "Surfaces that carry no executable meaning. When EVERY changed file matches, the review tier is 'skip' and deterministic gates suffice. NORMATIVE markdown is excluded: CLAUDE.md, AGENTS.md (project instructions the host loads into every session) and REVIEW.md (the review canon) read as prose but change how every session and every review behaves, so a change to them is never review-exempt. Add to that exclusion any file this repo's own CLAUDE.md makes binding (a GOAL.md of guardrails, say) — the seed names only the files the host and the review load by themselves. Code under docs/ (the placed builder and check scripts: .py, .ps1, .sh) is excluded too — executable, whatever directory it sits in.",
+    "docs_only": ["^docs/(?!.*\\.(py|ps1|sh)$)", "^(?!(CLAUDE|AGENTS|REVIEW)\\.md$)[^/]*\\.md$"],
 
     "//harness_layer": "Code-bearing surfaces that are tooling rather than product. When every code-bearing file is confined here, the tier is 'small'.",
     "harness_layer": [],
@@ -71,20 +71,20 @@
       "gates": []
     },
     {
-      "//": "The decision records this repo accumulates (docs/adr append-only, docs/spec living). Claimed so the first ADR you write — the whole point of the shape — does not fail the partition audit (ADR 0052). Prose has no deterministic gate; the docs build is the pipeline that consumes these.",
+      "//": "The decision records this repo accumulates (docs/adr append-only, docs/spec living). Claimed so the first ADR you write — the whole point of the shape — does not fail the partition audit (ADR 0052). The gate is the placed docs drift check (ywr-harness ADR 0094): the changed paths TRIGGER it and never narrow it, so pre-commit catches a doc committed without its regenerated index — a docs-only push that skips CI is otherwise gated by nothing.",
       "name": "docs-corpus",
       "match": "^docs/(adr|spec)/.*\\.md$",
       "cwd": "",
       "strip_prefix": "",
-      "gates": []
+      "gates": [ { "runner": "python", "script": "docs/check_docs.py", "files": true } ]
     },
     {
-      "//": "The builder outputs the pipeline COMMITS (index.json + INDEX.md — the html surfaces are gitignored, ADR 0053; PROJECTS.md is committed like INDEX.md when docs.customer.projects_md is declared true, ADR 0060). If this repo moves docs.index, update this match with it (ADR 0052).",
+      "//": "The builder outputs the pipeline COMMITS (index.json + INDEX.md — the html surfaces are gitignored, ADR 0053; PROJECTS.md is committed like INDEX.md when docs.customer.projects_md is declared true, ADR 0060). If this repo moves docs.index, update this match with it (ADR 0052). A hand-touched output is caught by the same drift check as docs-corpus (ywr-harness ADR 0094).",
       "name": "docs-generated",
       "match": "^docs/(index\\.json|INDEX\\.md|PROJECTS\\.md)$",
       "cwd": "",
       "strip_prefix": "",
-      "gates": []
+      "gates": [ { "runner": "python", "script": "docs/check_docs.py", "files": true } ]
     },
     {
       "//": "Root prose every repo has. Widen this as the repo's own prose accumulates (CONTRIBUTING.md, a handoff doc, …) — a new prose file surfacing as ungrouped is this group asking to be widened (ADR 0052).",

@@ -26,8 +26,12 @@ the author and their own history.
   SLICE_RETRO=0 git commit ...             # skip once
 
 A check whose declaration is empty is DISABLED, and the disablement is reported under --coverage.
-Silence has to mean "clean", never "not configured" — otherwise an unconfigured repo looks exactly
-like a healthy one.
+Per-commit silence therefore means "no finding among the ENABLED checks" — it cannot distinguish
+a clean commit from a disabled check, and it does not try: repeating a deliberate disablement
+(this canon declares no dependency manifest, truthfully) on every commit is the noise that gets a
+hook turned off. The distinction lives where the audit runs: `--coverage` names every disabled
+check, and the slice close runs it (the spec-debt ledger), so an unconfigured repo is visible
+once per slice rather than never.
 """
 
 from __future__ import annotations
@@ -308,7 +312,17 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
         return []
 
     files = [c[1][-1] for c in changes]                       # last field = current path
+    # A rename can TRIGGER a check but never SATISFY one. `added` (triggers: MIGRATION, UNMAPPED)
+    # keeps renames — a file moved into a scope is new to it, the conservative reading for an
+    # advisory gate. The suppressors take the strict sets: a renamed ADR is not a new decision,
+    # and a spec moved without an edit — or deleted — updated nothing. Until 0.55.0 both sides
+    # used the loose sets, so renaming an old ADR silenced DEP and deleting a spec silenced
+    # MIGRATION (ADR 0081 measurement arm, B low; review 2026-09-26). BUILD below already applied
+    # the same "never suppress on what was not checked" rule. Only A counts as new: git reports
+    # C only under -C, which neither diff here passes.
     added = [c[1][-1] for c in changes if c[0][:1] in ("A", "R")]
+    new_files = [c[1][-1] for c in changes if c[0][:1] == "A"]
+    edited = [c[1][-1] for c in changes if c[0][:1] != "D" and c[0] != "R100"]
     fileset = set(files)
     pairs = spec_map(root)
     owned = {p for _, p in pairs}
@@ -322,13 +336,13 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
     # 1) DEP — a dependency manifest moved with no new ADR in scope. Lockfile-only changes are a
     #    version bump, not a decision, and are deliberately not matched by the declaration.
     if deps and any(any_match(deps, x) for x in files):
-        if not any(ADR_RX.match(x) for x in added):
+        if not any(ADR_RX.match(x) for x in new_files):
             f.append("DEP: dependency manifest changed, no new ADR in scope — a new dependency or "
                      "pattern needs an ADR first")
 
     # 2) MIGRATION — a schema migration added with no living spec touched.
     if migs and any(any_match(migs, x) for x in added):
-        if not any(SPEC_RX.match(x) for x in files):
+        if not any(SPEC_RX.match(x) for x in edited):
             f.append("MIGRATION: migration added, no spec updated — check which living spec covers "
                      "the schema")
 

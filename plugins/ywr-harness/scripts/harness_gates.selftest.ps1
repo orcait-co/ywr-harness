@@ -1733,6 +1733,37 @@ $seedCfg = Join-Path $PSScriptRoot '../skills/harness-init/templates/harness.jso
 $rAE = (& $py.Source $aeScript $PSScriptRoot $seedCfg 2>&1 | Out-String)
 $ok = (Assert-True 'AE the seeded groups comment lists exactly the GATES selectors, verify.runner exactly the RUNNERS' ($rAE -match 'AE-OK') $rAE) -and $ok
 
+# --- AF: find_repo_root stops at the NEAREST repo boundary (ADR 0081 arm, A low) ----------------
+# Every CLI without --repo resolves its root through this. The two-pass form searched all
+# ancestors for .harness.json before any .git, so a nested repository with no declaration of its
+# own attached to the OUTER repo's declaration. Markers are plain files/dirs (no git needed): a
+# `.git` FILE is what a submodule or worktree carries, so the inner one is a file on purpose.
+$afRoot = Join-Path $fxBase 'nested-root'
+foreach ($d in @('outer/.git', 'outer/inner/src', 'outer/sub', 'outer/decl/deep')) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $afRoot $d) | Out-Null
+}
+Set-Content -LiteralPath (Join-Path $afRoot 'outer/.harness.json') -Value '{}' -NoNewline
+Set-Content -LiteralPath (Join-Path $afRoot 'outer/inner/.git') -Value 'gitdir: elsewhere' -NoNewline
+Set-Content -LiteralPath (Join-Path $afRoot 'outer/decl/.harness.json') -Value '{}' -NoNewline
+$afScript = Join-Path $fxBase 'find_root.py'
+Set-Content -LiteralPath $afScript -NoNewline -Value @'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import harness_config as hc
+base = Path(sys.argv[2]).resolve()
+fails = []
+for start, want in (("outer/inner/src", "outer/inner"),   # nested repo: its own .git wins
+                    ("outer/sub", "outer"),               # plain subdir: the outer declaration
+                    ("outer/decl/deep", "outer/decl")):   # a declaration below the git root wins
+    got = hc.find_repo_root(base / start)
+    if got != (base / want).resolve():
+        fails.append(f"{start} -> {got} (want {want})")
+print("AF-OK" if not fails else "AF-FAIL: " + " | ".join(fails))
+'@
+$rAF = (& $py.Source $afScript $PSScriptRoot $afRoot 2>&1 | Out-String)
+$ok = (Assert-True 'AF find_repo_root: a nested repo keeps its own root; a declaration below the git root still wins' ($rAF -match 'AF-OK') $rAF) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 Restore-GitPath

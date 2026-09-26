@@ -88,6 +88,14 @@ Commit $a 'chore: dep with adr'
 $rA2 = Invoke-Retro $a @()
 $ok = (Assert-True 'A2 DEP is SILENT when an ADR is added with it' ($rA2.Out -notmatch 'DEP:') $rA2.Out) -and $ok
 
+# A3: a rename can TRIGGER a check but never SATISFY one (ADR 0081 arm, B low). Renaming the
+# existing ADR is not a new decision — `added` counted R, so the rename used to silence DEP.
+Write-F $a 'pyproject.toml' "[project]`nname='x'`nversion='3'`n"
+& git -C $a mv 'docs/adr/0001-a.md' 'docs/adr/0001-renamed.md' 2>$null
+Commit $a 'chore: dep with a renamed adr'
+$rA3 = Invoke-Retro $a @()
+$ok = (Assert-True 'A3 DEP still fires when the only ADR in scope is a RENAME of an old one' ($rA3.Out -match 'DEP:') $rA3.Out) -and $ok
+
 # --- B: MIGRATION — migration added with no spec touched ----------------------------------------
 $b = New-Repo 'migration' $CFG
 Write-F $b 'migrations/versions/001_init.py' "# migration`n"
@@ -101,6 +109,31 @@ Write-F $b2 'docs/spec/0001-s.md' (Spec '0001' @())
 Commit $b2 'feat: schema with spec'
 $rB2 = Invoke-Retro $b2 @()
 $ok = (Assert-True 'B2 MIGRATION is SILENT when a spec is touched' ($rB2.Out -notmatch 'MIGRATION:') $rB2.Out) -and $ok
+
+# B3: a spec moved WITHOUT an edit (R100) updated nothing, so it cannot satisfy MIGRATION; the
+# migration itself still triggers as added.
+Write-F $b2 'migrations/versions/003_y.py' "# migration`n"
+& git -C $b2 mv 'docs/spec/0001-s.md' 'docs/spec/0001-moved.md' 2>$null
+Commit $b2 'feat: schema with a moved spec'
+$rB3 = Invoke-Retro $b2 @()
+$ok = (Assert-True 'B3 MIGRATION still fires when the only spec in scope is a pure rename' ($rB3.Out -match 'MIGRATION:') $rB3.Out) -and $ok
+
+# B4: a DELETED spec updated nothing either (review 2026-09-26: the D line's path sat in the
+# suppressor set).
+Write-F $b2 'migrations/versions/004_z.py' "# migration`n"
+& git -C $b2 rm -q 'docs/spec/0001-moved.md' 2>$null
+Commit $b2 'feat: schema with a deleted spec'
+$rB4 = Invoke-Retro $b2 @()
+$ok = (Assert-True 'B4 MIGRATION still fires when the only spec in scope was deleted' ($rB4.Out -match 'MIGRATION:') $rB4.Out) -and $ok
+
+# B5: a rename INTO scope still TRIGGERS — the other half of the rule (UNMAPPED keeps R).
+Write-F $b2 'tools/helper.py' "x = 1`n"
+Commit $b2 'chore: helper outside scope'
+New-Item -ItemType Directory -Force -Path (Join-Path $b2 'src') | Out-Null
+& git -C $b2 mv 'tools/helper.py' 'src/helper.py' 2>$null
+Commit $b2 'chore: move helper into src'
+$rB5 = Invoke-Retro $b2 @()
+$ok = (Assert-True 'B5 a file renamed INTO source_scope fires UNMAPPED (a rename triggers)' ($rB5.Out -match 'UNMAPPED: new file src/helper\.py') $rB5.Out) -and $ok
 
 # --- C: SPEC — a mapped file changed, its spec did not ------------------------------------------
 $c = New-Repo 'spec' $CFG

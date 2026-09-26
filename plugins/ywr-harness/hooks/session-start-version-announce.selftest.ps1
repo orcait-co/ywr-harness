@@ -141,6 +141,27 @@ try {
     $ok = (Assert-True 'fresh: state seeded to current' ((Get-State) -eq '2.5.0') `
             "state reads [$(Get-State)] (want 2.5.0)") -and $ok
 
+    # 1b. the first-run seed is an EXCLUSIVE create (ADR 0081 arm, B low: two sessions starting
+    #     together both saw the path absent and both welcomed). A timing race between two child
+    #     processes could pass without the fix, so the REAL function is lifted from the hook's
+    #     AST and run against a state file that already exists — the loser's exact position:
+    #     it must refuse ($false) and leave the winner's bytes alone. Its success path is case 1.
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($hookSrc, [ref]$null, [ref]$null)
+    $fnAst = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'New-StateExclusive' }, $true)
+    $ok = (Assert-True 'exclusive seed: New-StateExclusive exists in the hook' ($null -ne $fnAst) `
+            'function not found — the first-run seed is no longer an exclusive create') -and $ok
+    if ($fnAst) {
+        $seedResult = & {
+            $stateDir = Split-Path $stateFile -Parent
+            . ([scriptblock]::Create($fnAst.Extent.Text))
+            New-StateExclusive '9.9.9'
+        }
+        $ok = (Assert-True 'exclusive seed: an existing state file refuses the seed' ($seedResult -eq $false) `
+                "returned [$seedResult] (want False — a concurrent first run must not seed twice)") -and $ok
+        $ok = (Assert-True 'exclusive seed: the winner''s state is untouched' ((Get-State) -eq '2.5.0') `
+                "state reads [$(Get-State)] (want 2.5.0)") -and $ok
+    }
+
     # 2. state == current -> the permanent steady state costs nothing
     $out = Invoke-Hook (New-Payload) $hook
     $ok = (Assert-EmptyStdout 'same version: silent' $out) -and $ok

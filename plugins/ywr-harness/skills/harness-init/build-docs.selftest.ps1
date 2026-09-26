@@ -792,7 +792,12 @@ $ok = (Assert-True 'CK8 an empty corpus makes the assembly refuse: exit 2, REFUS
 Rename-Item -LiteralPath (Join-Path $docsCK 'adr/0001-a.md.bak') -NewName '0001-a.md'
 $null = Invoke-CKBuild   # restore a clean build after the empty-corpus fixture
 
-# CK6: the check_docs.py wrapper — no args runs the check; any argument is a usage refusal.
+# CK6: the check_docs.py wrapper — no args runs the check; a flag is a usage refusal; path
+# arguments are triggers that run the same full check (ADR 0094 — the docs groups declare it
+# `files: true` so pre-commit runs it on a staged ADR/spec).
+# Mutation anchor: a wrapper that treats a path as a refusal (the pre-0094 `if sys.argv[1:]`), that
+# reads only argv[1], or that lets a path narrow or skip the check turns CK6d/CK6e/CK6f red — CK6f
+# is the multi-path shape the hook actually sends (a flag AFTER a path must still refuse).
 Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $docsCK 'check_docs.py')
 $rCK6a = & $py.Source (Join-Path $docsCK 'check_docs.py') 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper, clean fixture, no args: exit 0 with the [check] OK line' `
@@ -801,9 +806,26 @@ Add-Content -LiteralPath $idxCK -Value 'x' -NoNewline
 $rCK6b = & $py.Source (Join-Path $docsCK 'check_docs.py') 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper on the drifted fixture: exit 1' ($LASTEXITCODE -eq 1) $rCK6b) -and $ok
 $null = Invoke-CKBuild
-$rCK6c = & $py.Source (Join-Path $docsCK 'check_docs.py') 'extra-arg' 2>&1 | Out-String
-$ok = (Assert-True 'CK6 wrapper with an argument: exit 2 (usage refusal — the check is the only mode)' `
+$rCK6c = & $py.Source (Join-Path $docsCK 'check_docs.py') '--write' 2>&1 | Out-String
+$ok = (Assert-True 'CK6 wrapper with a flag: exit 2 (usage refusal — the check is the only mode)' `
     ($LASTEXITCODE -eq 2) $rCK6c) -and $ok
+$rCK6d = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' 2>&1 | Out-String
+$ok = (Assert-True 'CK6 wrapper with a path argument, clean fixture: exit 0 with the [check] OK line (a trigger, not a refusal)' `
+    ($LASTEXITCODE -eq 0 -and $rCK6d -match '\[check\] OK') $rCK6d) -and $ok
+Add-Content -LiteralPath $idxCK -Value 'x' -NoNewline
+$rCK6e = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' 2>&1 | Out-String
+$ok = (Assert-True 'CK6 wrapper with a path argument on the drifted fixture: exit 1 (the path does not narrow the check)' `
+    ($LASTEXITCODE -eq 1) $rCK6e) -and $ok
+$rCK6f = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' 'docs/spec/0001-s.md' 'docs/index.json' 2>&1 | Out-String
+$ok = (Assert-True 'CK6 wrapper with the multi-path list pre-commit sends, drifted fixture: exit 1' `
+    ($LASTEXITCODE -eq 1) $rCK6f) -and $ok
+$null = Invoke-CKBuild
+$rCK6g = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' 'docs/spec/0001-s.md' 2>&1 | Out-String
+$ok = (Assert-True 'CK6 wrapper with several paths, clean fixture: exit 0 with the [check] OK line' `
+    ($LASTEXITCODE -eq 0 -and $rCK6g -match '\[check\] OK') $rCK6g) -and $ok
+$rCK6h = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' '--write' 2>&1 | Out-String
+$ok = (Assert-True 'CK6 wrapper with a flag after a path: exit 2 (every argument is inspected, not argv[1])' `
+    ($LASTEXITCODE -eq 2) $rCK6h) -and $ok
 
 # --- FL: every YAML list shape a spec is written in indexes as the SAME list (dist issue #6) ----
 # The builder read only the one-line `[a, b]` form: a block list landed in index.json as null and a

@@ -78,6 +78,33 @@ function Write-State([string]$Value) {
     catch { return $false }
 }
 
+# The first-run seed is an EXCLUSIVE create (FileMode.CreateNew), not Write-State's overwrite:
+# two sessions starting together both see the path absent, and with a check-then-write each
+# would seed and each would welcome (ADR 0081 measurement arm, B low). CreateNew lets exactly
+# one win; the loser gets an IOException, returns $false and stays byte-silent — the existing
+# "a failed seed is silent" row, so no new behavior is needed for it. UTF-8 without BOM, the
+# bytes Write-State's Set-Content -Encoding utf8 writes under pwsh 7.
+function New-StateExclusive([string]$Value) {
+    try {
+        if (-not (Test-Path -LiteralPath $stateDir -PathType Container)) {
+            New-Item -ItemType Directory -Force -Path $stateDir -ErrorAction Stop | Out-Null
+        }
+        $fs = [System.IO.File]::Open($stateFile, [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        # Flushed INSIDE the success path and disposed in a guarded finally: a Dispose that threw
+        # after a completed write would otherwise report a recorded seed as failed and silence the
+        # one welcome this machine gets (review 2026-09-26, low).
+        try {
+            $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($Value)
+            $fs.Write($bytes, 0, $bytes.Length)
+            $fs.Flush()
+        }
+        finally { try { $fs.Dispose() } catch { } }
+        return $true
+    }
+    catch { return $false }
+}
+
 # ABSENT is a first run; anything else keeps its ADR 0030 behavior (0031 amends only that row).
 # Test-Path without -PathType on purpose: a DIRECTORY squatting on the path counts as "exists" —
 # welcoming a squatted path would guess "first run" about a machine that already ran. A probe
@@ -98,8 +125,9 @@ if (-not $stored -and -not $stateExists) {
     # First run on this machine — fresh install, or the first version carrying this mechanism;
     # indistinguishable, and the message below is TRUE in both states (ADR 0031). Write-then-
     # speak, inverted from the update path on purpose: the update announcement protects news,
-    # this protects nothing the dist README does not already carry, so a failed seed is silent.
-    if (Write-State $currentRaw) {
+    # this protects nothing the dist README does not already carry, so a failed seed is silent
+    # — and a seed lost to a concurrent first run is a failed seed (New-StateExclusive).
+    if (New-StateExclusive $currentRaw) {
         $sys = "[hook:version-announce] ywr-harness v$currentRaw 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 변경 이력: 플러그인의 CHANGELOG.md · 릴리스 노트 탭(가이드 개정 시 갱신) $rnUrl (claude.ai Team 좌석 로그인 필요)"
         $ctx = "The ywr-harness plugin v$currentRaw is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the artifact release-notes tab at $rnUrl (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ADR 0078). This welcome appears once per machine; do not repeat it unprompted."
         @{

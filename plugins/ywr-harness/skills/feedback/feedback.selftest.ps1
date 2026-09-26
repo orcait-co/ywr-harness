@@ -204,10 +204,14 @@ $gatesPy = Join-Path $scaff 'scripts/harness/harness_gates.py'
 $scaffReady = ($initExit -eq 0) -and (Test-Path -LiteralPath $gatesPy) -and (Test-Path -LiteralPath (Join-Path $scaff '.harness-version'))
 $ok = (Assert-True 'B0 fixture: init.ps1 scaffolded the repo (stamp + vendored gate script present)' $scaffReady "init exit=$initExit") -and $ok
 if ($scaffReady) {
-    Invoke-GitQ $scaff @('add', '-A'); Invoke-GitQ $scaff @('commit', '-q', '-m', 'scaffold via harness-init')
+    # --no-verify on the fixture's commits: init.ps1 wires core.hooksPath, and since ADR 0094 the
+    # seeded docs groups run check_docs.py at pre-commit — this scaffold ran with python off the PATH,
+    # so no index was built and the hook (correctly) refuses the commit. This suite tests the
+    # feedback draft, not the hooks; a refused commit left the history block empty (B1/B6 red).
+    Invoke-GitQ $scaff @('add', '-A'); Invoke-GitQ $scaff @('commit', '-q', '--no-verify', '-m', 'scaffold via harness-init')
     $marker = 'LOCAL-PATCH-MARKER-7f3e9a'
     Add-Content -LiteralPath $gatesPy -Value "# REPO-LOCAL: $marker — report upstream" -Encoding utf8
-    Invoke-GitQ $scaff @('add', '-A'); Invoke-GitQ $scaff @('commit', '-q', '-m', 'local patch: fix gate emitter (REPO-LOCAL, report upstream)')
+    Invoke-GitQ $scaff @('add', '-A'); Invoke-GitQ $scaff @('commit', '-q', '--no-verify', '-m', 'local patch: fix gate emitter (REPO-LOCAL, report upstream)')
     # a second, UNCOMMITTED toolchain edit
     Add-Content -LiteralPath (Join-Path $scaff '.githooks/pre-commit') -Value '# uncommitted local tweak' -Encoding utf8
 
@@ -289,7 +293,7 @@ if ($scaffReady) {
     $tick3 = '`' * 3
     Invoke-GitQ $scaff @('checkout', '-q', '-b', 'fix/a`b')
     Add-Content -LiteralPath $gatesPy -Value '# second local edit' -Encoding utf8
-    Invoke-GitQ $scaff @('add', '-A'); Invoke-GitQ $scaff @('commit', '-q', '-m', "close ${tick3} early ![x](http://evil.invalid/track) ## forged heading")
+    Invoke-GitQ $scaff @('add', '-A'); Invoke-GitQ $scaff @('commit', '-q', '--no-verify', '-m', "close ${tick3} early ![x](http://evil.invalid/track) ## forged heading")
     $out = Invoke-Feedback @('-Description', 'hostile', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh
     $textB6 = Read-Body (Get-BodyPath $out)
     $fenceLine = '`' * 4

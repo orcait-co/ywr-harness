@@ -753,14 +753,20 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
 
 
 def find_repo_root(start: Path) -> Path:
-    """Walk upward for .harness.json, then for .git. Falls back to `start`: both consumers are
-    advisory, so a repo with neither marker still works on defaults rather than failing."""
-    for marker in (".harness.json", ".git"):
-        cur = start.resolve()
-        for candidate in (cur, *cur.parents):
-            if (candidate / marker).exists():
-                return candidate
-    return start.resolve()
+    """Walk upward ONCE: the nearest directory holding .harness.json, or the nearest holding
+    .git — whichever comes first. Falls back to `start`: every consumer is advisory, so a repo
+    with neither marker still works on defaults rather than failing.
+
+    One walk, not two: the two-pass form searched every ancestor for .harness.json before looking
+    for .git at all, so a nested repository without a declaration of its own (a submodule, a
+    scratch clone inside a scaffolded repo) attached to the OUTER repo's declaration and gated
+    its files against the wrong tree (ADR 0081 measurement arm, A low). A .git boundary now ends
+    the walk; a .harness.json below the git root still wins, as before."""
+    cur = start.resolve()
+    for candidate in (cur, *cur.parents):
+        if (candidate / ".harness.json").exists() or (candidate / ".git").exists():
+            return candidate
+    return cur
 
 
 def load(root: Path) -> tuple[dict, list[str]]:
