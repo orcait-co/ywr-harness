@@ -46,6 +46,8 @@ const budgetStub = { total: null, spent: () => 0, remaining: () => Infinity };
 // ywr-harness ADR 0089 knobs: `plan.canaryReply` (the canary's text, default 'ok'),
 // `plan.findings(key)` (a finder's findings array — undefined falls back to the defaults),
 // `plan.groups` (the dedupe stage's groups) and `plan.verdict(prompt, label)` (a skeptic's vote).
+// `plan.omitted(key)` sets a finder's cap-overflow count (default 0, as the schema requires); a finder
+// whose key is in `plan.noOmitted` returns no `omitted` field at all.
 async function run(plan) {
   const logs = [];
   const attempts = {};
@@ -63,17 +65,18 @@ async function run(plan) {
       const n = (attempts[key] = (attempts[key] ?? -1) + 1);
       const outcome = (plan.find?.[key] ?? [])[n] ?? 'ok';
       if (outcome === 'die') return null;
+      const om = plan.noOmitted?.includes(key) ? {} : { omitted: plan.omitted?.(key) ?? 0 };
       const custom = plan.findings?.(key);
-      if (custom) return { findings: custom };
+      if (custom) return { findings: custom, ...om };
       // One finding per lens. The file MUST stay inside args.scope.files or the finding is
       // routed to out_of_scope_confirmed instead of confirmed; only the line varies, which is
       // enough to keep the first-pass `file:line` dedupe from merging the two lenses.
       // plan.many = n: n findings per finder on distinct lines — enough to cross the >12 grouping
       // branch, which the one-finding default never reaches.
       if (plan.many) return { findings: Array.from({ length: plan.many }, (_, i) => ({ title: `t-${key}-${i}`,
-        file: 'f.md', line: (LINE[key] ?? 1) * 100 + i, severity: 'low', claim: 'c', evidence: 'e' })) };
+        file: 'f.md', line: (LINE[key] ?? 1) * 100 + i, severity: 'low', claim: 'c', evidence: 'e' })), ...om };
       return { findings: [{ title: `t-${key}`, file: 'f.md', line: LINE[key] ?? 1,
-                            severity: 'low', claim: 'c', evidence: 'e' }] };
+                            severity: 'low', claim: 'c', evidence: 'e' }], ...om };
     }
     if (label.startsWith('verify:')) return plan.verdict ? plan.verdict(prompt, label) : { refuted: false, reason: 'r' };
     if (label === 'dedupe:haiku' || label === 'dedupe') return { groups: plan.groups ?? [] };
@@ -747,6 +750,47 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   else if (s.dead_skeptics !== 3 || s.unverified_by_death !== 1 || s.verified !== 2) fail(name, `stats dead_skeptics=${s.dead_skeptics} unverified_by_death=${s.unverified_by_death} verified=${s.verified}`);
   else if (s.agents_per_phase.verify !== 9) fail(name, `verify legs=${s.agents_per_phase.verify} (want 5 + 4 retries)`);
   else if (!logs.some((l2) => l2.includes('skeptic 레그 4개 실패 — 1회 재시도')) || !logs.some((l2) => l2.includes('재시도 후에도 skeptic 레그 3개'))) fail(name, `dead legs not logged: ${logs.join(' | ')}`);
+  else pass(name);
+}
+
+// 13. The finder cap is never a silent truncation (org guide coverage-cap rule; prompt audit O36, 2026-09-26).
+{
+  const name = '13a a capped finder reports its overflow: logged, summed in stats, named per unit; the prompt asks for it';
+  const { result, logs, spawns } = await run({ omitted: (k) => (k === 'correctness-pitfalls' ? 3 : 0) });
+  const s = result.stats;
+  const finder = spawns.find((x) => x.label === 'find:correctness-pitfalls');
+  if (s.find_cap !== 6 || s.find_omitted !== 3) fail(name, `find_cap=${s.find_cap} find_omitted=${s.find_omitted}`);
+  else if (JSON.stringify(s.capped_finders) !== JSON.stringify(['correctness-pitfalls+3'])) fail(name, `capped_finders=${JSON.stringify(s.capped_finders)}`);
+  else if (s.cap_unreported.length !== 0) fail(name, `cap_unreported=${JSON.stringify(s.cap_unreported)}`);
+  else if (!logs.some((l) => l.includes('파인더 상한 6건에 걸려 3건이 반환되지 않았다'))) fail(name, `cap not logged: ${logs.join(' | ')}`);
+  else if (!finder.prompt.includes('omitted 에 적어라') || !finder.schema?.required?.includes('omitted')) fail(name, 'prompt or schema does not demand omitted');
+  else pass(name);
+}
+{
+  const name = '13b a finder that omits the field, or reports a negative or non-integer count, is unreported, never uncapped; a clean run logs nothing';
+  const { result, logs } = await run({ noOmitted: ['boundary-ui-tests'] });
+  const neg = await run({ omitted: (k) => (k === 'correctness-pitfalls' ? -1 : '2') });
+  const frac = await run({ omitted: (k) => (k === 'correctness-pitfalls' ? 1.5 : 0) });
+  const clean = await run({});
+  const s = result.stats;
+  if (JSON.stringify(s.cap_unreported) !== JSON.stringify(['boundary-ui-tests']) || s.find_omitted !== 0) fail(name, `cap_unreported=${JSON.stringify(s.cap_unreported)} find_omitted=${s.find_omitted}`);
+  else if (JSON.stringify(neg.result.stats.cap_unreported) !== JSON.stringify(['correctness-pitfalls', 'boundary-ui-tests']) || neg.result.stats.find_omitted !== 0) fail(name, `negative/string: ${JSON.stringify(neg.result.stats.cap_unreported)} omitted=${neg.result.stats.find_omitted}`);
+  else if (JSON.stringify(frac.result.stats.cap_unreported) !== JSON.stringify(['correctness-pitfalls']) || frac.result.stats.capped_finders.length) fail(name, `fraction: ${JSON.stringify(frac.result.stats)}`);
+  else if (!logs.some((l) => l.includes('omitted 를 보고하지 않았다'))) fail(name, `unreported not logged: ${logs.join(' | ')}`);
+  else if (clean.logs.some((l) => l.includes('파인더 상한') || l.includes('omitted 를 보고하지'))) fail(name, 'clean run logged a cap line');
+  else if (clean.result.stats.capped_finders.length || clean.result.stats.cap_unreported.length) fail(name, 'clean run reported caps');
+  else pass(name);
+}
+
+{
+  const name = '13c the full tier caps at 8 across its three lenses and reports a capped lens by its own key';
+  const { result, spawns } = await run({ args: { scope: { files: ['f.md'], context: 'c' } },
+    omitted: (k) => (k === 'boundary-docs' ? 2 : 0) });
+  const s = result.stats;
+  const finders = spawns.filter((x) => x.label.startsWith('find:'));
+  if (s.tier !== 'full' || s.lenses !== 3 || finders.length !== 3) fail(name, `tier=${s.tier} lenses=${s.lenses} finders=${finders.length}`);
+  else if (s.find_cap !== 8 || !finders.every((x) => x.prompt.includes('최대 8건'))) fail(name, `find_cap=${s.find_cap}`);
+  else if (JSON.stringify(s.capped_finders) !== JSON.stringify(['boundary-docs+2']) || s.find_omitted !== 2) fail(name, `capped_finders=${JSON.stringify(s.capped_finders)}`);
   else pass(name);
 }
 

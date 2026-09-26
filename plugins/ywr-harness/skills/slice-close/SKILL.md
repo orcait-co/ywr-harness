@@ -174,7 +174,9 @@ is written **once**, in that commit's message body (ADR 0090).
 - **Commit**: subject at most 72 characters; the **close record in the body** — the `scope:` line;
   the gates that passed; the tier **and its reason**; the `ignored-tree claims:` line as printed (a
   standing claim with its reason; `none checked` / `NOT CHECKED` quoted, never summarised as
-  clean); the review outcome (confirmed / rejected counts, `stats.worker_pins`) or the skip reason;
+  clean); the review outcome (confirmed / rejected counts, `stats.worker_pins`, and
+  `stats.find_omitted` with `capped_finders` when a finder hit its cap, and `stats.cap_unreported`
+  when a finder did not say whether it did — unknown coverage, never read as full) or the skip reason;
   the fix disposition (gate re-runs, every per-finding verdict, `also_at` sites and split
   rejections, any re-review criterion); `review basis:` after a rebase; the verify verdict; and
   what went ungated or unverified. **Never paste a CI skip directive into the body** — GitHub skips

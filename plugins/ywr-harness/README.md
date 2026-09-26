@@ -64,7 +64,9 @@ canonical defaults never reach that repo — the same outcome as a local fork.
 agents use the session's working directory; baking one repo's absolute path in as a default
 would be knowledge that is false everywhere else.
 
-`REVIEW.md` ships alongside it as the review-invariants canon the scope block should cite.
+The scope block cites the consuming repo's own root `REVIEW.md`, seeded by
+`/ywr-harness:harness-init` (ADR 0054). The plugin's `REVIEW.md` is the canon repo's own review
+invariants, not a shared canon.
 
 ## Local execution layer (git hooks)
 

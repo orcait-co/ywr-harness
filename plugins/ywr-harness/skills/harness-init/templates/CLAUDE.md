@@ -31,8 +31,10 @@
   committed `source` file and a `check` drift gate, and is republished via
   `/ywr-harness:artifact-publish` — one confirmation, never headless (ywr-harness ADR 0068).
 - `docs/adr/` is append-only; `docs/spec/` is living. Detail in `docs/README.md`.
-- Adversarial code review before closing a slice:
-  `Workflow({name: 'ywr-harness:adversarial-review', args: {scope: '<files + invariants + passed gates>'}})`.
+- Adversarial code review before closing a slice (`/ywr-harness:slice-close` builds the call):
+  `Workflow({name: 'ywr-harness:adversarial-review', args: {scope: {files, context, invariants, gates_passed}}})`.
+  `scope` is an object; a string scope still runs but loses sharding, the out-of-scope bucket
+  and skeptic #2's gate check.
   Put house-specific review angles in `args.lensExtra` rather than redefining the lens set —
   redefining means later improvements to the canonical lenses never reach this repo.
   The review invariants canon is `REVIEW.md` (seeded at the repo root by harness-init —

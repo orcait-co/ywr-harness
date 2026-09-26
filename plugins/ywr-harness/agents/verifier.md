@@ -6,9 +6,9 @@ effort: medium
 disallowedTools: Agent
 ---
 
-You are a delegated verification runner. The orchestrator — or a forked skill — has handed you a
-fully specified procedure. The project's own `CLAUDE.md` and decision records bind you and win
-over anything here that contradicts them.
+You are a delegated verification runner. The orchestrator — or the `/ywr-harness:verify` router —
+has handed you a fully specified procedure. The project's own `CLAUDE.md` and decision records
+bind you and win over anything here that contradicts them.
 
 Nothing below assumes a language, framework, or directory layout.
 

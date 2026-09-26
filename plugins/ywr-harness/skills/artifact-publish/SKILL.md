@@ -99,10 +99,10 @@ refusals came anyway, +45k tokens). `read_file` never satisfies it (measured). T
 exactly as measured:
 
 1. `Artifact publish` of `source` to `url`. It is REFUSED — the contract, not an error: the tool
-   saves the served page to a local file and demands it be Read line by line. On Claude Code
-   ≥ 2.1.274 the refusal arrives before any approval prompt; older hosts asked for approval and
-   refused after it — the same sequence, one prompt fewer. Keep the favicon; label per the
-   repo's convention (e.g. `v<version>-rn`).
+   saves the served page to a local file and demands it be Read line by line. From Claude Code
+   2.1.274 the refusal arrives before any approval prompt; an older host asks for approval first
+   and refuses after it — the same sequence, one prompt more. Omit `icon` — a redeploy keeps the page's tab icon
+   (`favicon` is the deprecated name); label per the repo's convention (e.g. `v<version>-rn`).
 2. Read that saved file line-complete. Size the slices to the per-call TOKEN cap, not to a line
    count — denser lines need smaller slices (measured 2026-09-07 on a ~2,000-line page: 250-line
    reads exceeded the cap past the middle of the file, ~125-line slices did not). ~50k tokens at
@@ -120,7 +120,8 @@ For a large page (megabytes) the saved copy counts as viewed and step 2 is not d
 fight a refusal with `force`, and never read the served copy into context for a comparison — the
 hash is the proof (fact 38); §3's `read_file` is what proves nothing is lost, so the refusal's
 saved copy is never needed for a proof. Budget ≈95k tokens of served page per republish at 136 KB
-(steps 2 and 4); a smaller page costs proportionally less.
+(steps 2 and 4), and none when §3 finds the page already live; a smaller page costs proportionally
+less.
 
 A publish refused for OWNERSHIP is final for this machine: only the account that owns the URL
 can redeploy it. Report which account owns it and stop — never work around it.
@@ -148,14 +149,10 @@ neither form, print the first ~400 and last ~40 bytes of the saved copy, adapt t
 what the host now serves, and record the new shape in the close — an unrecognised wrapper is a host
 change to report, never drift to declare.
 
-Measured on three republishes (v0.49.0 and v0.50.0 on 2026-09-14, v0.51.0 on 2026-09-15; 134–140 KB
-pages): served == head + committed + LF + `</body></html>` byte for byte every time, but the head
-through `<body>\n` VARIES by host serve — 355 bytes on the first two serves, 537 bytes on the
-v0.51.0 serve, with no changelog entry naming the change. Slice at the marker, never at a byte
-offset; a head of a new size is a host change to record, not drift. The two `read_file` proofs are one result line each at that size (below the tool's small-file
-band the echo makes them cost the page size again); the served page enters context twice per
-republish (§4 steps 2 and 4, ≈95k tokens at 136 KB) and not at all when §3 finds the page already
-live.
+The formula above held byte for byte on three measured republishes, but the head through `<body>\n`
+varies by host serve (355 and 537 bytes have both been served, with no changelog entry naming the
+change): slice at the marker, never at a byte offset; a head of a new
+size is a host change to record, not drift.
 
 ## What this skill never does
 

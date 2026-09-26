@@ -5,9 +5,14 @@
 //   ultracode?: true, effort?: 'low'|'medium'|'high'|'xhigh'|'max'  (ultracode 세션·키워드일 때만 — ywr-harness ADR 0084)}})
 //
 // 이 파일의 ADR 번호는 별도 표기가 없으면 ywrlabs/ywr-platform 의 것이다 — 이 워크플로가 자란 곳이고
-// 근거 기록이 거기 있다. 렌즈 기본값은 레포 무관하게 일반화돼 있고, 하우스 고유 앵글(테넌시 격리
-// 구현·클린룸 명명·특정 결정 경계 등)은 args.lensExtra 로 호출자가 주입한다 — 정본에 특정 레포의
-// 어휘를 굽지 않기 위한 것이다(ywr-harness ADR 0010 경계 질문: 다른 레포에서도 똑같이 참인가?).
+// 근거 기록이 거기 있다. 렌즈 기본값은 일반 웹앱 앵글(인가·테넌시 경로, 프론트엔드 수명주기)을 이름으로
+// 부르되 특정 레포의 어휘는 굽지 않는다 — 그 레포에서 테넌시 격리가 어떻게 구현되는지·클린룸 명명·특정 결정
+// 경계 같은 하우스 고유 앵글은 args.lensExtra 로 호출자가 주입한다(ywr-harness ADR 0010 경계 질문: 다른
+// 레포에서도 똑같이 참인가?). 해당 표면이 없는 레포에서 그 앵글은 지적 0건으로 끝난다 — 문구 변경은 recall 을
+// 바꾸므로 실측 없이 하지 않는다(owner call 2026-09-26, 프롬프트 감사 O36).
+// 파인더·스켑틱·그룹핑 프롬프트는 한국어로 둔다 — 모델이 읽는 텍스트지만 영어 전환은 기록된 리뷰의 A/B 재측정
+// 없이는 하지 않는다: 프롬프트는 워커 프리픽스(~16k)의 일부라 절감이 작고, 전환은 리뷰 동작을 바꾼다(같은 owner call).
+// whenToUse 만 영어인 이유는 아래 meta 주석.
 // tier 'small'(ADR #104: ≤150 diff 라인·≤5 파일·크리티컬 표면 무접촉 — RLS/수치코어/인가/
 // 마이그레이션/훅·CI 제외) = 병합 2렌즈·렌즈당 6건. 그 외 = 풀 3렌즈. skeptic 게이트는 동일.
 // 워커 모델은 전역 CLAUDE.md 규칙대로 sonnet 고정 · effort 는 상한 high(세션 effort 상속 금지,
@@ -205,8 +210,10 @@ const FINDINGS = {
         required: ['title', 'file', 'severity', 'claim', 'evidence'],
       },
     },
+    // 상한(FIND_CAP) 초과분을 파인더가 스스로 센다 — 조용한 절단 금지(org guide 커버리지 상한 규칙, REVIEW.md #4).
+    omitted: { type: 'integer', description: 'findings found but not returned because of the cap; 0 when none' },
   },
-  required: ['findings'],
+  required: ['findings', 'omitted'],
 }
 
 const VERDICT = {
@@ -308,7 +315,7 @@ ${SCOPE}
 ${ROOT_LINE}${shardLine(u)}
 ${u.lens.prompt}
 
-규칙: 위 스코프에 명시된 파일만 Read 하라(그 밖 탐색 금지 — 스키마/규약 대조에 필요한 참조 파일, 그리고 아래 인용 검증은 예외). ${parallelClause(u)}${CITATION_CLAUSE} 스타일 취향 제외, 실제 버그/위험/규칙위반만. 이미 통과한 게이트와 모순되는 주장 금지(단 게이트가 못 잡는 결함은 가능 — 왜 못 잡는지 명시). 각 지적은 구체적 실패 시나리오 필수. 확신 없으면 severity 를 낮춰라. 최대 ${FIND_CAP}건.`
+규칙: 위 스코프에 명시된 파일만 Read 하라(그 밖 탐색 금지 — 스키마/규약 대조에 필요한 참조 파일, 그리고 아래 인용 검증은 예외). ${parallelClause(u)}${CITATION_CLAUSE} 스타일 취향 제외, 실제 버그/위험/규칙위반만. 이미 통과한 게이트와 모순되는 주장 금지(단 게이트가 못 잡는 결함은 가능 — 왜 못 잡는지 명시). 각 지적은 구체적 실패 시나리오 필수. 확신 없으면 severity 를 낮춰라. 최대 ${FIND_CAP}건 — 그보다 많이 찾았으면 심각도 높은 순으로 ${FIND_CAP}건만 내고, 내지 않은 건수를 omitted 에 적어라(없으면 0).`
 
 // 파인더 단위 = 렌즈 × 샤드. 분할이 없으면 라벨은 종전과 같다(`find:<key>`); 분할되면 `find:<key>#<i>`.
 const UNITS = LENSES.flatMap(l => SHARDS.map((shard, si) => ({ lens: l, shard, si, sn: SHARDS.length })))
@@ -355,6 +362,17 @@ if (deadFinders.length) {
 // filter(Boolean) 후 인덱스로 렌즈를 붙이면 죽은 렌즈가 있을 때 라벨이 당겨져 오귀속된다
 // (렌즈 0 사망 시 렌즈 1 의 지적이 렌즈 0 이름으로 기록) — 원본 배열 인덱스를 유지한다.
 const all = found.flatMap((r, i) => (r ? r.findings.map(f => ({ ...f, lens: unitKey(UNITS[i]) })) : []))
+// 상한 절단은 결과에 드러낸다(org guide: coverage cap 은 log() 로 — 무음 절단 금지). 파인더가 센 초과분만 믿는다 —
+// omitted 가 없거나 정수가 아니면 0 으로 읽지 않고 unreported 로 따로 센다(보고 안 된 절단을 "절단 없음"으로 읽지 않는다).
+const cappedFinders = [], unreportedCap = []
+let findOmitted = 0
+found.forEach((r, i) => {
+  if (!r) return
+  if (!Number.isInteger(r.omitted) || r.omitted < 0) { unreportedCap.push(unitKey(UNITS[i])); return }
+  if (r.omitted > 0) { cappedFinders.push(`${unitKey(UNITS[i])}+${r.omitted}`); findOmitted += r.omitted }
+})
+if (cappedFinders.length) log(`[경고] 파인더 상한 ${FIND_CAP}건에 걸려 ${findOmitted}건이 반환되지 않았다(${cappedFinders.join(', ')}) — 그 렌즈의 커버리지는 부분이다(stats.find_omitted / capped_finders)`)
+if (unreportedCap.length) log(`[참고] 파인더 ${unreportedCap.length}개가 omitted 를 보고하지 않았다(${unreportedCap.join(', ')}) — 상한 절단 여부를 알 수 없다(stats.cap_unreported)`)
 lap('find')
 // 경로를 한 번 정규화한다(ywr-harness ADR 0089) — 이후 1차 키·그룹 목록·스켑틱 프롬프트·스코프 버킷이 모두 같은 경로를 본다.
 for (const f of all) if (typeof f.file === 'string') f.file = normPath(f.file)
@@ -524,6 +542,7 @@ return {
     worker_pins: ULTRA ? { mode: 'ultracode', model: 'session', effort: ULTRA_EFFORT }
       : { mode: 'pinned', model: 'sonnet · dedupe haiku', effort: 'canary low · find medium · verify low · dedupe low' },
     dead_lenses: deadLenses, dead_finders: deadFinders, raw: all.length,
+    find_cap: FIND_CAP, find_omitted: findOmitted, capped_finders: cappedFinders, cap_unreported: unreportedCap,
     // verified = 산 skeptic 표가 1개 이상인 지적 수(표가 전혀 없는 지적은 unverified_by_death 로 따로 — 검증된 척 세지 않는다).
     deduped: deduped.length, verified: toVerify.length - unverifiedByDeath, nit_passthrough: nits.length,
     dead_skeptics: deadSkeptics, unverified_by_death: unverifiedByDeath,
