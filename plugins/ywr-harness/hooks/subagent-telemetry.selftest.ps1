@@ -1,13 +1,13 @@
-# Self-test for subagent-telemetry.ps1 (ADR #112; harness-scope gate ADR #106).
+# Self-test for subagent-telemetry.ps1 (harness-scope gate).
 # Temp CLAUDE_PROJECT_DIR fixture — never touches the real repo's telemetry file.
 # Usage: pwsh .claude/hooks/subagent-telemetry.selftest.ps1
 $ErrorActionPreference = 'Stop'
-# Dot-sourced for the FIXTURE half of the core only (ADR 0126) — this file's Pass/Fail shape
+# Dot-sourced for the FIXTURE half of the core only — this file's Pass/Fail shape
 # has no MustMatch/MustNotMatch pair, so the assertion half does not apply to it.
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')
 $hook = Join-Path $PSScriptRoot 'subagent-telemetry.ps1'
 $fx = New-FixtureRoot 'subagent-telemetry-selftest'
-trap { Remove-FixtureRoot $fx; break }   # exception-safe teardown, ADR 0126
+trap { Remove-FixtureRoot $fx; break }   # exception-safe teardown
 $log = Join-Path $fx '.claude/telemetry/subagent-stops.jsonl'
 
 function Invoke-Hook([string]$Stdin, [string]$Root) {

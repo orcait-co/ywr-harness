@@ -1,11 +1,11 @@
 # DirectoryAdded (NO matcher — the matcher for this event filters on `source`, and a
 # guard must not be bypassable by a future third source value) — mid-session
-# working-directory registration guard (ADR #120).
+# working-directory registration guard.
 #
 # Visibility ONLY, by construction: DirectoryAdded carries no decision control and
 # fires AFTER the sandbox/permission refresh, so the directory is already live when
 # this runs. Blocking would need a permissions deny rule instead (deliberately not
-# taken — ADR #120 Options).
+# taken).
 #
 # Payload, verified against the shipped 2.1.220 binary's zod schema (this event is
 # absent from the official hooks reference's 30 documented events as of 2026-07-25;
@@ -20,10 +20,10 @@
 # Anti-vacuity: a DirectoryAdded payload with no `directory` emits a SCHEMA-DRIFT
 # banner listing the keys actually received, rather than failing open into silence.
 # The sibling config-change-audit hook read an invented field name and was silently
-# inert while its selftest stayed green (ADR #120) — a guard that cannot report its
+# inert while its selftest stayed green — a guard that cannot report its
 # own drift is indistinguishable from an absent guard.
 #
-# Existence is not selection (ADR #120 review, medium): the two settings keys an added
+# Existence is not selection (review finding, medium): the two settings keys an added
 # directory can contribute are PARSED for, not inferred from the settings file merely
 # existing — a `.claude/settings.json` holding only hooks or permissions contributes
 # nothing, and claiming otherwise would be the same existence-vs-selection confusion
@@ -34,14 +34,26 @@
 try { $payload = [Console]::In.ReadToEnd().TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { exit 0 }
 if ([string]$payload.hook_event_name -ne 'DirectoryAdded') { exit 0 }
 
-$dir = ([string]$payload.directory).Trim()
-$src = ([string]$payload.source).Trim()
+# Payload-authored text is echoed through Inline() — the class agent-model-warn.ps1 uses (C0, DEL,
+# U+0085 NEL, U+2028/U+2029 and the backtick become a space, then a hard cap) — so a hostile value
+# cannot forge a second `[hook:*]` line in the banner a person or a model reads.
+function Inline([string]$Text, [int]$Max = 80) {
+    $t = (([string]$Text) -replace '[\u0000-\u001F\u007F\u0085\u2028\u2029`]', ' ').Trim()
+    if ($t.Length -gt $Max) { $t = $t.Substring(0, $Max - 1) + '…' }
+    return $t
+}
+
+# The raw directory drives the filesystem checks; drift is judged on what the banner would echo
+# (a value of only control bytes or backticks survives Trim() but echoes as nothing), and a
+# non-string `directory` is a shape change — both are drift.
+$dir = if ($payload.directory -is [string]) { $payload.directory.Trim() } else { '' }
+$src = if ($payload.source -is [string]) { Inline $payload.source } else { '' }
 if (-not $src) { $src = '(source absent)' }
 
-if (-not $dir) {
+if (-not (Inline $dir)) {
     $keys = '(none)'
-    try { $k = @($payload.PSObject.Properties.Name | Sort-Object); if ($k) { $keys = $k -join ', ' } } catch { }
-    $drift = "[hook:dir-added] SCHEMA DRIFT — DirectoryAdded 페이로드에 'directory' 필드가 없어, 이 가드가 작업 공간에 무엇이 추가되었는지 보고할 수 없습니다. 수신된 키: $keys. 페이로드 형식을 다시 확인하고 .claude/hooks/directory-added-guard.ps1을 수정하세요 (ADR #120)."
+    try { $k = @($payload.PSObject.Properties.Name | Sort-Object); if ($k) { $keys = Inline ($k -join ', ') 300 } } catch { }
+    $drift = "[hook:dir-added] SCHEMA DRIFT — DirectoryAdded 페이로드의 'directory' 필드가 없거나 비어 있거나 문자열이 아니어서, 이 가드가 작업 공간에 무엇이 추가되었는지 보고할 수 없습니다. 수신된 키: $keys. hooks 레퍼런스의 DirectoryAdded 입력 형식이 바뀌었을 수 있습니다 — 플러그인 쪽 문제이니 /ywr-harness:feedback 으로 알려 주세요."
     @{ systemMessage = $drift } | ConvertTo-Json -Compress
     exit 0
 }
@@ -59,14 +71,14 @@ try {
     # not exist on this platform (a Windows drive letter under Linux CI, a bogus drive
     # under Windows), so a bare try/catch never sees them and the wall of stderr lands
     # in the captured output — the CI failure on 48c264c. Promote them so the catch below
-    # is the single exit for an unusable path. Same non-terminating class as the
-    # Add-Content trap in ADR #111/#112.
+    # is the single exit for an unusable path. Same non-terminating class as a failed
+    # Add-Content write.
     $ErrorActionPreference = 'Stop'
     if (Test-Path -LiteralPath (Join-Path $dir '.claude/skills')) {
         $loads += '.claude/skills의 스킬 (라이브 리로드 포함)'
     }
     if (Test-Path -LiteralPath (Join-Path $dir '.claude/agents')) {
-        $loads += '.claude/agents의 서브에이전트 정의 — ADR #111/#112가 의존하는 model/effort 고정을 가릴 수 있음'
+        $loads += '.claude/agents의 서브에이전트 정의 — 같은 이름의 정의가 하네스 에이전트의 model/effort 고정을 가릴 수 있음'
     }
     $keysFound = @()
     foreach ($s in @('.claude/settings.json', '.claude/settings.local.json')) {
@@ -84,7 +96,7 @@ try {
     if ($keysFound) { $loads += "$($keysFound -join ' + ') — 설정 파일에서 로드됨 (추가된 디렉터리가 기여할 수 있는 유일한 설정 키)" }
 
     # CLAUDE.local.md is listed apart because the reference gives it a SECOND
-    # precondition the others do not have (ADR #120 review, low).
+    # precondition the others do not have (review finding, low).
     foreach ($p in @('CLAUDE.md', '.claude/CLAUDE.md', '.claude/rules')) {
         if (Test-Path -LiteralPath (Join-Path $dir $p)) { $instr += $p }
     }
@@ -93,7 +105,7 @@ try {
 catch { }
 
 $mdEnvSet = [bool][string]$env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
-$parts = @("[hook:dir-added] $dir 디렉터리가 이 세션의 작업 디렉터리로 추가되었습니다 (source: $src).")
+$parts = @("[hook:dir-added] $(Inline $dir 300) 디렉터리가 이 세션의 작업 디렉터리로 추가되었습니다 (source: $src).")
 $parts += "CLAUDE.md의 컨텍스트 격리 주장은 관례일 뿐 강제 사항이 아닙니다: 이 트리 하위의 파일은 이제부터 도구가 읽고 편집할 수 있으므로, 비즈니스·법률·재무 관련 맥락이 이 세션에 유입될 수 있습니다."
 $parts += '이 저장소는 이를 전혀 게이트하지 않습니다 — 모든 훅과 git 훅은 경로를 CLAUDE_PROJECT_DIR 기준으로 해석하므로, ruff-on-edit, ADR append-only 가드, handoff 계약, pre-commit lint, pre-push secret scan 모두 추가된 트리에서의 수정을 건너뜁니다.'
 if ($loads) { $parts += "여기서 로드된 설정: $($loads -join ' · ')." }

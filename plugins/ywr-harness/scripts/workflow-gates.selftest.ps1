@@ -1,17 +1,17 @@
-# Self-test for workflow-gates.mjs (ADR 0124) — the file the ADR 0106 router discovers, which is
-# how the JS-side gates reach CI at all: naming it *.selftest.ps1 needs zero ci.yml wiring
-# (ADR 0123), and .claude/workflows/ now routes to the scripts group that owns it.
+# Self-test for workflow-gates.mjs — the file the plugin's selftest runner discovers, which is
+# how the JS-side gates reach CI at all: naming it *.selftest.ps1 needs zero ci.yml wiring,
+# and .claude/workflows/ now routes to the scripts group that owns it.
 #
-# Two arms, the ADR 0123 shape:
+# Two arms:
 #   live      the real repo corpus — exit 0, and the known workflow file must appear by name so a
 #             silently shrinking corpus is visible. Counts are printed, NOT asserted exactly:
 #             adding a second workflow is legitimate growth, removing the only one is not.
 #   fixture   temp trees driving every terminal branch, including the clean cases. Without those
-#             the arm could be green by rejecting everything (ADR 0118 vacuous-pass discipline).
+#             the arm could be green by rejecting everything (vacuous-pass discipline).
 #
 # Usage: pwsh plugins/ywr-harness/scripts/workflow-gates.selftest.ps1  (exit 0 = all green). ~3 s.
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 $gate = Join-Path $PSScriptRoot 'workflow-gates.mjs'
 # The LIVE corpus here is this plugin's own workflows/ (plugin root = one level up from scripts/),
 # not a repo's .claude/workflows — the gate takes the corpus dir as an option for exactly this
@@ -21,7 +21,7 @@ $liveRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $liveDir = 'workflows'
 
 # Terminal branches of the node dependency, all three asserted below (M1-M3). The pwsh Linux
-# image (ADR 0122) ships WITHOUT node, so a hard failure there would report Linux breakage that
+# image ships WITHOUT node, so a hard failure there would report Linux breakage that
 # does not exist — the exact reason git is installed in that image rather than skipped around.
 # CI's ubuntu runner does have node and runs this same file, so absence THERE means the gate
 # stopped running and must be loud.
@@ -46,8 +46,8 @@ function Invoke-Gate([string]$Root, [string]$Dir) {
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 
-# The ADR #116 empty-MustNotMatch guard and the match loops live in the shared assertion core
-# (ADR 0125) — this file's copy called itself the sixth and was actually the seventh. Keeping
+# The empty-MustNotMatch guard and the match loops live in the shared assertion core — this
+# file's copy called itself the sixth and was actually the seventh. Keeping
 # the selftest runnable alone was the reason given for duplicating it; a dot-source keeps that
 # property, since the library is a repo file and not a module install.
 function Assert-Case([string]$Name, $R, [int]$ExpectExit, [string[]]$MustMatch, [string[]]$MustNotMatch, [string]$NoNegative = '') {
@@ -58,15 +58,17 @@ function Assert-Case([string]$Name, $R, [int]$ExpectExit, [string[]]$MustMatch, 
     return (Write-CaseVerdict -Name $Name -Fail $script:LastFails -Detail $R.Out)
 }
 
-$node = Resolve-NodeVerdict ([bool](Get-Command node -ErrorAction SilentlyContinue)) ([bool]$env:GITHUB_ACTIONS)
+# `$env:CI`, like every sibling suite: GitHub Actions sets it too, and so does any other runner a
+# consumer's CI uses — keying on GITHUB_ACTIONS let a non-GitHub CI without node pass as a skip.
+$node = Resolve-NodeVerdict ([bool](Get-Command node -ErrorAction SilentlyContinue)) ([bool]$env:CI)
 if ($node.Verdict -eq 'fail') { Write-Host "FAIL [node]: $($node.Message)" -ForegroundColor Red; exit 1 }
 if ($node.Verdict -eq 'skip') { Write-Host "SKIP [workflow-gates]: $($node.Message)" -ForegroundColor Yellow; exit 0 }
 
-# Fixture root AFTER the node gate on purpose (ADR 0126): the two early exits above leave
+# Fixture root AFTER the node gate on purpose: the two early exits above leave
 # before anything is created, so neither of them has a tree to leak. New-Fixture below reads
 # $fxBase and is never called ahead of this line.
 $fxBase = New-FixtureRoot 'workflow-gates-selftest'
-trap { Remove-FixtureRoot $fxBase; break }   # exception-safe teardown, ADR 0126
+trap { Remove-FixtureRoot $fxBase; break }   # exception-safe teardown
 
 # The awkward shape the gate exists for: `export const meta` AND a top-level return/await in one
 # file. Case D proves `node --check` rejects exactly this, which is why the transform exists.
@@ -100,7 +102,7 @@ $ok = (Assert-Case 'A live corpus' (Invoke-Gate $liveRoot $liveDir) 0 `
         @('FAIL —', 'vacuous')) -and $ok
 
 # B a syntax error is caught and named. Negatives: a parse failure must not coexist with a green
-# verdict — that combination is the whole failure mode ADR 0115 recorded as ungated.
+# verdict — that combination is the whole failure mode this gate exists to close.
 $fxBroken = New-Fixture 'broken' @{ 'bad.js' = $broken; 'bad.selftest.mjs' = $passSelftest }
 $ok = (Assert-Case 'B syntax error fails' (Invoke-Gate $fxBroken) 1 `
         @('FAIL — \.claude/workflows/bad\.js: SyntaxError') @('green —')) -and $ok
@@ -114,17 +116,18 @@ $ok = (Assert-Case 'C legal shape clean' (Invoke-Gate $fxLegal) 0 `
 # D why this gate is not a `node --check` wrapper, MEASURED rather than argued (2026-07-25, node
 # v24.14.0): the `export` line makes the file module-detected and NOT syntax-checked, so --check
 # exits 0 on the same broken file case B rejects — proven on the real adversarial-review.js with
-# an unbalanced paren injected mid-file, not only on this fixture. ADR 0115 recorded the opposite
-# direction (a false alarm on a valid file); the direction that matters is the silent pass.
+# an unbalanced paren injected mid-file, not only on this fixture. The failure mode once worried
+# about was the opposite direction (a false alarm on a valid file); the direction that matters is
+# the silent pass.
 # A node version that starts rejecting it does NOT break anything here, so this WARNs rather than
-# fails — it is the trigger to re-read the ADR 0124 rationale, not a defect signal.
+# fails — it is the trigger to re-verify the reasoning above, not a defect signal.
 $dOut = (& node --check (Join-Path $fxBroken '.claude/workflows/bad.js') 2>&1 | Out-String)
 $dRc = $LASTEXITCODE
 if ($dRc -eq 0 -and $dOut -notmatch 'SyntaxError') {
     Write-Host 'PASS [D node --check is vacuous on this class]' -ForegroundColor Green
 }
 else {
-    Write-Host "WARN [D]: node --check now rejects the broken workflow (rc=$dRc) — the custom parser is still correct, but re-read the ADR 0124 rationale before citing --check as unusable" -ForegroundColor Yellow
+    Write-Host "WARN [D]: node --check now rejects the broken workflow (rc=$dRc) — the custom parser is still correct, but re-verify the reasoning above before citing --check as unusable" -ForegroundColor Yellow
 }
 
 # E vacuous corpus: an empty directory FAILS both arms rather than printing a green zero.
@@ -178,18 +181,19 @@ foreach ($m in @(
     else { Write-Host "PASS [$($m.Name)]" -ForegroundColor Green }
 }
 
-# META — the ADR #116 guard must fire through this file's wrapper, and on the guard reason alone.
-# Since ADR 0125 the guard is shared, so this proves the WIRING, not the guard.
+# META — the empty-MustNotMatch guard must fire through this file's wrapper, and on the guard
+# reason alone. The guard itself lives in the shared assertion core, so this proves the WIRING,
+# not the guard.
 $accepted = Assert-Case 'META probe' @{ Code = 0; Out = 'meta probe' } 0 @('meta probe') @() 6>$null
 if ($accepted -or $script:LastFails.Count -ne 1 -or ($script:LastFails[0] -notmatch 'no MustNotMatch')) {
     Write-Host "FAIL [META]: guard did not fire — accepted=$accepted reason='$($script:LastFails -join '; ')'" -ForegroundColor Red
     $ok = $false
 }
 else { Write-Host 'PASS [META]: negative-less case rejected, on the guard reason alone' -ForegroundColor Green }
-# The OTHER arm: since ADR 0125 the -NoNegative forwarding is this wrapper's job, and no real
+# The OTHER arm: the -NoNegative forwarding is this wrapper's job, and no real
 # case here passes a reason, so without this the parameter is write-only and a dropped
 # passthrough stays invisible until someone needs the escape hatch.
-if (Assert-Case 'META exemption honored' @{ Code = 0; Out = 'meta probe' } 0 @('meta probe') @() 'META: proves this wrapper forwards -NoNegative to the shared core (ADR 0125)') {
+if (Assert-Case 'META exemption honored' @{ Code = 0; Out = 'meta probe' } 0 @('meta probe') @() 'META: proves this wrapper forwards -NoNegative to the shared core') {
     Write-Host 'PASS [META]: -NoNegative exemption honored' -ForegroundColor Green
 }
 else { Write-Host 'FAIL [META]: -NoNegative exemption rejected' -ForegroundColor Red; $ok = $false }

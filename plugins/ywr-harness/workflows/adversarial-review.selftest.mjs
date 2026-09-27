@@ -1,5 +1,5 @@
 // Behavioral selftest for adversarial-review.js — the find-phase dead-finder handling
-// (ADR 0115 Decision item 3) plus the ADR 0050 §4 canary abort.
+// plus the canary abort.
 //
 // Why it looks like this: a workflow script is not importable. It takes ALL its I/O through
 // runtime globals (agent/parallel/log/phase/budget/args) and ends with a top-level `return`,
@@ -7,13 +7,13 @@
 // file with `new Function`, injects stub globals, and drives each terminal branch. It tests the
 // shipped source, not a copy.
 //
-// Correction 2026-07-25 (ADR 0124): the line here that said `node --check` FAILS on the
+// Correction 2026-07-25: the line here that said `node --check` FAILS on the
 // unmodified file is wrong as measured on node v24.14.0 — the `export` line makes the file
 // module-detected and unchecked, so --check exits 0 even with a genuine syntax error injected
 // into this very workflow. The direction that matters is a silent pass, not a false alarm.
 //
 // Run: node .claude/workflows/adversarial-review.selftest.mjs
-// Exit 0 = all green. Prints PASS/FAIL per case (ADR 0106 selftest convention).
+// Exit 0 = all green. Prints PASS/FAIL per case (selftest convention).
 
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -160,7 +160,7 @@ await expectThrow('all finders dead aborts',
   else pass(name);
 }
 
-// 6. canary abort (ADR 0050 §4) — unchanged by this slice, pinned so it stays.
+// 6. canary abort — unchanged by this slice, pinned so it stays.
 await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 실패');
 
 // 7. non-vacuous proof: the harness must FAIL a script whose index-shift bug is restored.
@@ -174,8 +174,8 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   );
   if (buggy === src) fail(name, 'could not construct the buggy variant — anchor drifted');
   else {
-    // OS temp dir, not the tree (2026-07-25, ADR 0124): this selftest is now run by a CI gate,
-    // and the ADR 0122 Linux runner bind-mounts the repo READ-ONLY — an in-tree write would
+    // OS temp dir, not the tree (2026-07-25): this selftest is now run by a CI gate,
+    // and the Linux runner bind-mounts the repo READ-ONLY — an in-tree write would
     // report breakage that does not exist, and a mid-run abort would leave a stray .js inside
     // the very directory the parse arm globs.
     const tmp = join(tmpdir(), `adversarial-review-buggy-${process.pid}.js`);
@@ -211,7 +211,7 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   }
 }
 
-// 8. telemetry honesty (ADR 0129). budget.spent() is a pool shared with the main loop, so the
+// 8. telemetry honesty. budget.spent() is a pool shared with the main loop, so the
 //    per-phase figures are upper bounds; the old key was named `output_tokens`, which reads as
 //    exact. The rename is the fix, so the OLD key must be gone — a stats object carrying both
 //    would let a reader keep quoting the exact-sounding one. agents_per_phase is the one exact
@@ -251,11 +251,11 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   else pass(name);
 }
 
-// 10. the spawn pins (ADR 0129 · org guide worker discipline). Effort and model are decisions
+// 10. the spawn pins (org guide worker discipline). Effort and model are decisions
 //     with measurements behind them, and both are one word in a helper call — a silent flip back
 //     to `high` would restore ~50% of the review's cost with nothing red, and dropping the
 //     explicit model would let workers inherit a deep-work session's Opus. Asserted per phase
-//     because they differ on purpose: find medium (0129), canary/verify low, dedupe haiku.
+//     because they differ on purpose: find medium, canary/verify low, dedupe haiku.
 {
   const name = 'model and effort pins hold per phase';
   const { spawns } = await run({});
@@ -458,7 +458,7 @@ await expectThrow('11l explicit groups assigning one file twice throw naming it'
   else pass(name);
 }
 
-// 11. the citation clause must carry the ABSENCE rule (ADR 0129). The clause tells finders to
+// 11. the citation clause must carry the ABSENCE rule. The clause tells finders to
 //     verify claims against the original; measured 2026-07-26, that instruction alone produced a
 //     false "not on the page" report, because WebFetch returns a silently truncated view of a
 //     large page. A finder that keeps the verify-the-original half but loses the raw-fetch half

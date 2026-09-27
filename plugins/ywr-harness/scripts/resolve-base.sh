@@ -1,8 +1,8 @@
 #!/bin/sh
 # Single source for CI diff-range base resolution (ADR 0043) — replaces the inline per-step
 # range computation whose failure modes read as "nothing changed" (the 2026-08-10 audit's H1
-# trigger surface). Ported from ywr-platform scripts/ci/resolve-base.sh (its ADR 0108/0109),
-# logic unchanged; vendored into consuming repos as scripts/harness/resolve-base.sh, with byte
+# trigger surface). Ported from ywr-platform scripts/ci/resolve-base.sh, logic unchanged;
+# vendored into consuming repos as scripts/harness/resolve-base.sh, with byte
 # identity to this copy enforced by manifest-gate.ps1 (ADR 0014).
 # The CI step invokes it directly with everything env-mapped — never template-expand workflow
 # expressions into run: text (shell-injection surface):

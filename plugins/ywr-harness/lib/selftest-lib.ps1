@@ -1,15 +1,15 @@
 # Shared selftest core. Five things live here, added in the order the duplication justified
-# them: the ADR 0116 empty-MustNotMatch guard with the match loops it protects (ADR 0125), the
-# fixture lifecycle (ADR 0126), — on their third copy / first measured failure — the boolean
-# `Assert-True` verdict and the child-output decoding pin (ADR 0128), and the in-process script
+# them: the empty-MustNotMatch guard with the match loops it protects, the
+# fixture lifecycle, — on their third copy / first measured failure — the boolean
+# `Assert-True` verdict and the child-output decoding pin, and the in-process script
 # runner that replaced the per-case child pwsh in the spawn-bound suites (ADR 0071 option E).
 #
-# The guard half (ADR 0125) is the single owner of the ADR 0116 empty-MustNotMatch rule.
+# The guard half is the single owner of the empty-MustNotMatch rule.
 #
 # Before this file the guard was copy-pasted into standalone helpers, and the copies
-# were miscounted while being counted: ADR 0116 Addendum said four (a claim scoped to
-# .claude/hooks/ without saying so), ADR 0122 said five, ADR 0124 said six. The real
-# number was SEVEN — the ADR 0122 slice added two copies (harness-scope and
+# were miscounted while being counted: an early count said four (a claim scoped to
+# .claude/hooks/ without saying so), a later one said five, then six. The real
+# number was SEVEN — one slice added two copies (harness-scope and
 # harness-selftest-linux) and only one of them was counted, so every later count was
 # off by one. An eighth helper (scripts/watch-cd.selftest.ps1) had the MustNotMatch
 # parameter and no guard at all.
@@ -25,7 +25,7 @@
 # and the adapters genuinely differ (JSON-envelope extraction, which variable holds the exit
 # code, which extra facts a given gate asserts), so what is shared for them is the INVARIANT and
 # not the call shape. `Assert-True` is the exception and is shared whole: its three copies were
-# identical apart from a contract divergence that failed open (ADR 0128).
+# identical apart from a contract divergence that failed open.
 #
 # The MustMatch/MustNotMatch DISCIPLINE is still not in scope for helpers with no such pair —
 # .claude/hooks/subagent-telemetry.selftest.ps1 (Pass/Fail calls), scripts/ci-local and
@@ -33,8 +33,8 @@
 # scripts/ci/harness-pins.selftest.ps1, which is MustMatch-only ON PURPOSE and says so
 # in its own comment. Folding those in would mean inventing negatives for assertions
 # that do not have any. They dot-source this file regardless — subagent-telemetry and
-# harness-pins since ADR 0126 for the FIXTURE half, ci-local and resolve-base since ADR 0128
-# for Assert-True and the decoding pin. Sharing a helper is not the same as adopting the
+# harness-pins for the FIXTURE half, ci-local and resolve-base for Assert-True and the
+# decoding pin. Sharing a helper is not the same as adopting the
 # discipline, and the two are deliberately independent.
 #
 # scripts/ci/selftest-lib.selftest.ps1 keeps its OWN boolean assert (Assert-Bootstrap) rather
@@ -44,7 +44,7 @@
 
 Set-StrictMode -Off
 
-# --- child-output decoding pin (ADR 0128) ------------------------------------
+# --- child-output decoding pin ------------------------------------
 # Every selftest here captures a child process's stdout, and PowerShell decodes native output
 # with [Console]::OutputEncoding — which is the LAUNCHING console's code page, not the child's.
 # From a Git-Bash-launched pwsh on this Korean Windows box that is cp949, and a child's UTF-8
@@ -140,7 +140,7 @@ function Get-AssertionFailure {
         [string]$Label = ''
     )
     $fails = @()
-    # ADR 0116's empty-MustNotMatch CLASS: a case that disallows nothing asserts presence
+    # The empty-MustNotMatch CLASS: a case that disallows nothing asserts presence
     # only, so it stays green against any defect that ADDS output. -NoNegative '<reason>'
     # is the visible exemption; an empty list is not one, and neither is whitespace —
     # IsNullOrWhiteSpace rather than -not, so ' ' cannot buy an exemption (the seven
@@ -152,7 +152,7 @@ function Get-AssertionFailure {
     # carried it: measured on pwsh 7.6.4, `$null.Count` is 0, so `.Count -eq 0` alone already
     # covers both $null (what callers forward) and @(). Do not read it as the null guard.
     if (((-not $MustNotMatch) -or $MustNotMatch.Count -eq 0) -and [string]::IsNullOrWhiteSpace($NoNegative)) {
-        $fails += 'no MustNotMatch and no -NoNegative reason (ADR #116 class)'
+        $fails += 'no MustNotMatch and no -NoNegative reason (empty-MustNotMatch class)'
     }
     $fails += $PreFail
     $pfx = if ($Label) { "$Label " } else { '' }
@@ -185,7 +185,7 @@ function Write-CaseVerdict {
 
 function Assert-True {
     # Case verdict for a selftest whose assertion is a computed predicate rather than a text
-    # match. Folded in by ADR 0128 on its third copy — and the copies had DIVERGED under one
+    # match. Folded in on its third copy — and the copies had DIVERGED under one
     # name: two wrote $script:ok as a side effect and returned nothing, the third returned the
     # verdict and touched nothing. Both mixups fail OPEN (a failing case leaves $ok true), which
     # is why this is not cosmetic de-duplication.
@@ -204,7 +204,7 @@ function Assert-True {
     return (Write-CaseVerdict -Name $Name -Fail $fail)
 }
 
-# --- fixture lifecycle (ADR 0126) --------------------------------------------
+# --- fixture lifecycle --------------------------------------------------------
 # The second thing this core owns. Every selftest needing a scratch tree built the path by
 # hand (GetTempPath + "<name>-$PID") and then placed its `Remove-Item -Recurse` as the LAST
 # UNCONDITIONAL statement, so with $ErrorActionPreference = 'Stop' a terminating error
@@ -212,7 +212,7 @@ function Assert-True {
 # before this slice (`git grep -l GetTempPath HEAD -- '*.selftest.ps1'`, uncapped) and EIGHT had
 # that shape — not the six the backlog recorded, because harness-pins and subagent-telemetry do
 # not use the assertion core and so went unread when the leaking files were counted. Same
-# off-by-N as the guard count ADR 0125 corrected, one surface over. The other two were already
+# off-by-N as the guard-count correction, one surface over. The other two were already
 # exception-safe: directory-added-guard (try/finally) and resolve-base (per-call temp file).
 #
 # The caller-side shape is a script-scope trap, MEASURED on pwsh 7.6.4 rather than assumed
@@ -269,7 +269,7 @@ function Test-KeepFixture {
 
 function New-FixtureRoot {
     # Creates and returns "<Name>-$PID" under the system temp root. The PID suffix is what
-    # keeps concurrent runs (CI matrix, or a local run while the ADR 0122 container runs the
+    # keeps concurrent runs (CI matrix, or a local run while the Linux container runs the
     # same file) from sharing one tree and deleting each other's fixtures.
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Name)
@@ -283,14 +283,14 @@ function Remove-FixtureRoot {
     # and a teardown that threw would mask the real error with a second one. Takes several
     # paths so a caller with a fixture root AND a scratch file cleans both in one statement.
     #
-    # YWR_SELFTEST_KEEP_FIXTURE=1 keeps the tree and says where it is (ADR 0126's follow-up,
+    # YWR_SELFTEST_KEEP_FIXTURE=1 keeps the tree and says where it is (a follow-up,
     # opened because the trap deletes exactly the evidence a failing selftest would be debugged
     # from). It keeps on BOTH paths, pass and fail, stated plainly rather than named
     # "keep-on-failure": teardown has no verdict to consult — the common failure path is a case
     # that set $ok = $false and reached the unconditional call, not the trap — so a
     # failure-only switch would have to be threaded through every caller's exit path.
-    # Off by default; the report line is deliberately not SKIP-prefixed, since the ADR 0127
-    # router classifies on that word.
+    # Off by default; the report line is deliberately not SKIP-prefixed, since the runner
+    # classifies on that word.
     param([string[]]$Path)
     foreach ($p in $Path) {
         if ([string]::IsNullOrWhiteSpace($p)) { continue }

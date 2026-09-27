@@ -4,7 +4,7 @@
 # Fixture provenance: the payload shape is the RAW hooks reference read 2026-09-23 — PreToolUse
 # carries `tool_name` + `tool_input`, the Agent tool's `tool_input` is {prompt, description,
 # subagent_type, model} with `model` optional. An invented shape is how config-change-audit stayed
-# green while inert (ADR #120), so the speaking cases use exactly the documented fields.
+# green while inert, so the speaking cases use exactly the documented fields.
 #
 # The four contract negatives every speaking case carries, in the wrapper so no case can forget them:
 #   - the raw output never contains `permissionDecision`, `updatedInput` or a top-level `decision`
@@ -19,7 +19,7 @@
 # The ADR 0084 guard is case S1: an OMITTED model is byte-silent — ultracode's sanctioned spawn is an
 # unpinned Agent type with no model, so a warning there would fire on the prescribed path.
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 $hook = Join-Path $PSScriptRoot 'agent-model-warn.ps1'
 
 function Invoke-Hook([string]$Stdin) {
@@ -212,8 +212,8 @@ try {
 $ok = (Assert-True 'R1 hooks.json registers this script once: PreToolUse, matcher exactly Agent, exec-form pwsh -File' `
         (-not $regFails.Count) ($regFails -join ' · ')) -and $ok
 
-# META — the wrapper's wiring to the shared ADR #116 guard: a negative-less case must be rejected on
-# the guard reason alone, and the visible exemption must still be honoured.
+# META — the wrapper's wiring to the shared empty-MustNotMatch guard: a negative-less case must
+# be rejected on the guard reason alone, and the visible exemption must still be honoured.
 $script:HookExit = 0
 $metaOut = '{"systemMessage":"meta probe"}'
 $accepted = Assert-Warn 'META probe' $metaOut @('meta probe') 6>$null

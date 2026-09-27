@@ -22,12 +22,12 @@ runner, and the generated docs index for `implements_in` — **not** the spec fi
 frontmatter changed this session, run `pwsh docs/build.ps1` first.
 
 Invocation argument (your prompt carries it) — when non-empty, use it as the range (or explicit file list).
-Sanity-check it first (`git rev-parse` both endpoints, or `git diff --stat <range>` succeeds); on
-failure, report the broken scope and stop. **Do NOT silently fall back to the working-tree
-default** — a scope you did not verify produces a verdict about files nobody asked about.
+Pass it to the mapper as given — the mapper is the range check (ADR 0041, below); a git pre-check
+of your own adds a round-trip and proves nothing more. **Do NOT silently fall back to the
+working-tree default** — a scope you did not verify produces a verdict about files nobody asked about.
 
 Exit 0 is not enough. An **empty commit range** (both endpoints the same, or the commits already
-in HEAD) passes every check above and then maps only the working tree — the silent fallback in a
+in HEAD) resolves cleanly and then maps only the working tree — the silent fallback in a
 different costume. The mapper prints a `scope:` line and warns when a range matched zero files;
 **quote that line** and call an empty range out by name.
 

@@ -11,7 +11,7 @@
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
-. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
 $retro = Join-Path $PSScriptRoot 'harness_retro.py'
 $fxBase = New-FixtureRoot 'harness-retro-selftest'

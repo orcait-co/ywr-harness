@@ -12,7 +12,7 @@
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
-. (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # assertion core
 
 $yml = Join-Path $PSScriptRoot 'templates/.github/workflows/harness-gates.yml'
 if (-not (Test-Path -LiteralPath $yml -PathType Leaf)) {

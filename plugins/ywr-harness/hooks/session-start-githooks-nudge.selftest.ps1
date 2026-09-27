@@ -5,12 +5,12 @@
 # official hooks reference on 2026-08-05 (cwd + source; the event supports a `source` matcher
 # that this hook deliberately registers without; additionalContext AND systemMessage both
 # consumed) — not a guess; an invented shape is how a sibling hook once stayed green while
-# being inert. Every match-based case carries MustNotMatch as well as MustMatch (ADR 0116
-# class), enforced by the shared assertion core (ADR 0125).
+# being inert. Every match-based case carries MustNotMatch as well as MustMatch
+# (the empty-MustNotMatch class), enforced by the shared assertion core.
 #
 # The git-dependent cases build REAL repos (git init) because the hook's whole verdict is read
 # from `git rev-parse` + `git config --local`; asserting against a faked .git directory would
-# test the fake. When git is absent (the ADR 0122 Linux container), those cases are a reported
+# test the fake. When git is absent (the Linux container), those cases are a reported
 # SKIP, never a silent pass — and the no-git branch is exercised anyway by clearing PATH for
 # the child, which works on both kinds of machine.
 $ErrorActionPreference = 'Stop'
@@ -216,8 +216,8 @@ finally { $env:PATH = $savedPath }
 
 Remove-FixtureRoot $fx
 
-# META — proves this file's WIRING to the shared ADR 0116 guard: a wrapper that dropped the
-# -MustNotMatch passthrough would leave the core intact and every case above unguarded.
+# META — proves this file's WIRING to the shared empty-MustNotMatch guard: a wrapper that
+# dropped the -MustNotMatch passthrough would leave the core intact and every case above unguarded.
 $script:HookExit = 0
 $metaOut = '{"systemMessage":"meta probe"}'
 $accepted = Assert-Nudge 'META probe' $metaOut @('meta probe') 6>$null

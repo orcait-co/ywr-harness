@@ -7,7 +7,7 @@
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
-. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
 $install = Join-Path $PSScriptRoot 'install.ps1'
 $fxBase = New-FixtureRoot 'statusline-install-selftest'

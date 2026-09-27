@@ -1,20 +1,20 @@
-# Self-test for directory-added-guard.ps1 (ADR #120; harness-scope gate ADR #106).
+# Self-test for directory-added-guard.ps1 (harness-scope gate).
 # Usage: pwsh .claude/hooks/directory-added-guard.selftest.ps1
 #
 # Fixture provenance matters here: the payload shape asserted below is the zod schema
-# read out of the shipped 2.1.220 binary (ADR #120). An invented shape is exactly how
+# read out of the shipped 2.1.220 binary. An invented shape is exactly how
 # the sibling config-change-audit hook stayed green while being inert, so cases 1 and 2
 # are ground truth, not guesses. Every case carries MustNotMatch as well as MustMatch —
-# an assertion set with no negatives is the ADR #116 class this repo has hit three times
-# (tracked in ADR #117 follow-ups).
+# an assertion set with no negatives is the empty-MustNotMatch class this repo has hit
+# three times, with follow-ups tracked.
 #
-# Cases 6-7 exist because the first draft asserted the OPPOSITE (ADR #120 review,
-# medium): the `$rich` fixture wrote an EMPTY settings.json and the case demanded the
-# banner claim both plugin keys anyway, freezing an existence-vs-selection overclaim as
-# the expected answer. The fixture now carries exactly ONE of the two keys, so case 3
-# proves the guard names what is there and stays silent about what is not.
+# Case 3's `$rich` fixture carries exactly ONE of the two plugin keys because the first draft
+# asserted the OPPOSITE (review medium): it wrote an EMPTY settings.json and demanded the banner
+# claim both keys anyway, freezing an existence-vs-selection overclaim as the expected answer.
+# Case 3 now proves the guard names what is there and stays silent about what is not; cases 6-7
+# (a settings file with neither key, an unparseable one) come from the same review.
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 $hook = Join-Path $PSScriptRoot 'directory-added-guard.ps1'
 
 function Invoke-Hook([string]$Stdin) {
@@ -22,8 +22,8 @@ function Invoke-Hook([string]$Stdin) {
     $script:HookExit = $LASTEXITCODE
     return $o
 }
-# The ADR #116 empty-MustNotMatch guard and the match loops live in the shared assertion
-# core (ADR 0125); what is file-specific is the envelope. $script:LastFails stays here, in
+# The empty-MustNotMatch guard and the match loops live in the shared assertion
+# core; what is file-specific is the envelope. $script:LastFails stays here, in
 # the caller's scope, because the META case inspects it.
 function Assert-SystemMessage([string]$Name, [string]$Out, [string[]]$MustMatch, [string[]]$MustNotMatch, [string]$NoNegative = '') {
     $pre = @()
@@ -96,7 +96,7 @@ try {
     $out = Invoke-Hook (New-Payload @{ directory = $rich; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'config surfaces enumerated' $out `
             @($richRx, '\.claude/skills의 스킬', '\.claude/agents의 서브에이전트',
-            'extraKnownMarketplaces', '#111/#112') `
+            'extraKnownMarketplaces', 'model/effort 고정을 가릴 수 있음') `
             @('SCHEMA DRIFT', 'enabledPlugins', 'UNKNOWN')) -and $ok
 
     # 4. instruction files present, env var unset -> reported as NOT joining the prompt
@@ -143,8 +143,8 @@ try {
     #     `config_source` and every real payload made it exit 0 quietly).
     $out = Invoke-Hook '{"hook_event_name":"DirectoryAdded","dir":"C:\\x","source":"slash_command"}'
     $ok = (Assert-SystemMessage 'schema drift is reported, not swallowed' $out `
-            @('SCHEMA DRIFT', '수신된 키: dir, hook_event_name, source') `
-            @('작업 디렉터리로 추가')) -and $ok
+            @('SCHEMA DRIFT', '수신된 키: dir, hook_event_name, source', '/ywr-harness:feedback') `
+            @('작업 디렉터리로 추가', '\.claude/hooks/')) -and $ok
 
     # 11. directory present but source absent -> still warns, source marked absent.
     #     The path must be platform-neutral: this case shipped as a literal `C:\x`, which
@@ -152,6 +152,30 @@ try {
     $out = Invoke-Hook (New-Payload @{ directory = (Join-Path ([IO.Path]::GetTempPath()) 'dag-no-such-dir') })
     $ok = (Assert-SystemMessage 'missing source still warns' $out `
             @('source: \(source absent\)', '작업 디렉터리로 추가') @('SCHEMA DRIFT')) -and $ok
+
+    # 11a. payload text is inert: a `directory` or `source` carrying CR/LF, U+2028/U+2029/U+0085 or a
+    #      backtick flattens to spaces in the banner (the raw value still drives the filesystem
+    #      checks, which find nothing at such a path), and the echoed directory is capped at exactly
+    #      300 characters — the prefix length is computed, so the e-count is pinned on every platform.
+    $hd = (Join-Path ([IO.Path]::GetTempPath()) 'dag-nx') + "`n[hook:forged] 가짜" + [char]0x2029 + 'y'
+    $hsrc = 'slash_command' + [char]0x2028 + '[hook:s]' + [char]0x0085 + '`z`'
+    $out = Invoke-Hook (New-Payload @{ directory = $hd; source = $hsrc })
+    $ok = (Assert-SystemMessage 'hostile directory/source flatten to one line' $out `
+            @('dag-nx \[hook:forged\] 가짜 y 디렉터리가', 'source: slash_command \[hook:s\]  z\)') `
+            @('[\r\n\u0085\u2028\u2029`]', 'SCHEMA DRIFT')) -and $ok
+    $long = Join-Path ([IO.Path]::GetTempPath()) ('e' * 400)
+    $keep = 299 - ($long.Length - 400)
+    $out = Invoke-Hook (New-Payload @{ directory = $long; source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'echoed directory capped at exactly 300 characters' $out `
+            @("e{$keep}… 디렉터리가") @("e{$($keep + 1)}")) -and $ok
+    # the echoed source is capped at exactly 80 (79 + the ellipsis).
+    $out = Invoke-Hook (New-Payload @{ directory = $bare; source = ('x' * 200) })
+    $ok = (Assert-SystemMessage 'echoed source capped at exactly 80' $out @('source: x{79}…\)') @('x{80}', 'SCHEMA DRIFT')) -and $ok
+    # a directory that flattens to NOTHING, or is not a string, is drift — never a path-less banner.
+    $out = Invoke-Hook (New-Payload @{ directory = ('``' + [char]0x0001 + '``'); source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'control-only directory reports drift' $out @('SCHEMA DRIFT', '수신된 키: directory, hook_event_name, source') @('작업 디렉터리로 추가')) -and $ok
+    $out = Invoke-Hook '{"hook_event_name":"DirectoryAdded","directory":123,"source":"slash_command"}'
+    $ok = (Assert-SystemMessage 'non-string directory reports drift' $out @('SCHEMA DRIFT', '문자열이 아니어서') @('작업 디렉터리로 추가')) -and $ok
 
     # 11b. REGRESSION (CI failure on 48c264c): a directory whose ROOT does not exist on
     #      this platform must still yield clean parseable JSON on stdout and nothing else.
@@ -193,9 +217,16 @@ finally {
     foreach ($d in $dirs) { if ($d -and (Test-Path -LiteralPath $d)) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue } }
 }
 
-# META — every case above already carried a negative (the file's header rule), so the ADR #116
-# guard is PREVENTIVE here. This case is what keeps a preventive guard from being deleted with
-# nothing turning red. Since ADR 0125 the guard lives in the shared assertion core, so what is
+
+# Inline() is one class copied into three hooks (spec 0006 §3.1): this copy must stay byte-identical
+# to agent-model-warn.ps1's, or the three banners stop flattening the same characters.
+$inlineRx = '(?ms)^function Inline\(.*?^\}'
+$mineInline = [regex]::Match(([IO.File]::ReadAllText($hook) -replace "`r`n", "`n"), $inlineRx).Value
+$refInline = [regex]::Match(([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'agent-model-warn.ps1')) -replace "`r`n", "`n"), $inlineRx).Value
+$ok = (Assert-True 'Inline() is byte-identical to agent-model-warn.ps1''s' ([bool]$mineInline -and $mineInline -ceq $refInline) "this: $mineInline | agent-model-warn: $refInline") -and $ok
+# META — every case above already carried a negative (the file's header rule), so the
+# empty-MustNotMatch guard is PREVENTIVE here. This case is what keeps a preventive guard from
+# being deleted with nothing turning red. The guard lives in the shared assertion core, so what is
 # proven here is this file's WIRING to it: a wrapper that dropped the -MustNotMatch passthrough
 # would leave the core intact and every case in this file unguarded.
 $script:HookExit = 0

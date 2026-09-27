@@ -10,10 +10,10 @@
 # state), so almost every case runs on a git-less machine too: with git present the fixtures
 # are real repos and the root is resolved by rev-parse; with git absent the hook's documented
 # cwd-fallback carries the same verdicts. Only the subdirectory-resolution case needs git and
-# is a reported SKIP without it (the ADR 0122 container), never a silent pass.
+# is a reported SKIP without it (the Linux container), never a silent pass.
 #
-# Every match-based case carries MustNotMatch as well as MustMatch (ADR 0116 class), enforced
-# by the shared assertion core (ADR 0125).
+# Every match-based case carries MustNotMatch as well as MustMatch (the empty-MustNotMatch
+# class), enforced by the shared assertion core.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core + fixture lifecycle
 $hook = Join-Path $PSScriptRoot 'session-start-scaffold-refresh-nudge.ps1'
@@ -523,8 +523,8 @@ $ok = (Assert-True 'non-mutation: drifted placement not "refreshed"' `
 
 Remove-FixtureRoot $fx
 
-# META — proves this file's WIRING to the shared ADR 0116 guard: a wrapper that dropped the
-# -MustNotMatch passthrough would leave the core intact and every case above unguarded.
+# META — proves this file's WIRING to the shared empty-MustNotMatch guard: a wrapper that
+# dropped the -MustNotMatch passthrough would leave the core intact and every case above unguarded.
 $script:HookExit = 0
 $metaOut = '{"systemMessage":"meta probe"}'
 $accepted = Assert-Nudge 'META probe' $metaOut @('meta probe') 6>$null

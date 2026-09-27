@@ -4,10 +4,10 @@
 # an existing SEED file must survive byte-identical. Getting those backwards either silently
 # discards a repo's own CLAUDE.md or silently pins it to a stale builder.
 #
-# Fixtures live under the system temp root with exception-safe teardown (ADR 0126).
+# Fixtures live under the system temp root with exception-safe teardown.
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # assertion core
 
 $init = Join-Path $PSScriptRoot 'init.ps1'
 $templates = Join-Path $PSScriptRoot 'templates'

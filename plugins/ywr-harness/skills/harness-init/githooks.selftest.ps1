@@ -1,6 +1,8 @@
-# Selftest for the two shipped git hooks (ADR 0015). They live under templates/ — payload this
-# plugin COPIES rather than runs — but they are the only shipped artifacts that can block a commit
-# or a push, so "template payload has no selftest here" is the wrong call for these two.
+# Selftest for the shipped git hooks (ADR 0015; post-commit ADR 0017). They live under templates/ —
+# payload this plugin COPIES rather than runs — but pre-commit and pre-push are the only shipped
+# artifacts that can block a commit or a push, so "template payload has no selftest here" is the
+# wrong call for them. post-commit cannot block anything; its cases (P) exist because every one of
+# its branches exits 0, so only running it shows which branch a repo actually gets.
 #
 # The hooks are RUN, in real throwaway git repositories, against real staged changes and real
 # commit ranges. Three findings in this line of work came from running the thing instead of
@@ -13,13 +15,14 @@
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
-. (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # assertion core
 
 $hooksSrc = Join-Path $PSScriptRoot 'templates/githooks'
 $preCommit = Join-Path $hooksSrc 'pre-commit'
 $prePush = Join-Path $hooksSrc 'pre-push'
+$postCommit = Join-Path $hooksSrc 'post-commit'
 
-foreach ($f in @($preCommit, $prePush)) {
+foreach ($f in @($preCommit, $prePush, $postCommit)) {
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) {
         Write-Host "FAIL — hook template missing: $f" -ForegroundColor Red
         exit 1
@@ -113,12 +116,14 @@ function Write-File([string]$Repo, [string]$Rel, [string]$Body) {
     # -NoNewline then an explicit LF keeps the fixtures byte-predictable across platforms.
     [IO.File]::WriteAllText($full, ($Body -replace "`r`n", "`n"))
 }
-function Invoke-Hook([string]$Repo, [string]$Hook, [string]$StdIn) {
+function Invoke-Hook([string]$Repo, [string]$Hook, [string]$StdIn, [string]$PathOverride = '') {
     $sh = ConvertTo-ShPath $Hook
     $prevPath = $env:PATH
     Push-Location $Repo
     try {
-        if ($shExtraPath.Count) { $env:PATH = ($shExtraPath -join ';') + ';' + $prevPath }
+        # $PathOverride REPLACES the hook's PATH (no git toolchain prepended) — the P5 no-python arm.
+        if ($PathOverride) { $env:PATH = $PathOverride }
+        elseif ($shExtraPath.Count) { $env:PATH = ($shExtraPath -join ';') + ';' + $prevPath }
         if ($null -ne $StdIn) {
             # git feeds a hook LF-terminated lines. PowerShell's pipe into a native process writes
             # CRLF, and the trailing \r landed INSIDE the ref oid — `git rev-list <sha>\r..<sha>`
@@ -598,6 +603,81 @@ if ($null -ne $ssBody -and @($ssCtx | Where-Object { -not $ssEnv.ContainsKey($_)
     # LOST (the value a mismatched env: name delivers) take the fallback and scan nothing.
     $rS2c = Invoke-SecretScanStep $ss @{ 'github.event_name' = ''; 'github.base_ref' = 'main'; 'github.event.before' = '' }
     $ok = (Assert-True 'SS2c control: with EVENT_NAME lost, the same PR refs take the ZERO fallback and scan 0 commits — SS2''s count comes only from the PR path' ($rS2c.Code -eq 0 -and $rS2c.Out -notmatch 'commit\(s\) scanned' -and $rS2c.Out -match 'secret scan: ') "exit=$($rS2c.Code) out=$($rS2c.Out)") -and $ok
+}
+
+# =================================================================================================
+# post-commit — the slice retro's per-commit driver (ADR 0017, spec 0007 §3.4)
+# =================================================================================================
+# Placement (GUARDED) is init Q's and manifest-gate's; these cases RUN the body. Every branch exits
+# 0, so an exit code alone proves nothing: each case asserts what the hook printed, and the stub
+# retro's `[stub-retro]` line is what separates "ran the retro" from "exited early".
+# Mutation-checked when written (2026-09-27): dropping `|| true` AND the final `exit 0` fails P2
+# (either one alone is covered by the other — the pair is the contract); dropping the SLICE_RETRO
+# line fails P3; dropping the `[ -f "$RETRO" ]` guard fails P4 with or without python (an
+# interpreter error on a missing file, or the SKIP line — non-empty either way); dropping the SKIP
+# echo fails P5.
+function New-RetroRepo([string]$Name, [string]$StubBody) {
+    $p = New-Repo $Name
+    if ($StubBody) { Write-File $p 'scripts/harness/harness_retro.py' $StubBody }
+    return $p
+}
+$prevRetroVar = $env:SLICE_RETRO
+Remove-Item Env:SLICE_RETRO -ErrorAction SilentlyContinue
+try {
+    # P4: no vendored retro -> a silent exit 0. The guard runs before python is resolved, so this
+    # case needs no python.
+    $p4 = New-RetroRepo 'pcm-no-retro' ''
+    $rP4 = Invoke-Hook $p4 $postCommit $null
+    $ok = (Assert-True 'P4 without scripts/harness/harness_retro.py the hook exits 0 and prints nothing' ($rP4.Code -eq 0 -and $rP4.Out.Trim() -eq '') "exit=$($rP4.Code) out=$($rP4.Out)") -and $ok
+
+    # P5: a retro but no python on PATH -> a REPORTED skip, never a silent pass. PATH is replaced by
+    # one directory holding a `git` shim (the hook's first line needs git). Absence is VERIFIED under
+    # that PATH before asserting (fact 42: a narrowed PATH can keep a python neighbour).
+    $p5 = New-RetroRepo 'pcm-no-python' "print('[stub-retro] ran')`n"
+    $binDir = Join-Path $fxBase 'pcm-bin'
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+    $gitShim = Join-Path $binDir 'git'
+    [IO.File]::WriteAllText($gitShim, "#!/bin/sh`nexec '$(ConvertTo-ShPath (Get-Command git).Source)' `"`$@`"`n")
+    # POSIX needs the mode bit; Windows has none — git's MSYS sh treats a file opening with `#!` as
+    # executable, which is what `command -v git` below proves rather than assumes.
+    if (-not $IsWindows) { & chmod +x $gitShim }
+    $prevPath = $env:PATH
+    try {
+        $env:PATH = $binDir
+        $pyOnNarrow = "$(& $shPath -c 'command -v python; command -v python3; command -v py' 2>&1)".Trim()
+        $gitOnNarrow = "$(& $shPath -c 'command -v git' 2>&1)".Trim()
+    } finally { $env:PATH = $prevPath }
+    if ($pyOnNarrow -or -not $gitOnNarrow) {
+        # Locally a reported SKIP; on CI a FAIL — a probe that keeps failing there would otherwise
+        # retire P5's assertion for good behind an all-green run (review 2026-09-27, low).
+        $p5Why = "the narrowed PATH is not python-free with git (python='$pyOnNarrow' git='$gitOnNarrow')"
+        if ($env:CI) { $ok = (Assert-True 'P5 the git-shim PATH probe resolves on CI' $false $p5Why) -and $ok }
+        else { Write-Host "SKIP [P5 post-commit] $p5Why — reported, not silent; CI fails on it" -ForegroundColor Yellow }
+    } else {
+        $rP5 = Invoke-Hook $p5 $postCommit $null $binDir
+        $ok = (Assert-True 'P5 no python on PATH is a reported SKIP line, exit 0, and the retro does not run' ($rP5.Code -eq 0 -and $rP5.Out -match '\[slice-retro\] SKIP — no python on PATH' -and $rP5.Out -notmatch '\[stub-retro\]') "exit=$($rP5.Code) out=$($rP5.Out)") -and $ok
+    }
+
+    if (-not $pyAvail) {
+        Write-Host 'SKIP [P1-P3 post-commit] python absent (reported, not silent) — CI has python' -ForegroundColor Yellow
+    } else {
+        # P1: the retro runs with --repo <toplevel> and its output reaches the author verbatim.
+        $p1 = New-RetroRepo 'pcm-runs' "import sys`nprint('[stub-retro] ran ' + ' '.join(sys.argv[1:]))`n"
+        $rP1 = Invoke-Hook $p1 $postCommit $null
+        $ok = (Assert-True 'P1 the retro runs with --repo <toplevel> and its output passes through, exit 0' ($rP1.Code -eq 0 -and $rP1.Out -match '\[stub-retro\] ran --repo \S') "exit=$($rP1.Code) out=$($rP1.Out)") -and $ok
+
+        # P2: a crashing retro never reads as a failed commit — exit 0, and the crash is still shown.
+        $p2 = New-RetroRepo 'pcm-crash' "import sys`nprint('[stub-retro] crashing')`nsys.exit(3)`n"
+        $rP2 = Invoke-Hook $p2 $postCommit $null
+        $ok = (Assert-True 'P2 a retro exiting 3 leaves the hook at exit 0 with the retro output shown' ($rP2.Code -eq 0 -and $rP2.Out -match '\[stub-retro\] crashing') "exit=$($rP2.Code) out=$($rP2.Out)") -and $ok
+
+        # P3: SLICE_RETRO=0 skips this commit's retro. P1 (same stub shape, variable unset) is the control.
+        $env:SLICE_RETRO = '0'
+        try { $rP3 = Invoke-Hook $p1 $postCommit $null } finally { Remove-Item Env:SLICE_RETRO -ErrorAction SilentlyContinue }
+        $ok = (Assert-True 'P3 SLICE_RETRO=0 exits 0 without running the retro' ($rP3.Code -eq 0 -and $rP3.Out -notmatch '\[stub-retro\]') "exit=$($rP3.Code) out=$($rP3.Out)") -and $ok
+    }
+} finally {
+    if ($null -ne $prevRetroVar) { $env:SLICE_RETRO = $prevRetroVar }
 }
 
 Remove-FixtureRoot $fxBase

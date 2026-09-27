@@ -50,8 +50,9 @@ import harness_config as hc
 
 hc.pin_utf8()
 
-# ADR 0104's thresholds, generalised. A slice may be small by both measures and still be `full` if
-# it touches a declared critical surface — size never overrides criticality.
+# Small-tier thresholds, generalised from the adversarial-review workflow's own. A slice may be
+# small by both measures and still be `full` if it touches a declared critical surface — size
+# never overrides criticality.
 SMALL_MAX_FILES = 5
 SMALL_MAX_LINES = 150
 

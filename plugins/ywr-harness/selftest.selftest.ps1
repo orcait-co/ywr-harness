@@ -15,10 +15,10 @@
 # Usage: pwsh plugins/ywr-harness/selftest.selftest.ps1  (exit 0 = all green). 42–82 s measured
 # 2026-09-23 on a box shared with other agents' runs (section G is about half of it).
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot 'lib/selftest-lib.ps1')   # assertion core
 $runner = Join-Path $PSScriptRoot 'selftest.ps1'
 $fxBase = New-FixtureRoot 'selftest-runner-selftest'
-trap { Remove-FixtureRoot $fxBase; break }   # exception-safe teardown, ADR 0126
+trap { Remove-FixtureRoot $fxBase; break }   # exception-safe teardown
 
 # NOT `$Args`: that name is PowerShell's automatic unbound-arguments variable, and `@Args` splats
 # the (empty) automatic one rather than the parameter — the child then runs the runner with NO
@@ -236,8 +236,9 @@ $ok = (Assert-True 'G2 results in discovery order (a, b, c) although c finished 
     ($dA -ge 0 -and $dC -ge 0 -and $dC -lt $dA -and $rA -gt $dA -and $rA -lt $rB -and $rB -lt $rC) `
     "done a=$dA c=$dC · results a=$rA b=$rB c=$rC`n$(Format-Nested $g1.Out)") -and $ok
 # G1c — condensing keeps a passing suite's SIGNAL lines, not only its SKIPs (review 2026-09-23): a
-# WARN re-review trigger, a FAIL line that never reached the exit code (the ADR 0127 class), the
-# lib's KEEP line, and a host Write-Warning line. That label is localized, so the case matches the
+# WARN re-review trigger, a FAIL line that never reached the exit code (a gate judged from the
+# wrong observable), the lib's KEEP line, and a host Write-Warning line. That label is localized,
+# so the case matches the
 # message, not the label; on an English host the WARN word already covers it, so only a non-English
 # host (the owner's ko-KR box) can catch a lost label probe.
 $ok = (Assert-Case 'G1c passing suite condensed: its WARN, FAIL, KEEP and Write-Warning lines are kept' $g1 1 `
@@ -299,15 +300,15 @@ $ok = (Assert-True 'G7 a failing case echoes a nested runner transcript indented
     ($col0.Count -eq 1 -and $col0[0] -match '^FAIL \[NESTED probe\]' -and $printed -match '(?m)^    \| selftests: discovered=3 passed=3 failed=0$' -and $printed -match '(?m)^    \| ywr-harness plugin: all gates green$') `
     ($printed -replace '(?m)^', '    > ')) -and $ok
 
-# META — the ADR #116 guard must fire through this file's wrapper, and on the guard reason alone.
-# Since ADR 0125 the guard is shared, so this proves the WIRING, not the guard.
+# META — the empty-MustNotMatch guard must fire through this file's wrapper, and on the guard
+# reason alone. The guard is shared, so this proves the WIRING, not the guard.
 $accepted = Assert-Case 'META probe' @{ Code = 0; Out = 'meta probe' } 0 @('meta probe') @() 6>$null
 if ($accepted -or $script:LastFails.Count -ne 1 -or ($script:LastFails[0] -notmatch 'no MustNotMatch')) {
     Write-Host "FAIL [META]: guard did not fire — accepted=$accepted reason='$($script:LastFails -join '; ')'" -ForegroundColor Red
     $ok = $false
 }
 else { Write-Host 'PASS [META]: negative-less case rejected, on the guard reason alone' -ForegroundColor Green }
-if (Assert-Case 'META exemption honored' @{ Code = 0; Out = 'meta probe' } 0 @('meta probe') @() 'META: proves this wrapper forwards -NoNegative to the shared core (ADR 0125)') {
+if (Assert-Case 'META exemption honored' @{ Code = 0; Out = 'meta probe' } 0 @('meta probe') @() 'META: proves this wrapper forwards -NoNegative to the shared core') {
     Write-Host 'PASS [META]: -NoNegative exemption honored' -ForegroundColor Green
 }
 else { Write-Host 'FAIL [META]: -NoNegative exemption rejected' -ForegroundColor Red; $ok = $false }

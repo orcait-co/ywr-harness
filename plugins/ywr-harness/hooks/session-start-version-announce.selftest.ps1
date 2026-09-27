@@ -6,8 +6,8 @@
 # suite runs a COPY of the hook inside fixture plugin trees (controlled versions and notes) with
 # USERPROFILE/HOME redirected to a fixture home (the harness-statusline suite's hermetic-home
 # technique; the hook reads the env vars directly for exactly this reason). Every match-based
-# case carries MustNotMatch as well as MustMatch (ADR 0116 class), enforced by the shared
-# assertion core (ADR 0125).
+# case carries MustNotMatch as well as MustMatch (the empty-MustNotMatch class), enforced by
+# the shared assertion core.
 #
 # The announce-once contract is asserted from BOTH observables: the output (speaks exactly when
 # stored < current) and the state file (seeded/updated on every path the table says, byte-equal
@@ -302,8 +302,8 @@ finally {
 
 Remove-FixtureRoot $fx
 
-# META — proves this file's WIRING to the shared ADR 0116 guard: a wrapper that dropped the
-# -MustNotMatch passthrough would leave the core intact and every case above unguarded.
+# META — proves this file's WIRING to the shared empty-MustNotMatch guard: a wrapper that
+# dropped the -MustNotMatch passthrough would leave the core intact and every case above unguarded.
 $script:HookExit = 0
 $metaOut = '{"systemMessage":"meta probe"}'
 $accepted = Assert-Announce 'META probe' $metaOut @('meta probe') 6>$null

@@ -1,11 +1,10 @@
-// 적대 코드리뷰 표준 워크플로 (ADR #50, 티어 #104) — 렌즈 파인더 + 시맨틱 중복제거 + 심각도 게이트 검증.
+// 적대 코드리뷰 표준 워크플로 — 렌즈 파인더 + 시맨틱 중복제거 + 심각도 게이트 검증.
 // 호출: Workflow({name: 'ywr-harness:adversarial-review', args: {scope: {files, invariants, gates_passed} | '<리뷰 대상+하우스 컨텍스트 블록>',
 //   tier?: 'small', root?: '<레포 루트>', lenses?: [{key, prompt}], lensExtra?: '<하우스 앵글>',
 //   shards?: 'auto' | n | [[files…], …]  (scope.files 필요 — 렌즈별 파인더를 파일 샤드로 분할, ywr-harness ADR 0070),
 //   ultracode?: true, effort?: 'low'|'medium'|'high'|'xhigh'|'max'  (ultracode 세션·키워드일 때만 — ywr-harness ADR 0084)}})
 //
-// 이 파일의 ADR 번호는 별도 표기가 없으면 ywrlabs/ywr-platform 의 것이다 — 이 워크플로가 자란 곳이고
-// 근거 기록이 거기 있다. 렌즈 기본값은 일반 웹앱 앵글(인가·테넌시 경로, 프론트엔드 수명주기)을 이름으로
+// 렌즈 기본값은 일반 웹앱 앵글(인가·테넌시 경로, 프론트엔드 수명주기)을 이름으로
 // 부르되 특정 레포의 어휘는 굽지 않는다 — 그 레포에서 테넌시 격리가 어떻게 구현되는지·클린룸 명명·특정 결정
 // 경계 같은 하우스 고유 앵글은 args.lensExtra 로 호출자가 주입한다(ywr-harness ADR 0010 경계 질문: 다른
 // 레포에서도 똑같이 참인가?). 해당 표면이 없는 레포에서 그 앵글은 지적 0건으로 끝난다 — 문구 변경은 recall 을
@@ -13,7 +12,7 @@
 // 파인더·스켑틱·그룹핑 프롬프트는 한국어로 둔다 — 모델이 읽는 텍스트지만 영어 전환은 기록된 리뷰의 A/B 재측정
 // 없이는 하지 않는다: 프롬프트는 워커 프리픽스(~16k)의 일부라 절감이 작고, 전환은 리뷰 동작을 바꾼다(같은 owner call).
 // whenToUse 만 영어인 이유는 아래 meta 주석.
-// tier 'small'(ADR #104: ≤150 diff 라인·≤5 파일·크리티컬 표면 무접촉 — RLS/수치코어/인가/
+// tier 'small'(≤150 diff 라인·≤5 파일·크리티컬 표면 무접촉 — RLS/수치코어/인가/
 // 마이그레이션/훅·CI 제외) = 병합 2렌즈·렌즈당 6건. 그 외 = 풀 3렌즈. skeptic 게이트는 동일.
 // 워커 모델은 전역 CLAUDE.md 규칙대로 sonnet 고정 · effort 는 상한 high(세션 effort 상속 금지,
 // 2026-07-13 — xhigh/max 딥워크 누수 차단; ultracode 예외는 ywr-harness ADR 0084 — 아래 ULTRA). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
@@ -169,11 +168,11 @@ const SCOPE_GATES = (() => {
   return text && text !== '[]' && text !== '{}' ? text : null
 })()
 
-// 페이즈별 출력 토큰 계측(ADR 0086, 상한 표기로 교정 ADR 0129) — budget.spent() 는 메인 루프와
+// 페이즈별 출력 토큰 계측(상한 표기로 교정) — budget.spent() 는 메인 루프와
 // 공유 풀이라 워크플로 단독 비용이 아니다: 실행 중 오케스트레이터가 낸 출력이 그대로 랩에 얹힌다
 // (감사에서 카나리아 랩이 4,077 로 기록된 사례 — 실제 카나리아 응답은 한 단어다).
-// **SubagentStop 원장(ADR 0112)으로 대체할 수 없다**: 그 이벤트 입력에는 토큰/시간 필드가 아예
-// 없고(0112 결정 2, doc-verified) 원장은 who/what/when 만 적는다. 그래서 여기서 하는 일은
+// **SubagentStop 원장으로 대체할 수 없다**: 그 이벤트 입력에는 토큰/시간 필드가 아예
+// 없고(doc-verified) 원장은 who/what/when 만 적는다. 그래서 여기서 하는 일은
 // 정확도를 올리는 게 아니라 **정확한 척하지 않게 만드는 것**이다:
 //   1) 이름을 upper bound 로 — exact 로 읽히는 이름이 결함이었다.
 //   2) 오염을 정량화 — 카나리아 랩에서 카나리아의 보이는 응답분을 뺀 초과분이 메인 루프 유입의
@@ -227,8 +226,8 @@ const VERDICT = {
   required: ['refuted', 'reason'],
 }
 
-// 렌즈(ADR #50 §1 + #104 보강) — 파인더는 스코프 파일만 읽는다(탐색 금지).
-// #104 파일럿 보강 절: 프레임워크 수명주기 함정 + 삭제라인 불변식 재확립 감사 —
+// 렌즈 — 파인더는 스코프 파일만 읽는다(탐색 금지).
+// 파일럿 보강 절: 프레임워크 수명주기 함정 + 삭제라인 불변식 재확립 감사 —
 // A/B 파일럿에서 하우스 렌즈가 놓친 두 앵글 클래스(스테일 리마운트 버그가 이 클래스였다).
 const PITFALL_CLAUSE =
   '프레임워크 수명주기 함정(마운트-1회 파싱 vs 클라이언트 내비게이션, 리마운트/키 가정, stale closure, 이펙트 의존성)과 diff 가 삭제/교체한 라인이 지키던 불변식이 새 코드 어디서 재확립되는지(재확립 부재 = 지적)를 함께 검증하라.'
@@ -250,7 +249,7 @@ const DEFAULT_FULL = [
   },
 ]
 
-// small 티어(ADR #104) — 병합 2렌즈. skeptic 게이트·dedupe 는 풀과 동일.
+// small 티어 — 병합 2렌즈. skeptic 게이트·dedupe 는 풀과 동일.
 const DEFAULT_SMALL = [
   {
     key: 'correctness-pitfalls',
@@ -290,7 +289,7 @@ if (!CANARY_OK) {
   log(`[경고] 카나리아 응답이 ok 가 아니다(${CANARY_TEXT.length}자: ${JSON.stringify(CANARY_TEXT.slice(0, 120))}) — 전송은 통과했으나 호스트가 프로브를 달리 읽었다; 다음 호스트 버전에서 프로브 문구를 재측정할 것. 메인 루프 유입 추정은 이 응답 길이를 뺀 값이다(사고 토큰은 응답에 보이지 않아 빠지지 않는다).`)
 }
 
-// 인용 검증 절(ADR 0115): high effort 의 우위는 "더 생각해서"가 아니라 "원본을 다시 읽어서"
+// 인용 검증 절: high effort 의 우위는 "더 생각해서"가 아니라 "원본을 다시 읽어서"
 // 나왔다 — A/B 실측(wf_2a26a277 high vs wf_a54aedab medium)에서 medium 이 놓친 3건이 전부
 // 스코프 텍스트 밖 왕복이 필요한 인용 결함이었다. 그 왕복을 프롬프트로 명시 요구한다.
 // 조회 묶기 + 로컬 우선(ywr-harness ADR 0070, 2026-09-02 실측): 바쁜 파인더 27요청 중 도구 호출 35개, 병렬
@@ -302,7 +301,7 @@ const parallelClause = (u) =>
   `조회는 묶어서 내라: 서로 독립인 Read·Grep·curl 은 한 턴에 병렬 도구 호출로 — 새 턴(왕복)은 앞 결과에 따라 다음 조회가 달라질 때만. ${u.shard ? '담당 파일 전부' : '스코프 파일 전부'}는 첫 턴에 한 번에 읽어라. `
 const CITATION_CLAUSE =
   '인용 검증(스코프 밖 탐색 금지의 명시적 예외): 스코프의 주장이 외부 레퍼런스(공식 문서·다른 ADR/spec·생성물·설정 스키마)를 인용하거나 그에 의존하면 그 원본을 실제로 조회해 대조하라. 스코프가 근거의 로컬 경로(레포 안 ADR·spec·생성물·스키마)를 지목했으면 그 파일을 Read 하는 것이 조회다 — 원격 조회는 로컬 원본이 없을 때만. 열거/표는 행 수를 세고, 인용문은 전문을 확인한다 — 잘린 열거(한 행 누락)와 한정절이 빠진 인용은 그 자체로 지적 대상이다. 조회 수단을 근거에 적어라. ' +
-  '**부재 주장에는 더 강한 근거가 필요하다(ADR 0129)**: "그 필드/행/변수가 원본에 없다"를 렌더링 조회(WebFetch 등)만으로 적지 마라 — 큰 페이지는 조용히 잘린 뷰로 돌아온다. 실측 2026-07-26: 332,870 바이트짜리 공식 env-vars 페이지에서 실재하는 변수 하나를 WebFetch 가 서로 다른 프롬프트 3회 모두 "not found" 로 답했고, 같은 URL 을 `curl` 로 받아 로컬 grep 하면 263행에 있었다. 부재는 raw 원본을 받아(가능하면 `.md` URL) 로컬에서 grep 한 뒤에만 주장하고 그 명령을 근거에 적어라. 확인하지 못했으면 "없다"가 아니라 "확인 실패"로 적어라 — 존재 주장보다 부재 주장이 더 비싸다.'
+  '**부재 주장에는 더 강한 근거가 필요하다**: "그 필드/행/변수가 원본에 없다"를 렌더링 조회(WebFetch 등)만으로 적지 마라 — 큰 페이지는 조용히 잘린 뷰로 돌아온다. 실측 2026-07-26: 332,870 바이트짜리 공식 env-vars 페이지에서 실재하는 변수 하나를 WebFetch 가 서로 다른 프롬프트 3회 모두 "not found" 로 답했고, 같은 URL 을 `curl` 로 받아 로컬 grep 하면 263행에 있었다. 부재는 raw 원본을 받아(가능하면 `.md` URL) 로컬에서 grep 한 뒤에만 주장하고 그 명령을 근거에 적어라. 확인하지 못했으면 "없다"가 아니라 "확인 실패"로 적어라 — 존재 주장보다 부재 주장이 더 비싸다.'
 
 // 샤드 절: 담당 파일 밖의 결함도 버리지 않는다 — 두 파일의 조합에서만 드러나는 결함(ywr-harness fact 36 의
 // 부류)은 분할의 대표 실패 모양이므로, 참조 읽기는 허용하고 dedupe 가 형제 파인더의 중복을 합친다.
@@ -321,7 +320,7 @@ ${u.lens.prompt}
 const UNITS = LENSES.flatMap(l => SHARDS.map((shard, si) => ({ lens: l, shard, si, sn: SHARDS.length })))
 const unitKey = (u) => (u.shard ? `${u.lens.key}#${u.si + 1}` : u.lens.key)
 
-// find effort medium(ADR 0129 — 0115 결정 1 supersede). 0115 는 medium 을 실측으로 기각했지만
+// find effort medium(이전의 high 고정을 대체한다). 그 결정은 실측으로 medium 을 기각했지만
 // 그때 잃은 3건이 전부 "스코프 텍스트 밖 왕복이 필요한" 인용 결함이었고, 같은 슬라이스가 그
 // 왕복을 요구하는 CITATION_CLAUSE 를 넣었다. 절을 켠 채 재측정(wf_0674e5fa, 같은 recipe 재구성본):
 // 인용 2건(D2 열거 절단·D3 한정절 누락)이 둘 다 복구됐고 D1 은 부분→완전, 출력은 high 대비
@@ -385,7 +384,7 @@ const CLAIM_CHARS = 300
 const siteOf = (f) => ({ file: f.file, line: f.line ?? null, lens: f.lens, severity: f.severity, title: f.title,
   claim: String(f.claim ?? '').slice(0, CLAIM_CHARS) })
 
-// 1차 dedupe: 정규화된 file:line 키(라인 없으면 file+제목 앞 30자) — 심각도 최고가 대표(ADR #50 §2). 버려지는 쪽은 없다
+// 1차 dedupe: 정규화된 file:line 키(라인 없으면 file+제목 앞 30자) — 심각도 최고가 대표. 버려지는 쪽은 없다
 // (리뷰 slice 26, medium): 같은 키라도 렌즈마다 주장이 다를 수 있으므로(같은 줄의 다른 결함) 나머지는 대표의 also_at 으로
 // 간다 — 조용히 버리면 다른 결함이 사라진다. 동률이면 먼저 보고된 쪽이 대표.
 const rank = { high: 3, medium: 2, low: 1, nit: 0 }
@@ -402,7 +401,7 @@ for (const f of all) {
 let deduped = [...byKey.values()]
 
 // 2차(선택): 12건 초과면 haiku 그룹핑 — 같은 근원의 다른 라인/제목/파일 병합. ultracode 에서는 세션 모델 · ULTRA_EFFORT.
-// 묶인 항목은 버리지 않는다(ywr-harness ADR 0089 — ADR #50 §2 의 "대표만 유지"를 좁힌다): 대표가 나머지의 위치를
+// 묶인 항목은 버리지 않는다(ywr-harness ADR 0089 — 위 1차 dedupe 의 "대표만 유지"를 좁힌다): 대표가 나머지의 위치를
 // also_at 으로 들고 가서, 스켑틱은 전 위치를 보고 한 번 판정하고 닫는 쪽은 위치마다 고친다. 실측 slice 25: 그룹핑이
 // 네 위치를 조용히 버렸고(그중 low 하나는 HEAD 에 아직 남았다), 한 근원('워커가 xhigh 로 돈다')이 4 파일에 흩어져
 // 스켑틱 8 레그를 사고 판정이 갈렸다(3 확정 · 1 분할 반증).
@@ -444,7 +443,7 @@ lap('dedupe') // haiku 그룹핑 미실행이면 0
 const alsoAtSites = deduped.reduce((n, f) => n + f.also_at.length, 0)
 log(`[${TIER}] 파인더 ${found.filter(Boolean).length}/${UNITS.length} — 원지적 ${all.length} → 중복제거 후 ${deduped.length}${alsoAtSites ? ` (묶인 보고 ${alsoAtSites}건은 대표의 also_at 으로 보존)` : ''}`)
 
-// 심각도 게이트(ADR #50 §3): high/medium=2 skeptic · low=1 · nit=0(오케스트레이터 판정).
+// 심각도 게이트: high/medium=2 skeptic · low=1 · nit=0(오케스트레이터 판정).
 // also_at 이 있으면 스켑틱은 묶인 보고 전부(위치 + 그 보고의 주장)를 본다 — 판정은 묶음 전체에 적용되므로, 한 곳에서라도
 // 주장이 참이면 유지다. #2 의 게이트 관점은 SCOPE_GATES 가 있을 때만 싣는다(ywr-harness ADR 0089) — 보지 못한 게이트를
 // 두고 반증하게 두지 않는다.
@@ -530,12 +529,12 @@ const confirmedAll = kept.map(({ votes, ...f }) => {
 return {
   confirmed: confirmedAll.filter(isInScope),
   out_of_scope_confirmed: SCOPE_FILES ? confirmedAll.filter(f => !isInScope(f)) : [],
-  nits_unverified: nits, // skeptic 생략 — 오케스트레이터가 직접 판정(ADR #50 §3)
+  nits_unverified: nits, // skeptic 생략 — 오케스트레이터가 직접 판정
   rejected_count: rejected,
   rejected: rejectedAll, // [{severity, title, file, line, also_at, votes: [{refuted, reason, dead?}]}] — ywr-harness ADR 0089
-  // lenses/dead_lenses 는 반환값 노출이 목적이다(ADR 0115): 오케스트레이터가 log 를 못 봐도
+  // lenses/dead_lenses 는 반환값 노출이 목적이다: 오케스트레이터가 log 를 못 봐도
   // 커버리지 축소를 알 수 있어야 한다. dead_lenses 가 비어있지 않으면 게이트는 부분 커버리지다.
-  // output_tokens 라는 이름이 exact 로 읽히던 것이 결함이었다(ADR 0129) — 이름과 basis 로
+  // output_tokens 라는 이름이 exact 로 읽히던 것이 결함이었다 — 이름과 basis 로
   // 상한임을 구조적으로 못 박고, 공유 풀이 아닌 유일한 정확값(에이전트 수)을 옆에 둔다.
   stats: {
     tier: TIER, lenses: LENSES.length, shards: SHARDED ? SHARDS.length : 1, finders: UNITS.length,

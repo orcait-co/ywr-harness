@@ -7,7 +7,7 @@
 # branch is exercised, including the one that must WIN over size (critical surface).
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
 $gates = Join-Path $PSScriptRoot 'harness_gates.py'
 $fxBase = New-FixtureRoot 'harness-gates-selftest'

@@ -497,7 +497,7 @@ $null = Invoke-IBuild
 # The sentinel is ASSEMBLED at runtime and the exit code is asserted too: Python 3.13's traceback
 # for `-c` code echoes the command source, so a literal sentinel in the command matched ITSELF
 # on a failing run — the 0.38.0 selfcheck was broken and this case read green locally (3.13)
-# while CI (3.12, no source echo) failed. A gate judged from the wrong observable (ADR 0127 class).
+# while CI (3.12, no source echo) failed. A gate judged from the wrong observable.
 $rI13 = & $py.Source -c "import sys; sys.path.insert(0, r'$docsI'); import build_docs; build_docs._selfcheck_release_helpers(); print('SELF' + 'CHECK-' + 'OK')" 2>&1 | Out-String
 $i13Code = $LASTEXITCODE
 $ok = (Assert-True 'I13 _selfcheck_release_helpers() passes standalone (exit 0, sentinel printed, no traceback)' `

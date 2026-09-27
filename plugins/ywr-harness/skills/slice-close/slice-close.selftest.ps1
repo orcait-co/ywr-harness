@@ -9,7 +9,7 @@
 # each with the old wording as its negative, so a partial revert turns red instead of passing on
 # presence alone. Non-ASCII in patterns is spelled as \uXXXX so this file stays ASCII.
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # assertion core
 $skillPath = Join-Path $PSScriptRoot 'SKILL.md'
 $refPath = Join-Path $PSScriptRoot 'reference.md'
 
@@ -67,6 +67,14 @@ $ok = (Assert-Text 'C7 stage 5: one commit, record in the body, handoff names th
 $ok = (Assert-Text 'C8 ADR 0072 rule stays named in SKILL.md in one line' $skill `
         @('re-arms it only over the overlap \(ADR 0072\)', 'hand-resolved conflict', 'review basis:') `
         @('\(in the reviewed scope or\s+not')) -and $ok
+
+# C9: the verify procedure (spec 0007 s3.7) follows C1's rule - its agent passes the range to the mapper
+# as given; the old git pre-check wording is the negative, the no-silent-fallback rule must survive.
+$procPath = Join-Path $PSScriptRoot '../verify/procedure.md'
+$proc = if (Test-Path -LiteralPath $procPath -PathType Leaf) { Get-Content -LiteralPath $procPath -Raw -Encoding utf8 } else { '' }
+$ok = (Assert-Text 'C9 verify procedure: range goes to the mapper as given, no own git pre-check, no silent fallback' $proc `
+        @('Pass it to the mapper as given', 'the mapper is the range check \(ADR 0041', 'Do NOT silently fall back', 'scope: FAILED') `
+        @('Sanity-check it first', 'git rev-parse')) -and $ok
 
 # --- META: the assertion guard must be able to fail -----------------------------------------------
 $accepted = Assert-Text 'META probe' 'meta probe' @('meta probe') @() 6>$null

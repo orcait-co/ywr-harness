@@ -1,15 +1,15 @@
 # Negative test for manifest-gate.ps1 — every mutation MUST make the gate exit 1.
 #
 # Why this exists: a gate that has only ever been observed passing is not known to work. The
-# gate's own comments name the failure class it guards against (ADR 0120: green selftests over
-# a payload field name nothing carried), and the gate would be an instance of that class if
-# nothing ever proved it can fail.
+# gate's own comments name the failure class it guards against (green selftests over a payload
+# field name nothing carried), and the gate would be an instance of that class if nothing ever
+# proved it can fail.
 #
 # Each case copies the plugin into a temp directory, mutates one thing, and runs the gate there.
 # The real plugin is never modified.
 
 $ErrorActionPreference = 'Stop'
-# The lib pins [Console]::OutputEncoding (UTF-8, no BOM — ADR 0128) and sets StrictMode off; this
+# The lib pins [Console]::OutputEncoding (UTF-8, no BOM) and sets StrictMode off; this
 # file set the BOM-bearing UTF8 itself before it dot-sourced the lib — one owner now.
 . (Join-Path $PSScriptRoot 'lib/selftest-lib.ps1')   # Invoke-ScriptInRunspace (ADR 0071 option E)
 
@@ -17,7 +17,7 @@ $src = $PSScriptRoot
 $base = Join-Path ([IO.Path]::GetTempPath()) ("ywrh-gate-neg-" + [guid]::NewGuid().ToString('N'))
 $results = @()
 
-# Teardown is exception-safe (ADR 0126) and refuses anything outside the temp root.
+# Teardown is exception-safe and refuses anything outside the temp root.
 trap {
     if ($base -and $base.StartsWith([IO.Path]::GetTempPath()) -and (Test-Path -LiteralPath $base)) {
         Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
@@ -437,6 +437,93 @@ $r = New-CanonShape 'lockstep-not-a-repo-skips'
 $g = Run-GateAt $r
 Record 'lockstep-not-a-repo-skips' ($g.rc -eq 0 -and $g.out -match 'release lockstep: skipped — ') "exit=$($g.rc) skip-said=$([bool]($g.out -match 'release lockstep: skipped'))"
 
+# --- canon ADR references (ADR 0095) ---------------------------------------------------------------
+# Git fixtures (the check reads `git ls-files`, never a directory walk): the canon shape plus a
+# docs/adr/ holding an empty file for every REAL canon ADR, so the copied plugin's own citations
+# resolve exactly as in the canon and each case isolates the one reference it adds. The unresolved
+# number is assembled at runtime — this file is itself scanned by the gate it tests.
+$realAdrDir = Join-Path (Split-Path -Parent (Split-Path -Parent $src)) 'docs/adr'
+$badNum = '09' + '99'
+function New-AdrRefRepo([string]$tag, [hashtable]$Files, [hashtable]$Untracked = @{}) {
+    $repo = New-CanonShape $tag
+    # The copy carries the owner's gitignored eval results; tracked in the fixture, a model answer
+    # quoting a foreign number would fail the control on one machine only.
+    Remove-Item -LiteralPath (Join-Path $repo 'plugins/ywr-harness/evals/results') -Recurse -Force -ErrorAction SilentlyContinue
+    $ad = Join-Path $repo 'docs/adr'
+    New-Item -ItemType Directory -Force -Path $ad | Out-Null
+    # 0000-template.md is left out: it is a scaffold placement, and an empty copy reads as drift.
+    foreach ($a in @(Get-ChildItem -LiteralPath $realAdrDir -File -Filter '*.md' | Where-Object { $_.Name -match '^\d{4}-' -and $_.Name -notmatch '^0000-' })) {
+        [IO.File]::WriteAllText((Join-Path $ad $a.Name), '')
+    }
+    $put = {
+        param($set)
+        foreach ($k in $set.Keys) {
+            $fp = Join-Path $repo $k
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fp) | Out-Null
+            [IO.File]::WriteAllText($fp, $set[$k])
+        }
+    }
+    & $put $Files
+    & git -C $repo init -q 2>$null | Out-Null
+    & git -C $repo config core.autocrlf false 2>$null | Out-Null
+    & git -C $repo add -A 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "adr-ref fixture '$tag': git add failed (exit $LASTEXITCODE)" }
+    & $put $Untracked
+    return $repo
+}
+if (-not $gitHere -or -not (Test-Path -LiteralPath $realAdrDir -PathType Container)) {
+    Write-Host 'SKIP [adr-ref] needs git and the canon''s docs/adr/ (a dist or consumer copy has none) — reported, not silent' -ForegroundColor Yellow
+} else {
+    # Control: nothing added. The copied plugin's own references all resolve, so the unresolved
+    # cases below fail for their one added line and nothing else.
+    $r = New-AdrRefRepo 'adr-ref-control' @{}
+    $g = Run-GateAt $r
+    Record 'adr-ref-control-resolves' ($g.rc -eq 0 -and $g.out -match 'adr references: [1-9]\d* reference\(s\) in \d+ of \d+ tracked text file\(s\) resolve') "exit=$($g.rc) resolved-line=$([bool]($g.out -match 'adr references: \d+ reference'))"
+
+    $r = New-AdrRefRepo 'adr-ref-unresolved' @{ 'scripts/note.md' = "see ADR $badNum for why`n" }
+    $g = Run-GateAt $r
+    Record 'adr-ref-unresolved' ($g.rc -eq 1 -and $g.out -match "scripts/note\.md:1 cites ADR $badNum") "exit=$($g.rc) named=$([bool]($g.out -match "cites ADR $badNum"))"
+
+    # A list member is checked on its own: the first number resolves, the second does not.
+    $r = New-AdrRefRepo 'adr-ref-list-member' @{ 'scripts/list.md' = "a line`nper ADRs 0001/$badNum and more`n" }
+    $g = Run-GateAt $r
+    Record 'adr-ref-list-member' ($g.rc -eq 1 -and $g.out -match "scripts/list\.md:2 cites ADR $badNum" -and $g.out -notmatch 'cites ADR 0001') "exit=$($g.rc)"
+
+    # An ASCII-hyphen range is a list too (`ADRs 0010-0017` is how the retro ignore file writes one).
+    $r = New-AdrRefRepo 'adr-ref-hyphen-range' @{ 'scripts/range.md' = "ADRs 0001-$badNum`n" }
+    $g = Run-GateAt $r
+    Record 'adr-ref-hyphen-range' ($g.rc -eq 1 -and $g.out -match "scripts/range\.md:1 cites ADR $badNum") "exit=$($g.rc)"
+
+    # The older hash form resolves zero-padded: `ADR #3` names 0003 (this canon's early specs), a
+    # hash number with no record fails like any other.
+    $hashRef = 'ADR #' + [string][int]$badNum
+    $r = New-AdrRefRepo 'adr-ref-hash-form' @{ 'scripts/hash.md' = "ok ADR #3`nbad $hashRef here`n" }
+    $g = Run-GateAt $r
+    Record 'adr-ref-hash-form' ($g.rc -eq 1 -and $g.out -match "scripts/hash\.md:2 cites ADR $badNum" -and $g.out -notmatch 'hash\.md:1 ') "exit=$($g.rc)"
+
+    # History and generated surfaces are excluded: an ADR body (append-only), the handoff archive,
+    # and the generated index. The same line elsewhere fails (adr-ref-unresolved).
+    $r = New-AdrRefRepo 'adr-ref-excluded' @{
+        'docs/adr/0001-fixture-history.md' = "cites ADR $badNum`n"
+        'docs/handoff-archive/SESSION_HANDOFF.md' = "cites ADR $badNum`n"
+        'docs/INDEX.md' = "cites ADR $badNum`n"
+    }
+    $g = Run-GateAt $r
+    Record 'adr-ref-excluded-history-and-generated' ($g.rc -eq 0 -and $g.out -notmatch "cites ADR $badNum" -and $g.out -match 'adr references: \d+ reference') "exit=$($g.rc)"
+
+    # An UNTRACKED file is not read — the reason the check lists with git instead of walking the tree
+    # (gitignored eval results and local settings would fail one machine only).
+    $r = New-AdrRefRepo 'adr-ref-untracked' @{} @{ 'scripts/local-only.md' = "cites ADR $badNum`n" }
+    $g = Run-GateAt $r
+    Record 'adr-ref-untracked-not-read' ($g.rc -eq 0 -and $g.out -notmatch "cites ADR $badNum") "exit=$($g.rc)"
+
+    # Outside a git work tree the check is a REPORTED skip, never a pass line.
+    $r = New-CanonShape 'adr-ref-not-git'
+    New-Item -ItemType Directory -Force -Path (Join-Path $r 'docs/adr') | Out-Null
+    $g = Run-GateAt $r
+    Record 'adr-ref-skip-not-git' ($g.rc -eq 0 -and $g.out -match 'adr references: skipped — the canon shape is not inside a git work tree' -and $g.out -notmatch 'adr references: \d+ reference') "exit=$($g.rc)"
+}
+
 # --- eval suite structure (ADR 0076 / spec 0014) -------------------------------------------------
 # Four refusals the runner would otherwise deliver only after a PAID run (unknown prompt.md key ·
 # unknown grader type · grader-less case) or never (an unpinned or non-worker model — the host has
@@ -454,7 +541,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $evalCase 'prompt.md') -PathType Lea
     }
     # A key the parser cannot read (dashed) must be refused as UNPARSED, not silently skipped past
     # the unknown-key loop — the review's high finding: the first cut printed PASS over it while
-    # the runner still rejects the file (ADR 0125 class).
+    # the runner still rejects the file (a validator that only sees what it parsed).
     Try-Case 'eval-unparsed-frontmatter-line' {
         param($d)
         $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'

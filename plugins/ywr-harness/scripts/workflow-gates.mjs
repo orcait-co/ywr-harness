@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// JS-side gate for .claude/workflows/ (ADR 0124) — promotes the one-off parse checker ADR 0115
-// item 7 recorded but left hand-run, and turns the behavioral selftest from a slice-close habit
-// into a discovered gate. Both were run by hand until now, which means a session could forget
-// them; ADR 0115 said so in its own Consequences.
+// JS-side gate for .claude/workflows/ — promotes the one-off parse checker that had stayed
+// hand-run, and turns the behavioral selftest from a slice-close habit into a discovered gate.
+// Both were run by hand until now, which means a session could forget them.
 //
 // Two arms, in this order:
 //   parse       every .claude/workflows/*.js compiles. `node --check` cannot do this job, and the
-//               reason is the opposite of the one ADR 0115 recorded: measured 2026-07-25 on node
-//               v24.14.0, an `export` line makes the file module-detected and NOT syntax-checked,
-//               so --check exits 0 for any content after it — including the real
-//               adversarial-review.js with an unbalanced paren injected mid-file. On this class
-//               (every workflow carries `export const meta`) --check is vacuous, not noisy.
+//               reason is the opposite of what was once assumed (that `node --check` FAILS on the
+//               file): measured 2026-07-25 on node v24.14.0, an `export` line makes the file
+//               module-detected and NOT syntax-checked, so --check exits 0 for any content after
+//               it — including the real adversarial-review.js with an unbalanced paren injected
+//               mid-file. On this class (every workflow carries `export const meta`) --check is
+//               vacuous, not noisy.
 //               So the `export` keyword is stripped and the body compiled inside an async wrapper
 //               via `new Function` — which accepts the top-level `return`/`await` a workflow
 //               script legitimately has. Compile only; nothing is executed.
@@ -19,12 +19,13 @@
 // The `export const meta` anchor is asserted rather than assumed: the Workflow tool rejects a
 // script without it, and the parse transform above is anchored on it. That is one documented
 // presence check, deliberately NOT an allow-list of meta fields or a phase-shape schema — those
-// have no raw in-repo source, and inventing one is the provenance defect ADR 0123 refused.
+// have no raw in-repo source, and inventing one would be a provenance defect: a schema nobody
+// could audit against real inputs.
 //
 // Vacuity: zero workflow scripts, or zero selftests, FAILS. A gate reporting green over an empty
-// corpus is the ADR 0118 vacuous-pass class. Counts are printed so shrinking coverage is visible
-// (ADR 0123), and there is no flag that switches an arm off — an escape hatch here is how the
-// behavioral arm would quietly stop running.
+// corpus is a vacuous pass. Counts are printed so shrinking coverage is visible, and there is no
+// flag that switches an arm off — an escape hatch here is how the behavioral arm would quietly
+// stop running.
 //
 // Usage: node scripts/ci/workflow-gates.mjs [--root <dir>]
 // Exit 0 = green · 1 = parse failure, failing selftest, missing corpus, or vacuous corpus.

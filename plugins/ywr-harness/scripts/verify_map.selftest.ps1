@@ -2,10 +2,10 @@
 # nothing here and every case asserts on output. That property is also why the config guards need
 # testing: a rejected value that silently became a default would look identical to a good run.
 #
-# Fixtures are throwaway git repos under the system temp root, torn down exception-safely (ADR 0126).
+# Fixtures are throwaway git repos under the system temp root, torn down exception-safely.
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
 $mapper = Join-Path $PSScriptRoot 'verify_map.py'
 $fxBase = New-FixtureRoot 'verify-map-selftest'

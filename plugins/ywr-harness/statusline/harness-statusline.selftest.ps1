@@ -8,7 +8,7 @@
 # Payload fixtures are shaped from a live 2.1.220 payload captured 2026-07-27, not from the docs.
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core, ADR 0125
+. (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
 $mod = Join-Path $PSScriptRoot 'harness-statusline.js'
 if (-not (Test-Path -LiteralPath $mod -PathType Leaf)) {
@@ -148,6 +148,22 @@ $ok = (Assert-True 'F context 95% is red' ($hiCtx -match "`e\[31m95%") 'expected
 # rather than one shared threshold.
 $q = Invoke-Raw '{"model":{"display_name":"m"},"workspace":{"current_dir":"a"},"rate_limits":{"five_hour":{"used_percentage":50}}}'
 $ok = (Assert-True 'F quota 50% is yellow — a different curve from context' ($q -match "`e\[33m50%") 'expected yellow at 50% quota') -and $ok
+# Band EDGES, both sides of every threshold (context 70/90, quota 50/80, the weekly on the quota
+# curve): a threshold moved by one point flips exactly one of these, where the interior probes
+# above stay green. Integer inputs, so the renderer's Math.round leaves them as written.
+$bandName = @{ '32' = 'green'; '33' = 'yellow'; '31' = 'red' }
+foreach ($bc in @(@('context', 69, '32'), @('context', 70, '33'), @('context', 89, '33'), @('context', 90, '31'),
+        @('5h', 49, '32'), @('5h', 79, '33'), @('5h', 80, '31'), @('7d', 49, '32'), @('7d', 50, '33'),
+        @('7d', 79, '33'), @('7d', 80, '31'))) {
+    $kind, $v, $code = $bc
+    $metric = switch ($kind) {
+        'context' { '"context_window":{"used_percentage":' + $v + '}' }
+        '5h' { '"rate_limits":{"five_hour":{"used_percentage":' + $v + '}}' }
+        '7d' { '"rate_limits":{"seven_day":{"used_percentage":' + $v + '}}' }
+    }
+    $edge = Invoke-Raw ('{"model":{"display_name":"m"},"workspace":{"current_dir":"a"},' + $metric + '}')
+    $ok = (Assert-True "F $kind $v% is $($bandName[$code]) (band edge)" ($edge -match "`e\[${code}m$v%") "raw: $edge") -and $ok
+}
 
 # --- G: garbage in must not throw ----------------------------------------------------------------
 # A status line that crashes takes the status line away on every render.

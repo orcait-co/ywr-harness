@@ -13,10 +13,10 @@
 #   exit 0 = every gate that RAN passed, and at least one selftest was discovered
 #   exit 1 = anything failed, OR nothing was discovered
 #
-# Zero discovered is a FAILURE, not a pass. A runner that reports green on an empty set is the
-# ADR 0127 class: a gate judged from the wrong observable. Counts are always printed so a
-# shrinking suite is visible rather than silent, and skips are printed as skips rather than
-# folded into the pass count (ADR 0127 again — a SKIP counted as a pass was the original defect).
+# Zero discovered is a FAILURE, not a pass. A runner that reports green on an empty set is
+# a gate judged from the wrong observable. Counts are always printed so a shrinking suite is
+# visible rather than silent, and skips are printed as skips rather than folded into the pass
+# count (a SKIP counted as a pass was the original defect).
 #
 # Suite output contract (ADR 0088): one live `done <rel> PASS|FAIL (<s> s, <n> PASS lines)` line
 # per suite as it finishes (completion order), then the results in ordinal DISCOVERY order — a
@@ -29,7 +29,7 @@
 #
 # No gate short-circuits: one run should surface every defect, not just the cheapest one.
 #
-# The child-output decoding pin (ADR 0128) is set here because this runner CAPTURES child
+# The child-output decoding pin is set here because this runner CAPTURES child
 # output: without it a non-UTF-8 console codepage destroys non-ASCII in the captured text
 # rather than merely garbling the display. It must stay AHEAD of the first line this script
 # prints — measured 2026-09-23 in a fresh console (cp949): a pwsh whose stdout is redirected
@@ -189,10 +189,11 @@ function Write-SuiteLine([string]$Line) {
 }
 # The lines a PASSING suite keeps under condensing (review 2026-09-23): SKIP (a skip is never a
 # pass), WARN (a deliberate re-review trigger that does not fail — workflow-gates' `WARN [D]`), FAIL
-# (a FAIL line that never reached the exit code is the ADR 0127 class, so it stays loud rather than
-# folding into `ok`), KEEP (the lib's kept-fixture path), and a child's Write-Warning line — e.g. the
-# lib's `Remove-FixtureRoot refused`. The host LOCALIZES that line's label ("WARNING:" in English,
-# a Korean label on the owner's ko-KR box — measured 2026-09-23), so it is learned from one probe
+# (a FAIL line that never reached the exit code is a gate judged from the wrong observable, so it
+# stays loud rather than folding into `ok`), KEEP (the lib's kept-fixture path), and a child's
+# Write-Warning line — e.g. the lib's `Remove-FixtureRoot refused`. The host LOCALIZES that line's
+# label ("WARNING:" in English, a Korean label on the owner's ko-KR box — measured 2026-09-23), so
+# it is learned from one probe
 # child of the suites' shape, on first use only (~0.8 s measured; never under -Full or -List). A
 # probe that yields nothing leaves the WARN word, which covers an English host. A green run carries
 # no such line beyond its SKIPs, so this adds nothing to the green output.

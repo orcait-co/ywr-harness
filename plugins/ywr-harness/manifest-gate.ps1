@@ -10,8 +10,8 @@
 #      so EVERY commit becomes a new version and propagates to every consumer. This is the one
 #      manifest defect with org-wide blast radius, so it is a hard failure here.
 #   2. A hook path that does not resolve — the regression a file move or rename produces. The
-#      plugin loads, the hook silently never runs (the ADR 0120 `config_source` class: green
-#      selftests over a name nothing carries).
+#      plugin loads, the hook silently never runs (green selftests over a payload field name
+#      nothing carries — the failure this whole gate exists to catch).
 #   3. Shell form where a path placeholder is used — exec form (`args` present) is the shipped
 #      decision because a marketplace install path contains a version string. A regression to
 #      shell form reintroduces the quoting surface without any visible symptom.
@@ -428,8 +428,7 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
     # Every OTHER column-0 line inside the block is returned as UNPARSED and refused by the caller:
     # a key the regex cannot read (`max-turns:`, a stray list item, a typo) is exactly a key the
     # unknown-key loop would otherwise never see — the check would print PASS over a file the
-    # runner still rejects (review 2026-09-14, high; the ADR 0125 class — a validator that only
-    # sees what it parsed). Comments (`#`) and blank lines are the only column-0 lines let through.
+    # runner still rejects (review 2026-09-14, high — a validator that only sees what it parsed). Comments (`#`) and blank lines are the only column-0 lines let through.
     function Get-FrontmatterKeys([string]$Path) {
         $lines = @(Get-Content -LiteralPath $Path)
         $keys = [ordered]@{}
@@ -508,7 +507,8 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
     # .NET, the runner with JS: a construct the two read differently (inline flags, named groups,
     # lookaround, atomic/possessive, \p, \A \Z \z \G) is refused, so what passes here means the same there.
     # A flag value other than true/false is refused rather than read as "not disabled" — a skill the
-    # parser misreads would drop out of the sweep with no line at all (the ADR 0125 class).
+    # parser misreads would drop out of the sweep with no line at all (a validator that only sees
+    # what it parsed).
     $guardName = 'disabled-skills-stay-user-invoked/graders/no-skill-invoked.md'
     $guardPath = Join-Path $evalDir $guardName
     $guardSkills = 0
@@ -579,10 +579,86 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
     }
 }
 
+# --- canon ADR references (ADR 0095) ----------------------------------------------------------
+# The canon cites only its own decision records. Every `ADR 0NNN` in a tracked text file — lists
+# such as `ADR 0063/0078`, `ADRs 0079, 0081` or `ADRs 0010-0017` included, and the older hash form `ADR #3` read as
+# 0003 — must name a docs/adr/NNNN-*.md file. A
+# consumer's ADR number (the plugin's first scripts were ported from ywr-platform, and 127 of its
+# citations came along) resolves to nothing here and to the WRONG record in any other consumer.
+# Excluded: docs/adr/ (append-only history), docs/handoff-archive/, and the generated docs
+# surfaces, which are rebuilt from sources this scan already reads. `git ls-files`, never a
+# directory walk: a walk would read gitignored eval results and local settings and fail on one
+# machine only. Canon shape only (the dist and consumer copies have no docs/adr to resolve
+# against); every skip says why.
+$adrRefRx = '\bADRs?\s+(0\d{3}(?:\s*(?:/|,|·|&|and|or|-|–|—)\s*0\d{3})*)\b'
+$adrHashRx = '\bADRs?\s+#(\d{1,4})\b'
+$adrRefExcludeRx = '^(docs/adr/|docs/handoff-archive/|docs/(INDEX\.md|index\.json|docs\.html|docs\.artifact\.html|onboarding\.artifact\.html)$)'
+$adrDir = if ($repoRoot) { Join-Path $repoRoot 'docs/adr' } else { '' }
+if (-not $inTree) {
+    Write-Host 'adr references: skipped — not the canon dogfood shape (only the canon has docs/adr to resolve against)' -ForegroundColor Yellow
+} elseif (-not (Test-Path -LiteralPath $adrDir -PathType Container)) {
+    Write-Host 'adr references: skipped — no docs/adr/ at the canon root, nothing to resolve against (reported, not silent)' -ForegroundColor Yellow
+} elseif (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host 'adr references: skipped — git not on PATH (reported, not silent)' -ForegroundColor Yellow
+} else {
+    $null = & git -C $repoRoot rev-parse --is-inside-work-tree 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'adr references: skipped — the canon shape is not inside a git work tree, so there is no tracked-file list (reported, not silent)' -ForegroundColor Yellow
+    } else {
+        $adrIds = @{}
+        foreach ($a in @(Get-ChildItem -LiteralPath $adrDir -File -Filter '*.md')) {
+            if ($a.Name -match '^(\d{4})-') { $adrIds[$Matches[1]] = $true }
+        }
+        # NUL-separated and UTF-8-decoded (the issue #40 boundary): the console encoding is pinned
+        # for this one call and restored, since an in-process caller shares it.
+        $prevEnc = [Console]::OutputEncoding
+        try {
+            [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+            $lsRaw = (& git -C $repoRoot -c core.quotepath=false ls-files -z 2>$null) -join "`n"
+            $lsCode = $LASTEXITCODE
+        } finally { [Console]::OutputEncoding = $prevEnc }
+        if ($lsCode -ne 0) {
+            Bad "adr references: git ls-files exited $lsCode — NOT CHECKED, not passed"
+        } else {
+            $utf8 = [Text.UTF8Encoding]::new($false)
+            $adrScanned = 0; $adrRefs = 0; $adrFiles = 0; $adrBad = 0
+            foreach ($rel in @($lsRaw -split "`0" | Where-Object { $_ })) {
+                if ($rel -match $adrRefExcludeRx) { continue }
+                $full = Join-Path $repoRoot $rel
+                if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }   # deleted in the work tree
+                $bytes = [IO.File]::ReadAllBytes($full)
+                if ([Array]::IndexOf($bytes, [byte]0) -ge 0) { continue }             # binary
+                $adrScanned++
+                $text = $utf8.GetString($bytes)
+                if (-not $text.Contains('ADR')) { continue }
+                $lines = $text -split "`n"
+                $hitHere = $false
+                for ($i = 0; $i -lt $lines.Count; $i++) {
+                    $nums = @(foreach ($m in [regex]::Matches($lines[$i], $adrRefRx)) {
+                            foreach ($num in [regex]::Matches($m.Groups[1].Value, '0\d{3}')) { $num.Value }
+                        })
+                    $nums += @(foreach ($m in [regex]::Matches($lines[$i], $adrHashRx)) { ([int]$m.Groups[1].Value).ToString('0000') })
+                    foreach ($num in $nums) {
+                        $adrRefs++; $hitHere = $true
+                        if (-not $adrIds.ContainsKey($num)) {
+                            Bad "adr references: ${rel}:$($i + 1) cites ADR $num — no docs/adr/$num-*.md in this canon (a consumer's number? ADR 0095)"
+                            $adrBad++
+                        }
+                    }
+                }
+                if ($hitHere) { $adrFiles++ }
+            }
+            if ($adrBad -eq 0) {
+                Good "adr references: $adrRefs reference(s) in $adrFiles of $adrScanned tracked text file(s) resolve to docs/adr ($($adrIds.Count) record(s))"
+            }
+        }
+    }
+}
+
 # --- coverage report (visible every run, never a silent cap) --------------------------------
 # Nothing is excluded but the selftests themselves. Excluding the runner, the gate, or the
-# shared lib would be the ADR 0125 miscount: a coverage number narrowed by an undeclared
-# filter reads as full coverage. A count is only as wide as the population it enumerates.
+# shared lib would be a miscount: a coverage number narrowed by an undeclared filter reads as
+# full coverage. A count is only as wide as the population it enumerates.
 #
 # A selftest may be `.ps1` or `.mjs` (the workflow corpus is JS-side), and shipped artifacts now
 # include `.js` workflows. Both lists derive from ONE enumeration so a new extension cannot land
@@ -592,7 +668,7 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
 # `templates/` directory are content this plugin COPIES into a consuming repo, not code it runs —
 # `templates/docs/build.ps1` belongs to whatever repo it lands in and cannot have a selftest here.
 # Declared and counted separately rather than filtered in silence, because an undeclared narrowing
-# is exactly how a partial count comes to read as full coverage (ADR 0125).
+# is exactly how a partial count comes to read as full coverage.
 $selftestRx = '\.selftest\.(ps1|mjs|js)$'
 $templateRx = '[\\/]templates[\\/]'
 $found = @(Get-ChildItem -LiteralPath $root -Recurse -File -Include '*.ps1', '*.mjs', '*.js', '*.sh', '*.py')
