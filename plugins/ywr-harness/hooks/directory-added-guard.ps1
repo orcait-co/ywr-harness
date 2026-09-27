@@ -7,15 +7,18 @@
 # this runs. Blocking would need a permissions deny rule instead (deliberately not
 # taken).
 #
-# Payload, verified against the shipped 2.1.220 binary's zod schema (this event is
-# absent from the official hooks reference's 30 documented events as of 2026-07-25;
-# it is a v2.1.219 changelog entry):
+# Payload (hooks reference "DirectoryAdded input", re-read raw 2026-09-27 on 2.1.283; first
+# read out of the 2.1.220 binary's zod schema before the event was documented):
 #   directory : absolute path of the directory that was added
 #   source    : "slash_command" (/add-dir) | "register_repo_root" (SDK control request)
-# The runtime consumes ONLY `systemMessage` for this event (it maps hook results to
-# .systemMessage and surfaces them as "DirectoryAdded hook: <text>"); `additionalContext`
-# is not in this event's list, and a non-zero exit sends the message to the debug log.
-# So: always exit 0 and speak through systemMessage.
+#
+# THE READER IS CLAUDE, NOT THE PERSON (ADR 0097). Per the reference, a `slash_command`
+# systemMessage is delivered "to Claude as context on the next conversation turn, rather than
+# showing it to you", and a `register_repo_root` one goes to the debug log only. So the banner
+# is English (ADR 0045's reader rule, narrowed by ADR 0097), states what the model should do,
+# and asks it to relay one sentence to the user. The hook runs in the background after the add
+# has completed; a failed hook shows only as a failure COUNT in the transcript (/add-dir) or not at
+# all (register_repo_root), its output going to the debug log — so always exit 0.
 #
 # Anti-vacuity: a DirectoryAdded payload with no `directory` emits a SCHEMA-DRIFT
 # banner listing the keys actually received, rather than failing open into silence.
@@ -36,7 +39,7 @@ if ([string]$payload.hook_event_name -ne 'DirectoryAdded') { exit 0 }
 
 # Payload-authored text is echoed through Inline() — the class agent-model-warn.ps1 uses (C0, DEL,
 # U+0085 NEL, U+2028/U+2029 and the backtick become a space, then a hard cap) — so a hostile value
-# cannot forge a second `[hook:*]` line in the banner a person or a model reads.
+# cannot forge a second `[hook:*]` line in the banner the model reads.
 function Inline([string]$Text, [int]$Max = 80) {
     $t = (([string]$Text) -replace '[\u0000-\u001F\u007F\u0085\u2028\u2029`]', ' ').Trim()
     if ($t.Length -gt $Max) { $t = $t.Substring(0, $Max - 1) + '…' }
@@ -47,25 +50,28 @@ function Inline([string]$Text, [int]$Max = 80) {
 # (a value of only control bytes or backticks survives Trim() but echoes as nothing), and a
 # non-string `directory` is a shape change — both are drift.
 $dir = if ($payload.directory -is [string]) { $payload.directory.Trim() } else { '' }
+# A `source` that is present but not a string is named as such, never folded into 'absent'.
 $src = if ($payload.source -is [string]) { Inline $payload.source } else { '' }
-if (-not $src) { $src = '(source absent)' }
+if (-not $src) { $src = if ($null -ne $payload.source) { '(source not a string)' } else { '(source absent)' } }
 
 if (-not (Inline $dir)) {
     $keys = '(none)'
     try { $k = @($payload.PSObject.Properties.Name | Sort-Object); if ($k) { $keys = Inline ($k -join ', ') 300 } } catch { }
-    $drift = "[hook:dir-added] SCHEMA DRIFT — DirectoryAdded 페이로드의 'directory' 필드가 없거나 비어 있거나 문자열이 아니어서, 이 가드가 작업 공간에 무엇이 추가되었는지 보고할 수 없습니다. 수신된 키: $keys. hooks 레퍼런스의 DirectoryAdded 입력 형식이 바뀌었을 수 있습니다 — 플러그인 쪽 문제이니 /ywr-harness:feedback 으로 알려 주세요."
+    $drift = "[hook:dir-added] SCHEMA DRIFT — the DirectoryAdded payload's 'directory' field is missing, empty or not a string, so this guard cannot report which directory was added to the session. Keys received: $keys. The hooks reference's DirectoryAdded input may have changed. In your next reply, tell the user in one sentence, in their language, that this is a ywr-harness plugin defect to report with /ywr-harness:feedback."
     @{ systemMessage = $drift } | ConvertTo-Json -Compress
     exit 0
 }
 
 # What the addition actually pulls in, per the official permissions reference table
-# "Additional directories grant file access, not configuration" (4 rows, read 2026-07-25).
-# Note the table's own caveat: these exceptions apply to --add-dir / /add-dir only,
-# NOT to permissions.additionalDirectories, which grants file access and nothing else.
+# "Additional directories grant file access, not configuration" (5 rows, re-read 2026-09-27;
+# the `.claude/commands` row was absent from the 2026-07-25 read). Note the table's own caveat:
+# these exceptions apply to --add-dir / /add-dir only, NOT to permissions.additionalDirectories,
+# which grants file access and nothing else.
 $loads = @()
 $unparsed = @()
 $instr = @()
 $instrLocal = @()
+$eapSaved = $ErrorActionPreference
 try {
     # Join-Path/Test-Path raise NON-TERMINATING errors when $dir names a root that does
     # not exist on this platform (a Windows drive letter under Linux CI, a bogus drive
@@ -75,10 +81,13 @@ try {
     # Add-Content write.
     $ErrorActionPreference = 'Stop'
     if (Test-Path -LiteralPath (Join-Path $dir '.claude/skills')) {
-        $loads += '.claude/skills의 스킬 (라이브 리로드 포함)'
+        $loads += 'skills from .claude/skills (live reload)'
+    }
+    if (Test-Path -LiteralPath (Join-Path $dir '.claude/commands')) {
+        $loads += 'command files from .claude/commands (no live reload; a same-named command of this project wins)'
     }
     if (Test-Path -LiteralPath (Join-Path $dir '.claude/agents')) {
-        $loads += '.claude/agents의 서브에이전트 정의 — 같은 이름의 정의가 하네스 에이전트의 model/effort 고정을 가릴 수 있음'
+        $loads += 'subagent definitions from .claude/agents — they answer bare names, so a spawn naming worker instead of ywr-harness:worker gets that tree''s model/effort, not the harness pin'
     }
     $keysFound = @()
     foreach ($s in @('.claude/settings.json', '.claude/settings.local.json')) {
@@ -93,7 +102,7 @@ try {
         }
         catch { $unparsed += $s }
     }
-    if ($keysFound) { $loads += "$($keysFound -join ' + ') — 설정 파일에서 로드됨 (추가된 디렉터리가 기여할 수 있는 유일한 설정 키)" }
+    if ($keysFound) { $loads += "$($keysFound -join ' + ') from its settings (the only settings keys an added directory contributes)" }
 
     # CLAUDE.local.md is listed apart because the reference gives it a SECOND
     # precondition the others do not have (review finding, low).
@@ -103,22 +112,26 @@ try {
     if (Test-Path -LiteralPath (Join-Path $dir 'CLAUDE.local.md')) { $instrLocal += 'CLAUDE.local.md' }
 }
 catch { }
+# Stop is for the probes above only; the banner assembly below must not inherit it.
+finally { $ErrorActionPreference = $eapSaved }
 
-$mdEnvSet = [bool][string]$env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
-$parts = @("[hook:dir-added] $(Inline $dir 300) 디렉터리가 이 세션의 작업 디렉터리로 추가되었습니다 (source: $src).")
-$parts += "CLAUDE.md의 컨텍스트 격리 주장은 관례일 뿐 강제 사항이 아닙니다: 이 트리 하위의 파일은 이제부터 도구가 읽고 편집할 수 있으므로, 비즈니스·법률·재무 관련 맥락이 이 세션에 유입될 수 있습니다."
-$parts += '이 저장소는 이를 전혀 게이트하지 않습니다 — 모든 훅과 git 훅은 경로를 CLAUDE_PROJECT_DIR 기준으로 해석하므로, ruff-on-edit, ADR append-only 가드, handoff 계약, pre-commit lint, pre-push secret scan 모두 추가된 트리에서의 수정을 건너뜁니다.'
-if ($loads) { $parts += "여기서 로드된 설정: $($loads -join ' · ')." }
-if ($unparsed) { $parts += "$($unparsed -join ', ')을(를) 파싱할 수 없어, enabledPlugins 또는 extraKnownMarketplaces 기여 여부는 UNKNOWN이며 부재로 단정할 수 없습니다." }
+# The permissions reference gates the merge on `=1`. Any other value reads as unset: telling the model
+# files are NOT in context when they are costs one extra read; the reverse leaves it without them.
+$mdEnvSet = ([string]$env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD).Trim() -eq '1'
+$parts = @("[hook:dir-added] $(Inline $dir 300) was added as a working directory of this session (source: $src).")
+$parts += 'Files under it are now readable and editable by your tools; a context-isolation rule stated in any CLAUDE.md is convention, not enforcement, so do not carry content from that tree into this project unless the user asks.'
+$parts += 'Do not assume this project''s gates cover it: its git hooks never run for a commit in the added tree (that repository''s own hooks do), and its Claude Code hooks still fire on your tool calls there but may skip or misjudge paths outside CLAUDE_PROJECT_DIR — run that tree''s own checks when you change files there.'
+if ($loads) { $parts += "Loaded from it: $($loads -join ' · ')." }
+if ($unparsed) { $parts += "$($unparsed -join ', ') could not be parsed, so whether it contributes enabledPlugins or extraKnownMarketplaces is UNKNOWN, not absent." }
 if ($instr) {
     $found = $instr -join ', '
-    if ($mdEnvSet) { $parts += "지침 파일 존재 ($found), CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD도 설정됨 — 이 세션의 프롬프트에 MERGE됩니다." }
-    else { $parts += "지침 파일 존재 ($found), 그러나 CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD가 설정되지 않아 파일로만 읽히고 프롬프트에는 합류하지 않습니다." }
+    if ($mdEnvSet) { $parts += "Instruction files present ($found) and CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 — they MERGE into this session's prompt." }
+    else { $parts += "Instruction files present ($found), but CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD is not 1, so they are NOT in your context — read them before working in that tree." }
 }
 if ($instrLocal) {
-    if ($mdEnvSet) { $parts += 'CLAUDE.local.md가 존재하고 해당 환경 변수도 설정되어 있지만, `local` 설정 소스도 함께 활성화되어 있을 때만 병합됩니다 (기본값) — 다른 지침 파일보다 조건이 하나 더 있습니다.' }
-    else { $parts += 'CLAUDE.local.md가 존재하지만 같은 이유(환경 변수 미설정)로 프롬프트에 합류하지 않습니다.' }
+    if ($mdEnvSet) { $parts += 'CLAUDE.local.md is present and the env var is 1, but it merges only while the ''local'' setting source is also enabled (the default) — one precondition more than the other instruction files.' }
+    else { $parts += 'CLAUDE.local.md is present and, for the same reason (env var not 1), NOT in your context.' }
 }
-$parts += '의도한 것이 아니라면 /permissions로 되돌리세요.'
+$parts += 'In your next reply, tell the user in one sentence, in their language, that this directory was added and that this project''s checks may not cover edits there; if they did not mean to add it, /permissions removes it.'
 @{ systemMessage = ($parts -join ' ') } | ConvertTo-Json -Compress
 exit 0

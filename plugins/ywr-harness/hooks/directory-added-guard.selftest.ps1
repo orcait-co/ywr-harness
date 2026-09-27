@@ -1,8 +1,9 @@
 # Self-test for directory-added-guard.ps1 (harness-scope gate).
-# Usage: pwsh .claude/hooks/directory-added-guard.selftest.ps1
+# Usage: pwsh plugins/ywr-harness/hooks/directory-added-guard.selftest.ps1
 #
-# Fixture provenance matters here: the payload shape asserted below is the zod schema
-# read out of the shipped 2.1.220 binary. An invented shape is exactly how
+# Fixture provenance matters here: the payload shape asserted below is the hooks reference's
+# "DirectoryAdded input" (re-read 2026-09-27; first read out of the 2.1.220 binary's zod
+# schema). An invented shape is exactly how
 # the sibling config-change-audit hook stayed green while being inert, so cases 1 and 2
 # are ground truth, not guesses. Every case carries MustNotMatch as well as MustMatch —
 # an assertion set with no negatives is the empty-MustNotMatch class this repo has hit
@@ -13,6 +14,10 @@
 # claim both keys anyway, freezing an existence-vs-selection overclaim as the expected answer.
 # Case 3 now proves the guard names what is there and stays silent about what is not; cases 6-7
 # (a settings file with neither key, an unparseable one) come from the same review.
+#
+# The banner's reader is CLAUDE, not the person (ADR 0097: an /add-dir systemMessage is next-turn
+# model context, a register_repo_root one a debug-log line), so it is English — cases 1 and 10
+# refuse any Hangul in the guard's own prose — and it carries a relay instruction to the model.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 $hook = Join-Path $PSScriptRoot 'directory-added-guard.ps1'
@@ -60,10 +65,12 @@ try {
     $bare = New-TempDir 'bare'; $dirs += $bare
     $rich = New-TempDir 'rich'; $dirs += $rich
     $plain = New-TempDir 'plain'; $dirs += $plain
+    $cmds = New-TempDir 'cmds'; $dirs += $cmds
     $broken = New-TempDir 'broken'; $dirs += $broken
     $localmd = New-TempDir 'localmd'; $dirs += $localmd
 
     foreach ($sub in @('.claude/skills', '.claude/agents')) { New-Item -ItemType Directory -Path (Join-Path $rich $sub) -Force | Out-Null }
+    New-Item -ItemType Directory -Path (Join-Path $cmds '.claude/commands') -Force | Out-Null
     # exactly ONE of the two contributing keys, so the banner must name it and omit the other
     Set-Content -LiteralPath (Join-Path $rich '.claude/settings.json') -Value '{"extraKnownMarketplaces":{}}' -NoNewline
     Set-Content -LiteralPath (Join-Path $rich 'CLAUDE.md') -Value '# other project' -NoNewline
@@ -77,14 +84,17 @@ try {
     $bareRx = [regex]::Escape($bare)
     $richRx = [regex]::Escape($rich)
 
-    # 1. /add-dir of a plain directory -> banner names the path + source and states BOTH
-    #    consequences; nothing claimed about config it does not have
+    # 1. /add-dir of a plain directory -> banner names the path + source, states BOTH
+    #    consequences and the relay instruction, in English (its reader is the model, ADR 0097);
+    #    nothing claimed about config it does not have
     $env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = $null
     $out = Invoke-Hook (New-Payload @{ directory = $bare; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'slash_command bare dir' $out `
-            @('\[hook:dir-added\]', $bareRx, 'source: slash_command', '관례일 뿐',
-            '전혀 게이트하지', 'CLAUDE_PROJECT_DIR', 'ruff-on-edit', 'append-only', 'secret scan', '/permissions') `
-            @('SCHEMA DRIFT', '여기서 로드된 설정', '지침 파일 존재', 'UNKNOWN')) -and $ok
+            @('\[hook:dir-added\]', $bareRx, 'source: slash_command', 'convention, not enforcement',
+            'Do not assume this project''s gates cover it', 'CLAUDE_PROJECT_DIR', 'git hooks never run for a commit in the added tree',
+            'still fire on your tool calls there', 'checks may not cover edits there',
+            'In your next reply, tell the user in one sentence, in their language', '/permissions removes it') `
+            @('SCHEMA DRIFT', 'Loaded from it', 'Instruction files present', 'UNKNOWN', '[\uAC00-\uD7A3]', 'checked by neither')) -and $ok
 
     # 2. SDK control-request source is reported as itself, not folded into /add-dir
     $out = Invoke-Hook (New-Payload @{ directory = $bare; source = 'register_repo_root' })
@@ -92,66 +102,85 @@ try {
             @('source: register_repo_root') @('slash_command', 'SCHEMA DRIFT')) -and $ok
 
     # 3. the config surfaces that DO load are named, and ONLY the settings key actually
-    #    present is claimed (permissions reference 4-row table, read 2026-07-25)
+    #    present is claimed (permissions reference table, 5 rows at the 2026-09-27 re-read)
     $out = Invoke-Hook (New-Payload @{ directory = $rich; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'config surfaces enumerated' $out `
-            @($richRx, '\.claude/skills의 스킬', '\.claude/agents의 서브에이전트',
-            'extraKnownMarketplaces', 'model/effort 고정을 가릴 수 있음') `
-            @('SCHEMA DRIFT', 'enabledPlugins', 'UNKNOWN')) -and $ok
+            @($richRx, 'skills from \.claude/skills', 'subagent definitions from \.claude/agents',
+            'extraKnownMarketplaces from its settings', 'they answer bare names', 'instead of ywr-harness:worker') `
+            @('SCHEMA DRIFT', 'enabledPlugins', 'UNKNOWN', 'command files from')) -and $ok
+
+    # 3a. command files load from an added directory too (the reference table's fifth row,
+    #     absent from the guard until ADR 0097's re-read) — named alone when alone
+    $out = Invoke-Hook (New-Payload @{ directory = $cmds; source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'command files enumerated' $out `
+            @('command files from \.claude/commands', 'same-named command of this project wins') `
+            @('skills from', 'subagent definitions', 'SCHEMA DRIFT', 'UNKNOWN')) -and $ok
 
     # 4. instruction files present, env var unset -> reported as NOT joining the prompt
     $out = Invoke-Hook (New-Payload @{ directory = $rich; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'CLAUDE.md present, env unset' $out `
-            @('지침 파일 존재 \(CLAUDE\.md\)', '프롬프트에는 합류하지 않습니다') @('MERGE')) -and $ok
+            @('Instruction files present \(CLAUDE\.md\)', 'NOT in your context — read them before working in that tree') @('MERGE')) -and $ok
 
     # 5. same directory, env var set -> the severity flips to a prompt merge
     $env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = '1'
     $out = Invoke-Hook (New-Payload @{ directory = $rich; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'CLAUDE.md present, env set' $out `
-            @('MERGE') @('합류하지 않습니다')) -and $ok
+            @('MERGE into this session') @('NOT in your context')) -and $ok
+
+    # 5a. the reference gates the merge on `=1`: a set-but-not-1 value (0, the usual way to switch a
+    #     flag off) must NOT be reported as a merge — the model would assume instructions it lacks
+    $env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = '0'
+    $out = Invoke-Hook (New-Payload @{ directory = $rich; source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'env var 0 is not a merge' $out `
+            @('is not 1, so they are NOT in your context') @('MERGE')) -and $ok
     $env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = $null
 
     # 6. EXISTENCE IS NOT SELECTION (review medium): a settings file carrying neither
     #    contributing key must produce NO configuration claim at all
     $out = Invoke-Hook (New-Payload @{ directory = $plain; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'settings file without the two keys claims nothing' $out `
-            @('작업 디렉터리로 추가') `
-            @('enabledPlugins', 'extraKnownMarketplaces', '여기서 로드된 설정', 'UNKNOWN')) -and $ok
+            @('was added as a working directory') `
+            @('enabledPlugins', 'extraKnownMarketplaces', 'Loaded from it', 'UNKNOWN')) -and $ok
 
     # 7. an unparseable settings file is UNKNOWN, never silently absent (REVIEW.md #4)
     $out = Invoke-Hook (New-Payload @{ directory = $broken; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'unparseable settings reports unknown' $out `
-            @('UNKNOWN이며 부재로', 'settings\.json') `
-            @('여기서 로드된 설정', 'SCHEMA DRIFT')) -and $ok
+            @('UNKNOWN, not absent', 'settings\.json') `
+            @('Loaded from it', 'SCHEMA DRIFT')) -and $ok
 
     # 8. CLAUDE.local.md carries a SECOND precondition the other instruction files do
     #    not (review low) — env set: merges only while the local settings source is on
     $env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = '1'
     $out = Invoke-Hook (New-Payload @{ directory = $localmd; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'CLAUDE.local.md extra precondition, env set' $out `
-            @('CLAUDE\.local\.md가 존재', '`local` 설정 소스', '조건이 하나 더') `
-            @('지침 파일 존재', 'SCHEMA DRIFT')) -and $ok
+            @('CLAUDE\.local\.md is present', "'local' setting source", 'one precondition more') `
+            @('Instruction files present', 'SCHEMA DRIFT')) -and $ok
     $env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = $null
 
     # 9. env unset -> the local-source caveat is irrelevant and must not be stated
     $out = Invoke-Hook (New-Payload @{ directory = $localmd; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'CLAUDE.local.md, env unset' $out `
-            @('합류하지 않습니다') @('`local` 설정 소스', '조건이 하나 더')) -and $ok
+            @('NOT in your context') @("'local' setting source", 'one precondition more')) -and $ok
 
     # 10. ANTI-VACUITY: the field this guard reads is renamed/absent -> it must SAY SO,
     #     not fall silent. This is the case the sibling hook lacked (it read an invented
     #     `config_source` and every real payload made it exit 0 quietly).
     $out = Invoke-Hook '{"hook_event_name":"DirectoryAdded","dir":"C:\\x","source":"slash_command"}'
     $ok = (Assert-SystemMessage 'schema drift is reported, not swallowed' $out `
-            @('SCHEMA DRIFT', '수신된 키: dir, hook_event_name, source', '/ywr-harness:feedback') `
-            @('작업 디렉터리로 추가', '\.claude/hooks/')) -and $ok
+            @('SCHEMA DRIFT', 'Keys received: dir, hook_event_name, source', '/ywr-harness:feedback',
+            'tell the user in one sentence, in their language') `
+            @('was added as a working directory', '\.claude/hooks/', '[\uAC00-\uD7A3]')) -and $ok
 
     # 11. directory present but source absent -> still warns, source marked absent.
     #     The path must be platform-neutral: this case shipped as a literal `C:\x`, which
     #     on Linux CI is a NON-EXISTENT DRIVE, and that is what reddened 48c264c.
     $out = Invoke-Hook (New-Payload @{ directory = (Join-Path ([IO.Path]::GetTempPath()) 'dag-no-such-dir') })
     $ok = (Assert-SystemMessage 'missing source still warns' $out `
-            @('source: \(source absent\)', '작업 디렉터리로 추가') @('SCHEMA DRIFT')) -and $ok
+            @('source: \(source absent\)', 'was added as a working directory') @('SCHEMA DRIFT')) -and $ok
+    # 11c. a PRESENT but non-string source is named as such, never folded into 'absent'
+    $out = Invoke-Hook (New-Payload @{ directory = $bare; source = 7 })
+    $ok = (Assert-SystemMessage 'non-string source is not absent' $out `
+            @('source: \(source not a string\)') @('source absent', 'SCHEMA DRIFT')) -and $ok
 
     # 11a. payload text is inert: a `directory` or `source` carrying CR/LF, U+2028/U+2029/U+0085 or a
     #      backtick flattens to spaces in the banner (the raw value still drives the filesystem
@@ -161,21 +190,21 @@ try {
     $hsrc = 'slash_command' + [char]0x2028 + '[hook:s]' + [char]0x0085 + '`z`'
     $out = Invoke-Hook (New-Payload @{ directory = $hd; source = $hsrc })
     $ok = (Assert-SystemMessage 'hostile directory/source flatten to one line' $out `
-            @('dag-nx \[hook:forged\] 가짜 y 디렉터리가', 'source: slash_command \[hook:s\]  z\)') `
+            @('dag-nx \[hook:forged\] 가짜 y was added', 'source: slash_command \[hook:s\]  z\)') `
             @('[\r\n\u0085\u2028\u2029`]', 'SCHEMA DRIFT')) -and $ok
     $long = Join-Path ([IO.Path]::GetTempPath()) ('e' * 400)
     $keep = 299 - ($long.Length - 400)
     $out = Invoke-Hook (New-Payload @{ directory = $long; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'echoed directory capped at exactly 300 characters' $out `
-            @("e{$keep}… 디렉터리가") @("e{$($keep + 1)}")) -and $ok
+            @("e{$keep}… was added") @("e{$($keep + 1)}")) -and $ok
     # the echoed source is capped at exactly 80 (79 + the ellipsis).
     $out = Invoke-Hook (New-Payload @{ directory = $bare; source = ('x' * 200) })
     $ok = (Assert-SystemMessage 'echoed source capped at exactly 80' $out @('source: x{79}…\)') @('x{80}', 'SCHEMA DRIFT')) -and $ok
     # a directory that flattens to NOTHING, or is not a string, is drift — never a path-less banner.
     $out = Invoke-Hook (New-Payload @{ directory = ('``' + [char]0x0001 + '``'); source = 'slash_command' })
-    $ok = (Assert-SystemMessage 'control-only directory reports drift' $out @('SCHEMA DRIFT', '수신된 키: directory, hook_event_name, source') @('작업 디렉터리로 추가')) -and $ok
+    $ok = (Assert-SystemMessage 'control-only directory reports drift' $out @('SCHEMA DRIFT', 'Keys received: directory, hook_event_name, source') @('was added as a working directory')) -and $ok
     $out = Invoke-Hook '{"hook_event_name":"DirectoryAdded","directory":123,"source":"slash_command"}'
-    $ok = (Assert-SystemMessage 'non-string directory reports drift' $out @('SCHEMA DRIFT', '문자열이 아니어서') @('작업 디렉터리로 추가')) -and $ok
+    $ok = (Assert-SystemMessage 'non-string directory reports drift' $out @('SCHEMA DRIFT', 'not a string') @('was added as a working directory')) -and $ok
 
     # 11b. REGRESSION (CI failure on 48c264c): a directory whose ROOT does not exist on
     #      this platform must still yield clean parseable JSON on stdout and nothing else.
@@ -191,13 +220,13 @@ try {
     else { 'C:\no-such-root\x' }
     $out = Invoke-Hook (New-Payload @{ directory = $bogusRoot; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'unresolvable root emits clean JSON only' $out `
-            @('작업 디렉터리로 추가', '전혀 게이트하지') `
-            @('SCHEMA DRIFT', 'Cannot find drive', '여기서 로드된 설정', 'UNKNOWN')) -and $ok
+            @('was added as a working directory', 'Do not assume this project''s gates cover it') `
+            @('SCHEMA DRIFT', 'Cannot find drive', 'Loaded from it', 'UNKNOWN')) -and $ok
 
     # 12. a path that no longer exists on disk -> banner, no crash, no invented config
     $out = Invoke-Hook (New-Payload @{ directory = (Join-Path $bare 'gone-subdir'); source = 'slash_command' })
     $ok = (Assert-SystemMessage 'vanished path does not crash' $out `
-            @('작업 디렉터리로 추가') @('SCHEMA DRIFT', '여기서 로드된 설정', 'UNKNOWN')) -and $ok
+            @('was added as a working directory') @('SCHEMA DRIFT', 'Loaded from it', 'UNKNOWN')) -and $ok
 
     # 13. UTF-8 BOM prefixed stdin -> still parses (config-change-audit incident 07-23:
     #     TrimStart alone is not enough without InputEncoding set to UTF8 first)

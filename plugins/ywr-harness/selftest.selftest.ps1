@@ -9,8 +9,9 @@
 # equal the unsharded list, pairwise disjoint, every shard non-empty, sizes within one of each
 # other (round-robin). If that ever fails, a CI matrix would be green while a suite ran on no
 # shard — the silent-coverage-loss class this file exists to keep loud.
-# Section G makes the only real runs — four (G1, G3, G4, G5), all of a COPY of the runner in a
-# fixture tree of three stub suites; G6 is -List again, G7 reads this file's own FAIL echo.
+# Section G makes the only real runs — five (G1, G3, G4, G5, G8), all of a COPY of the runner in
+# a fixture tree of stub suites (three; G8's own tree has two); G6 is -List again, G7 reads this
+# file's own FAIL echo.
 #
 # Usage: pwsh plugins/ywr-harness/selftest.selftest.ps1  (exit 0 = all green). 42–82 s measured
 # 2026-09-23 on a box shared with other agents' runs (section G is about half of it).
@@ -277,6 +278,44 @@ $ok = (Assert-Case 'G5 -Shard 3/3 -Jobs 2: c-pass alone, the gate still runs, gr
     @('selftests: discovered=3 shard=3/3 selected=1 passed=1 failed=0', 'all gates green \(shard 3/3\)', 'PASS  stub manifest gate', '(?m)^ok   c-pass\.selftest\.ps1') `
     @('done a-slow', 'done b-fail', '(?m)^FAIL', 'FAIL —')) -and $ok
 
+# G8 — -SuiteTimeout (ADR 0098): a suite that hangs is killed WITH its process tree and counted
+# FAILED, the run still finishes and still reports the suite beside it. Its own fixture tree, so G1–G5's
+# counts stay three. The hanging stub starts a grandchild pwsh first and records its PID: the case
+# checks that child is gone too, since a surviving descendant is what kept a CI job alive. The limit
+# is 20 s, not less: under a loaded 2-CPU container a 5 s limit fired while the stub was still
+# spawning (measured 2026-09-27), and a process killed mid-spawn can orphan the child it was
+# starting. The stub writes `ready` once the grandchild runs, so that case reads as what it is.
+$fxHang = Join-Path $fxBase 'hang'
+New-Item -ItemType Directory -Force $fxHang | Out-Null
+$hangRunner = Join-Path $fxHang 'selftest.ps1'
+Copy-Item -LiteralPath $runner -Destination $hangRunner
+[IO.File]::WriteAllText((Join-Path $fxHang 'manifest-gate.ps1'), "Write-Host 'PASS  stub manifest gate'`nexit 0`n")
+[IO.File]::WriteAllText((Join-Path $fxHang 'h-hang.selftest.ps1'), @'
+$kid = Start-Process -FilePath ([Environment]::ProcessPath) -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 300' -NoNewWindow -PassThru
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'grandchild.pid'), "$($kid.Id)")
+Write-Host 'PASS [h before the hang]'
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'ready'), '1')
+Start-Sleep -Seconds 300
+exit 0
+'@)
+[IO.File]::WriteAllText((Join-Path $fxHang 'p-ok.selftest.ps1'), "Write-Host 'PASS [p one]'`nexit 0`n")
+$hangClock = [Diagnostics.Stopwatch]::StartNew()
+$g8 = Invoke-RunnerFresh $hangRunner @('-Jobs', '2', '-SuiteTimeout', '20')
+$hangClock.Stop()
+$ok = (Assert-Case 'G8 a hung suite is killed at -SuiteTimeout and counted FAILED; the suite beside it still reports' $g8 1 `
+    @('selftests: discovered=2 passed=1 failed=1', 'FAIL — h-hang\.selftest\.ps1', '(?m)^done h-hang\.selftest\.ps1 FAIL \(',
+        'exceeded -SuiteTimeout 20 s and was killed with its process tree', '(?m)^PASS \[h before the hang\]', '(?m)^ok   p-ok\.selftest\.ps1') `
+    @('all gates green', '(?m)^--- p-ok')) -and $ok
+$gcPid = 0
+$gcFile = Join-Path $fxHang 'grandchild.pid'
+$gcRead = (Test-Path -LiteralPath $gcFile) -and [int]::TryParse(([IO.File]::ReadAllText($gcFile)).Trim(), [ref]$gcPid)
+$gcAlive = $gcRead -and [bool](Get-Process -Id $gcPid -ErrorAction SilentlyContinue)
+$stubReady = Test-Path -LiteralPath (Join-Path $fxHang 'ready')
+if ($gcAlive) { Stop-Process -Id $gcPid -Force -ErrorAction SilentlyContinue }
+$ok = (Assert-True 'G8b the hung suite''s grandchild died with it, and the run ended well before the stub''s 300 s' `
+    ($stubReady -and $gcRead -and -not $gcAlive -and $hangClock.Elapsed.TotalSeconds -lt 120) `
+    "stub ready before the kill=$stubReady (false: the limit fired mid-spawn — load, not the kill) · grandchild pid read=$gcRead alive=$gcAlive · wall $([int]$hangClock.Elapsed.TotalSeconds) s`n$(Format-Nested $g8.Out)") -and $ok
+
 # Not cased: the runner's could-not-start and no-result branches. Neither is reachable from a
 # fixture without a test hook in the shipped runner — tried 2026-09-23: with PATH pointing at an
 # empty dir, the runner's `& pwsh` still resolved and the suites ran.
@@ -285,6 +324,11 @@ $ok = (Assert-Case 'G5 -Shard 3/3 -Jobs 2: c-pass alone, the gate still runs, gr
 foreach ($bad in '0', '-3') {
     $ok = (Assert-Case "G6 -Jobs $bad refused" (Invoke-Runner $runner @('-List', '-Jobs', $bad)) 1 `
         @('FAIL — -Jobs must be a whole number >= 1', [regex]::Escape("(got $bad)")) @('LIST ONLY', 'suites: discovered')) -and $ok
+}
+# G6c — -SuiteTimeout outside 1..86400 is refused too; the upper bound keeps the milliseconds in Int32.
+foreach ($bad in '0', '-3', '86401') {
+    $ok = (Assert-Case "G6c -SuiteTimeout $bad refused" (Invoke-Runner $runner @('-List', '-SuiteTimeout', $bad)) 1 `
+        @('FAIL — -SuiteTimeout must be a whole number of seconds from 1 to 86400', [regex]::Escape("(got $bad)")) @('LIST ONLY', 'suites: discovered')) -and $ok
 }
 $ok = (Assert-Case 'G6b -List -Jobs 2 -Shard 1/2 lists and runs nothing' (Invoke-Runner $runner @('-List', '-Jobs', '2', '-Shard', '1/2')) 0 `
     @('LIST ONLY', 'shard=1/2 selected=\d+') @('--- manifest-gate\.ps1', '--- suites:', 'all gates green')) -and $ok

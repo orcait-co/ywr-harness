@@ -28,7 +28,11 @@ by `/ywr-harness:harness-init` (ADR 0054).
    is the single source of truth (no body duplication); new internal doc prose is English. The
    READER decides rendered-surface language (ADR 0045): every hook `systemMessage` is Korean —
    state markers, commands and paths verbatim — while `additionalContext` (model) and internal
-   docs stay English; a new hook shipping an English member banner is a finding.
+   docs stay English; a new hook shipping an English member banner is a finding. A
+   `systemMessage` the event never shows the person is English and addressed to the model
+   (ADR 0097: DirectoryAdded's goes to the model on `/add-dir`, to the debug log on
+   `register_repo_root`) — read the event's delivery in the raw hooks reference before choosing
+   the language.
 6. **Secrets** — never committed (`.env` gitignored, `.env.example` only). The pre-push hook scans
    added lines; a false positive is exempted per line with `harness:allow-secret`, never with
    `--no-verify`. NEVER quote a scanner's trigger string in comments, handoffs or commit messages —

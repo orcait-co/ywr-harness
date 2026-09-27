@@ -58,6 +58,13 @@ param(
     # one at a time in discovery order — the fallback if a suite ever proves unsafe to run beside
     # another. Composes with -Shard (the shard selects, -Jobs runs the selection). Below 1 is exit 1.
     [int]$Jobs = [Math]::Min([Environment]::ProcessorCount, 8),
+    # Seconds one suite may run before it is killed with its process tree and counted FAILED
+    # (ADR 0098). Without it a hung suite showed only as a missing `done` line, and on CI it held
+    # the job until GitHub's 360-minute default. 900 is ~3x the slowest suite measured anywhere
+    # (manifest-gate.selftest, 268–292 s at jobs=8 on the owner's box). Outside 1..86400 is exit 1.
+    # It bounds the SUITES only: the two gates ahead of them and the warning-label probe run under
+    # the caller's own limit (on CI, the job's timeout-minutes).
+    [int]$SuiteTimeout = 900,
     # Print every suite's full captured output, in discovery order, instead of the condensed
     # one-line-per-passing-suite view. Debugging aid; the verdict and exit code do not change.
     [switch]$Full
@@ -73,8 +80,13 @@ if ($Jobs -lt 1) {
     Write-Host "FAIL — -Jobs must be a whole number >= 1 (got $Jobs)" -ForegroundColor Red
     exit 1
 }
+# The upper bound keeps $SuiteTimeout * 1000 inside WaitForExit's Int32 milliseconds.
+if ($SuiteTimeout -lt 1 -or $SuiteTimeout -gt 86400) {
+    Write-Host "FAIL — -SuiteTimeout must be a whole number of seconds from 1 to 86400 (got $SuiteTimeout)" -ForegroundColor Red
+    exit 1
+}
 
-# --- shard argument (ADR 0071) ---------------------------------------------------------------
+# --- shard argument (ADR 0071)---------------------------------------------------------------
 $shardIndex = 0
 $shardCount = 0
 if ($Shard) {
@@ -144,7 +156,8 @@ if ($List) {
 $gate = Join-Path $PSScriptRoot 'manifest-gate.ps1'
 if (Test-Path -LiteralPath $gate) {
     Write-Host '--- manifest-gate.ps1' -ForegroundColor Cyan
-    & pwsh -NoProfile -ExecutionPolicy Bypass -File $gate
+    # The runner's own pwsh, as for every suite child below — never a different one off PATH.
+    & ([Environment]::ProcessPath) -NoProfile -ExecutionPolicy Bypass -File $gate
     if ($LASTEXITCODE -ne 0) { $failed += 'manifest-gate.ps1' }
 } else {
     Write-Host 'FAIL — manifest-gate.ps1 missing (the wiring gate is not optional)' -ForegroundColor Red
@@ -208,7 +221,7 @@ function Get-SignalRx {
     if ($null -ne $script:signalRx) { return $script:signalRx }
     $rx = '^(SKIP|WARN|FAIL|KEEP)'
     try {
-        $probe = @(& pwsh -NoProfile -ExecutionPolicy Bypass -Command '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); Write-Warning ''ywr-warning-label-probe''' 2>&1 | ForEach-Object { "$_" })
+        $probe = @(& ([Environment]::ProcessPath) -NoProfile -ExecutionPolicy Bypass -Command '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); Write-Warning ''ywr-warning-label-probe''' 2>&1 | ForEach-Object { "$_" })
         foreach ($l in $probe) {
             $m = [regex]::Match((ConvertTo-Plain $l), '^(\S.*?)\s*ywr-warning-label-probe\s*$')
             if ($m.Success) { $rx += '|^' + [regex]::Escape($m.Groups[1].Value); break }
@@ -226,14 +239,62 @@ $work | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     # not used). Measured 2026-09-23 by mutation: a guarded re-pin in this block changed nothing,
     # and with the top pin removed it still let the Korean case fail, because this script's own
     # stdout writer had already been fixed at its first write.
+    #
+    # The child is a Process object, not `& pwsh`, because a timeout needs a handle to kill (ADR
+    # 0098). It is the runner's own pwsh ([Environment]::ProcessPath), read as UTF-8 on both pipes —
+    # the children inherit the console code page the pin above set. Its stderr follows its stdout
+    # rather than interleaving; nothing keys on that order (the verdict is the exit code).
     $s = $_
+    $limit = $using:SuiteTimeout
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $lines = @()
     $code = -1
     try {
-        $global:LASTEXITCODE = -1
-        $lines = @(& pwsh -NoProfile -ExecutionPolicy Bypass -File $s.Path 2>&1 | ForEach-Object { "$_" })
-        $code = $global:LASTEXITCODE
+        $psi = [Diagnostics.ProcessStartInfo]::new([Environment]::ProcessPath)
+        foreach ($a in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $s.Path)) { $psi.ArgumentList.Add($a) }
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+        $psi.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+        $p = [Diagnostics.Process]::Start($psi)
+        # Both pipes drain asynchronously: a full pipe must never block the child.
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $errTask = $p.StandardError.ReadToEndAsync()
+        $timedOut = -not $p.WaitForExit($limit * 1000)
+        $unkillable = $false
+        if ($timedOut) {
+            # The whole tree: a suite's own children (fixture gits, nested pwsh) would otherwise
+            # keep the pipes open and the job alive.
+            try { $p.Kill($true) } catch { }
+            # A kill that threw or did not take must not trade one unbounded wait for another.
+            $unkillable = -not $p.WaitForExit(30000)
+        } else {
+            $p.WaitForExit()   # returns at once; the untimed overload is what flushes the async readers
+        }
+        if ($unkillable) {
+            $lines = @("FAIL — this suite exceeded -SuiteTimeout $limit s and was still running 30 s after the kill; its output is lost")
+        } elseif ([Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask, $errTask), 30000)) {
+            # (A descendant that escaped the tree could still hold a pipe: never wait on it forever.)
+            # Each pipe split on its own, so an unterminated last stdout line never fuses with stderr;
+            # the empty piece after a final newline is not a line.
+            $lines = @(foreach ($t in @($outTask.Result, $errTask.Result)) {
+                    if (-not $t) { continue }
+                    $parts = $t -split "`r?`n"
+                    if ($parts[-1] -eq '') { $parts = $parts[0..($parts.Count - 2)] }
+                    $parts
+                })
+        } else {
+            $lines = @("FAIL — this suite's output pipes stayed open 30 s after it exited; its output is lost")
+        }
+        if ($unkillable) {
+            $code = -1
+        } elseif ($timedOut) {
+            $lines = @($lines) + "FAIL — this suite exceeded -SuiteTimeout $limit s and was killed with its process tree"
+            $code = -1
+        } else {
+            $code = $p.ExitCode
+        }
     } catch {
         # A suite the runner could not even start is a FAILED suite with a reason, never a
         # missing row (and never the previous iteration's exit code on a reused runspace).
