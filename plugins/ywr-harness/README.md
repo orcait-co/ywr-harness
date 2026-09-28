@@ -242,11 +242,16 @@ fresh, isolated `claude -p` child with ONLY this plugin loaded and grades what c
 SessionStart hook's `additionalContext` reaching the model, `ywr-harness:verify` triggering on
 natural phrasing, the five `disable-model-invocation` skills staying uninvoked, and
 `ywr-harness:reviewer` resolving by its namespaced name with a `SubagentStop` ledger line behind
-it. Every case pins `model:` to a worker model (sonnet), and `manifest-gate.ps1` refuses a case
-that does not (or that carries an unknown frontmatter key or grader type — refusals the runner
-would otherwise deliver only after the paid run).
+it. Every case pins `model:` to one worker model (opus, ADR 0103), and `manifest-gate.ps1` refuses
+a case that does not (or that carries an unknown frontmatter key or grader type — refusals the
+runner would otherwise deliver only after the paid run). The child's effort has no flag and no
+frontmatter key: set it once per shell, or the child runs opus at its default effort (unmeasured;
+the sonnet child's was `high` at 2.1.278). The variable also overrides `/effort` for any `claude` session started later
+from that shell, so close the shell (or remove the variable) when the run is done.
 
 ```
+$env:CLAUDE_CODE_EFFORT_LEVEL = 'low'                          # PowerShell, once per shell — the suite's effort pin (spec 0014 §4.3)
+export CLAUDE_CODE_EFFORT_LEVEL=low                            # the same pin in bash/zsh
 claude plugin eval . --no-publish                              # from the plugin root: two arms, 3 runs per case
 claude plugin eval . --case <name> --runs 1 --ablation none     # iterate on one grader cheaply
 claude plugin eval ywr-harness@ywrlabs                          # the INSTALLED copy — a member self-check

@@ -12,6 +12,19 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.57.2 — 2026-09-28
+
+- **플러그인 평가 스위트(`evals/`)가 opus · effort low 로 돕니다 (ADR 0103).** 네 case 모두 `model: claude-opus-5-5`
+  를 고정하고, effort 는 실행하는 셸에서 정합니다. PowerShell 은 `$env:CLAUDE_CODE_EFFORT_LEVEL = 'low'`,
+  bash·zsh 는 `export CLAUDE_CODE_EFFORT_LEVEL=low` 입니다. 같은 트리에서 종전
+  sonnet · high 와 비교해 판정은 같았고(4/4), 비용은 약 39% 적었으며($2.25 → $1.37), 약 3배 빨랐습니다(871초 →
+  283초). 설치본 셀프체크(`claude plugin eval ywr-harness@ywrlabs`)를 돌릴 때도 그 셸에서 effort 줄을 먼저 넣으세요.
+  빠뜨리면 opus 가 기본 effort 로 돕니다(측정된 적 없음, 종전 sonnet 은 high 였습니다). 이 변수는 그 셸에서 나중에 띄운 `claude` 세션의 `/effort` 도 덮어쓰므로,
+  평가가 끝나면 셸을 닫거나 변수를 지우세요. 평가를 돌리지 않는 멤버에게는 달라지는 것이 없습니다.
+- `manifest-gate.ps1` 는 eval case 의 모델을 전체 id(예: `claude-opus-5-5`)로만 받습니다. `opus` 같은 별칭은 실행
+  시점의 최신 모델로 바뀌므로 거부합니다.
+- `manifest-gate.ps1` 가 eval case 의 모델로 opus 를 받아들입니다. Fable 은 여전히 거부합니다.
+
 ## v0.57.1 — 2026-09-28
 
 - **Sonnet·Fable 세션의 적대 코드리뷰에서 중복 그룹핑이 haiku 대신 sonnet · effort low 로 돕니다 (ADR 0102).**

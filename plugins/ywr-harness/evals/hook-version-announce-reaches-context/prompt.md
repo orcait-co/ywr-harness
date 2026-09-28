@@ -2,7 +2,7 @@
 description: The plugin's SessionStart version-announce hook (ADR 0030/0031) fires in a fresh isolated session and its additionalContext reaches the model. Automates spec 0012 §3 row 1 (hook events and payload delivery) for the exec-form pwsh hooks.
 expected_outcome: The reply names the ywr-harness plugin with a semantic version and says this is the first recorded run, without calling any tool. Without the plugin the model has no such context and says so.
 tags: [hooks, smoke]
-model: claude-sonnet-5
+model: claude-opus-5-5
 max_turns: 2
 allowed_tools: []
 ---

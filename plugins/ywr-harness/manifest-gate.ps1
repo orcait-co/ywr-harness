@@ -423,9 +423,13 @@ if (-not $inTree) {
 # surface only at run time: an unknown prompt.md frontmatter key is an error, a grader with an
 # unknown `type` fails to load, and a case with no grader scores nothing. Each costs a run to
 # find. This section refuses them here, plus the one house rule the host cannot know: every case
-# pins `model:` to a WORKER model (sonnet or haiku). An unpinned case runs on the operator's
-# session default — on a Premium seat that is the Fable weekly cap — and two operators with
-# different defaults get incomparable scores (org guide: workers never inherit the session model).
+# pins `model:` to a WORKER model (opus, sonnet or haiku — opus since ADR 0103). An unpinned case
+# runs on the operator's session default — on a Premium seat that is the Fable weekly cap — and two
+# operators with different defaults get incomparable scores (org guide: workers never inherit the
+# session model). Fable is never a worker pin here: it is the separate, smaller weekly cap. The
+# pin must be a FULL id, matched case-sensitively and end-anchored (ADR 0103): a bare alias
+# (`opus`) resolves to whatever the latest model is at run time, so a rollover would move the
+# series with no commit; a suffixed form (`claude-opus-5-5[1m]`) is not a model id.
 # The key and type sets are the documented ones (plugin-evals reference, read 2026-09-14). A
 # documented key this list lacks fails loudly here and is added in the same reviewed commit —
 # the alternative is a silent list that lets an unknown key through to a paid run.
@@ -442,7 +446,7 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
     $promptKeys = @('schema_version', 'name', 'description', 'tags', 'plugins', 'runs', 'expected_outcome',
                     'model', 'max_turns', 'timeout_seconds', 'allowed_tools', 'append_system_prompt', 'env')
     $graderTypes = @('regex', 'tool_used', 'tool_order', 'file_exists', 'llm', 'baseline')
-    $workerModelRx = '^(claude-)?(sonnet|haiku)'
+    $workerModelRx = '^claude-(opus|sonnet|haiku)-[0-9]+(-[0-9]+)*$'
     # Top-level keys only (`^name:`): nested YAML lines are indented and stay out of the key set,
     # so an inline map value such as `target: { source: file, path: x }` counts as ONE key.
     # Every OTHER column-0 line inside the block is returned as UNPARSED and refused by the caller:
@@ -490,8 +494,8 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
         if (-not $model) {
             Bad "eval case $caseName : model not pinned — the case would run on the operator's session default (org guide: workers never inherit the session model; ADR 0076)"
             $evalBad++
-        } elseif ($model -notmatch $workerModelRx) {
-            Bad "eval case $caseName : model '$model' is not a worker model (sonnet/haiku) — scores must be comparable across operators and never draw the Fable weekly cap (ADR 0076)"
+        } elseif ($model -cnotmatch $workerModelRx) {
+            Bad "eval case $caseName : model '$model' is not a full worker model id (claude-opus-*/claude-sonnet-*/claude-haiku-*, digits only after the family) — scores must be comparable across operators and never draw the Fable weekly cap (ADR 0076, ADR 0103)"
             $evalBad++
         } else {
             $models += $model

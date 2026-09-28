@@ -648,6 +648,20 @@ if (-not (Test-Path -LiteralPath (Join-Path $evalCase 'prompt.md') -PathType Lea
         $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'
         (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:.*$', 'model: claude-fable-5-1' | Set-Content -LiteralPath $p -NoNewline
     }
+    # ADR 0103: a full id only. EVERY case is mutated, because a one-case change would also trip
+    # the mixed-models rule and prove nothing about the id check.
+    Try-Case 'eval-model-bare-alias' {
+        param($d)
+        foreach ($p in Get-ChildItem -LiteralPath (Join-Path $d 'evals') -Recurse -Filter 'prompt.md') {
+            (Get-Content -LiteralPath $p.FullName -Raw) -replace '(?m)^model:.*$', 'model: opus' | Set-Content -LiteralPath $p.FullName -NoNewline
+        }
+    }
+    Try-Case 'eval-model-suffixed-id' {
+        param($d)
+        foreach ($p in Get-ChildItem -LiteralPath (Join-Path $d 'evals') -Recurse -Filter 'prompt.md') {
+            (Get-Content -LiteralPath $p.FullName -Raw) -replace '(?m)^model:.*$', 'model: claude-opus-5-5[1m]' | Set-Content -LiteralPath $p.FullName -NoNewline
+        }
+    }
     Try-Case 'eval-unknown-grader-type' {
         param($d)
         $p = Join-Path $d 'evals/hook-version-announce-reaches-context/graders/says-first-recorded-run.md'
