@@ -26,6 +26,15 @@ $fail = @()
 function Bad($m) { $script:fail += $m; Write-Host "FAIL  $m" -ForegroundColor Red }
 function Good($m) { Write-Host "PASS  $m" -ForegroundColor Green }
 
+# ONE recursive listing serves both tree scans below (namespacing, coverage) — `Get-ChildItem
+# -Recurse -Include` walked the tree once per scan at ~250 ms each, and its selftest runs this gate
+# ~70 times (handoff O31). The .NET enumerator's default options skip Hidden and System entries (on
+# Unix a dot-name is Hidden) and do not recurse into a reparse point, as Get-ChildItem without
+# -Force or -FollowSymlink does; the order is sorted so every platform lists the same way.
+$eo = [IO.EnumerationOptions]::new()
+$eo.RecurseSubdirectories = $true
+$treeFiles = @([IO.DirectoryInfo]::new($root).EnumerateFiles('*', $eo) | Sort-Object FullName)
+
 # --- plugin.json ---------------------------------------------------------------------------
 $mfPath = Join-Path $root '.claude-plugin/plugin.json'
 if (-not (Test-Path -LiteralPath $mfPath)) {
@@ -173,23 +182,37 @@ if ($pluginName) {
         Where-Object { $_.Name -notmatch '\.selftest\.' } | ForEach-Object { $_.BaseName })
     $shippedSkills = @(Get-ChildItem -LiteralPath (Join-Path $root 'skills') -Directory -ErrorAction SilentlyContinue |
         ForEach-Object { $_.Name })
-    $scanned = @(Get-ChildItem -LiteralPath $root -Recurse -File -Include '*.md', '*.js', '*.mjs')
+    $scanned = @($treeFiles | Where-Object { $_.Extension -in '.md', '.js', '.mjs' })
+    # Each pattern is built once, case-insensitive as `-match` was. Both refused forms carry a fixed
+    # literal (`Workflow({`, `` `/ ``), so a file holding neither cannot hit and is not split into
+    # lines at all — the per-line, per-name regex build over every file was this section's cost.
+    $ic = [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    $wfRx = @($shippedWf | ForEach-Object { @{ name = $_; rx = [regex]::new("Workflow\(\{\s*name:\s*['""]" + [regex]::Escape($_) + "['""]", $ic) } })
+    $skRx = @($shippedSkills | ForEach-Object { @{ name = $_; rx = [regex]::new('`/' + [regex]::Escape($_) + '`', $ic) } })
     $nsBad = 0
     foreach ($f in $scanned) {
+        $text = [IO.File]::ReadAllText($f.FullName)
+        $wfHere = $text.IndexOf('Workflow({', [StringComparison]::OrdinalIgnoreCase) -ge 0
+        $skHere = $text.Contains('`/')
+        if (-not ($wfHere -or $skHere)) { continue }
         $lineNo = 0
-        foreach ($line in (Get-Content -LiteralPath $f.FullName)) {
+        foreach ($line in ($text -split '\r\n|\r|\n')) {   # Get-Content's line breaks: CRLF, CR, LF
             $lineNo++
             if ($line -match '^\s*#') { continue }   # heading: identity, not an invocation
-            foreach ($w in $shippedWf) {
-                if ($line -match ("Workflow\(\{\s*name:\s*['""]" + [regex]::Escape($w) + "['""]")) {
-                    Bad "$($f.Name):$lineNo — Workflow call names '$w' bare; plugin components resolve as '${pluginName}:$w'"
-                    $nsBad++
+            if ($wfHere) {
+                foreach ($w in $wfRx) {
+                    if ($w.rx.IsMatch($line)) {
+                        Bad "$($f.Name):$lineNo — Workflow call names '$($w.name)' bare; plugin components resolve as '${pluginName}:$($w.name)'"
+                        $nsBad++
+                    }
                 }
             }
-            foreach ($s in $shippedSkills) {
-                if ($line -match ('`/' + [regex]::Escape($s) + '`')) {
-                    Bad "$($f.Name):$lineNo — slash invocation ``/$s`` is bare; it resolves as ``/${pluginName}:$s``"
-                    $nsBad++
+            if ($skHere) {
+                foreach ($s in $skRx) {
+                    if ($s.rx.IsMatch($line)) {
+                        Bad "$($f.Name):$lineNo — slash invocation ``/$($s.name)`` is bare; it resolves as ``/${pluginName}:$($s.name)``"
+                        $nsBad++
+                    }
                 }
             }
         }
@@ -223,9 +246,12 @@ if (Test-Path -LiteralPath $vendorDir -PathType Container) {
             $drift++
             continue
         }
+        # An ORDERED compare. `Compare-Object` over two byte arrays compares them as sets: two
+        # swapped lines keep the length and the byte multiset, so a reordered copy read identical
+        # (measured 2026-09-28) — and it was ~50 ms per 25 KB file where this is ~0.
         $a = [IO.File]::ReadAllBytes($origin)
         $b = [IO.File]::ReadAllBytes($v.FullName)
-        if ($a.Length -ne $b.Length -or (Compare-Object $a $b)) {
+        if (-not [Linq.Enumerable]::SequenceEqual($a, $b)) {
             Bad "vendored copy DIVERGED: $($v.Name) — re-copy scripts/$($v.Name) into skills/harness-init/templates/scripts/harness/"
             $drift++
         }
@@ -695,7 +721,7 @@ if (-not $inTree) {
 # is exactly how a partial count comes to read as full coverage.
 $selftestRx = '\.selftest\.(ps1|mjs|js)$'
 $templateRx = '[\\/]templates[\\/]'
-$found = @(Get-ChildItem -LiteralPath $root -Recurse -File -Include '*.ps1', '*.mjs', '*.js', '*.sh', '*.py')
+$found = @($treeFiles | Where-Object { $_.Extension -in '.ps1', '.mjs', '.js', '.sh', '.py' })
 $templatePayload = @($found | Where-Object { $_.FullName -match $templateRx })
 $all = @($found | Where-Object { $_.FullName -notmatch $templateRx })
 $shipped = @($all | Where-Object { $_.Name -notmatch $selftestRx })

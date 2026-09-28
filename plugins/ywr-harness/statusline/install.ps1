@@ -82,7 +82,8 @@ $scriptState = 'unchanged'
 $exists = Test-Path -LiteralPath $dst -PathType Leaf
 if ($exists) {
     $a = [IO.File]::ReadAllBytes($src); $b = [IO.File]::ReadAllBytes($dst)
-    if ($a.Length -ne $b.Length -or (Compare-Object $a $b)) { $scriptState = 'refreshed' }
+    # Ordered: Compare-Object treats two byte arrays as sets, so a same-length reordered copy read unchanged.
+    if (-not [Linq.Enumerable]::SequenceEqual($a, $b)) { $scriptState = 'refreshed' }
 } else {
     $scriptState = 'created'
 }

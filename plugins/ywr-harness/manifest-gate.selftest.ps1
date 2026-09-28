@@ -76,10 +76,13 @@ function Assert-FixturePristine($fx) {
 function Reset-Fixture($fx) {
     $want = $fx.state
     $have = Get-TreeState $fx.work
-    # Remove what the snapshot does not have (deepest first), then restore what differs or is gone.
-    foreach ($rel in @($have.Keys | Where-Object { -not $want.ContainsKey($_) } | Sort-Object Length -Descending)) {
+    # Remove what the snapshot does not have, then restore what differs or is gone. Shallowest first
+    # (an ancestor's path is always the shorter): one recursive remove takes a whole added `.git`, and
+    # its ~400 entries are then already gone — removing each one deepest-first was ~2.5 s of a 2.7 s
+    # reset in every git case (measured 2026-09-28). The assert below still proves nothing survived.
+    foreach ($rel in @($have.Keys | Where-Object { -not $want.ContainsKey($_) } | Sort-Object Length)) {
         $p = Join-Path $fx.work $rel.TrimEnd('/')
-        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
+        if ([IO.File]::Exists($p) -or [IO.Directory]::Exists($p)) { Remove-Item -LiteralPath $p -Recurse -Force }
     }
     foreach ($rel in $want.Keys) {
         if ($have.ContainsKey($rel) -and $have[$rel] -eq $want[$rel]) { continue }
@@ -191,6 +194,26 @@ Try-Case 'vendored-copy-diverged' {
     $p = Join-Path $d 'skills/harness-init/templates/scripts/harness/harness_config.py'
     Add-Content -LiteralPath $p -Value "`n# local drift`n"
 }
+
+# Same length, same byte multiset, two lines swapped — the copy a set compare (Compare-Object over
+# byte arrays, the gate's first cut) read as identical (2026-09-28). The swap is done on the BYTES,
+# so length and multiset hold by construction (a text round trip could drop a BOM and fall back to
+# what the old length check caught), and the verdict needs the DIVERGED line naming this file — an
+# exit 1 from any other check would otherwise keep the case green over a reverted compare (review
+# 2026-09-28, both low). The two lines must differ or the swap proves nothing; that throws.
+$dir = Reset-Fixture $pluginFx
+$p = Join-Path $dir 'skills/harness-init/templates/scripts/harness/harness_config.py'
+$b = [IO.File]::ReadAllBytes($p)
+$e0 = [Array]::IndexOf($b, [byte]10)
+$e1 = if ($e0 -ge 0) { [Array]::IndexOf($b, [byte]10, $e0 + 1) } else { -1 }
+if ($e1 -lt 0 -or [Linq.Enumerable]::SequenceEqual([byte[]]$b[0..$e0], [byte[]]$b[($e0 + 1)..$e1])) { throw 'vendored-copy-reordered: harness_config.py has no two distinct leading lines to swap' }
+$tail = if ($e1 + 1 -lt $b.Length) { $b[($e1 + 1)..($b.Length - 1)] } else { @() }
+[IO.File]::WriteAllBytes($p, [byte[]]($b[($e0 + 1)..$e1] + $b[0..$e0] + $tail))
+$g = Invoke-Gate (Join-Path $dir 'manifest-gate.ps1')
+$caught = ($g.Code -eq 1) -and ($g.Out -match 'vendored copy DIVERGED: harness_config\.py')
+if ($caught) { Write-Host 'PASS [vendored-copy-reordered] gate exited 1 and named harness_config.py DIVERGED' -ForegroundColor Green }
+else { Write-Host "FAIL [vendored-copy-reordered] exit=$($g.Code) aborted=$($g.Aborted) diverged-named=$([bool]($g.Out -match 'vendored copy DIVERGED: harness_config\.py'))" -ForegroundColor Red }
+$results += [pscustomobject]@{ case = 'vendored-copy-reordered'; exit = $(if ($caught) { 1 } else { 0 }) }
 
 Try-Case 'vendored-copy-orphaned' {
     param($d)

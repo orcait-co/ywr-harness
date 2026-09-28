@@ -53,7 +53,23 @@ $rC = Invoke-Install $a @()
 $canon = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'harness-statusline.js'))
 $placed = [IO.File]::ReadAllBytes((Join-Path $a 'harness-statusline.js'))
 $ok = (Assert-True 'C an edited copy is refreshed' ($rC.Out -match 'harness-statusline\.js refreshed') $rC.Out) -and $ok
-$ok = (Assert-True 'C the refreshed copy is byte-identical to canon' (($canon.Length -eq $placed.Length) -and -not (Compare-Object $canon $placed)) 'copy still differs') -and $ok
+$ok = (Assert-True 'C the refreshed copy is byte-identical to canon' ([Linq.Enumerable]::SequenceEqual($canon, $placed)) 'copy still differs') -and $ok
+
+# --- C2: a REORDERED installed copy is refreshed too --------------------------------------------
+# Same length, same bytes, two lines swapped: a set compare (Compare-Object over byte arrays) read it
+# unchanged (2026-09-28). The swap is on the BYTES (a text round trip could drop a BOM and change the
+# length for an unrelated reason) and needs two distinct lines, asserted so the case cannot go vacuous.
+$e0 = [Array]::IndexOf($canon, [byte]10)
+$e1 = if ($e0 -ge 0) { [Array]::IndexOf($canon, [byte]10, $e0 + 1) } else { -1 }
+$ok = (Assert-True 'C2 fixture has two distinct lines to swap' ($e1 -gt 0 -and -not [Linq.Enumerable]::SequenceEqual([byte[]]$canon[0..$e0], [byte[]]$canon[($e0 + 1)..$e1])) 'canon script too short') -and $ok
+$cTail = if ($e1 + 1 -lt $canon.Length) { $canon[($e1 + 1)..($canon.Length - 1)] } else { @() }
+[IO.File]::WriteAllBytes((Join-Path $a 'harness-statusline.js'), [byte[]]($canon[($e0 + 1)..$e1] + $canon[0..$e0] + $cTail))
+$swapped = [IO.File]::ReadAllBytes((Join-Path $a 'harness-statusline.js'))
+$ok = (Assert-True 'C2 the swapped copy keeps the length' ($swapped.Length -eq $canon.Length) "$($swapped.Length) vs $($canon.Length)") -and $ok
+$rC2 = Invoke-Install $a @()
+$placed = [IO.File]::ReadAllBytes((Join-Path $a 'harness-statusline.js'))
+$ok = (Assert-True 'C2 a reordered copy is refreshed' ($rC2.Out -match 'harness-statusline\.js refreshed') $rC2.Out) -and $ok
+$ok = (Assert-True 'C2 the refreshed copy is byte-identical to canon' ([Linq.Enumerable]::SequenceEqual($canon, $placed)) 'copy still differs') -and $ok
 
 # --- D: UNRELATED SETTINGS SURVIVE ---------------------------------------------------------------
 # The case that justifies parsing rather than templating the file. A rewrite that dropped a
