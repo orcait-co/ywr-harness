@@ -35,6 +35,7 @@ gate instead (ADR 0024).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import sys
@@ -963,11 +964,12 @@ def load(root: Path) -> tuple[dict, list[str]]:
 # answer "which files is this slice" the SAME way, and two implementations of that question would
 # let a slice pass one gate on a different file set than the other saw.
 # ---------------------------------------------------------------------------------------------
-def git_run(root: Path, *args: str, stdin: str | None = None) -> str:
+def git_run(root: Path, *args: str, stdin: str | None = None, env: dict | None = None) -> str:
     """Run one git command and return its stdout as str. THE git subprocess boundary for every
     parsed call (CLAUDE.md, issue #40): the quotepath and encoding pins below live here and
     nowhere else — `git_lines` is the line-shaped reading of this, `git_paths` the -z path-list
-    one. `stdin` feeds a `--stdin`-shaped command (check-ignore, ADR 0077).
+    one. `stdin` feeds a `--stdin`-shaped command (check-ignore, ADR 0077); `env` adds variables
+    to the inherited environment (`GIT_INDEX_FILE` for the worktree snapshot, ADR 0105).
 
     The pipes are BYTES, decoded here explicitly, never subprocess's text mode: text mode wraps
     both directions in universal-newline translation — `\\n` written becomes `\\r\\n` on Windows
@@ -999,6 +1001,7 @@ def git_run(root: Path, *args: str, stdin: str | None = None) -> str:
         ["git", "-c", "core.quotepath=false", *args],
         cwd=root, capture_output=True,
         input=None if stdin is None else stdin.encode("utf-8"),
+        env=None if env is None else {**os.environ, **env},
     )
     out = proc.stdout.decode("utf-8", errors="backslashreplace")
     err = proc.stderr.decode("utf-8", errors="backslashreplace")
@@ -1074,6 +1077,65 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
     files.update(worktree)
     files.update(untracked)
     return sorted(files), prov
+
+
+def worktree_snapshot(root: Path) -> tuple[str, str]:
+    """Return (tree, head): the working tree as one git tree id, and HEAD's commit id ("none" when
+    HEAD is unborn). The prepared-close identity (ADR 0105): a session that ran the gates, the
+    review and verify reports this pair, and the owner-typed `/slice-close` reuses those results
+    only while a fresh snapshot prints the same pair; when it differs, `git diff --name-only
+    <old-tree> <new-tree>` names exactly what changed since.
+
+    The tree is the worktree in its STAGED form: tracked content plus untracked, non-ignored files,
+    after clean filters and eol normalization, a submodule by its commit only. It is taken through a
+    COPY of the index, so the real index, refs and worktree are never touched; the copy keeps the
+    index's mtime (`copy2`), because git re-hashes a racily clean entry by comparing against the
+    index file's own mtime, and a fresh one would trust stat data the real index would not. The
+    copy's assume-unchanged and skip-worktree bits are cleared first, one `update-index` call per
+    bit (one call with both clears only one, measured on git 2.53): `add -A` never looks at a
+    flagged entry, so an edit to one would leave the id unchanged while the gates read the new
+    bytes. The `-c` pins keep `core.ignoreStat` from setting those bits again and keep an fsmonitor
+    or split index out of it. It writes blob and tree objects, unreferenced, which `git gc` prunes
+    like any `git stash create`, plus whatever a clean filter stores (git-lfs's object store).
+    Every git failure raises; the caller prints the loud marker, and nothing is reused."""
+    import shutil
+    import subprocess
+    import tempfile
+    try:
+        head = git_run(root, "rev-parse", "--verify", "--quiet", "HEAD").strip()
+    except subprocess.CalledProcessError:
+        # Unborn is the one failure that means "none": HEAD names a branch that has no ref yet.
+        # Anything else (a corrupt ref, a detached HEAD git cannot resolve) stays loud.
+        branch = git_run(root, "symbolic-ref", "-q", "HEAD").strip()
+        if git_run(root, "for-each-ref", "--format=%(refname)", branch).strip():
+            raise
+        head = "none"
+    index = root / git_run(root, "rev-parse", "--git-path", "index").strip()
+    fd, tmp = tempfile.mkstemp(prefix="ywr-tree-", suffix=".index")
+    os.close(fd)
+    pins = ("-c", "core.ignoreStat=false", "-c", "core.fsmonitor=false", "-c", "core.splitIndex=false")
+    try:
+        if index.is_file():
+            shutil.copy2(index, tmp)
+        else:
+            os.remove(tmp)  # no index yet: git creates one; an EMPTY file would read as corrupt
+        env = {"GIT_INDEX_FILE": tmp}
+        records = [r for r in git_run(root, *pins, "ls-files", "-v", "-z", env=env).split("\0") if r]
+        # `ls-files -v` tags: lowercase = assume-unchanged, `S`/`s` = skip-worktree.
+        for flag, paths in (("--no-assume-unchanged", [r[2:] for r in records if r[0].islower()]),
+                            ("--no-skip-worktree", [r[2:] for r in records if r[0] in "Ss"])):
+            if paths:
+                git_run(root, *pins, "update-index", flag, "-z", "--stdin",
+                        stdin="\0".join(paths) + "\0", env=env)
+        git_run(root, *pins, "add", "-A", env=env)
+        tree = git_run(root, *pins, "write-tree", env=env).strip()
+    finally:
+        for p in (tmp, tmp + ".lock"):
+            try:
+                os.remove(p)
+            except FileNotFoundError:
+                pass
+    return tree, head
 
 
 def print_scope(files: list[str], prov: dict) -> None:

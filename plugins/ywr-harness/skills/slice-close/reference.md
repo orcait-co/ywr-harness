@@ -87,3 +87,49 @@ the slice is rebased onto, or merges, a base that other commits advanced after t
 
 The overlap is file-level on purpose. A foreign change to an unrelated function in a reviewed file
 re-arms the review too. That is the cheaper error.
+
+## Prepared
+
+The close is owner-typed, but the stages before it are not (ADR 0105). A session may run stages
+1–3 before the owner types `/ywr-harness:slice-close` and end with a ready report: the emitter's
+output and the result of every command it printed, the review's `digest` and every fix verdict,
+the verify verdict, and LAST the line `harness_gates.py --tree` printed after the final edit. It
+writes no handoff and makes no commit. Reuse needs those lines verbatim in THIS session's context.
+A summary left by compaction, or a report from another session, is no report: run every stage.
+The report is the session's own record, trusted as a close record is. The snapshot proves only
+that the tree did not change after it.
+
+1. Take a fresh snapshot:
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py" --tree
+   ```
+
+   `tree: FAILED` → nothing is reused; run every stage.
+2. **The same line as the report** → run the emitter itself again (stage 1's first command, not
+   the commands it prints). It takes seconds, and its `hooks:` and `ignored-tree claims:` lines read
+   git config and ignored paths that the tree does not hold.
+   - **The same output** → stages 1–3 are the report's. Quote them into the close record as
+     reported and add `prepared: reused at <the tree line>`. Re-run none of the printed commands,
+     the review or verify, except a gate the last paragraph below names, and go to stage 4.
+   - **Only a trailer line differs** → handle that line as stage 1 says and keep the rest.
+   - **The `gates:` window differs** → run stage 1's commands in full. The review and verify
+     still stand on the unchanged tree.
+3. **A different line** → something changed after the report. Run stages 1 and 3 in full: their
+   results were for the old tree. The review stands only over what did not change. Name what did:
+
+   ```
+   git diff --name-only <report tree id> <fresh tree id>
+   ```
+
+   An empty list (HEAD moved, content equal) keeps the review standing. Any listed file re-arms it
+   over exactly those files, as a rebase overlap does (§Rebase step 4: ONE review, the stage-2
+   scope object, the tier from the emitter run over that scope). Record
+   `review basis: prepared at <report tree id>, changed since: <files | none>`.
+
+The snapshot is the working tree in its STAGED form: tracked content plus untracked, non-ignored
+files, after clean filters and eol normalization, with a submodule counted by its commit only.
+Edits under assume-unchanged or skip-worktree count, because the snapshot clears those bits in its
+index copy. It cannot see a byte change that staging normalizes away (a CRLF-only edit), a
+submodule's uncommitted work, an ignored file (a build output), a tool version or a database. When
+a gate reads one of those, run that gate again.

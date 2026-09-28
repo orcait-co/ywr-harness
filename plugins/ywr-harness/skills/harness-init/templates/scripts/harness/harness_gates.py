@@ -18,6 +18,7 @@ Usage:
   python harness_gates.py --range main~3..HEAD  # slice range UNIONED with the working tree
   python harness_gates.py path/to/file [...]    # explicit files
   python harness_gates.py --all                 # full-tree audit: ls-files + untracked (ADR 0041)
+  python harness_gates.py --tree                # prepared-close identity: `tree: <id> · HEAD <id>` (ADR 0105)
   python harness_gates.py --repo <dir>
 
 Both the gate commands and the tier come from `.harness.json` via harness_config, so a repo
@@ -576,10 +577,31 @@ def main() -> int:
     ap.add_argument("--repo", dest="repo", default=None)
     ap.add_argument("--all", dest="all_files", action="store_true",
                     help="full-tree audit scope: git ls-files + untracked (ADR 0041 — CI push runs)")
+    ap.add_argument("--tree", dest="tree", action="store_true",
+                    help="print only the worktree snapshot a prepared close is reused against (ADR 0105)")
     ap.add_argument("files", nargs="*")
     args = ap.parse_args()
 
     root = Path(args.repo).resolve() if args.repo else hc.find_repo_root(Path.cwd())
+    if args.tree:
+        # Its own mode, never a line in the per-slice output: that output is what CI and
+        # pre-commit parse, and a snapshot writes git objects no gate run should pay for.
+        if args.all_files or args.rev_range or args.files:
+            print("note: --tree given — ignoring --all, --range and explicit files", file=sys.stderr)
+        try:
+            tree, head = hc.worktree_snapshot(root)
+        except (subprocess.CalledProcessError, OSError) as e:
+            # OSError too: a locked or unreadable index, or no temp dir, must print the same
+            # marker, never a traceback a reader might retry or paraphrase.
+            if isinstance(e, subprocess.CalledProcessError):
+                print(f"git failed: {(e.stderr or '').strip()}", file=sys.stderr)
+            else:
+                print(f"snapshot failed: {e}", file=sys.stderr)
+            hc.say("tree: FAILED — the working tree could not be snapshotted; nothing prepared "
+                   "can be reused against it (ADR 0105).")
+            return 1
+        hc.say(f"tree: {tree} · HEAD {head}")
+        return 0
     cfg, warns = hc.load(root)
 
     if args.all_files and (args.rev_range or args.files):

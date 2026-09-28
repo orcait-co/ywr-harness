@@ -76,6 +76,18 @@ $ok = (Assert-Text 'C9 verify procedure: range goes to the mapper as given, no o
         @('Pass it to the mapper as given', 'the mapper is the range check \(ADR 0041', 'Do NOT silently fall back', 'scope: FAILED') `
         @('Sanity-check it first', 'git rev-parse')) -and $ok
 
+# C10: the prepared close (ADR 0105). What can regress silently is reuse without the identity check
+# (a report taken on trust), a same-line reuse that skips the emitter's trailer (config and ignored
+# paths are outside the tree), a changed tree that still skips stages 1 and 3, or a changed file that
+# never re-arms the review. The negatives are the loosened rules a rewrite could slip in beside the
+# required lines (review 2026-09-28, low: presence alone let a contradicting sentence pass).
+$ok = (Assert-Text 'C10 prepared close: reuse only on an identical --tree line, verbatim in this session, with the emitter re-run; a change re-runs stages 1+3 and re-arms the review over the changed files' $ref `
+        @([regex]::Escape('scripts/harness_gates.py" --tree'), 'verbatim in THIS session', 'is no report: run every stage', 'tree: FAILED` \u2192 nothing is reused', 'run the emitter itself again', 'Re-run none of the printed commands,\s+the review or verify', 'The `gates:` window differs', 'prepared: reused at <the tree line>', 'Run stages 1 and 3 in full', [regex]::Escape('git diff --name-only <report tree id> <fresh tree id>'), 'review basis: prepared at', 'writes no handoff and makes no commit') `
+        @('(?i)(paraphrase|summary)[^.]{0,40}(is enough|suffices|counts as (a|the) report)', '(?i)another session[^.]{0,40}(may|can) be reused', '(?i)the tree line alone')) -and $ok
+$ok = (Assert-Text 'C10 SKILL.md states why the skill is owner-typed and records a reused preparation' $skill `
+        @('\*\*Owner-typed on purpose\*\* \(ADR 0105\)', 'ADR 0034', 'prepared: reused at') `
+        @('(?m)^disable-model-invocation: false')) -and $ok
+
 # --- META: the assertion guard must be able to fail -----------------------------------------------
 $accepted = Assert-Text 'META probe' 'meta probe' @('meta probe') @() 6>$null
 if ($accepted -or $script:LastFails.Count -ne 1 -or ($script:LastFails[0] -notmatch 'no MustNotMatch')) {

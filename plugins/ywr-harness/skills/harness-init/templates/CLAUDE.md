@@ -45,6 +45,13 @@
   ADR 0028). A rebase or merge after the review re-arms it only over the overlap — reviewed files
   the incoming commits also touched, plus any hand-resolved conflict; an empty overlap keeps the
   review standing, recorded in the close as `review basis:` (ywr-harness ADR 0072).
+- The close is owner-typed: `/ywr-harness:slice-close` writes the handoff and the ONE commit and
+  never runs on the model's own call (ywr-harness ADR 0105). The session prepares it: it runs the
+  emitter's commands, the review with its fix checks, and verify, writes no handoff and makes no
+  commit, then reports those results with, LAST, the line
+  `python scripts/harness/harness_gates.py --tree` printed after the final edit, and asks the owner
+  to type the command. The close reuses the report only while it is verbatim in the same session
+  and that line is unchanged; a new session or a compaction summary runs the full close.
 - Close each slice with a commit plus an updated handoff — the resume file the `handoff` key in
   `.harness.json` names. A value ending in `/` is a DIRECTORY holding one resume file per work
   line (multi-writer repos), each named after the work line, never after a person (ywr-harness

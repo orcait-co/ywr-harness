@@ -1801,6 +1801,87 @@ print("AF-OK" if not fails else "AF-FAIL: " + " | ".join(fails))
 $rAF = (& $py.Source $afScript $PSScriptRoot $afRoot 2>&1 | Out-String)
 $ok = (Assert-True 'AF find_repo_root: a nested repo keeps its own root; a declaration below the git root still wins' ($rAF -match 'AF-OK') $rAF) -and $ok
 
+# --- AG: the prepared-close snapshot (ADR 0105) — `--tree` names the worktree the gates read ------
+# A prepared close is reused only while this line is unchanged, so the two ways it can lie are the
+# cases: a CONTENT change that `git status` cannot see (a file already `M`, edited again — AG3) and
+# a snapshot that mutates what it measures (the real index staging an untracked file — AG5).
+# Mutants run 2026-09-28, each turned its case red: HEAD's own tree returned (AG3/AG4), `add -u`
+# for `add -A` (AG4), the real index used in place of the copy (AG5); after the review, no flag
+# clearing (AG9), one update-index call clearing both bits (AG9's second half), a broken ref read as
+# `none` (AG10). Not covered by a case: `copy2` over `copyfile` (the racy-clean mtime, docstring).
+function Get-TreeLine([string]$Repo) {
+    $r = Invoke-Gates $Repo @('--tree')
+    $m = [regex]::Match($r.Out, '(?m)^tree: ([0-9a-f]{40}) · HEAD ([0-9a-f]{40}|none)\s*$')
+    return @{ Out = $r.Out; Code = $r.Code; Ok = $m.Success; Tree = $m.Groups[1].Value; Head = $m.Groups[2].Value }
+}
+$ag = New-Repo 'tree-snapshot' $CFG @()
+Set-Content -LiteralPath (Join-Path $ag '.gitignore') -Value 'build/' -NoNewline
+Set-Content -LiteralPath (Join-Path $ag 'seed.txt') -Value 'edit one' -NoNewline
+$t1 = Get-TreeLine $ag
+$ok = (Assert-True 'AG1 --tree exits 0 with exactly the tree/HEAD line and no gate output' ($t1.Code -eq 0 -and $t1.Ok -and $t1.Out -notmatch '(?m)^(scope|gates|review tier):') $t1.Out) -and $ok
+$t2 = Get-TreeLine $ag
+$ok = (Assert-True 'AG2 an unchanged worktree prints the same line twice' ($t2.Ok -and $t2.Tree -eq $t1.Tree -and $t2.Head -eq $t1.Head) "first=$($t1.Out) second=$($t2.Out)") -and $ok
+Set-Content -LiteralPath (Join-Path $ag 'seed.txt') -Value 'edit two' -NoNewline
+$t3 = Get-TreeLine $ag
+$agDiff = @(& git -C $ag diff --name-only $t1.Tree $t3.Tree)
+$ok = (Assert-True 'AG3 a second edit to an already-modified file changes the tree, and diffing the two trees names exactly that file' `
+        ($t3.Ok -and $t3.Tree -ne $t1.Tree -and $t3.Head -eq $t1.Head -and ($agDiff -join ',') -eq 'seed.txt') "t1=$($t1.Tree) t3=$($t3.Tree) diff=[$($agDiff -join ',')]") -and $ok
+New-Item -ItemType Directory -Force -Path (Join-Path $ag 'build') | Out-Null
+Set-Content -LiteralPath (Join-Path $ag 'build/out.bin') -Value 'ignored' -NoNewline
+$t4a = Get-TreeLine $ag
+Set-Content -LiteralPath (Join-Path $ag 'new.txt') -Value 'untracked' -NoNewline
+$t4b = Get-TreeLine $ag
+$ok = (Assert-True 'AG4 an ignored file leaves the tree as it was; an untracked, non-ignored file changes it' `
+        ($t4a.Tree -eq $t3.Tree -and $t4b.Ok -and $t4b.Tree -ne $t3.Tree) "t3=$($t3.Tree) ignored=$($t4a.Tree) untracked=$($t4b.Tree)") -and $ok
+$agIndex = Join-Path $ag '.git/index'
+$hashBefore = (Get-FileHash -LiteralPath $agIndex -Algorithm SHA256).Hash
+$null = Get-TreeLine $ag
+$hashAfter = (Get-FileHash -LiteralPath $agIndex -Algorithm SHA256).Hash
+$agStaged = @(& git -C $ag diff --cached --name-only)
+$agOthers = @(& git -C $ag ls-files --others --exclude-standard)
+$ok = (Assert-True 'AG5 the snapshot never touches the real index: same bytes, nothing staged, the new file still untracked' `
+        ($hashBefore -eq $hashAfter -and $agStaged.Count -eq 0 -and ($agOthers -contains 'new.txt')) "index same=$($hashBefore -eq $hashAfter) staged=[$($agStaged -join ',')] others=[$($agOthers -join ',')]") -and $ok
+Invoke-FixtureCommit $ag 'commit the prepared state'
+$t6 = Get-TreeLine $ag
+$ok = (Assert-True 'AG6 committing the same content keeps the tree and moves HEAD, so the line differs' `
+        ($t6.Ok -and $t6.Tree -eq $t4b.Tree -and $t6.Head -ne $t4b.Head) "before=$($t4b.Out) after=$($t6.Out)") -and $ok
+$agBare = Join-Path $fxBase 'tree-not-a-repo'
+New-Item -ItemType Directory -Force -Path $agBare | Out-Null
+$t7 = Invoke-Gates $agBare @('--tree')
+$ok = (Assert-True 'AG7 outside a repository the snapshot fails loudly: marker, non-zero exit, no tree line' `
+        ($t7.Code -ne 0 -and $t7.Out -match 'tree: FAILED — the working tree could not be snapshotted' -and $t7.Out -notmatch 'tree: [0-9a-f]{40}') "exit=$($t7.Code) out=$($t7.Out)") -and $ok
+$agUnborn = Join-Path $fxBase 'tree-unborn'
+New-Item -ItemType Directory -Force -Path $agUnborn | Out-Null
+& git -C $agUnborn init -q 2>$null
+Set-Content -LiteralPath (Join-Path $agUnborn 'a.txt') -Value 'a' -NoNewline
+$t8 = Get-TreeLine $agUnborn
+$ok = (Assert-True 'AG8 an unborn HEAD is a state, not a failure: HEAD none, a tree id, exit 0' ($t8.Code -eq 0 -and $t8.Ok -and $t8.Head -eq 'none') $t8.Out) -and $ok
+# AG9 (review 2026-09-28, medium): the copied index carries assume-unchanged and skip-worktree bits,
+# and `add -A` never looks at a flagged entry, so an edit to one left the id unchanged while every
+# gate read the new bytes. Each bit is its own edit here: git clears only one bit per update-index
+# call, so a one-call fix passes the first half and fails the second.
+$ag9 = New-Repo 'tree-flags' $CFG @('au.txt', 'sw.txt')
+Invoke-FixtureCommit $ag9 'flag targets'
+& git -C $ag9 update-index --assume-unchanged au.txt
+& git -C $ag9 update-index --skip-worktree sw.txt
+$t9a = Get-TreeLine $ag9
+Set-Content -LiteralPath (Join-Path $ag9 'au.txt') -Value 'edited' -NoNewline
+$t9b = Get-TreeLine $ag9
+Set-Content -LiteralPath (Join-Path $ag9 'sw.txt') -Value 'edited' -NoNewline
+$t9c = Get-TreeLine $ag9
+$ag9Flags = (@(& git -C $ag9 ls-files -v) -join ',')
+$ok = (Assert-True 'AG9 an edit under assume-unchanged, then one under skip-worktree, each changes the tree; the real index keeps both bits' `
+        ($t9a.Ok -and $t9b.Ok -and $t9c.Ok -and $t9b.Tree -ne $t9a.Tree -and $t9c.Tree -ne $t9b.Tree -and $ag9Flags -match '(^|,)h au\.txt' -and $ag9Flags -match '(^|,)S sw\.txt') `
+        "clean=$($t9a.Tree) au=$($t9b.Tree) sw=$($t9c.Tree) flags=[$ag9Flags]") -and $ok
+# AG10: only an unborn branch reads as `HEAD none`. A branch whose ref is garbage is a failure, and
+# printing `none` for it would give two broken runs a matching, false identity.
+$ag10 = New-Repo 'tree-broken-ref' $CFG @()
+$ag10Ref = (& git -C $ag10 symbolic-ref HEAD).Trim()
+Set-Content -LiteralPath (Join-Path $ag10 ".git/$ag10Ref") -Value 'not-a-sha' -NoNewline
+$t10 = Invoke-Gates $ag10 @('--tree')
+$ok = (Assert-True 'AG10 a broken branch ref fails loudly instead of printing HEAD none' `
+        ($t10.Code -ne 0 -and $t10.Out -match 'tree: FAILED' -and $t10.Out -notmatch 'HEAD none') "exit=$($t10.Code) out=$($t10.Out)") -and $ok
+
 Remove-FixtureRoot $fxBase
 
 Restore-GitPath
