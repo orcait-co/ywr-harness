@@ -1067,6 +1067,23 @@ $ok = (Assert-True 'Y7 the non-ASCII file is claimed by its group, not ungrouped
 $ok = (Assert-True 'Y7 the ungrouped non-ASCII file is named VERBATIM' ($rY7.Out -match 'ungrouped \(2 file' -and $rY7.Out -match [regex]::Escape('메모.rb') -and $rY7.Out -match 'seed\.txt') $rY7.Out) -and $ok
 $ok = (Assert-True 'Y7 no octal-escaped or C-quoted path anywhere in the report' ($rY7.Out -notmatch '\\\d{3}' -and $rY7.Out -notmatch '"docs/') $rY7.Out) -and $ok
 
+# Y8: a path carrying U+2028 stays ONE path (O41(c), ADR 0077). git prints it raw under
+# quotepath=false, and `str.splitlines()` in git_lines broke it into `docs/a` + `b.md` — the
+# second half is ungrouped, so a docs-only file failed the partition. The fix is `git_paths`
+# (-z, NUL split). The separator is built at runtime from its code point, never a literal in this
+# file (a literal U+2028 escape can materialize as the character itself). Both scope shapes are
+# exercised: --all (ls-files) and the default worktree scope (diff --name-only / ls-files --others).
+$ls = [string][char]0x2028
+$cfgY8 = '{ "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] }, "groups": [ { "name": "docs", "match": "^docs/", "cwd": "", "strip_prefix": "", "gates": [] } ] }'
+$y8 = New-Repo 'line-sep-path' $cfgY8 @()
+New-Item -ItemType Directory -Force -Path (Join-Path $y8 'docs') | Out-Null
+Set-Content -LiteralPath (Join-Path $y8 "docs/a${ls}b.md") -Value 'x' -NoNewline
+$rY8u = Invoke-Gates $y8 @()
+Invoke-FixtureCommit $y8 'line-separator path'
+$rY8 = Invoke-Gates $y8 @('--all')
+$ok = (Assert-True 'Y8 --all: a U+2028 path is ONE docs file, nothing ungrouped but the seed' ($rY8.Out -match '\[docs\] 1 file' -and $rY8.Out -notmatch '(?m)^\s*b\.md\s*$') $rY8.Out) -and $ok
+$ok = (Assert-True 'Y8 worktree scope: the untracked U+2028 path is ONE docs file' ($rY8u.Out -match '\[docs\] 1 file' -and $rY8u.Out -notmatch 'ungrouped') $rY8u.Out) -and $ok
+
 # --- Z: built-in scaffold claims (ADR 0044) ------------------------------------------------------
 # Z1: a scaffold-placed path no declared group matches is claimed built-in and REPORTED with its
 # name; a genuinely foreign file still fails the partition alone. Mutation anchors: dropping the

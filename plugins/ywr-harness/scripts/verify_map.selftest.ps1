@@ -216,6 +216,23 @@ $ok = (Assert-True 'L a non-string entry is skipped with a warning; the spec sti
 $ok = (Assert-True 'L a well-formed spec in the same index still maps' ($rL.Out -match 'spec 0001 — Pipeline') $rL.Out) -and $ok
 $ok = (Assert-True 'L an ABSENT implements_in is an honest empty list — no warning' ($rL.Out -notmatch 'spec 0007:') $rL.Out) -and $ok
 
+# --- M: an index spec entry without an id must not crash the mapper (O41(c)) -------------------
+# `spec["id"]` raised KeyError and the whole run died (exit 1, traceback) — every OTHER spec's
+# verify scripts lost with it. The id-less entry still maps, under a placeholder, WARNED; its
+# registered verify script is still printed (dropping it would be a silent coverage gap).
+$M_INDEX = @'
+{ "spec": [
+  { "title": "Nameless", "implements_in": ["apps/api/app/pipeline.py", "apps/api/scripts/verify_pipeline_e2e.py"] },
+  { "id": "0001", "title": "Pipeline", "implements_in": ["apps/api/app/pipeline.py"] }
+] }
+'@
+$m = New-Repo 'no-id-entry' $GOOD_CFG $M_INDEX
+$rM = Invoke-Map $m @('apps/api/app/pipeline.py')
+$ok = (Assert-True 'M an id-less spec entry does not crash (exit 0, no traceback)' ($rM.Code -eq 0 -and $rM.Out -notmatch 'Traceback') "exit=$($rM.Code): $($rM.Out)") -and $ok
+$ok = (Assert-True 'M the id-less entry is warned, naming its position and the fix' ($rM.Out -match 'index spec entry 1 \(title "Nameless"\) has no id' -and $rM.Out -match 'give the spec an `id:`') $rM.Out) -and $ok
+$ok = (Assert-True 'M the id-less entry still maps and prints its verify script' ($rM.Out -match 'spec \(index entry 1, no id\) — Nameless' -and $rM.Out -match 'run:\s+.*verify_pipeline_e2e\.py') $rM.Out) -and $ok
+$ok = (Assert-True 'M a well-formed spec in the same index still maps' ($rM.Out -match 'spec 0001 — Pipeline') $rM.Out) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'verify_map selftest: FAILED' -ForegroundColor Red; exit 1 }

@@ -11,7 +11,13 @@
 # permission flow whatever it prints.
 #
 # Speaks ONLY when `tool_input.model` is a string naming the opus or fable family (an alias —
-# `opus`, `fable` — or a full id such as `claude-opus-5-5`). NEVER on an omitted model: under
+# `opus`, `fable` — or a full id such as `claude-opus-5-5`), with ONE exception: silent when
+# `subagent_type` is exactly `ywr-harness:worker-opus` and the model is opus-family — that matches
+# the agent's own opus pin, so nothing is overridden (a fable model there still warns). The hook
+# cannot see the session model, so the prose states the org guide's rule for both session kinds:
+# an Opus session routes Agent-tool workers to `ywr-harness:worker-opus` with no per-call model; a
+# Sonnet or Fable session keeps workers on sonnet and names the reason for an opus/fable one.
+# NEVER on an omitted model: under
 # ultracode ADR 0084's sanctioned spawn is an unpinned Agent type with no model, and the built-in
 # Explore/Plan agents inherit too — a warning there would fire on exactly the spawn the rule
 # prescribes. No suppression on effort xhigh/max either: that is this seat's normal level and the
@@ -77,19 +83,26 @@ if ($model -isnot [string]) { exit 0 }          # omitted (ultracode's sanctione
 $m = $model.Trim()
 if (-not $m -or $m -notmatch '(?i)(^|[-_/.:])(opus|fable)') { exit 0 }
 
+# Silent on the Opus-session route itself: `ywr-harness:worker-opus` pins opus in its own frontmatter,
+# so an opus-family per-call model on it overrides nothing. Exact type match only, and only the opus
+# family — a fable model on worker-opus does override its pin and still warns.
+if ([string]$ti.subagent_type -ceq 'ywr-harness:worker-opus' -and $m -match '(?i)(^|[-_/.:])opus') { exit 0 }
+
 $mShow = Inline $m
 $type = Inline ([string]$ti.subagent_type)
 if (-not $type) { $type = '(unset)' }
 
 $sys = "[hook:agent-model] Agent 호출이 모델을 '${mShow}' 로 명시했습니다 (subagent_type: ${type}). " +
-       '조직 가이드: 워커 기본값은 sonnet(기계적 작업은 haiku)이고, opus·fable 계열은 꼭 필요한 워커에만 씁니다 — 그렇다면 이유를 호출의 description 에 적으세요. ' +
+       '조직 가이드: Opus 세션은 추론 워커(탐색·검증·구현·조사)를 opus · effort low 로 돌립니다 — Agent 호출이라면 호출별 model 없이 ywr-harness:worker-opus 를 쓰세요. ' +
+       'Sonnet·Fable 세션의 워커는 sonnet 이고(기계적 작업은 어느 세션이든 haiku), opus·fable 모델은 꼭 필요한 워커에만 쓰며 그 이유를 호출의 description 에 적습니다. ' +
        '호출별 model 은 고정(pinned)된 에이전트의 frontmatter 모델보다 우선합니다. ' +
        '이 작업에 ultracode 가 켜져 있다면(세션 설정 또는 호스트가 확인한 키워드 옵트인) 워커의 모델·effort 고정이 모두 풀리므로 이 안내는 무시해도 됩니다. ' +
-       '훅은 ultracode 여부를 알 수 없어 차단하지 않았습니다 — 안내만 합니다.'
+       '훅은 세션 모델도 ultracode 여부도 알 수 없어 차단하지 않았습니다 — 안내만 합니다.'
 $ctx = "This Agent spawn requested model '${mShow}' (subagent_type '${type}'), an opus/fable-family model. " +
-       "Org guide: workers default to 'sonnet' ('haiku' for mechanical work); use 'opus' only for a worker that demonstrably needs it, and when this one does, say why in the spawn's description. " +
+       "Org guide: an Opus session runs reasoning workers (finders, skeptics, implementation, research) on opus at effort low — for an Agent-tool spawn that route is subagent_type 'ywr-harness:worker-opus' with NO per-call model. " +
+       "A Sonnet or Fable session runs its workers on 'sonnet' ('haiku' for mechanical work in every session); there an opus or fable model is only for a worker that demonstrably needs it, with the reason in the spawn's description. " +
        'A per-call model overrides a pinned agent''s frontmatter model, so the ywr-harness:worker / ywr-harness:mech pins do not apply to this call. ' +
        'If ultracode is on for this task (the session setting or the host-confirmed keyword opt-in), every worker model and effort pin is lifted and this note can be ignored. ' +
-       'Nothing was blocked: a hook cannot tell an ultracode spawn from an unsanctioned one, so this note only warns.'
+       'Nothing was blocked: a hook cannot see the session model and cannot tell an ultracode spawn from an unsanctioned one, so this note only warns.'
 @{ systemMessage = $sys; hookSpecificOutput = @{ hookEventName = 'PreToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress
 exit 0

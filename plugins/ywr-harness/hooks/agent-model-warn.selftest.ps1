@@ -63,7 +63,8 @@ function Assert-Silent([string]$Name, [string]$Out) {
 }
 
 $ok = $true
-$warnCore = @('\[hook:agent-model\]', 'description', 'demonstrably', 'overrides a pinned agent', 'ultracode', 'Nothing was blocked',
+$warnCore = @('\[hook:agent-model\]', 'description', 'demonstrably', 'Opus session runs reasoning workers', 'ywr-harness:worker-opus'' with NO per-call model',
+    'Sonnet or Fable session runs its workers on ''sonnet''', '호출별 model 없이 ywr-harness:worker-opus', 'Sonnet·Fable 세션의 워커는 sonnet', 'cannot see the session model', 'overrides a pinned agent', 'ultracode', 'Nothing was blocked',
     # the rules the removed decision numbers used to stand for, stated on both surfaces
     '고정이 모두 풀리므로', 'every worker model and effort pin is lifted', '알 수 없어 차단하지 않았습니다', 'cannot tell an ultracode spawn')
 
@@ -150,6 +151,23 @@ $ok = (Assert-Silent 'S6 malformed stdin is byte-silent, exit 0' $out) -and $ok
 # S7. an Agent tool_input that merely MENTIONS opus outside `model` -> silent (only the field counts)
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; description = 'compare opus and sonnet'; prompt = 'use opus reasoning' })
 $ok = (Assert-Silent 'S7 opus in description/prompt only is byte-silent' $out) -and $ok
+
+# S8. THE OPUS-SESSION ROUTE: subagent_type exactly ywr-harness:worker-opus + an opus-family model
+#     matches that agent's own opus pin, so nothing is overridden -> byte-silent (alias and full id).
+foreach ($mdl in @('opus', 'claude-opus-5-5', 'Opus')) {
+    $out = Invoke-Hook (New-Payload @{ subagent_type = 'ywr-harness:worker-opus'; model = $mdl; description = 'd'; prompt = 'p' })
+    $ok = (Assert-Silent "S8 ywr-harness:worker-opus + model '$mdl' is byte-silent (matches its own pin)" $out) -and $ok
+}
+
+# W9. the silence is opus-only: a FABLE model on worker-opus overrides its opus pin and still warns
+$out = Invoke-Hook (New-Payload @{ subagent_type = 'ywr-harness:worker-opus'; model = 'fable'; description = 'd'; prompt = 'p' })
+$ok = (Assert-Warn 'W9 ywr-harness:worker-opus + model fable still warns' $out @("'fable'", 'subagent_type: ywr-harness:worker-opus\)') @('SCHEMA DRIFT')) -and $ok
+
+# W10. the silence is an EXACT, case-sensitive type match: a near-miss or another type with opus warns
+foreach ($t in @('ywr-harness:worker', 'worker-opus', 'YWR-HARNESS:WORKER-OPUS', 'ywr-harness:worker-opus2', ' ywr-harness:worker-opus')) {
+    $out = Invoke-Hook (New-Payload @{ subagent_type = $t; model = 'opus'; description = 'd'; prompt = 'p' })
+    $ok = (Assert-Warn "W10 subagent_type '$t' + model opus warns (no exact worker-opus match)" $out @("requested model 'opus'") @('SCHEMA DRIFT')) -and $ok
+}
 
 # D1. ANTI-VACUITY: tool_input is not an object -> SCHEMA DRIFT names the keys received, never silence
 $out = Invoke-Hook '{"hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":"opus"}'

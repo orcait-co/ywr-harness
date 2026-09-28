@@ -97,6 +97,11 @@ the exclusions, or the previous review's busiest finder ran past ~10 requests; n
 scope (it throws). **→ Explicit shard groups, or the measurements: `reference.md` §Shards.**
 Put repo-specific angles in `lensExtra`; a redefined lens set never receives canonical updates.
 
+**Read the result's `digest` first** — its first key, one line: confirmed count by severity,
+out-of-scope / nit / rejected counts, any coverage loss (dead lenses, finders or skeptics, unverified
+findings, capped finds), tier, shards, pin mode and `canary_ok`. A completion notice truncates
+around 14k characters, so the digest survives it; open the full lists only for what it names.
+
 **Disposition**: every confirmed finding is fixed or gets an explicit reason — and so does each
 site in its `also_at` list (the same claim at another file:line): a site is dispositioned on its
 own, never by its representative's verdict. A confirmed finding marked `unverified: true` (every skeptic leg died, twice) is read against its

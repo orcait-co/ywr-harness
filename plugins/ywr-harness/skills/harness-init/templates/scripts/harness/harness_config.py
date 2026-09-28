@@ -947,8 +947,8 @@ def load(root: Path) -> tuple[dict, list[str]]:
 def git_run(root: Path, *args: str, stdin: str | None = None) -> str:
     """Run one git command and return its stdout as str. THE git subprocess boundary for every
     parsed call (CLAUDE.md, issue #40): the quotepath and encoding pins below live here and
-    nowhere else — `git_lines` is the line-shaped reading of this, and a `-z` consumer splits the
-    return on NUL itself. `stdin` feeds a `--stdin`-shaped command (check-ignore, ADR 0077).
+    nowhere else — `git_lines` is the line-shaped reading of this, `git_paths` the -z path-list
+    one. `stdin` feeds a `--stdin`-shaped command (check-ignore, ADR 0077).
 
     The pipes are BYTES, decoded here explicitly, never subprocess's text mode: text mode wraps
     both directions in universal-newline translation — `\\n` written becomes `\\r\\n` on Windows
@@ -989,9 +989,21 @@ def git_run(root: Path, *args: str, stdin: str | None = None) -> str:
 
 
 def git_lines(root: Path, *args: str) -> list[str]:
-    """`git_run`, read as non-blank, path-normalised lines — the shape every scope and
-    partition consumer parses."""
-    return [norm(line) for line in git_run(root, *args).splitlines() if line.strip()]
+    """`git_run`, read as non-blank, path-normalised RECORD lines (numstat and the like).
+
+    Split on \\n ONLY, never `str.splitlines()`: that also breaks on U+2028/U+2029, NEL, \\x0b,
+    \\x0c and \\x1c-\\x1e, which git prints raw inside a path under core.quotepath=false, so one
+    path became two records (O41(c)). A path LIST does not come through here at all: it goes
+    through `git_paths` (-z, ADR 0077)."""
+    return [norm(line) for line in git_run(root, *args).split("\n") if line.strip()]
+
+
+def git_paths(root: Path, *args: str) -> list[str]:
+    """A path-LIST git command (`ls-files`, `diff --name-only`) run with `-z` and split on NUL —
+    ADR 0077: paths travel verbatim, no C-quoting of tab/newline/quote, no line-separator
+    ambiguity. Only for commands whose -z output is one path per record: `--name-status -z`
+    interleaves status and path fields and needs its own parse."""
+    return [norm(p) for p in git_run(root, args[0], "-z", *args[1:]).split("\0") if p.strip()]
 
 
 def changed_files(root: Path, rev_range: str | None, explicit: list[str],
@@ -1005,8 +1017,8 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
     by construction — partition and gate coverage are TREE properties there, not diff properties."""
     import subprocess
     if all_files:
-        tracked = git_lines(root, "ls-files")
-        untracked = git_lines(root, "ls-files", "--others", "--exclude-standard")
+        tracked = git_paths(root, "ls-files")
+        untracked = git_paths(root, "ls-files", "--others", "--exclude-standard")
         files = sorted(set(tracked) | set(untracked))
         return files, {"source": "all", "tracked_files": len(tracked),
                        "untracked_files": len(untracked)}
@@ -1016,13 +1028,13 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
     prov: dict = {"source": "git", "range": rev_range, "range_files": None}
     files: set[str] = set()
     if rev_range:
-        ranged = git_lines(root, "diff", "--name-only", rev_range)
+        ranged = git_paths(root, "diff", "--name-only", rev_range)
         prov["range_files"] = len(ranged)
         files.update(ranged)
     # Current state always counts: staged+unstaged vs HEAD, plus untracked. `git diff` never lists
     # untracked files, and a new file must surface too.
     try:
-        worktree = git_lines(root, "diff", "--name-only", "HEAD")
+        worktree = git_paths(root, "diff", "--name-only", "HEAD")
     except subprocess.CalledProcessError:
         # An unborn HEAD (no commit yet — a freshly scaffolded repo before its first commit) is a
         # NORMAL state, not the ADR 0041 fail-loud class (force-pushed base, stale fetch): letting
@@ -1034,10 +1046,10 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
                                cwd=root, capture_output=True)
         if probe.returncode == 0:
             raise
-        worktree = sorted(set(git_lines(root, "diff", "--name-only", "--cached"))
-                          | set(git_lines(root, "diff", "--name-only")))
+        worktree = sorted(set(git_paths(root, "diff", "--name-only", "--cached"))
+                          | set(git_paths(root, "diff", "--name-only")))
         prov["unborn_head"] = True
-    untracked = git_lines(root, "ls-files", "--others", "--exclude-standard")
+    untracked = git_paths(root, "ls-files", "--others", "--exclude-standard")
     prov["worktree_files"] = len(worktree)
     prov["untracked_files"] = len(untracked)
     files.update(worktree)

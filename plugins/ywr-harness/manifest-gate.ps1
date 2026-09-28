@@ -379,20 +379,40 @@ if (-not $inTree) {
             if ($LASTEXITCODE -ne 0) {
                 Good "release lockstep: no local tag $relTag — v$mfVer is unreleased in this clone, nothing to compare (a tag-less shallow clone reads the same; the fetch-depth-0 script gate is the enforcing CI leg)"
             } else {
-                $lsChanged = @(& git -C $repoRoot diff --name-only --ignore-cr-at-eol $relTag -- plugins/ywr-harness 2>$null)
-                $rcDiff = $LASTEXITCODE
-                $lsUntracked = @(& git -C $repoRoot ls-files --others --exclude-standard -- plugins/ywr-harness 2>$null)
-                $rcLs = $LASTEXITCODE
-                if ($rcDiff -ne 0 -or $rcLs -ne 0) {
-                    Bad "release lockstep: git diff / ls-files against $relTag failed (exit $rcDiff / $rcLs) — NOT CHECKED, not passed"
-                } else {
-                    $moved = @(@($lsChanged) + @($lsUntracked) | Where-Object { "$_".Trim() } | Sort-Object -Unique)
-                    if ($moved.Count) {
-                        Bad ("release lockstep BROKEN: $($moved.Count) file(s) under plugins/ywr-harness differ from tag $relTag while plugin.json still says $mfVer — a released version must name ONE tree (ADR 0073). Bump plugin.json + .claude-plugin/marketplace.json + the CHANGELOG top entry in THIS commit: " + ($moved -join ', '))
+                # -z: raw names, NUL-framed (a control character in a name is not C-quoted); PowerShell splits native
+                # output on newlines, so the lines are re-joined before the NUL split.
+                # The console codepage decodes native output (cp949 on this org's machines): pin UTF-8 so a
+                # non-ASCII name comes back as itself — a misdecoded name matches no path, and --quiet on
+                # an empty match exits 0, which would read a moved file as identical.
+                $prevEncLs = [Console]::OutputEncoding
+                [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+                try {
+                    $lsChanged = @(((& git -C $repoRoot -c core.quotepath=false diff --name-only -z --ignore-cr-at-eol $relTag -- plugins/ywr-harness 2>$null) -join "`n") -split "`0" | Where-Object { $_ })
+                    $rcDiff = $LASTEXITCODE
+                    $lsUntracked = @(& git -C $repoRoot -c core.quotepath=false ls-files --others --exclude-standard -- plugins/ywr-harness 2>$null)
+                    $rcLs = $LASTEXITCODE
+                    if ($rcDiff -ne 0 -or $rcLs -ne 0) {
+                        Bad "release lockstep: git diff / ls-files against $relTag failed (exit $rcDiff / $rcLs) — NOT CHECKED, not passed"
                     } else {
-                        Good "release lockstep: plugins/ywr-harness identical to tag $relTag"
+                        # git 2.34 (the Linux parity image) does not apply --ignore-cr-at-eol to --name-only's
+                        # list — a CR-only change is listed although its patch is empty (ADR 0102; newer git
+                        # agrees with the patch). Each candidate is re-asked with --quiet, which does apply it:
+                        # exit 0 = identical once CR is ignored (dropped), 1 = differs; any other exit keeps
+                        # the file, so a failed check reads as moved, never as identical. quotepath is off and
+                        # the pathspec literal so a non-ASCII, control-character or glob-shaped name is asked about itself.
+                        $lsChanged = @($lsChanged | Where-Object { "$_".Trim() } | ForEach-Object {
+                            $f = "$_"
+                            $null = & git -C $repoRoot -c core.quotepath=false diff --quiet --ignore-cr-at-eol $relTag -- ":(literal)$f" 2>$null
+                            if ($LASTEXITCODE -ne 0) { $f }
+                        })
+                        $moved = @(@($lsChanged) + @($lsUntracked) | Where-Object { "$_".Trim() } | Sort-Object -Unique)
+                        if ($moved.Count) {
+                            Bad ("release lockstep BROKEN: $($moved.Count) file(s) under plugins/ywr-harness differ from tag $relTag while plugin.json still says $mfVer — a released version must name ONE tree (ADR 0073). Bump plugin.json + .claude-plugin/marketplace.json + the CHANGELOG top entry in THIS commit: " + ($moved -join ', '))
+                        } else {
+                            Good "release lockstep: plugins/ywr-harness identical to tag $relTag"
+                        }
                     }
-                }
+                } finally { [Console]::OutputEncoding = $prevEncLs }
             }
         }
     }

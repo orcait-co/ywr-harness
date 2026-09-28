@@ -184,13 +184,27 @@ def main() -> int:
     refused: list[str] = []
     hits: dict[str, dict] = {}
     owned: set[str] = set()
-    for spec in specs:
+    for n, spec in enumerate(specs, 1):
+        if not isinstance(spec, dict):
+            refused.append(f"index spec entry {n} is not an object — skipped, it maps nothing; "
+                           "rebuild the index (pwsh docs/build.ps1)")
+            continue
+        # An entry without a usable id still MAPS (O41(c)): dropping it would hide its verify
+        # scripts — a coverage gap reading as "no spec owns this". Shown under a placeholder and
+        # WARNED, the same "never crash, never silent" rule as case L's non-list implements_in.
+        # Until then `spec["id"]` raised KeyError and the whole run died.
+        sid = spec.get("id")
+        if not isinstance(sid, str) or not sid.strip():
+            sid = f"(index entry {n}, no id)"
+            refused.append(f"index spec entry {n} (title {json.dumps(spec.get('title', ''))[:60]}) "
+                           "has no id — mapped under a placeholder; give the spec an `id:` in its "
+                           "frontmatter and rebuild the index (pwsh docs/build.ps1)")
         impl = spec_files(spec, refused)
         verify = sorted(p for p in impl if verify_re and verify_re.match(p))
         matched = sorted(f for f in files if f in impl)
         owned.update(impl)
         if matched:
-            hits[spec["id"]] = {"title": spec.get("title", ""), "matched": matched, "verify": verify}
+            hits[sid] = {"title": spec.get("title", ""), "matched": matched, "verify": verify}
 
     unmapped = sorted(f for f in files if scope_re.match(f) and f not in owned) if scope_re else []
 

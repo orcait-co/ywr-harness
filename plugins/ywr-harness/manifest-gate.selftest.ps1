@@ -5,7 +5,7 @@
 # field name nothing carried), and the gate would be an instance of that class if nothing ever
 # proved it can fail.
 #
-# Each case copies the plugin into a temp directory, mutates one thing, and runs the gate there.
+# Each case resets a temp copy of the plugin to pristine (asserted), mutates one thing, and runs the gate there.
 # The real plugin is never modified.
 
 $ErrorActionPreference = 'Stop'
@@ -37,12 +37,64 @@ function Invoke-Gate([string]$GatePath) {
     return Invoke-ScriptInRunspace -Path $GatePath
 }
 
+# --- copy once, reset per case (handoff O31) -----------------------------------------------------
+# A per-case Copy-Item of the whole plugin tree was part of the suite's floor. Each fixture family
+# now copies ONCE into a pristine snapshot plus one working tree; before every case the working tree
+# is reset to the snapshot and the reset is ASSERTED: the full state (every file's relative path and
+# SHA-256, every directory, and the Unix mode off Windows) must equal the snapshot's, or the suite
+# throws. A case therefore never sees a previous case's mutation — an added file or directory, a
+# `.git` from `git init`, a deleted file, an edited byte — and a reset that missed one is a loud
+# abort, not a leaked fixture. Copy a directory ITSELF to a not-yet-existing destination:
+# pre-creating it would nest the copy one level down, and a wildcard source is not an option
+# (-LiteralPath takes `*` literally — what the first wired run caught).
+$sha = [System.Security.Cryptography.SHA256]::Create()
+function Get-TreeState([string]$root) {
+    $state = [System.Collections.Generic.SortedDictionary[string, string]]::new([StringComparer]::Ordinal)
+    $rootFull = [IO.Path]::GetFullPath($root).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    foreach ($e in [IO.Directory]::EnumerateFileSystemEntries($rootFull, '*', [IO.SearchOption]::AllDirectories)) {
+        $rel = $e.Substring($rootFull.Length).Replace('\', '/')
+        $mode = if ($IsWindows) { '' } else { ' ' + [IO.File]::GetUnixFileMode($e) }
+        if ([IO.Directory]::Exists($e)) { $state[$rel + '/'] = 'dir' + $mode }
+        else { $state[$rel] = [Convert]::ToHexString($sha.ComputeHash([IO.File]::ReadAllBytes($e))) + $mode }
+    }
+    return $state
+}
+function New-Fixture([string]$name, [scriptblock]$build) {
+    # $build lays the pristine tree at the path it is given; the working tree is one copy of it.
+    $pristine = Join-Path $base "$name.pristine"
+    & $build $pristine
+    $work = Join-Path $base $name
+    Copy-Item -LiteralPath $pristine -Destination $work -Recurse -Force
+    return @{ name = $name; pristine = $pristine; work = $work; state = (Get-TreeState $pristine) }
+}
+function Assert-FixturePristine($fx) {
+    $have = Get-TreeState $fx.work
+    $diff = @($fx.state.Keys | Where-Object { -not $have.ContainsKey($_) -or $have[$_] -ne $fx.state[$_] }) +
+            @($have.Keys | Where-Object { -not $fx.state.ContainsKey($_) })
+    if ($diff.Count) { throw "fixture '$($fx.name)' reset NOT pristine — a case would see a previous case's mutation: $(($diff | Select-Object -First 5) -join ', ')" }
+}
+function Reset-Fixture($fx) {
+    $want = $fx.state
+    $have = Get-TreeState $fx.work
+    # Remove what the snapshot does not have (deepest first), then restore what differs or is gone.
+    foreach ($rel in @($have.Keys | Where-Object { -not $want.ContainsKey($_) } | Sort-Object Length -Descending)) {
+        $p = Join-Path $fx.work $rel.TrimEnd('/')
+        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
+    }
+    foreach ($rel in $want.Keys) {
+        if ($have.ContainsKey($rel) -and $have[$rel] -eq $want[$rel]) { continue }
+        $p = Join-Path $fx.work $rel.TrimEnd('/')
+        if ($rel.EndsWith('/')) { New-Item -ItemType Directory -Force -Path $p | Out-Null; continue }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $p) | Out-Null
+        Copy-Item -LiteralPath (Join-Path $fx.pristine $rel) -Destination $p -Force
+    }
+    Assert-FixturePristine $fx
+    return $fx.work
+}
+$pluginFx = New-Fixture 'plugin' { param($p) Copy-Item -LiteralPath $src -Destination $p -Recurse -Force }
+
 function Try-Case([string]$tag, [scriptblock]$mutate) {
-    # Copy the directory ITSELF to a not-yet-existing destination. Pre-creating $dir would nest
-    # the copy one level down, and switching to a `$src/*` wildcard is not an option: -LiteralPath
-    # takes `*` literally (this exact substitution is what the first wired run caught).
-    $dir = Join-Path $base $tag
-    Copy-Item -LiteralPath $src -Destination $dir -Recurse -Force
+    $dir = Reset-Fixture $pluginFx
     & $mutate $dir
     $g = Invoke-Gate (Join-Path $dir 'manifest-gate.ps1')
     $rc = $g.Code
@@ -190,8 +242,7 @@ Try-Case 'hangul-glued-variable' {
 # can never catch the defect this pins, which was the CHANGELOG check printing a false
 # "(matches plugin.json)" PASS for a comparison it never ran (review 2026-08-05, medium). The
 # skipped comparison must say NOT CHECKED.
-$dir = Join-Path $base 'changelog-check-broken-manifest'
-Copy-Item -LiteralPath $src -Destination $dir -Recurse -Force
+$dir = Reset-Fixture $pluginFx
 '{ this is not json' | Set-Content -LiteralPath (Join-Path $dir '.claude-plugin/plugin.json') -NoNewline
 $g = Invoke-Gate (Join-Path $dir 'manifest-gate.ps1')
 $out = $g.Out
@@ -207,14 +258,18 @@ $results += [pscustomobject]@{ case = 'changelog-check-broken-manifest'; exit = 
 # fixture exercises exactly the branch under test without running the scaffold (which would drag
 # python/git into a suite that needs neither). Positive cases assert the MESSAGE as well as the
 # exit code, the changelog-check-broken-manifest precedent.
-function New-CanonShape([string]$tag) {
-    $repo = Join-Path $base "$tag/repo"
+# One canon-shape fixture serves every canon case below, reset and asserted per case — the git
+# cases included: their `.git` is an entry the snapshot lacks, so the reset removes it.
+$canonFx = New-Fixture 'canon' {
+    param($repo)
     New-Item -ItemType Directory -Force -Path (Join-Path $repo 'plugins') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $repo '.claude-plugin') | Out-Null
     Copy-Item -LiteralPath $src -Destination (Join-Path $repo 'plugins/ywr-harness') -Recurse -Force
     Set-Content -LiteralPath (Join-Path $repo '.harness.json') -Value '{}' -NoNewline
     Set-Content -LiteralPath (Join-Path $repo '.claude-plugin/marketplace.json') -Value '{}' -NoNewline
-    return $repo
+}
+function New-CanonShape([string]$tag) {
+    return Reset-Fixture $canonFx
 }
 function Run-GateAt([string]$repo) {
     $g = Invoke-Gate (Join-Path $repo 'plugins/ywr-harness/manifest-gate.ps1')
@@ -429,6 +484,31 @@ if (-not $gitHere) {
     $j | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $mfp -NoNewline
     $g = Run-GateAt $r
     Record 'lockstep-version-suffix-not-checked' ($g.rc -eq 1 -and $g.out -match "release lockstep: plugin.json version '9\.9\.9 rc' is not a plain major\.minor\.patch.*NOT CHECKED" -and $g.out -notmatch 'no local tag') "exit=$($g.rc) not-checked-said=$([bool]($g.out -match 'not a plain major'))"
+
+    # A NON-ASCII tracked name (ADR 0102 re-ask, review F6): the -z list and the per-file re-ask
+    # must see the name as itself. The console encoding is forced to Latin-1 around the gate run
+    # (the in-process gate inherits this suite's UTF-8 pin, which would hide a missing pin): a
+    # misdecoded name matches no path, --quiet exits 0, and the moved file would read identical.
+    $koName = [string]::new([char[]]@(0xD55C, 0xAE00)) + '-notes.md'
+    $koBody = "ko line one`nko line two`n"
+    $r = New-LockstepRepo 'lockstep-non-ascii-moved' '9.9.9' {
+        param($repo)
+        [IO.File]::WriteAllBytes((Join-Path $repo "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody))
+    }
+    [IO.File]::WriteAllBytes((Join-Path $r "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody + "moved after the tag`n"))
+    $encKeep = [Console]::OutputEncoding
+    try { [Console]::OutputEncoding = [Text.Encoding]::Latin1; $g = Run-GateAt $r } finally { [Console]::OutputEncoding = $encKeep }
+    Record 'lockstep-non-ascii-moved' ($g.rc -eq 1 -and $g.out -match "release lockstep BROKEN: 1 file\(s\).*plugins/ywr-harness/$([regex]::Escape($koName))") "exit=$($g.rc) broken-named=$([bool]($g.out -match 'lockstep BROKEN')) identical-said=$([bool]($g.out -match 'identical to tag'))"
+
+    # The same name with a CR-only change is identical (git 2.34 lists it in --name-only; the
+    # re-ask must drop it — the non-ASCII pathspec has to reach git intact for that).
+    $r = New-LockstepRepo 'lockstep-non-ascii-cr-only' '9.9.9' {
+        param($repo)
+        [IO.File]::WriteAllBytes((Join-Path $repo "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody))
+    }
+    [IO.File]::WriteAllBytes((Join-Path $r "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody.Replace("`n", "`r`n")))
+    try { [Console]::OutputEncoding = [Text.Encoding]::Latin1; $g = Run-GateAt $r } finally { [Console]::OutputEncoding = $encKeep }
+    Record 'lockstep-non-ascii-cr-only' ($g.rc -eq 0 -and $g.out -match 'release lockstep: plugins/ywr-harness identical to tag ywr-harness--v9\.9\.9') "exit=$($g.rc) identical-said=$([bool]($g.out -match 'identical to tag')) broken-said=$([bool]($g.out -match 'lockstep BROKEN'))"
 }
 
 # A canon shape that is NOT a git repo (every fixture above this section) must report the check
@@ -442,7 +522,11 @@ Record 'lockstep-not-a-repo-skips' ($g.rc -eq 0 -and $g.out -match 'release lock
 # docs/adr/ holding an empty file for every REAL canon ADR, so the copied plugin's own citations
 # resolve exactly as in the canon and each case isolates the one reference it adds. The unresolved
 # number is assembled at runtime — this file is itself scanned by the gate it tests.
-$realAdrDir = Join-Path (Split-Path -Parent (Split-Path -Parent $src)) 'docs/adr'
+# A plugin tree mounted at a filesystem root (the Linux parity container's /repo) has no grandparent:
+# Split-Path returns '' and Join-Path refused it, killing the suite before the SKIP guard below.
+$canonGuess = Split-Path -Parent $src
+if ($canonGuess) { $canonGuess = Split-Path -Parent $canonGuess }
+$realAdrDir = if ($canonGuess) { Join-Path $canonGuess 'docs/adr' } else { '' }
 $badNum = '09' + '99'
 function New-AdrRefRepo([string]$tag, [hashtable]$Files, [hashtable]$Untracked = @{}) {
     $repo = New-CanonShape $tag
@@ -471,7 +555,7 @@ function New-AdrRefRepo([string]$tag, [hashtable]$Files, [hashtable]$Untracked =
     & $put $Untracked
     return $repo
 }
-if (-not $gitHere -or -not (Test-Path -LiteralPath $realAdrDir -PathType Container)) {
+if (-not $gitHere -or -not $realAdrDir -or -not (Test-Path -LiteralPath $realAdrDir -PathType Container)) {
     Write-Host 'SKIP [adr-ref] needs git and the canon''s docs/adr/ (a dist or consumer copy has none) — reported, not silent' -ForegroundColor Yellow
 } else {
     # Control: nothing added. The copied plugin's own references all resolve, so the unresolved
@@ -614,8 +698,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $evalCase 'prompt.md') -PathType Lea
 # section must SAY it ran over the shipped suite (a PASS line with a case count): a section that
 # silently did nothing would let every eval mutation above be caught by some other check and
 # still read as covered.
-$ok = Join-Path $base 'unmutated-control'
-Copy-Item -LiteralPath $src -Destination $ok -Recurse -Force
+# It runs on the RESET working tree, so it also proves a reset tree is one the gate passes (the
+# reset assertion proves the bytes; this proves the verdict).
+$ok = Reset-Fixture $pluginFx
 $gc = Invoke-Gate (Join-Path $ok 'manifest-gate.ps1')
 $ctlOut = $gc.Out
 $ctl = $gc.Code

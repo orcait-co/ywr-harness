@@ -79,7 +79,7 @@ async function run(plan) {
                             severity: 'low', claim: 'c', evidence: 'e' }], ...om };
     }
     if (label.startsWith('verify:')) return plan.verdict ? plan.verdict(prompt, label) : { refuted: false, reason: 'r' };
-    if (label === 'dedupe:haiku' || label === 'dedupe:opus' || label === 'dedupe') return { groups: plan.groups ?? [] };
+    if (label === 'dedupe:sonnet' || label === 'dedupe:opus' || label === 'dedupe') return { groups: plan.groups ?? [] };
     throw new Error(`stub: unexpected label ${label}`);
   };
   const fn = compile(SCRIPT);
@@ -255,7 +255,7 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
 //     with measurements behind them, and both are one word in a helper call — a silent flip back
 //     to `high` would restore ~50% of the review's cost with nothing red, and dropping the
 //     explicit model would let workers inherit a deep-work session's Opus. Asserted per phase
-//     because they differ on purpose: find medium, canary/verify low, dedupe haiku.
+//     because they differ on purpose: find medium, canary/verify low, dedupe low (sonnet on the reviewer agent — ywr-harness ADR 0102).
 {
   const name = 'model and effort pins hold per phase';
   const { spawns } = await run({});
@@ -274,7 +274,8 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
 //     reviewer agentType at 2.1.280) at ONE explicit effort, default 'xhigh' (an 'inherit' effort is
 //     silently dropped for the frontmatter's medium — measured, so the script never sends it). The
 //     haiku dedupe lifts too (owner follow-up, same day): no model (the default subagent inherits the
-//     session model — measured) and the same explicit effort. The agentType stays (the allowlist is
+//     session model — measured) and the same explicit effort. (Pinned mode's dedupe is now sonnet · low on
+//     the reviewer agent — ADR 0102; ultracode's stays on the default subagent.) The agentType stays (the allowlist is
 //     the no-edit guarantee, not a cost lever only). The stats name the mode so a close can record it.
 {
   const name = 'ultracode lifts the sonnet and effort pins, keeps agentType';
@@ -295,12 +296,12 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   else pass(name);
 }
 {
-  const name = 'dedupe grouping: haiku · low when pinned, session model at the ultracode effort otherwise';
+  const name = 'dedupe grouping: sonnet · low on the reviewer agent when pinned, session model at the ultracode effort otherwise';
   const pinned = (await run({ many: 7 })).spawns.filter((s) => s.phase === 'Dedupe' || /^dedupe/.test(s.label));
   const ultra = (await run({ many: 7, args: { tier: 'small', ultracode: true, scope: { files: ['f.md'], context: 'c' } } }))
     .spawns.filter((s) => s.phase === 'Dedupe' || /^dedupe/.test(s.label));
   if (pinned.length !== 1 || ultra.length !== 1) fail(name, `dedupe spawns pinned=${pinned.length} ultra=${ultra.length} (14 findings must cross >12)`);
-  else if (pinned[0].model !== 'haiku' || pinned[0].effort !== 'low' || pinned[0].agentType !== undefined) fail(name, `pinned dedupe=${JSON.stringify([pinned[0].model, pinned[0].effort, pinned[0].agentType])}`);
+  else if (pinned[0].model !== 'sonnet' || pinned[0].effort !== 'low' || pinned[0].agentType !== 'ywr-harness:reviewer' || pinned[0].label !== 'dedupe:sonnet') fail(name, `pinned dedupe=${JSON.stringify([pinned[0].model, pinned[0].effort, pinned[0].agentType])}`);
   else if (ultra[0].model !== undefined || ultra[0].effort !== 'xhigh' || ultra[0].agentType) fail(name, `ultra dedupe=${JSON.stringify([ultra[0].model, ultra[0].effort, ultra[0].agentType])}`);
   else pass(name);
 }
@@ -322,7 +323,7 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   const off = workers.filter((s) => s.model !== 'opus' || s.effort !== 'low' || s.agentType !== 'ywr-harness:reviewer');
   if (!workers.length || !workers.some((s) => /^find:/.test(s.label)) || !workers.some((s) => /^verify:/.test(s.label))) fail(name, 'canary/find/verify spawns not all captured');
   else if (off.length) fail(name, `pins: ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort, s.agentType]))}`);
-  else if (dedupe.length !== 1 || dedupe[0].model !== 'opus' || dedupe[0].effort !== 'low' || dedupe[0].label !== 'dedupe:opus') fail(name, `dedupe=${JSON.stringify(dedupe.map((s) => [s.label, s.model, s.effort]))}`);
+  else if (dedupe.length !== 1 || dedupe[0].model !== 'opus' || dedupe[0].effort !== 'low' || dedupe[0].label !== 'dedupe:opus' || dedupe[0].agentType !== undefined) fail(name, `dedupe=${JSON.stringify(dedupe.map((s) => [s.label, s.model, s.effort]))}`);
   else if (result.stats.worker_pins?.mode !== 'opus-low' || result.stats.worker_pins?.session_model !== 'claude-opus-5-5[1m]') fail(name, `stats.worker_pins=${JSON.stringify(result.stats.worker_pins)}`);
   else if (!logs.some((l) => l.startsWith('[opus-low]'))) fail(name, 'mode not logged');
   else pass(name);
@@ -336,10 +337,10 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   for (const m of ids) {
     const { result, spawns } = await run({ many: 7, args: { tier: 'small', sessionModel: m, scope: { files: ['f.md'], context: 'c' } } });
     const want = (s) => (/^find:/.test(s.label) ? ['sonnet', 'medium'] : /^(canary$|verify:)/.test(s.label) ? ['sonnet', 'low']
-      : /^dedupe/.test(s.label) ? ['haiku', 'low'] : null);
+      : /^dedupe/.test(s.label) ? ['sonnet', 'low'] : null);
     const off = spawns.filter((s) => want(s) && (s.model !== want(s)[0] || s.effort !== want(s)[1]));
     const dedupe = spawns.filter((s) => /^dedupe/.test(s.label));
-    if (result.stats.worker_pins?.mode !== 'pinned' || off.length || dedupe.length !== 1 || dedupe[0].label !== 'dedupe:haiku') {
+    if (result.stats.worker_pins?.mode !== 'pinned' || off.length || dedupe.length !== 1 || dedupe[0].label !== 'dedupe:sonnet' || dedupe[0].agentType !== 'ywr-harness:reviewer') {
       bad = `${JSON.stringify(m)}: ${JSON.stringify(result.stats.worker_pins)} ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort]))} dedupe=${dedupe.length}`;
       break;
     }
@@ -380,9 +381,9 @@ await expectThrow('an unknown ultracode effort is refused',
 //     tool-restricted reviewer agent — the allowlist is what removes ~half of the prefix every
 //     worker request re-reads, and it only takes effect through agentType. The name must be the
 //     NAMESPACED form (fact 1: a bare name does not resolve, and manifest-gate does not scan
-//     agentType strings — this assertion is the only gate on it). The dedupe grouping deliberately
-//     stays on the default subagent (haiku; a model override on top of agentType is unmeasured —
-//     ywr-harness ADR 0089 candidate I). The dedupe half runs on plan.many (14 findings): run({}) has
+//     agentType strings — this assertion is the only gate on it). The pinned-mode dedupe grouping
+//     runs as the reviewer agent too, at sonnet · low (ywr-harness ADR 0102 — adopted ADR 0089
+//     candidate I; it was haiku on the default subagent). The dedupe half runs on plan.many (14 findings): run({}) has
 //     2, never crosses >12, and an agentType check over zero dedupe spawns is vacuous (review slice 26).
 {
   const name = 'canary/find/verify spawns run as the namespaced reviewer agent';
@@ -392,8 +393,8 @@ await expectThrow('an unknown ultracode effort is refused',
   const dedupe = (await run({ many: 7 })).spawns.filter((s) => s.phase === 'Dedupe');
   if (!workers.length) fail(name, 'no worker spawns captured');
   else if (wrong.length) fail(name, `agentType drifted: ${JSON.stringify(wrong.map((s) => [s.label, s.agentType]))}`);
-  else if (dedupe.length !== 1) fail(name, `dedupe spawns=${dedupe.length} — the default-subagent check needs the >12 branch`);
-  else if (dedupe[0].agentType !== undefined) fail(name, `dedupe should stay on the default subagent (agentType=${dedupe[0].agentType})`);
+  else if (dedupe.length !== 1) fail(name, `dedupe spawns=${dedupe.length} — the agentType check needs the >12 branch`);
+  else if (dedupe[0].agentType !== 'ywr-harness:reviewer') fail(name, `pinned dedupe should run as the reviewer agent (agentType=${dedupe[0].agentType})`);
   else pass(name);
 }
 
@@ -850,6 +851,57 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   if (s.tier !== 'full' || s.lenses !== 3 || finders.length !== 3) fail(name, `tier=${s.tier} lenses=${s.lenses} finders=${finders.length}`);
   else if (s.find_cap !== 8 || !finders.every((x) => x.prompt.includes('최대 8건'))) fail(name, `find_cap=${s.find_cap}`);
   else if (JSON.stringify(s.capped_finders) !== JSON.stringify(['boundary-docs+2']) || s.find_omitted !== 2) fail(name, `capped_finders=${JSON.stringify(s.capped_finders)}`);
+  else pass(name);
+}
+
+// 14. digest (handoff O41d): a completion notice truncates near 13.9k chars, so the FIRST key is one
+//     line the closer can act on — counts by severity, the other buckets, and coverage loss made
+//     visible whenever there is any (never truncated silently), all from values already computed.
+{
+  const name = '14a digest is the first key, one line under 400 chars, and states coverage full on a clean run';
+  const { result, spawns } = await run({});
+  const d = result.digest;
+  if (Object.keys(result)[0] !== 'digest') fail(name, `first key=${Object.keys(result)[0]}`);
+  else if (typeof d !== 'string' || /[\r\n]/.test(d) || d.length > 400) fail(name, `digest=${JSON.stringify(d)} (${d?.length})`);
+  else if (!d.startsWith('confirmed 2 (h0 m0 l2) · out_of_scope_confirmed 0 · nits 0 · rejected 0 · coverage full · tier small · shards 1 · pins pinned · canary_ok true · full lists follow')) fail(name, d);
+  else if (/LOSS/.test(d)) fail(name, `clean run reported loss: ${d}`);
+  else if (spawns.some((x) => /digest/.test(x.label))) fail(name, 'digest spawned an agent');
+  else pass(name);
+}
+{
+  const name = '14b digest names every coverage loss: a dead lens + finder, a dead skeptic set, a capped find';
+  const { result } = await run({ find: { 'correctness-pitfalls': ['die', 'die'] },
+    findings: (k) => [F('f.md', 20, 'medium', 'm1')], omitted: () => 3,
+    verdict: () => null });
+  const d = result.digest ?? '';
+  const want = ['COVERAGE LOSS: ', 'dead_lenses 1', 'dead_finders 1', 'dead_skeptics 2', 'unverified_by_death 1', 'find_omitted 3', 'confirmed 1 (h0 m1 l0)'];
+  const miss = want.filter((w) => !d.includes(w));
+  if (miss.length) fail(name, `missing ${JSON.stringify(miss)} in ${d}`);
+  else if (d.includes('coverage full')) fail(name, d);
+  else if (d.length > 400) fail(name, `length ${d.length}`);
+  else pass(name);
+}
+{
+  const name = '14c digest counts out_of_scope and rejected, and reports the opus-low pin mode';
+  const { result } = await run({ args: { tier: 'small', sessionModel: 'claude-opus-5-5', scope: { files: ['f.md'], context: 'c' } },
+    findings: (k) => (k === 'correctness-pitfalls' ? [F('f.md', 10, 'high', 'h1'), F('g.md', 11, 'low', 'o1')] : [F('f.md', 20, 'low', 'l1')]),
+    verdict: (prompt, label) => (label === 'verify:l1' ? { refuted: true, reason: 'no' } : { refuted: false, reason: 'r' }) });
+  const d = result.digest ?? '';
+  if (!d.startsWith('confirmed 1 (h1 m0 l0) · out_of_scope_confirmed 1 · nits 0 · rejected 1 · coverage full') || !d.includes('pins opus-low')) fail(name, d);
+  else pass(name);
+}
+{
+  const name = '14d digest names cap_unreported as a coverage loss (a finder that did not report omitted)';
+  const { result } = await run({ noOmitted: ['boundary-ui-tests'] });
+  const d = result.digest ?? '';
+  if (!d.includes('COVERAGE LOSS: cap_unreported 1') || d.includes('coverage full')) fail(name, d);
+  else pass(name);
+}
+{
+  const name = '14e digest reports the ultracode pin mode';
+  const { result } = await run({ args: { tier: 'small', ultracode: true, scope: { files: ['f.md'], context: 'c' } } });
+  const d = result.digest ?? '';
+  if (!d.includes(' · pins ultracode · ') || d.includes('pins pinned') || d.includes('pins opus-low')) fail(name, d);
   else pass(name);
 }
 

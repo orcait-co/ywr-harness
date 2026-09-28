@@ -1,6 +1,6 @@
 # Selftest for harness_retro.py — the slice retro gate (ADR 0017).
 #
-# The gate is advisory and always exits 0, so every case asserts on OUTPUT. Two properties are
+# The gate is advisory and exits 0 (except a git failure, case N), so every case asserts on OUTPUT. Two properties are
 # asserted for each of the seven checks: that it fires when it should, and that it stays SILENT
 # when it should not. The silence half is the one that matters — an advisory gate that cries wolf
 # is an advisory gate people stop reading, and there is no exit code to notice the regression.
@@ -468,6 +468,68 @@ finally {
 }
 $ok = (Assert-True 'K3 --coverage on an ascii:strict console exits 0 with no UnicodeEncodeError' ($rK3.Code -eq 0 -and $rK3.Out -notmatch 'UnicodeEncodeError') "exit=$($rK3.Code): $($rK3.Out)") -and $ok
 $ok = (Assert-True 'K3 and the em dash arrives intact (UTF-8, not a replacement)' ($rK3.Out -match 'not declared — the checks it drives are DISABLED') $rK3.Out) -and $ok
+
+# --- N: a git failure is LOUD, never a false clean retro (O41(c), ADR 0041's principle) ---------
+# git() swallowed every failure as empty output, so an unresolvable range read as "nothing
+# changed" — silent, exit 0, indistinguishable from case H. Now: a stdout FAILED marker, exit 1
+# (the post-commit hook's `|| true` keeps the commit untouched). N2 is the silence half: the
+# semantic exits (rev-parse -q --verify on a root commit's HEAD^) still read as absent.
+$n = New-Repo 'git-failure' $CFG
+$rN = Invoke-Retro $n @('no-such-rev..HEAD')
+$ok = (Assert-True 'N1 an unresolvable range prints a FAILED marker on stdout' ($rN.Out -match '\[slice-retro\] FAILED — git diff' -and $rN.Out -match 'NO retro check ran') $rN.Out) -and $ok
+$ok = (Assert-True 'N1 and exits non-zero, no traceback' ($rN.Code -eq 1 -and $rN.Out -notmatch 'Traceback') "exit=$($rN.Code): $($rN.Out)") -and $ok
+$rN2 = Invoke-Retro $n @()
+$ok = (Assert-True 'N2 a root commit (HEAD^ absent, exit 1) is still a clean silent run' ($rN2.Code -eq 0 -and [string]::IsNullOrWhiteSpace($rN2.Out)) "exit=$($rN2.Code): $($rN2.Out)") -and $ok
+
+# --- O: a path carrying U+2028 stays ONE path (O41(c), ADR 0077) ---------------------------------
+# `.splitlines()` over `diff-tree --name-status` broke `src/a<U+2028>b.py` into `src/a` (no .py —
+# out of scope) + `b.py` (no tab — dropped), so UNMAPPED stayed SILENT on a new unowned file.
+# The separator is built from its code point at runtime, never a literal in this file.
+$lsO = [string][char]0x2028
+$o = New-Repo 'line-sep-path' $CFG
+Write-F $o "src/a${lsO}b.py" "x = 1`n"
+Commit $o 'chore: add a file whose name carries U+2028'
+$rO = Invoke-Retro $o @()
+$ok = (Assert-True 'O1 per-commit: UNMAPPED names the U+2028 path as ONE file' ($rO.Out -match ('UNMAPPED: new file ' + [regex]::Escape("src/a${lsO}b.py") + ' is owned')) $rO.Out) -and $ok
+$rO2 = Invoke-Retro $o @('--coverage')
+$ok = (Assert-True 'O2 --coverage: the U+2028 path is ONE unowned file (ls-files -z)' ($rO2.Out -match 'unowned files \(in scope, no spec, not ignored\): 1 of 1' -and $rO2.Out.Contains("src/a${lsO}b.py")) $rO2.Out) -and $ok
+
+# --- P: frontmatter_at — absence is asked structurally, every other git fatal is LOUD ------------
+# `git show pre:path` exited 128 both for "absent at pre" and for any fatal, so a missing blob
+# read as "absent" (a silent difference). P1 deletes the loose object of the pre-side ADR blob:
+# ls-tree still lists the path, `git show` must fail → FAILED marker, exit 1. P2 is the silence
+# half: an ADR ADDED in the commit (absent at pre) still reads as a difference, not a failure.
+$p1 = New-Repo 'fm-missing-blob' $CFG
+Write-F $p1 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`nstatus: proposed`n---`n# 0001`n"
+Commit $p1 'docs: add adr'
+$p1Blob = (& git -C $p1 rev-parse 'HEAD:docs/adr/0001-a.md').Trim()
+Write-F $p1 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`nstatus: accepted`n---`n# 0001`n"
+Commit $p1 'docs: accept it'
+$p1Obj = Join-Path $p1 ".git/objects/$($p1Blob.Substring(0,2))/$($p1Blob.Substring(2))"
+$p1Had = Test-Path -LiteralPath $p1Obj
+if ($p1Had) { Set-ItemProperty -LiteralPath $p1Obj -Name IsReadOnly -Value $false; Remove-Item -LiteralPath $p1Obj -Force }
+$rP1 = Invoke-Retro $p1 @()
+$ok = (Assert-True 'P1 fixture: the pre-side blob was a loose object and is now gone' $p1Had $p1Obj) -and $ok
+$ok = (Assert-True 'P1 a missing pre-side blob is a FAILED marker, not "absent at pre"' ($rP1.Out -match '\[slice-retro\] FAILED — git show' -and $rP1.Out -match 'NO retro check ran') $rP1.Out) -and $ok
+$ok = (Assert-True 'P1 and exits 1, no traceback' ($rP1.Code -eq 1 -and $rP1.Out -notmatch 'Traceback') "exit=$($rP1.Code): $($rP1.Out)") -and $ok
+
+$p2 = New-Repo 'fm-added' $CFG
+Write-F $p2 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`n---`n# 0001`n"
+Commit $p2 'docs: add adr, no index'
+$rP2 = Invoke-Retro $p2 @()
+$ok = (Assert-True 'P2 an ADR absent at pre (added) is a difference: BUILD fires, exit 0' ($rP2.Code -eq 0 -and $rP2.Out -match 'BUILD:' -and $rP2.Out -notmatch 'FAILED') "exit=$($rP2.Code): $($rP2.Out)") -and $ok
+
+# --- Q: git absent from PATH is the FAILED marker, never a traceback -----------------------------
+# PATH narrowed to python's own directory (fact 42: a tool's directory can carry neighbours — the
+# absence of git there is asserted, not assumed); python is invoked by absolute path.
+$qSavedPath = $env:PATH
+try {
+    $env:PATH = Split-Path -Parent $py.Source
+    $qGitGone = -not (Get-Command git -ErrorAction SilentlyContinue)
+    $rQ = Invoke-Retro $p2 @()
+} finally { $env:PATH = $qSavedPath }
+$ok = (Assert-True 'Q fixture: git is not resolvable on the narrowed PATH' $qGitGone "PATH=$(Split-Path -Parent $py.Source)") -and $ok
+$ok = (Assert-True 'Q a missing git binary prints the FAILED marker and exits 1, no traceback' ($rQ.Code -eq 1 -and $rQ.Out -match '\[slice-retro\] FAILED — git could not be run' -and $rQ.Out -notmatch 'Traceback') "exit=$($rQ.Code): $($rQ.Out)") -and $ok
 
 Remove-FixtureRoot $fxBase
 

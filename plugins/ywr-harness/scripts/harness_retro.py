@@ -15,9 +15,11 @@ false-green selftests in the hooks slice.
 
 ## Contract
 
-ADVISORY. Always exits 0, prints nothing when clean, and never blocks a commit — post-commit rather
+ADVISORY. Exits 0, prints nothing when clean, and never blocks a commit — post-commit rather
 than pre-commit precisely so a finding prompts a follow-up docs commit instead of standing between
-the author and their own history.
+the author and their own history. The one exception: a git failure prints a
+`[slice-retro] FAILED` line and exits 1 — silence there would be a false clean retro (ADR 0041's
+principle; the hook's `|| true` keeps the commit untouched).
 
   python harness_retro.py                  # the commit just made (HEAD); a merge commit
                                            # resolves as HEAD^1..HEAD (first-parent, ADR 0043)
@@ -52,21 +54,39 @@ ADR_RX = re.compile(r"^docs/adr/[0-9].*\.md$")
 DOCS_RX = re.compile(r"^docs/(adr|spec)/[0-9].*\.md$")
 
 
-def git(root: Path, *args: str) -> str:
-    # Same constraints as harness_config.git_lines (issue #40): quotepath off so a non-ASCII
-    # path arrives matchable rather than octal-escaped; encoding pinned through subprocess's own
-    # args because text=True would use the console codepage on Windows — this helper also reads
-    # file CONTENT (`git show rev:path`), which for this org's docs is UTF-8 Korean; and
-    # errors="backslashreplace" so undecodable bytes stay visible AND distinct (git_lines'
-    # comment carries the full rationale).
+def git(root: Path, *args: str, ok_exits: tuple[int, ...] = ()) -> str:
+    """One git call through `hc.git_run` — THE boundary (bytes pipes, one UTF-8/backslashreplace
+    decode, quotepath off; CLAUDE.md, issue #40). A non-zero exit RAISES, except the exits a
+    caller names in `ok_exits` as a semantic answer (`rev-parse -q --verify` exit 1 = absent),
+    which read as empty output. Never 128: git exits 128 for EVERY fatal error (a missing object,
+    a bad rev, a corrupt pack), so no caller can read it as an answer. Before 0.57.1 every failure read as empty output, so a failing `git diff` was
+    indistinguishable from a commit that changed nothing — a false clean retro. `main` turns the
+    raise into the ADR 0041 `FAILED` marker."""
     try:
-        return subprocess.run(
-            ["git", "-c", "core.quotepath=false", *args],
-            cwd=root, capture_output=True, check=False,
-            encoding="utf-8", errors="backslashreplace",
-        ).stdout
-    except OSError:
-        return ""
+        return hc.git_run(root, *args)
+    except subprocess.CalledProcessError as e:
+        if e.returncode in ok_exits:
+            return ""
+        raise
+
+
+def name_status_z(raw: str) -> list[tuple[str, list[str]]]:
+    """Parse `diff --name-status -z`: a status field, then ONE path — two for R/C (old, new).
+    NUL-framed (ADR 0077): a path carrying U+2028, NEL or a tab stays one path."""
+    tok = raw.split("\0")
+    out: list[tuple[str, list[str]]] = []
+    i = 0
+    while i < len(tok):
+        st = tok[i]
+        i += 1
+        if not st:
+            continue
+        n = 2 if st[:1] in ("R", "C") else 1
+        paths = [hc.norm(x) for x in tok[i:i + n] if x]
+        i += n
+        if paths:
+            out.append((st, paths))
+    return out
 
 
 # The docs builder's frontmatter list grammar (docs/build_docs.py parse_frontmatter, spec 0001 §3),
@@ -249,6 +269,13 @@ def frontmatter_at(root: Path, rev: str, path: str) -> str:
     that shape and is the normal way to correct a committed record, so keying on "source changed"
     cried wolf on a recurring class whose only answer was to rebuild and confirm no delta by hand.
     """
+    # Absence is asked structurally, not read off an exit code: `git show rev:path` exits 128 both
+    # for an absent path and for every other fatal (a missing object in a shallow clone, a bad
+    # rev), and its message is translated under a non-English locale. `ls-tree` answers an absent
+    # path with empty output and exit 0; any failure raises to main's FAILED marker. Absent is
+    # treated by the caller as a difference — the conservative side for BUILD.
+    if not git(root, "--literal-pathspecs", "ls-tree", "-z", rev, "--", path):
+        return ""
     blob = git(root, "show", f"{rev}:{path}")
     if not blob:
         return ""  # absent at that rev — the caller treats it as a difference
@@ -279,14 +306,14 @@ def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, li
     the stated semantics of an advisory gate, named rather than special-cased (review
     2026-08-10, low): parent order is what the committer's own `git merge` produced.
     """
-    if not rev_range and git(root, "rev-parse", "-q", "--verify", "HEAD^2").strip():
+    if not rev_range and git(root, "rev-parse", "-q", "--verify", "HEAD^2", ok_exits=(1,)).strip():
         rev_range = "HEAD^1..HEAD"
     if rev_range:
-        raw = git(root, "diff", "--name-status", "-M", rev_range)
-        subjects = [s for s in git(root, "log", "--format=%s", rev_range).splitlines() if s.strip()]
+        raw = git(root, "diff", "--name-status", "-z", "-M", rev_range)
+        subjects = [s for s in git(root, "log", "--format=%s", rev_range).split("\n") if s.strip()]
         if "..." in rev_range:
             a, b = rev_range.split("...", 1)
-            pre = git(root, "merge-base", a, b).strip()
+            pre = git(root, "merge-base", a, b, ok_exits=(1,)).strip()  # 1 = no common ancestor
             post = b or "HEAD"
         elif ".." in rev_range:
             a, b = rev_range.split("..", 1)
@@ -294,16 +321,11 @@ def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, li
         else:
             pre, post = "", rev_range
     else:
-        raw = git(root, "diff-tree", "--no-commit-id", "--name-status", "-r", "-M", "--root", "HEAD")
-        subjects = [s for s in git(root, "log", "-1", "--format=%s", "HEAD").splitlines() if s.strip()]
-        pre = git(root, "rev-parse", "-q", "--verify", "HEAD^").strip()  # empty at a root commit
+        raw = git(root, "diff-tree", "-z", "--no-commit-id", "--name-status", "-r", "-M", "--root", "HEAD")
+        subjects = [s for s in git(root, "log", "-1", "--format=%s", "HEAD").split("\n") if s.strip()]
+        pre = git(root, "rev-parse", "-q", "--verify", "HEAD^", ok_exits=(1,)).strip()  # empty at a root commit
         post = "HEAD"
-    changes: list[tuple[str, list[str]]] = []
-    for line in raw.splitlines():
-        parts = line.split("\t")
-        if len(parts) >= 2 and parts[0]:
-            changes.append((parts[0], [hc.norm(p) for p in parts[1:] if p]))
-    return changes, subjects, pre, post
+    return name_status_z(raw), subjects, pre, post
 
 
 def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | None) -> list[str]:
@@ -357,7 +379,7 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
     doc_changes = [(st, ps) for st, ps in changes if any(DOCS_RX.match(p) for p in ps)]
     if doc_changes:
         need = False
-        if not pre or not git(root, "rev-parse", "-q", "--verify", f"{pre}^{{commit}}").strip():
+        if not pre or not git(root, "rev-parse", "-q", "--verify", f"{pre}^{{commit}}", ok_exits=(1,)).strip():
             need = True  # no comparable endpoint — do not suppress what cannot be checked
         else:
             for st, ps in doc_changes:
@@ -417,7 +439,7 @@ def coverage(root: Path, cfg: dict, warns: list[str]) -> int:
         print("-- dead mappings: none")
 
     if scope:
-        tracked = [hc.norm(x) for x in git(root, "ls-files").splitlines() if x.strip()]
+        tracked = hc.git_paths(root, "ls-files")
         un = unowned(tracked, scope, owned, ign)
         in_scope = [x for x in tracked if any_match(scope, x)]
         if un:
@@ -447,10 +469,25 @@ def main() -> int:
     root = Path(args.repo).resolve() if args.repo else hc.find_repo_root(Path.cwd())
     cfg, warns = hc.load(root)
 
-    if args.coverage:
-        return coverage(root, cfg, warns)
-
-    findings = build_findings(root, cfg, warns, args.range)
+    try:
+        if args.coverage:
+            return coverage(root, cfg, warns)
+        findings = build_findings(root, cfg, warns, args.range)
+    except subprocess.CalledProcessError as e:
+        # The one non-zero exit (ADR 0041's principle, the gate emitter's scope path): an empty
+        # retro reads as "clean", so a git failure must print a marker, never silence. The
+        # post-commit hook calls this with `|| true`, so the commit is untouched either way.
+        print(f"git failed: {(e.stderr or '').strip()}", file=sys.stderr)
+        print(f"[slice-retro] FAILED — git {' '.join(str(a) for a in e.cmd[3:])} exited "
+              f"{e.returncode}; NO retro check ran. This is not a clean retro (ADR 0041).")
+        return 1
+    except OSError as e:
+        # git itself could not start (not on PATH — a hook environment with a stripped PATH):
+        # the same marker, never a raw traceback.
+        print(f"git failed to start: {e}", file=sys.stderr)
+        print("[slice-retro] FAILED — git could not be run; NO retro check ran. This is not a clean "
+              "retro (ADR 0041).")
+        return 1
     if findings:
         print("[slice-retro] retro gate (zero-token advisory) — findings:")
         for x in findings:

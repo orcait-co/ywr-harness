@@ -24,11 +24,11 @@ export const meta = {
   description: '적대 코드리뷰 표준 — 렌즈 티어(풀3·small2)·시맨틱 dedupe·심각도 게이트(h/m=2·low=1·nit=0 skeptic)',
   // whenToUse 는 모델만 읽는 목록 텍스트라 영어다(ywr-harness ADR 0045 의 분리 — 멤버 대상은 한국어, 모델 대상은 영어;
   // ywr-harness ADR 0089). 매 턴 모든 세션의 프리픽스에 실린다. description 은 멤버 UI 에 보이므로 한국어 그대로.
-  whenToUse: 'Slice-close gate review, once per slice. args.scope = {files: [...], invariants, gates_passed} (plus the git diff for a diff slice); run the repo\'s deterministic lint gates first and list what passed in gates_passed. args.tier:"small" for a small non-critical diff; house-specific lens angles go in args.lensExtra. A fix diff for its confirmed findings is never re-reviewed: close it with re-run gates + per-finding fix checks; one bounded re-review only when the fix is a new mechanism, not a patch. Ultracode on, or the host-confirmed ultracode keyword opt-in (not a mere mention): args.ultracode:true (every worker, haiku dedupe included, runs on the session model) and args.effort = the session effort (xhigh if unknown). Always pass args.sessionModel = your own model id: an Opus session runs every worker on opus at effort low.',
+  whenToUse: 'Slice-close gate review, once per slice. args.scope = {files: [...], invariants, gates_passed} (plus the git diff for a diff slice); run the repo\'s deterministic lint gates first and list what passed in gates_passed. args.tier:"small" for a small non-critical diff; house-specific lens angles go in args.lensExtra. A fix diff for its confirmed findings is never re-reviewed: close it with re-run gates + per-finding fix checks; one bounded re-review only when the fix is a new mechanism, not a patch. Ultracode on, or the host-confirmed ultracode keyword opt-in (not a mere mention): args.ultracode:true (every worker, the dedupe included, runs on the session model) and args.effort = the session effort (xhigh if unknown). Always pass args.sessionModel = your own model id: an Opus session runs every worker on opus at effort low.',
   phases: [
     { title: 'Canary', detail: '한도/게이트웨이 확인 1개 (sonnet · reviewer 에이전트)', model: 'sonnet' },
     { title: 'Find', detail: '렌즈 병렬 — 풀 3 · small 2 (sonnet·effort medium · reviewer 에이전트)', model: 'sonnet' },
-    { title: 'Dedupe', detail: '정규화 file:line 키 + >12건이면 haiku 그룹핑(effort low · 기본 서브에이전트) — 묶인 위치는 also_at', model: 'haiku' },
+    { title: 'Dedupe', detail: '정규화 file:line 키 + >12건이면 sonnet 그룹핑(effort low · reviewer 에이전트, ywr-harness ADR 0102) — 묶인 위치는 also_at', model: 'sonnet' },
     { title: 'Verify', detail: 'high/med=2 · low=1 skeptic(effort low · reviewer 에이전트) · nit=생략', model: 'sonnet' },
   ],
 }
@@ -47,8 +47,8 @@ export const meta = {
 // 사용자가 ultracode(세션 설정 또는 호스트가 확인한 프롬프트 키워드)로 토큰 비용 제약을 해제했기 때문이다. 모델은
 // 'inherit'(세션 모델 — reviewer agentType 위에서 실측, 2.1.280), effort 는 명시값만 먹는다: 'inherit' 는
 // 조용히 무시되고 에이전트 정의의 medium 이 남는다(실측) → args.effort = 세션 effort(모르면 기본 'xhigh' =
-// ultracode 가 모델에 보내는 값; 키워드만의 옵트인은 세션 effort 를 바꾸지 않으므로 그보다 높을 수 있다 — docs). haiku dedupe 핀도 같이 푼다(owner 2026-09-23: "ultracode 사용중일 때는 haiku 도 사용할 필요 없어") —
-// 기본 서브에이전트라 model 을 생략하면 세션 모델을 상속한다(실측), effort 만 명시.
+// ultracode 가 모델에 보내는 값; 키워드만의 옵트인은 세션 effort 를 바꾸지 않으므로 그보다 높을 수 있다 — docs). dedupe 핀도 같이 푼다(owner 2026-09-23: "ultracode 사용중일 때는 haiku 도 사용할 필요 없어" — 당시 dedupe 는 haiku) —
+// ultracode 의 dedupe 는 기본 서브에이전트라 model 을 생략하면 세션 모델을 상속한다(실측), effort 만 명시.
 // Opus 세션(ywr-harness ADR 0099): 호출자가 args.sessionModel 에 세션 모델 id 를 넘기고 그것이 opus 계열이면
 // (ultracode 가 아닐 때) canary·find·dedupe·verify 전부 opus · low 단일 모델로 돈다 — 스크립트는 세션 모델을
 // 조회할 수 없어 호출자의 신고가 유일한 신호다. 실측(2026-09-28, full 티어 2회 · small 2회, 심은 결함 채점):
@@ -82,7 +82,7 @@ if (_args.effort !== undefined && !(ULTRA && EFFORTS.includes(_args.effort))) {
   throw new Error(`args.effort 는 args.ultracode:true 와 함께만, ${EFFORTS.join('|')} 중 하나로 (받은 값: ${JSON.stringify(_args.effort)}) — 기본 모드의 effort 는 스테이지별 핀이다`)
 }
 const ULTRA_EFFORT = ULTRA ? (_args.effort || 'xhigh') : null
-if (ULTRA) log(`[ultracode] canary/find/dedupe/verify 워커 = 세션 모델 · effort ${ULTRA_EFFORT} — meta.phases 의 sonnet/haiku 라벨은 기본 모드 표기다.`)
+if (ULTRA) log(`[ultracode] canary/find/dedupe/verify 워커 = 세션 모델 · effort ${ULTRA_EFFORT} — meta.phases 의 sonnet 라벨은 기본 모드 표기다.`)
 if (_args.sessionModel !== undefined && typeof _args.sessionModel !== 'string') {
   throw new Error(`args.sessionModel 은 세션 모델 id 문자열이어야 한다 (받은 값: ${JSON.stringify(_args.sessionModel)})`)
 }
@@ -91,7 +91,7 @@ if (_args.sessionModel !== undefined && typeof _args.sessionModel !== 'string') 
 // 'anthropic.claude-opus-…'·'claude-opus-4@2025…' 만 맞고, 안 맞으면 핀 모드(안전한 쪽)다.
 const OPUS_ID = /(?:^|[./])(?:claude-)?opus(?:[-@.[]|$)/i
 const OPUS_LOW = !ULTRA && OPUS_ID.test(_args.sessionModel || '')
-if (OPUS_LOW) log(`[opus-low] 세션 모델 ${_args.sessionModel} — canary/find/dedupe/verify 워커 = opus · effort low 단일(ywr-harness ADR 0099) — meta.phases 의 sonnet/haiku 라벨은 기본 모드 표기다.`)
+if (OPUS_LOW) log(`[opus-low] 세션 모델 ${_args.sessionModel} — canary/find/dedupe/verify 워커 = opus · effort low 단일(ywr-harness ADR 0099) — meta.phases 의 sonnet 라벨은 기본 모드 표기다.`)
 // 스코프는 문자열 블록 또는 구조화 객체({files, invariants, ...}) — 객체는 직렬화해 프롬프트에 주입.
 // (2026-07-02 회고: 객체를 템플릿에 그대로 넣으면 "[object Object]" 로 스코프가 증발 → 파인더 드리프트 근원)
 const SCOPE = typeof _args.scope === 'string' ? _args.scope : JSON.stringify(_args.scope, null, 2)
@@ -417,7 +417,11 @@ for (const f of all) {
 }
 let deduped = [...byKey.values()]
 
-// 2차(선택): 12건 초과면 haiku 그룹핑 — 같은 근원의 다른 라인/제목/파일 병합. ultracode 에서는 세션 모델 · ULTRA_EFFORT.
+// 2차(선택): 12건 초과면 그룹핑 — 같은 근원의 다른 라인/제목/파일 병합. 기본 모드는 reviewer 에이전트 위 sonnet · low
+// (ywr-harness ADR 0102 — 종전 haiku · low 기본 서브에이전트. 기록된 목록 4건 헤드리스 재생, 암당 n=1, 호스트 2.1.283:
+// haiku 347.6 s · 출력 38,967 tok · $0.279 vs sonnet 113.7 s · 9,372 tok · $0.234(5분 쓰기 기준). sonnet 이 "서로 다른
+// 결함은 묶지 마라"를 더 잘 지켰고 ADR 0089 의 파일 교차 클래스를 혼자 재현했다; 그룹 집합이 같은 목록은 0/4).
+// ultracode 에서는 세션 모델 · ULTRA_EFFORT, Opus 세션은 opus · low — 두 모드는 기본 서브에이전트 그대로.
 // 묶인 항목은 버리지 않는다(ywr-harness ADR 0089 — 위 1차 dedupe 의 "대표만 유지"를 좁힌다): 대표가 나머지의 위치를
 // also_at 으로 들고 가서, 스켑틱은 전 위치를 보고 한 번 판정하고 닫는 쪽은 위치마다 고친다. 실측 slice 25: 그룹핑이
 // 네 위치를 조용히 버렸고(그중 low 하나는 HEAD 에 아직 남았다), 한 근원('워커가 xhigh 로 돈다')이 4 파일에 흩어져
@@ -426,9 +430,9 @@ if (deduped.length > 12) {
   phase('Dedupe')
   const listing = deduped.map((f, i) => `${i}. [${f.severity}] ${f.file}:${f.line ?? '?'} ${f.title}`).join('\n')
   const groups = await agent(
-    `아래 코드리뷰 지적 목록에서 **같은 근원 결함**을 가리키는 항목들을 그룹으로 묶어라: 같은 함수의 동일 원인, 동일 패턴의 중복 보고, 그리고 **같은 주장이 서로 다른 파일에 반복된 것**(한 결함이 여러 파일에 적혀 있으면 한 그룹이다 — 묶인 항목의 파일:라인은 전부 보존되고 검증만 한 번 한다). 서로 다른 결함은 절대 묶지 마라 — 같은 파일·같은 렌즈라도 주장이 다르면 따로다. 그룹은 인덱스 배열의 배열로.\n${listing}`,
-    { label: ULTRA ? 'dedupe' : OPUS_LOW ? 'dedupe:opus' : 'dedupe:haiku', phase: 'Dedupe',
-      ...(ULTRA ? { effort: ULTRA_EFFORT } : OPUS_LOW ? { model: 'opus', effort: 'low' } : { model: 'haiku', effort: 'low' }), schema: {
+    `아래 코드리뷰 지적 목록에서 **같은 근원 결함**을 가리키는 항목들을 그룹으로 묶어라: 같은 함수의 동일 원인, 동일 패턴의 중복 보고, 그리고 **같은 주장이 서로 다른 파일에 반복된 것**(한 결함이 여러 파일에 적혀 있으면 한 그룹이다 — 묶인 항목의 파일:라인은 전부 보존되고 검증만 한 번 한다). 서로 다른 결함은 절대 묶지 마라 — 같은 파일·같은 렌즈라도 주장이 다르면 따로다. 파일을 읽거나 검색하지 마라 — 아래 목록의 텍스트만으로 묶는다. 그룹은 인덱스 배열의 배열로.\n${listing}`,
+    { label: ULTRA ? 'dedupe' : OPUS_LOW ? 'dedupe:opus' : 'dedupe:sonnet', phase: 'Dedupe',
+      ...(ULTRA ? { effort: ULTRA_EFFORT } : OPUS_LOW ? { model: 'opus', effort: 'low' } : { agentType: REVIEWER, model: 'sonnet', effort: 'low' }), schema: {
       type: 'object',
       properties: { groups: { type: 'array', items: { type: 'array', items: { type: 'integer' } } } },
       required: ['groups'],
@@ -456,7 +460,7 @@ if (deduped.length > 12) {
     deduped = merged.sort((a, b) => a.at - b.at).map(m => m.f)
   }
 }
-lap('dedupe') // haiku 그룹핑 미실행이면 0
+lap('dedupe') // 그룹핑 미실행이면 0
 const alsoAtSites = deduped.reduce((n, f) => n + f.also_at.length, 0)
 log(`[${TIER}] 파인더 ${found.filter(Boolean).length}/${UNITS.length} — 원지적 ${all.length} → 중복제거 후 ${deduped.length}${alsoAtSites ? ` (묶인 보고 ${alsoAtSites}건은 대표의 also_at 으로 보존)` : ''}`)
 
@@ -543,9 +547,27 @@ const confirmedAll = kept.map(({ votes, ...f }) => {
     ...(dead ? { dead_votes: dead } : {}), ...(dead === votes.length ? { unverified: true } : {}) }
 })
 
+// digest 는 반환값의 첫 키다(handoff O41d): Workflow 완료 알림은 ~13.9k 자에서 잘리므로, 다음 결정에 필요한 것 —
+// 심각도별 확정 수, 스코프 밖·nit·반증 수, 커버리지 손실, 티어·샤드·핀 모드·카나리아 — 을 한 줄(≤ ~400자)로 맨 앞에 둔다.
+// 이미 계산된 값에서만 만든다(에이전트 호출 없음). 커버리지 손실은 0 이 아닌 항목만 적되, 손실이 있으면 반드시 보인다
+// (조직 가이드: 조용히 자르지 않는다). 없으면 'coverage full' 로 그 사실을 적는다.
+const confirmedIn = confirmedAll.filter(isInScope)
+const outOfScope = SCOPE_FILES ? confirmedAll.filter(f => !isInScope(f)) : []
+const bySev = xs => ['high', 'medium', 'low'].map(s => `${s[0]}${xs.filter(f => f.severity === s).length}`).join(' ')
+const loss = [
+  deadLenses.length && `dead_lenses ${deadLenses.length}`, deadFinders.length && `dead_finders ${deadFinders.length}`,
+  deadSkeptics && `dead_skeptics ${deadSkeptics}`, unverifiedByDeath && `unverified_by_death ${unverifiedByDeath}`,
+  findOmitted && `find_omitted ${findOmitted}`, unreportedCap.length && `cap_unreported ${unreportedCap.length}`,
+].filter(Boolean)
+const PIN_MODE = ULTRA ? 'ultracode' : OPUS_LOW ? 'opus-low' : 'pinned'
+const digest = `confirmed ${confirmedIn.length} (${bySev(confirmedIn)}) · out_of_scope_confirmed ${outOfScope.length} · nits ${nits.length} · rejected ${rejected} · ` +
+  (loss.length ? `COVERAGE LOSS: ${loss.join(', ')}` : 'coverage full') +
+  ` · tier ${TIER} · shards ${SHARDED ? SHARDS.length : 1} · pins ${PIN_MODE} · canary_ok ${CANARY_OK} · full lists follow (confirmed, out_of_scope_confirmed, nits_unverified, rejected, stats)`
+
 return {
-  confirmed: confirmedAll.filter(isInScope),
-  out_of_scope_confirmed: SCOPE_FILES ? confirmedAll.filter(f => !isInScope(f)) : [],
+  digest,
+  confirmed: confirmedIn,
+  out_of_scope_confirmed: outOfScope,
   nits_unverified: nits, // skeptic 생략 — 오케스트레이터가 직접 판정
   rejected_count: rejected,
   rejected: rejectedAll, // [{severity, title, file, line, also_at, votes: [{refuted, reason, dead?}]}] — ywr-harness ADR 0089
@@ -555,9 +577,9 @@ return {
   // 상한임을 구조적으로 못 박고, 공유 풀이 아닌 유일한 정확값(에이전트 수)을 옆에 둔다.
   stats: {
     tier: TIER, lenses: LENSES.length, shards: SHARDED ? SHARDS.length : 1, finders: UNITS.length,
-    worker_pins: ULTRA ? { mode: 'ultracode', model: 'session', effort: ULTRA_EFFORT }
-      : OPUS_LOW ? { mode: 'opus-low', model: 'opus', effort: 'low', session_model: _args.sessionModel }
-      : { mode: 'pinned', model: 'sonnet · dedupe haiku', effort: 'canary low · find medium · verify low · dedupe low' },
+    worker_pins: ULTRA ? { mode: PIN_MODE, model: 'session', effort: ULTRA_EFFORT }
+      : OPUS_LOW ? { mode: PIN_MODE, model: 'opus', effort: 'low', session_model: _args.sessionModel }
+      : { mode: PIN_MODE, model: 'sonnet', effort: 'canary low · find medium · verify low · dedupe low' },
     dead_lenses: deadLenses, dead_finders: deadFinders, raw: all.length,
     find_cap: FIND_CAP, find_omitted: findOmitted, capped_finders: cappedFinders, cap_unreported: unreportedCap,
     // verified = 산 skeptic 표가 1개 이상인 지적 수(표가 전혀 없는 지적은 unverified_by_death 로 따로 — 검증된 척 세지 않는다).
