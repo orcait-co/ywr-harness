@@ -57,7 +57,7 @@ explicit effort:
 - `effort` without `ultracode: true` throws. In the pinned mode each stage's effort is fixed.
 - The result's `stats.worker_pins` names the mode. Record it in the close record.
 - Stage 2's fix-check legs follow the same rule. They run on `general-purpose` instead of
-  `ywr-harness:worker`, because `general-purpose` inherits the session model and effort and the
+  `ywr-harness:worker` or `ywr-harness:worker-opus`, because `general-purpose` inherits the session model and effort and the
   Agent tool has no effort parameter.
 - The signal is the host's, not the word. The host says ultracode is on for the session, or it
   confirms the prompt's `ultracode` keyword opt-in. A bare mention of the word is not the opt-in.

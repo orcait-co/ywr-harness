@@ -79,7 +79,7 @@ async function run(plan) {
                             severity: 'low', claim: 'c', evidence: 'e' }], ...om };
     }
     if (label.startsWith('verify:')) return plan.verdict ? plan.verdict(prompt, label) : { refuted: false, reason: 'r' };
-    if (label === 'dedupe:haiku' || label === 'dedupe') return { groups: plan.groups ?? [] };
+    if (label === 'dedupe:haiku' || label === 'dedupe:opus' || label === 'dedupe') return { groups: plan.groups ?? [] };
     throw new Error(`stub: unexpected label ${label}`);
   };
   const fn = compile(SCRIPT);
@@ -310,6 +310,65 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   if (result.stats.worker_pins?.mode !== 'pinned' || !String(result.stats.worker_pins?.model).startsWith('sonnet')) fail(name, JSON.stringify(result.stats.worker_pins));
   else pass(name);
 }
+// 10o. the Opus-session mode (ywr-harness ADR 0099). The caller reports its own model id in
+//     args.sessionModel; an opus-family id (outside ultracode) runs EVERY stage — canary, finders,
+//     dedupe, skeptics — on opus at effort low, agentType kept on the reviewer stages. Any other id,
+//     or none, keeps the pinned mode; ultracode wins over it.
+{
+  const name = 'opus session runs every stage on opus · low';
+  const { result, spawns, logs } = await run({ many: 7, args: { tier: 'small', sessionModel: 'claude-opus-5-5[1m]', scope: { files: ['f.md'], context: 'c' } } });
+  const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
+  const dedupe = spawns.filter((s) => s.phase === 'Dedupe' || /^dedupe/.test(s.label));
+  const off = workers.filter((s) => s.model !== 'opus' || s.effort !== 'low' || s.agentType !== 'ywr-harness:reviewer');
+  if (!workers.length || !workers.some((s) => /^find:/.test(s.label)) || !workers.some((s) => /^verify:/.test(s.label))) fail(name, 'canary/find/verify spawns not all captured');
+  else if (off.length) fail(name, `pins: ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort, s.agentType]))}`);
+  else if (dedupe.length !== 1 || dedupe[0].model !== 'opus' || dedupe[0].effort !== 'low' || dedupe[0].label !== 'dedupe:opus') fail(name, `dedupe=${JSON.stringify(dedupe.map((s) => [s.label, s.model, s.effort]))}`);
+  else if (result.stats.worker_pins?.mode !== 'opus-low' || result.stats.worker_pins?.session_model !== 'claude-opus-5-5[1m]') fail(name, `stats.worker_pins=${JSON.stringify(result.stats.worker_pins)}`);
+  else if (!logs.some((l) => l.startsWith('[opus-low]'))) fail(name, 'mode not logged');
+  else pass(name);
+}
+{
+  // Every stage, dedupe included (many: 7 crosses the >12 gate), must keep its pin; the ids that only
+  // CONTAIN "opus" (a pasted placeholder, gateway aliases) must not switch the mode (review 2026-09-28).
+  const name = 'a non-opus session model keeps every stage pinned';
+  const ids = ['claude-sonnet-5', 'claude-fable-5-1', '', '<your own model id, e.g. claude-opus-5-5>', 'magnum-opus-local', 'non-opus-sonnet-proxy'];
+  let bad = null;
+  for (const m of ids) {
+    const { result, spawns } = await run({ many: 7, args: { tier: 'small', sessionModel: m, scope: { files: ['f.md'], context: 'c' } } });
+    const want = (s) => (/^find:/.test(s.label) ? ['sonnet', 'medium'] : /^(canary$|verify:)/.test(s.label) ? ['sonnet', 'low']
+      : /^dedupe/.test(s.label) ? ['haiku', 'low'] : null);
+    const off = spawns.filter((s) => want(s) && (s.model !== want(s)[0] || s.effort !== want(s)[1]));
+    const dedupe = spawns.filter((s) => /^dedupe/.test(s.label));
+    if (result.stats.worker_pins?.mode !== 'pinned' || off.length || dedupe.length !== 1 || dedupe[0].label !== 'dedupe:haiku') {
+      bad = `${JSON.stringify(m)}: ${JSON.stringify(result.stats.worker_pins)} ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort]))} dedupe=${dedupe.length}`;
+      break;
+    }
+  }
+  if (bad) fail(name, bad); else pass(name);
+}
+{
+  const name = 'opus ids by shape (alias, 1m, provider-prefixed) switch the mode, also through JSON-string args';
+  const ids = ['opus', 'opus[1m]', 'claude-opus-5-5', 'anthropic.claude-opus-4-1-20250805-v1:0', 'claude-opus-4@20250514'];
+  let bad = null;
+  for (const m of ids) {
+    const { result } = await run({ args: { tier: 'small', sessionModel: m, scope: { files: ['f.md'], context: 'c' } } });
+    if (result.stats.worker_pins?.mode !== 'opus-low') { bad = `${m}: ${JSON.stringify(result.stats.worker_pins)}`; break; }
+  }
+  if (!bad) {
+    const { result } = await run({ args: JSON.stringify({ tier: 'small', sessionModel: 'claude-opus-5-5[1m]', scope: { files: ['f.md'], context: 'c' } }) });
+    if (result.stats.worker_pins?.mode !== 'opus-low') bad = `JSON-string args: ${JSON.stringify(result.stats.worker_pins)}`;
+  }
+  if (bad) fail(name, bad); else pass(name);
+}
+{
+  const name = 'ultracode wins over an opus session model';
+  const { result, spawns } = await run({ args: { tier: 'small', ultracode: true, sessionModel: 'claude-opus-5-5', scope: { files: ['f.md'], context: 'c' } } });
+  const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
+  if (workers.some((s) => s.model !== 'inherit' || s.effort !== 'xhigh') || result.stats.worker_pins?.mode !== 'ultracode') fail(name, JSON.stringify([result.stats.worker_pins, workers.map((s) => [s.label, s.model, s.effort])]));
+  else pass(name);
+}
+await expectThrow('a non-string args.sessionModel is refused',
+  { args: { sessionModel: true, scope: { files: ['f.md'], context: 'c' } } }, 'args.sessionModel');
 await expectThrow('non-boolean args.ultracode is refused',
   { args: { ultracode: 'true', scope: { files: ['f.md'], context: 'c' } } }, 'args.ultracode');
 await expectThrow('args.effort without ultracode is refused',
@@ -694,7 +753,7 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   const name = '12g meta.whenToUse is English and keeps every clause';
   const m = readFileSync(SCRIPT, 'utf8').match(/whenToUse:\s*'((?:[^'\\]|\\.)*)'/);
   const w = m ? m[1] : '';
-  const clauses = ['once per slice', 'files: [...]', 'gates_passed', 'args.tier:"small"', 'args.lensExtra', 'never re-reviewed', 'new mechanism', 'args.ultracode:true', 'args.effort', 'xhigh'];
+  const clauses = ['once per slice', 'files: [...]', 'gates_passed', 'args.tier:"small"', 'args.lensExtra', 'never re-reviewed', 'new mechanism', 'args.ultracode:true', 'args.effort', 'xhigh', 'args.sessionModel'];
   const missing = clauses.filter((c) => !w.includes(c));
   if (!w) fail(name, 'whenToUse literal not found');
   else if (/[가-힣]/.test(w)) fail(name, 'whenToUse carries Hangul — the model-facing listing text is English');

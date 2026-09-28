@@ -70,7 +70,8 @@ Workflow({name: 'ywr-harness:adversarial-review', args: {
   shards: '<auto only per the shard habit below; omit otherwise>',
   ultracode: <true ONLY when the host says ultracode is on for the session or confirms the
               prompt's `ultracode` keyword opt-in; a bare mention of the word is not it; omit otherwise>,
-  effort: '<only beside ultracode (alone it throws): the session's level when known; omit for xhigh>'
+  effort: '<only beside ultracode (alone it throws): the session's level when known; omit for xhigh>',
+  sessionModel: '<your own model id from your system prompt, verbatim — always>'
 }})
 ```
 
@@ -82,7 +83,8 @@ state, not shipped); a file whose **whole diff a named gate checks** — e.g. `p
 `gates_passed`. Everything else stays in scope.
 
 `ultracode: true` lifts every model and effort pin in the review (ADR 0084); record the result's
-`stats.worker_pins`. **→ Choosing `effort`, or what runs on which model: `reference.md` §Ultracode.**
+`stats.worker_pins`. An Opus `sessionModel` runs every review worker on opus · low (ADR 0099);
+any other model keeps the pins. **→ Choosing `effort`, or what runs on which model: `reference.md` §Ultracode.**
 
 `invariants` come from the canon file the emitter printed. If it said **NOT FOUND**, stop and
 resolve that first: a review whose invariants nobody can cite is a review nobody can audit.
@@ -114,7 +116,8 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    close gate, run once on the final tree.
 2. **Per-finding fix check** (ADR 0090): read each fix against its finding's claim and failure
    scenario. **High and medium** findings go to skeptic legs on the pinned worker agent
-   (`ywr-harness:worker`; `general-purpose` under ultracode, ADR 0084), **batched**: one leg per
+   (`ywr-harness:worker-opus` on an Opus session, `ywr-harness:worker` on any other, ADR 0100;
+   `general-purpose` under ultracode, ADR 0084), **batched**: one leg per
    group whose fixes touch the same files or the same defect class, **at most 4 findings per leg**,
    and a leg of its own for a fix that touches a declared critical surface. A leg gets its findings
    (severity · title · claim · evidence · `also_at`) plus the files the fixes touched, tries to
