@@ -242,7 +242,11 @@ def hooks_status(root: Path) -> str | None:
 # a `$`-anchored full-match check while carrying the one character that can split an output line
 # (the same class as SAFE_TOKEN, which uses `\Z` for the same reason — an anchor that admits a
 # newline is not a full-match anchor).
-ARTIFACT_URL = re.compile(r"^https://claude\.ai/code/artifact/[0-9A-Fa-f-]+\Z")
+# Both link forms the platform issues are accepted (ADR 0104): the Artifact tool's own listing
+# returns `claude.ai/artifact/<id>` (a 22-char alphanumeric id) and it reads and publishes to both
+# that and `claude.ai/code/artifact/<uuid>`. Until 0.57.4 only the `/code/` form passed, so a
+# repo declaring what the listing handed it failed CI (dist issue #7).
+ARTIFACT_URL = re.compile(r"^https://claude\.ai/(?:code/artifact/[0-9A-Fa-f-]+|artifact/[0-9A-Za-z_-]+)\Z")
 
 
 def repo_name(root: Path) -> tuple[str, str]:
@@ -333,7 +337,8 @@ def artifact_status(root: Path, cfg: dict, warns: list[str]) -> tuple[list[str],
                             "a declared value is echoed on ONE status line")
         if not ARTIFACT_URL.match(url):
             problems.append("url is not a claude.ai Artifact URL "
-                            "(want https://claude.ai/code/artifact/<id>)")
+                            "(want https://claude.ai/artifact/<id> or "
+                            "https://claude.ai/code/artifact/<id>)")
         if not title.strip():
             problems.append("title missing")
         elif not title_has_prefix(title, name):

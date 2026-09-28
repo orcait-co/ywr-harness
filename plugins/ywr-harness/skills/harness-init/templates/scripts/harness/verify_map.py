@@ -201,12 +201,12 @@ def main() -> int:
                            "frontmatter and rebuild the index (pwsh docs/build.ps1)")
         impl = spec_files(spec, refused)
         verify = sorted(p for p in impl if verify_re and verify_re.match(p))
-        matched = sorted(f for f in files if f in impl)
+        matched = sorted(f for f in files if hc.owned(impl, f))
         owned.update(impl)
         if matched:
             hits[sid] = {"title": spec.get("title", ""), "matched": matched, "verify": verify}
 
-    unmapped = sorted(f for f in files if scope_re.match(f) and f not in owned) if scope_re else []
+    unmapped = sorted(f for f in files if scope_re.match(f) and not hc.owned(owned, f)) if scope_re else []
 
     if not hits:
         hc.say(f"{len(files)} changed file(s) map to no spec — no registered verify script.")

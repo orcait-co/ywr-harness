@@ -531,6 +531,30 @@ try {
 $ok = (Assert-True 'Q fixture: git is not resolvable on the narrowed PATH' $qGitGone "PATH=$(Split-Path -Parent $py.Source)") -and $ok
 $ok = (Assert-True 'Q a missing git binary prints the FAILED marker and exits 1, no traceback' ($rQ.Code -eq 1 -and $rQ.Out -match '\[slice-retro\] FAILED — git could not be run' -and $rQ.Out -notmatch 'Traceback') "exit=$($rQ.Code): $($rQ.Out)") -and $ok
 
+# --- R: a directory implements_in entry owns every file below it (ADR 0104, dist issue #7) -------
+# Exact-string ownership read every file added under a directory entry as UNMAPPED, and a change
+# there never fired SPEC. The prefix is `entry + "/"`: `src/notice` must not own `src/notice_old.py`.
+$r = New-Repo 'dir-entry' $CFG
+Write-F $r 'docs/spec/0001-s.md' (Spec '0001' @('src/notice', 'src/board/'))
+Commit $r 'docs: spec maps directories'
+Write-F $r 'src/notice/service.py' "x = 1`n"
+Write-F $r 'src/notice/sub/deep.py' "x = 1`n"
+Write-F $r 'src/board/x.py' "x = 1`n"
+Write-F $r 'src/notice_old.py' "x = 1`n"
+Commit $r 'chore: add files under the mapped directories'
+$rR = Invoke-Retro $r @()
+$ok = (Assert-True 'R1 files added under a directory entry are owned, nested and trailing-slash too (no UNMAPPED)' ($rR.Out -notmatch 'UNMAPPED: new file src/(notice/|board/)') $rR.Out) -and $ok
+$ok = (Assert-True 'R1 a sibling sharing the name prefix is still UNMAPPED' ($rR.Out -match 'UNMAPPED: new file src/notice_old\.py') $rR.Out) -and $ok
+$ok = (Assert-True 'R1 a change under a directory entry fires SPEC for its spec' ($rR.Out -match 'SPEC:.*0001-s\.md') $rR.Out) -and $ok
+$ok = (Assert-True 'R1 an existing directory entry is not a DEADMAP' ($rR.Out -notmatch 'DEADMAP') $rR.Out) -and $ok
+$rRc = Invoke-Retro $r @('--coverage')
+$ok = (Assert-True 'R2 --coverage agrees: only the sibling is unowned' ($rRc.Out -match 'unowned files \(in scope, no spec, not ignored\): 1 of 4' -and $rRc.Out -match 'src/notice_old\.py') $rRc.Out) -and $ok
+# R3: a DELETION under a directory entry still belongs to its spec — why owns() does no disk lookup.
+Remove-Item -LiteralPath (Join-Path $r 'src/notice/sub/deep.py')
+Commit $r 'chore: delete a file under the mapped directory'
+$rR3 = Invoke-Retro $r @()
+$ok = (Assert-True 'R3 a deletion under a directory entry fires SPEC for its spec' ($rR3.Out -match 'SPEC:.*0001-s\.md') $rR3.Out) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_retro selftest: FAILED' -ForegroundColor Red; exit 1 }

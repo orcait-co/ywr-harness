@@ -546,6 +546,26 @@ $ok = (Assert-True 'S1 satisfied declaration reports ok — readme, url, title, 
 $ok = (Assert-True 'S1 the ok path emits no violation' ($rS1.Out -notmatch 'artifact: VIOLATION') $rS1.Out) -and $ok
 $ok = (Assert-True 'S1 artifact lines print ABOVE gates: (outside both output parsers'' windows)' (($rS1.Out -split 'gates:')[0] -match 'artifact: ok') $rS1.Out) -and $ok
 
+# S1b: the short form the Artifact tool's listing returns (ADR 0104, dist issue #7) — a 22-char
+# alphanumeric id, mixed case. Until 0.57.4 it was a VIOLATION and the vendored CI failed on it.
+$SHORT = 'https://claude.ai/artifact/MHATJt6vTrR9i8hBYVofKR'
+$s1b = New-Repo 'art-short' (New-ArtCfg $SHORT 'art-short · 온보딩 가이드') @('src/x.py')
+Set-Content -LiteralPath (Join-Path $s1b 'README.md') -Value "docs: $SHORT fin" -NoNewline
+$rS1b = Invoke-Gates $s1b @()
+$ok = (Assert-True 'S1b the short claude.ai/artifact/<id> form is ok' ($rS1b.Out -match "artifact: ok — README\.md links https://claude\.ai/artifact/MHATJt6vTrR9i8hBYVofKR" -and $rS1b.Out -notmatch 'artifact: VIOLATION') $rS1b.Out) -and $ok
+# S1c: the widening is exactly two forms — a near miss of each still fails: an empty id, a
+# character outside the id alphabet, a plural path, the short form's id under /code/ (a non-hex
+# id there was never valid and stays refused), http, and a trailing newline (the `\Z` anchor —
+# the JSON escape `\n` lands as a real newline in the declared value, as in S10c).
+$nearN = 0
+foreach ($bad in @('https://claude.ai/artifact/', 'https://claude.ai/artifact/abc.def', 'https://claude.ai/artifacts/MHATJt6vTrR9i8hBYVofKR', 'https://claude.ai/code/artifact/MHATJt6vTrR9i8hBYVofKR', 'http://claude.ai/artifact/MHATJt6vTrR9i8hBYVofKR', 'https://claude.ai/artifact/MHATJt6vTrR9i8hBYVofKR\n')) {
+    $nearN++
+    $s1c = New-Repo "art-near-$nearN" (New-ArtCfg $bad 'art-near · docs') @('src/x.py')
+    Set-Content -LiteralPath (Join-Path $s1c 'README.md') -Value "docs: $bad" -NoNewline
+    $rS1c = Invoke-Gates $s1c @()
+    $ok = (Assert-True "S1c a near miss is still a VIOLATION: $bad" ($rS1c.Out -match 'artifact: VIOLATION.*url is not a claude\.ai Artifact URL \(want https://claude\.ai/artifact/<id> or https://claude\.ai/code/artifact/<id>\)') $rS1c.Out) -and $ok
+}
+
 # S2: the README lacks the declared link — the violation CI fails on, still advisory here.
 $s2 = New-Repo 'art-nolink' (New-ArtCfg $SURL 'art-nolink · docs') @('src/x.py')
 Set-Content -LiteralPath (Join-Path $s2 'README.md') -Value 'no link here' -NoNewline

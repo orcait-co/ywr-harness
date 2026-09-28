@@ -73,6 +73,7 @@ exists, or say plainly that the surface was not verified.
 
 Files the mapper flags as unmapped have no spec owner. Register them in a spec's `implements_in`
 rather than hand-picking a verify script — hand-picking is the guess this skill exists to remove.
+An entry may name a directory; it owns every file below it (ADR 0104).
 
-A new verify script must be registered in its spec's `implements_in`. That is the only place this
-skill looks.
+A new verify script must be registered in its spec's `implements_in` by its own path, even under a
+directory entry. That is the only place this skill looks.

@@ -233,6 +233,30 @@ $ok = (Assert-True 'M the id-less entry is warned, naming its position and the f
 $ok = (Assert-True 'M the id-less entry still maps and prints its verify script' ($rM.Out -match 'spec \(index entry 1, no id\) — Nameless' -and $rM.Out -match 'run:\s+.*verify_pipeline_e2e\.py') $rM.Out) -and $ok
 $ok = (Assert-True 'M a well-formed spec in the same index still maps' ($rM.Out -match 'spec 0001 — Pipeline') $rM.Out) -and $ok
 
+# --- N: a directory implements_in entry owns every file below it (ADR 0104, dist issue #7) ------
+# The mapper compared exact strings, so `apps/api/app/notice` owned nothing: a change under it read
+# as "unmapped" and /verify ran nothing for it. A prefix match on `entry + "/"` — never a bare
+# string prefix (`apps/api/app/notice` must not own `apps/api/app/notice_old.py`); a trailing
+# slash on the entry reads the same. The verify script is still registered by its exact path.
+$N_INDEX = @'
+{ "spec": [
+  { "id": "0003", "title": "Notice", "implements_in": ["apps/api/app/notice", "apps/api/scripts/verify_notice.py"] },
+  { "id": "0004", "title": "Slash", "implements_in": ["apps/api/app/board/"] },
+  { "id": "0005", "title": "Root", "implements_in": ["/"] },
+  { "id": "0006", "title": "Dotted", "implements_in": ["./apps/api/app/legacy"] }
+] }
+'@
+$n = New-Repo 'dir-entry' $GOOD_CFG $N_INDEX
+$rN = Invoke-Map $n @('apps/api/app/notice/service.py', 'apps/api/app/notice/sub/deep.py', 'apps/api/app/notice_old.py', 'apps/api/app/board/x.py', 'apps/api/app/legacy/y.py')
+$ok = (Assert-True 'N a file below a directory entry maps to its spec, nested too' ($rN.Out -match 'spec 0003 — Notice' -and $rN.Out -match 'changed: apps/api/app/notice/service\.py' -and $rN.Out -match 'changed: apps/api/app/notice/sub/deep\.py') $rN.Out) -and $ok
+$ok = (Assert-True 'N the directory spec still prints its exact-path verify script' ($rN.Out -match 'run:\s+cd apps/api && uv run python scripts/verify_notice\.py') $rN.Out) -and $ok
+$ok = (Assert-True 'N a trailing-slash directory entry owns the same way' ($rN.Out -match 'spec 0004 — Slash' -and $rN.Out -match 'changed: apps/api/app/board/x\.py') $rN.Out) -and $ok
+$nUnmapped = ($rN.Out -split 'unmapped product files')[1]
+$ok = (Assert-True 'N a sibling sharing the name prefix is NOT owned (prefix is entry + "/")' ($rN.Out -notmatch 'changed: apps/api/app/notice_old\.py' -and $nUnmapped -match 'apps/api/app/notice_old\.py') $rN.Out) -and $ok
+$ok = (Assert-True 'N owned files under a directory entry are not listed unmapped' ($null -ne $nUnmapped -and $nUnmapped -notmatch 'notice/service\.py|board/x\.py|legacy/y\.py') $rN.Out) -and $ok
+$ok = (Assert-True 'N a leading ./ on the entry reads the same (git never prints ./)' ($rN.Out -match 'spec 0006 — Dotted' -and $rN.Out -match 'changed: apps/api/app/legacy/y\.py') $rN.Out) -and $ok
+$ok = (Assert-True 'N an entry of / owns nothing — never the whole repo' ($rN.Out -notmatch 'spec 0005') $rN.Out) -and $ok
+
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'verify_map selftest: FAILED' -ForegroundColor Red; exit 1 }

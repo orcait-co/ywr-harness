@@ -163,6 +163,25 @@ def norm(path: str) -> str:
     return str(path).replace("\\", "/").strip()
 
 
+def owns(entry: str, path: str) -> bool:
+    """Whether one `implements_in` entry owns a repo-relative path (ADR 0104): a file entry owns
+    that file, a directory entry every path below it. A prefix match on `entry + "/"`, so
+    `app/mod` owns `app/mod/x.py` but not `app/module.py`; a trailing slash and a leading `./`
+    read the same (git never prints `./`, so a `./` entry owned nothing). An empty entry, or `/`,
+    owns nothing — never the whole repo. No disk lookup: the mapper reads an index and a
+    changed-file list, and a deleted directory must still own the deletions under it. Until 0.57.4 both readers compared exact strings, so a
+    directory entry owned nothing and every file under it read as unmapped (dist issue #7)."""
+    e = entry
+    while e.startswith("./"):
+        e = e[2:]
+    e = e.rstrip("/")
+    return bool(e) and (path == e or path.startswith(e + "/"))
+
+
+def owned(entries, path: str) -> bool:
+    return any(owns(e, path) for e in entries)
+
+
 def safe_path(value: str, field: str, warns: list[str]) -> str:
     v = norm(value)
     if v and UNSAFE.search(v):

@@ -255,7 +255,7 @@ def any_match(pats: list[re.Pattern], path: str) -> bool:
 
 
 def unowned(files: list[str], scope: list[re.Pattern], owned: set[str], ign: list[re.Pattern]) -> list[str]:
-    return [f for f in files if any_match(scope, f) and f not in owned and not any_match(ign, f)]
+    return [f for f in files if any_match(scope, f) and not hc.owned(owned, f) and not any_match(ign, f)]
 
 
 def frontmatter_at(root: Path, rev: str, path: str) -> str:
@@ -369,7 +369,8 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
                      "the schema")
 
     # 3) SPEC — a changed file is some spec's implements_in, but that spec was not updated.
-    for sp in sorted({s for s, p in pairs if p in fileset and s not in fileset}):
+    #    A directory entry counts for every changed file below it (ADR 0104).
+    for sp in sorted({s for s, p in pairs if s not in fileset and any(hc.owns(p, x) for x in fileset)}):
         f.append(f"SPEC: changed files are implements_in of {sp} — spec not updated in scope; "
                  "verify it still matches")
 

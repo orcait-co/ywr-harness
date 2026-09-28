@@ -12,6 +12,21 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.57.4 — 2026-09-28
+
+- **spec 의 `implements_in` 에 디렉터리를 적으면 그 아래 파일 전부를 소유합니다 (ADR 0104).** 종전에는
+  경로 문자열이 정확히 같아야만 소유로 쳤기 때문에, `backend/app/modules/notice` 처럼 디렉터리를 적으면 아무 파일도
+  소유하지 못했습니다. 그래서 `/ywr-harness:verify` 는 그 아래 변경을 "unmapped"로 두고 아무것도 돌리지 않았고,
+  slice retro 는 새 파일마다 `UNMAPPED` 를 냈습니다. 이제 `항목 + "/"` 로 시작하는 경로를 소유로 봅니다.
+  `notice` 는 `notice_old.py` 를 소유하지 않으며, 끝에 붙은 `/` 는 있어도 없어도 같습니다. 파일 항목은
+  종전과 같습니다. verify 스크립트는 지금처럼 정확한 경로로 적어야 등록됩니다 (디렉터리 아래 스크립트가
+  자동 등록되지는 않습니다).
+- **`.harness.json` 의 `artifacts.items[].url` 에 짧은 형식 `https://claude.ai/artifact/<id>` 도 씁니다.**
+  Artifact 도구의 목록이 이 형식으로 URL 을 돌려주는데, 종전 게이트는 `https://claude.ai/code/artifact/<id>`
+  만 받아 `artifact: VIOLATION` 을 냈고, vendored CI 가 그 줄에서 실패했습니다. 이미 적어 둔 URL 은 옮길 필요가
+  없습니다. README 에는 선언한 URL 을 그대로 적어야 한다는 규칙은 같습니다.
+- 두 수정은 `harness-init` 를 다시 돌려 `scripts/harness/` 를 새로 받아야 저장소에 반영됩니다 (dist issue #7).
+
 ## v0.57.3 — 2026-09-28
 
 - **`statusline/install.ps1` 이 설치된 스크립트의 변경을 정확히 알아봅니다.** 종전 비교는 바이트의
