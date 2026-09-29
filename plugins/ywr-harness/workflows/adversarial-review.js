@@ -2,7 +2,7 @@
 // 호출: Workflow({name: 'ywr-harness:adversarial-review', args: {scope: {files, invariants, gates_passed} | '<리뷰 대상+하우스 컨텍스트 블록>',
 //   tier?: 'small', root?: '<레포 루트>', lenses?: [{key, prompt}], lensExtra?: '<하우스 앵글>',
 //   shards?: 'auto' | n | [[files…], …]  (scope.files 필요 — 렌즈별 파인더를 파일 샤드로 분할, ywr-harness ADR 0070),
-//   ultracode?: true, effort?: 'low'|'medium'|'high'|'xhigh'|'max'  (ultracode 세션·키워드일 때만 — ywr-harness ADR 0084),
+//   (ultracode?/effort? 는 ywr-harness ADR 0108 로 폐기 — 넘겨도 무시하고 로그·stats.worker_pins.ignored 로 알린다),
 //   sessionModel?: '<세션 모델 id>'  (opus 계열이면 전 워커 opus · low — ywr-harness ADR 0099)}})
 //
 // 렌즈 기본값은 일반 웹앱 앵글(인가·테넌시 경로, 프론트엔드 수명주기)을 이름으로
@@ -16,7 +16,7 @@
 // tier 'small'(≤150 diff 라인·≤5 파일·크리티컬 표면 무접촉 — RLS/수치코어/인가/
 // 마이그레이션/훅·CI 제외) = 병합 2렌즈·렌즈당 6건. 그 외 = 풀 3렌즈. skeptic 게이트는 동일.
 // 워커 모델은 전역 CLAUDE.md 규칙대로 sonnet 고정 · effort 는 상한 high(세션 effort 상속 금지,
-// 2026-07-13 — xhigh/max 딥워크 누수 차단; ultracode 예외는 ywr-harness ADR 0084 — 아래 ULTRA). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
+// 2026-07-13 — xhigh/max 딥워크 누수 차단; ultracode 에서도 핀 유지 — ywr-harness ADR 0108). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
 // 슬라이스당 1회가 기본(ywr-harness ADR 0028): 확정 지적의 수정 diff 는 재호출 대상이 아니다 —
 // 게이트 재실행 + 지적별 수정 대조로 닫는다. 새 메커니즘급 수정만 1회 한정 재리뷰(마감에 기준 명기).
 export const meta = {
@@ -24,7 +24,7 @@ export const meta = {
   description: '적대 코드리뷰 표준 — 렌즈 티어(풀3·small2)·시맨틱 dedupe·심각도 게이트(h/m=2·low=1·nit=0 skeptic)',
   // whenToUse 는 모델만 읽는 목록 텍스트라 영어다(ywr-harness ADR 0045 의 분리 — 멤버 대상은 한국어, 모델 대상은 영어;
   // ywr-harness ADR 0089). 매 턴 모든 세션의 프리픽스에 실린다. description 은 멤버 UI 에 보이므로 한국어 그대로.
-  whenToUse: 'Slice-close gate review, once per slice. args.scope = {files: [...], invariants, gates_passed} (plus the git diff for a diff slice); run the repo\'s deterministic lint gates first and list what passed in gates_passed. args.tier:"small" for a small non-critical diff; house-specific lens angles go in args.lensExtra. A fix diff for its confirmed findings is never re-reviewed: close it with re-run gates + per-finding fix checks; one bounded re-review only when the fix is a new mechanism, not a patch. Ultracode on, or the host-confirmed ultracode keyword opt-in (not a mere mention): args.ultracode:true (every worker, the dedupe included, runs on the session model) and args.effort = the session effort (xhigh if unknown). Always pass args.sessionModel = your own model id: an Opus session runs every worker on opus at effort low.',
+  whenToUse: 'Slice-close gate review, once per slice. args.scope = {files: [...], invariants, gates_passed} (plus the git diff for a diff slice); run the repo\'s deterministic lint gates first and list what passed in gates_passed. args.tier:"small" for a small non-critical diff; house-specific lens angles go in args.lensExtra. A fix diff for its confirmed findings is never re-reviewed: close it with re-run gates + per-finding fix checks; one bounded re-review only when the fix is a new mechanism, not a patch. The pins hold under ultracode too. Always pass args.sessionModel = your own model id: an Opus session runs every worker on opus at effort low.',
   phases: [
     { title: 'Canary', detail: '한도/게이트웨이 확인 1개 (sonnet · reviewer 에이전트)', model: 'sonnet' },
     { title: 'Find', detail: '렌즈 병렬 — 풀 3 · small 2 (sonnet·effort medium · reviewer 에이전트)', model: 'sonnet' },
@@ -43,22 +43,19 @@ export const meta = {
 // 59 요청 실측: 요청당 캐시 읽기 −29%, 총 컨텍스트 토큰 −26%). 이름은 네임스페이스 형(fact 1) — bare 이름은
 // 해석되지 않는다.
 // opts.effort 가 에이전트 정의의 effort 핀을 덮어쓰는 것은 실측됨(정의 medium · 호출 low → low).
-// ultracode(ywr-harness ADR 0084): args.ultracode === true 면 sonnet 고정과 스테이지별 effort 핀을 무시한다 —
-// 사용자가 ultracode(세션 설정 또는 호스트가 확인한 프롬프트 키워드)로 토큰 비용 제약을 해제했기 때문이다. 모델은
-// 'inherit'(세션 모델 — reviewer agentType 위에서 실측, 2.1.280), effort 는 명시값만 먹는다: 'inherit' 는
-// 조용히 무시되고 에이전트 정의의 medium 이 남는다(실측) → args.effort = 세션 effort(모르면 기본 'xhigh' =
-// ultracode 가 모델에 보내는 값; 키워드만의 옵트인은 세션 effort 를 바꾸지 않으므로 그보다 높을 수 있다 — docs). dedupe 핀도 같이 푼다(owner 2026-09-23: "ultracode 사용중일 때는 haiku 도 사용할 필요 없어" — 당시 dedupe 는 haiku) —
-// ultracode 의 dedupe 는 기본 서브에이전트라 model 을 생략하면 세션 모델을 상속한다(실측), effort 만 명시.
+// ultracode 에서도 핀은 그대로다(ywr-harness ADR 0108 — ADR 0084 의 예외를 폐기). 2.1.284 부터 ultracode 는 effort 와
+// 별개의 토글이라 어느 effort 에서든 켜지고, 스테이지별로 모델·effort 를 고르는 이 핀이 세션 상속보다 싸고 빠르다(owner
+// 2026-09-29). args.ultracode·args.effort 는 넘어와도 무시한다 — 던지면 옛 호출자의 리뷰가 죽고, 조용히 버리면 호출자는
+// 풀렸다고 믿는다: 그래서 로그 한 줄과 stats.worker_pins.ignored 로 알린다.
 // Opus 세션(ywr-harness ADR 0099): 호출자가 args.sessionModel 에 세션 모델 id 를 넘기고 그것이 opus 계열이면
-// (ultracode 가 아닐 때) canary·find·dedupe·verify 전부 opus · low 단일 모델로 돈다 — 스크립트는 세션 모델을
+// canary·find·dedupe·verify 전부 opus · low 단일 모델로 돈다 — 스크립트는 세션 모델을
 // 조회할 수 없어 호출자의 신고가 유일한 신호다. 실측(2026-09-28, full 티어 2회 · small 2회, 심은 결함 채점):
 // full 현행 $2.45 · 297 s · 1.5/6 → opus·low $2.09 · 91 s · 5/6. find medium 은 +39% 비용에 +0.5 건, haiku
 // skeptic 은 순차 조회로 느리고 비쌌다, sonnet skeptic 은 참 결함 1건을 기각했다 — 그래서 단일 모델·단일 effort.
 // Opus 가 아닌 세션(sonnet·fable)과 신고 누락은 종전 핀 그대로다 — 누락은 안전한 쪽으로 저하된다.
 const REVIEWER = 'ywr-harness:reviewer'
-const work = (prompt, opts = {}) => agent(prompt, ULTRA
-  ? { agentType: REVIEWER, ...opts, model: 'inherit', effort: ULTRA_EFFORT }
-  : OPUS_LOW ? { agentType: REVIEWER, ...opts, model: 'opus', effort: 'low' }
+const work = (prompt, opts = {}) => agent(prompt, OPUS_LOW
+  ? { agentType: REVIEWER, ...opts, model: 'opus', effort: 'low' }
   : { model: 'sonnet', effort: 'high', agentType: REVIEWER, ...opts })
 
 // args 는 객체가 정석. 문자열이면 JSON 인코딩 → 파싱, 비JSON 평문 → scope 블록 자체로 수용
@@ -73,16 +70,8 @@ const _args = (() => {
   }
 })()
 if (!_args.scope) throw new Error("args.scope 필요 — 리뷰 대상 파일 목록 + 하우스 컨텍스트 블록")
-if (_args.ultracode !== undefined && typeof _args.ultracode !== 'boolean') {
-  throw new Error(`args.ultracode 는 boolean 이어야 한다 (받은 값: ${JSON.stringify(_args.ultracode)}) — 문자열 "true" 를 조용히 핀 모드로 읽지 않는다`)
-}
-const ULTRA = _args.ultracode === true
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-if (_args.effort !== undefined && !(ULTRA && EFFORTS.includes(_args.effort))) {
-  throw new Error(`args.effort 는 args.ultracode:true 와 함께만, ${EFFORTS.join('|')} 중 하나로 (받은 값: ${JSON.stringify(_args.effort)}) — 기본 모드의 effort 는 스테이지별 핀이다`)
-}
-const ULTRA_EFFORT = ULTRA ? (_args.effort || 'xhigh') : null
-if (ULTRA) log(`[ultracode] canary/find/dedupe/verify 워커 = 세션 모델 · effort ${ULTRA_EFFORT} — meta.phases 의 sonnet 라벨은 기본 모드 표기다.`)
+const IGNORED = ['ultracode', 'effort'].filter(k => _args[k] !== undefined && _args[k] !== null && _args[k] !== false)
+if (IGNORED.length) log(`[retired] args.${IGNORED.join('·args.')} 무시 — ultracode 예외는 폐기됐다(ywr-harness ADR 0108); 핀 모드 그대로 돈다.`)
 if (_args.sessionModel !== undefined && typeof _args.sessionModel !== 'string') {
   throw new Error(`args.sessionModel 은 세션 모델 id 문자열이어야 한다 (받은 값: ${JSON.stringify(_args.sessionModel)})`)
 }
@@ -90,7 +79,7 @@ if (_args.sessionModel !== undefined && typeof _args.sessionModel !== 'string') 
 // 'magnum-opus-local' 같은 게이트웨이 별칭에도 켜져 opus 비용을 쓴다. 'opus'·'opus[1m]'·'claude-opus-5-5[1m]'·
 // 'anthropic.claude-opus-…'·'claude-opus-4@2025…' 만 맞고, 안 맞으면 핀 모드(안전한 쪽)다.
 const OPUS_ID = /(?:^|[./])(?:claude-)?opus(?:[-@.[]|$)/i
-const OPUS_LOW = !ULTRA && OPUS_ID.test(_args.sessionModel || '')
+const OPUS_LOW = OPUS_ID.test(_args.sessionModel || '')
 if (OPUS_LOW) log(`[opus-low] 세션 모델 ${_args.sessionModel} — canary/find/dedupe/verify 워커 = opus · effort low 단일(ywr-harness ADR 0099) — meta.phases 의 sonnet 라벨은 기본 모드 표기다.`)
 // 스코프는 문자열 블록 또는 구조화 객체({files, invariants, ...}) — 객체는 직렬화해 프롬프트에 주입.
 // (2026-07-02 회고: 객체를 템플릿에 그대로 넣으면 "[object Object]" 로 스코프가 증발 → 파인더 드리프트 근원)
@@ -421,7 +410,7 @@ let deduped = [...byKey.values()]
 // (ywr-harness ADR 0102 — 종전 haiku · low 기본 서브에이전트. 기록된 목록 4건 헤드리스 재생, 암당 n=1, 호스트 2.1.283:
 // haiku 347.6 s · 출력 38,967 tok · $0.279 vs sonnet 113.7 s · 9,372 tok · $0.234(5분 쓰기 기준). sonnet 이 "서로 다른
 // 결함은 묶지 마라"를 더 잘 지켰고 ADR 0089 의 파일 교차 클래스를 혼자 재현했다; 그룹 집합이 같은 목록은 0/4).
-// ultracode 에서는 세션 모델 · ULTRA_EFFORT, Opus 세션은 opus · low — 두 모드는 기본 서브에이전트 그대로.
+// Opus 세션은 opus · low 로 기본 서브에이전트 그대로.
 // 묶인 항목은 버리지 않는다(ywr-harness ADR 0089 — 위 1차 dedupe 의 "대표만 유지"를 좁힌다): 대표가 나머지의 위치를
 // also_at 으로 들고 가서, 스켑틱은 전 위치를 보고 한 번 판정하고 닫는 쪽은 위치마다 고친다. 실측 slice 25: 그룹핑이
 // 네 위치를 조용히 버렸고(그중 low 하나는 HEAD 에 아직 남았다), 한 근원('워커가 xhigh 로 돈다')이 4 파일에 흩어져
@@ -431,8 +420,8 @@ if (deduped.length > 12) {
   const listing = deduped.map((f, i) => `${i}. [${f.severity}] ${f.file}:${f.line ?? '?'} ${f.title}`).join('\n')
   const groups = await agent(
     `아래 코드리뷰 지적 목록에서 **같은 근원 결함**을 가리키는 항목들을 그룹으로 묶어라: 같은 함수의 동일 원인, 동일 패턴의 중복 보고, 그리고 **같은 주장이 서로 다른 파일에 반복된 것**(한 결함이 여러 파일에 적혀 있으면 한 그룹이다 — 묶인 항목의 파일:라인은 전부 보존되고 검증만 한 번 한다). 서로 다른 결함은 절대 묶지 마라 — 같은 파일·같은 렌즈라도 주장이 다르면 따로다. 파일을 읽거나 검색하지 마라 — 아래 목록의 텍스트만으로 묶는다. 그룹은 인덱스 배열의 배열로.\n${listing}`,
-    { label: ULTRA ? 'dedupe' : OPUS_LOW ? 'dedupe:opus' : 'dedupe:sonnet', phase: 'Dedupe',
-      ...(ULTRA ? { effort: ULTRA_EFFORT } : OPUS_LOW ? { model: 'opus', effort: 'low' } : { agentType: REVIEWER, model: 'sonnet', effort: 'low' }), schema: {
+    { label: OPUS_LOW ? 'dedupe:opus' : 'dedupe:sonnet', phase: 'Dedupe',
+      ...(OPUS_LOW ? { model: 'opus', effort: 'low' } : { agentType: REVIEWER, model: 'sonnet', effort: 'low' }), schema: {
       type: 'object',
       properties: { groups: { type: 'array', items: { type: 'array', items: { type: 'integer' } } } },
       required: ['groups'],
@@ -559,7 +548,7 @@ const loss = [
   deadSkeptics && `dead_skeptics ${deadSkeptics}`, unverifiedByDeath && `unverified_by_death ${unverifiedByDeath}`,
   findOmitted && `find_omitted ${findOmitted}`, unreportedCap.length && `cap_unreported ${unreportedCap.length}`,
 ].filter(Boolean)
-const PIN_MODE = ULTRA ? 'ultracode' : OPUS_LOW ? 'opus-low' : 'pinned'
+const PIN_MODE = OPUS_LOW ? 'opus-low' : 'pinned'
 const digest = `confirmed ${confirmedIn.length} (${bySev(confirmedIn)}) · out_of_scope_confirmed ${outOfScope.length} · nits ${nits.length} · rejected ${rejected} · ` +
   (loss.length ? `COVERAGE LOSS: ${loss.join(', ')}` : 'coverage full') +
   ` · tier ${TIER} · shards ${SHARDED ? SHARDS.length : 1} · pins ${PIN_MODE} · canary_ok ${CANARY_OK} · full lists follow (confirmed, out_of_scope_confirmed, nits_unverified, rejected, stats)`
@@ -577,9 +566,11 @@ return {
   // 상한임을 구조적으로 못 박고, 공유 풀이 아닌 유일한 정확값(에이전트 수)을 옆에 둔다.
   stats: {
     tier: TIER, lenses: LENSES.length, shards: SHARDED ? SHARDS.length : 1, finders: UNITS.length,
-    worker_pins: ULTRA ? { mode: PIN_MODE, model: 'session', effort: ULTRA_EFFORT }
-      : OPUS_LOW ? { mode: PIN_MODE, model: 'opus', effort: 'low', session_model: _args.sessionModel }
-      : { mode: PIN_MODE, model: 'sonnet', effort: 'canary low · find medium · verify low · dedupe low' },
+    worker_pins: {
+      ...(OPUS_LOW ? { mode: PIN_MODE, model: 'opus', effort: 'low', session_model: _args.sessionModel }
+        : { mode: PIN_MODE, model: 'sonnet', effort: 'canary low · find medium · verify low · dedupe low' }),
+      ...(IGNORED.length ? { ignored: IGNORED } : {}),
+    },
     dead_lenses: deadLenses, dead_finders: deadFinders, raw: all.length,
     find_cap: FIND_CAP, find_omitted: findOmitted, capped_finders: cappedFinders, cap_unreported: unreportedCap,
     // verified = 산 skeptic 표가 1개 이상인 지적 수(표가 전혀 없는 지적은 unverified_by_death 로 따로 — 검증된 척 세지 않는다).

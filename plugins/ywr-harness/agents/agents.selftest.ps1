@@ -60,12 +60,13 @@ $ok = (Assert-True 'A2 both twins deny Agent' ($agents['worker'].fm['disallowedT
 $ok = (Assert-True 'A2 worker-opus name field is worker-opus' ($agents['worker-opus'].fm['name'] -eq 'worker-opus')) -and $ok
 
 # A3 — the routing text a model reads when it picks an agent: each twin names the other, namespaced
-# (a bare name does not resolve), and both state the ultracode exclusion.
+# (a bare name does not resolve). Neither routes to general-purpose or excludes ultracode any more:
+# ultracode lifts no pin (ADR 0108).
 $wd = $agents['worker'].fm['description']; $od = $agents['worker-opus'].fm['description']
-$ok = (Assert-True 'A3 worker description points an Opus session (ultracode off) at ywr-harness:worker-opus' `
-        ($wd -match 'Opus session' -and $wd -match 'ultracode' -and $wd -match 'ywr-harness:worker-opus')) -and $ok
-$ok = (Assert-True 'A3 worker-opus description names ywr-harness:worker and the ultracode exclusion' `
-        ($od -match 'ywr-harness:worker\b(?!-)' -and $od -match 'ultracode' -and $od -match 'general-purpose')) -and $ok
+$ok = (Assert-True 'A3 worker description points an Opus session at ywr-harness:worker-opus' `
+        ($wd -match 'Opus session' -and $wd -match 'ywr-harness:worker-opus' -and $wd -notmatch 'ultracode|general-purpose')) -and $ok
+$ok = (Assert-True 'A3 worker-opus description names ywr-harness:worker and no general-purpose route' `
+        ($od -match 'ywr-harness:worker\b(?!-)' -and $od -notmatch 'general-purpose' -and ($od -replace '\(ultracode or not\)', '') -notmatch 'ultracode')) -and $ok
 
 # META — Test-TwinBody (A2's own predicate) must refuse each drift shape a one-sided edit makes:
 # a word changed mid-body, a line appended, a CRLF-only difference, and an empty body on both sides.

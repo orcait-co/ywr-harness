@@ -60,6 +60,17 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start-model-route-guard.ps1"],
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SubagentStop": [

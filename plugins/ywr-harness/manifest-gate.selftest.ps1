@@ -659,31 +659,27 @@ if (-not (Test-Path -LiteralPath (Join-Path $evalCase 'prompt.md') -PathType Lea
     Try-Case 'eval-model-mixed-across-cases' {
         param($d)
         $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'
-        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:.*$', 'model: claude-haiku-4-5' | Set-Content -LiteralPath $p -NoNewline
+        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:.*$', 'model: haiku' | Set-Content -LiteralPath $p -NoNewline
     }
     Try-Case 'eval-model-unpinned' {
         param($d)
         $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'
         (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:.*\r?\n', '' | Set-Content -LiteralPath $p -NoNewline
     }
-    Try-Case 'eval-model-not-a-worker' {
-        param($d)
-        $p = Join-Path $d 'evals/hook-version-announce-reaches-context/prompt.md'
-        (Get-Content -LiteralPath $p -Raw) -replace '(?m)^model:.*$', 'model: claude-fable-5-1' | Set-Content -LiteralPath $p -NoNewline
-    }
-    # ADR 0103: a full id only. EVERY case is mutated, because a one-case change would also trip
-    # the mixed-models rule and prove nothing about the id check.
-    Try-Case 'eval-model-bare-alias' {
-        param($d)
-        foreach ($p in Get-ChildItem -LiteralPath (Join-Path $d 'evals') -Recurse -Filter 'prompt.md') {
-            (Get-Content -LiteralPath $p.FullName -Raw) -replace '(?m)^model:.*$', 'model: opus' | Set-Content -LiteralPath $p.FullName -NoNewline
-        }
-    }
-    Try-Case 'eval-model-suffixed-id' {
-        param($d)
-        foreach ($p in Get-ChildItem -LiteralPath (Join-Path $d 'evals') -Recurse -Filter 'prompt.md') {
-            (Get-Content -LiteralPath $p.FullName -Raw) -replace '(?m)^model:.*$', 'model: claude-opus-5-5[1m]' | Set-Content -LiteralPath $p.FullName -NoNewline
-        }
+    # ADR 0107: a bare worker alias only. EVERY case is mutated, because a one-case change would also
+    # trip the mixed-models rule and prove nothing about the alias check.
+    foreach ($bad in @(
+            @{ tag = 'eval-model-not-a-worker'; model = 'fable' },
+            @{ tag = 'eval-model-full-id'; model = 'claude-opus-5-5' },
+            @{ tag = 'eval-model-suffixed-alias'; model = 'opus[1m]' },
+            @{ tag = 'eval-model-alias-wrong-case'; model = 'Opus' })) {
+        $m = $bad.model
+        Try-Case $bad.tag {
+            param($d)
+            foreach ($p in Get-ChildItem -LiteralPath (Join-Path $d 'evals') -Recurse -Filter 'prompt.md') {
+                (Get-Content -LiteralPath $p.FullName -Raw) -replace '(?m)^model:.*$', "model: $m" | Set-Content -LiteralPath $p.FullName -NoNewline
+            }
+        }.GetNewClosure()
     }
     Try-Case 'eval-unknown-grader-type' {
         param($d)

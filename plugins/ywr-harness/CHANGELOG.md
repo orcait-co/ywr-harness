@@ -12,6 +12,25 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.59.0 — 2026-09-29
+
+- **ultracode 가 켜져도 워커의 모델·effort 고정이 풀리지 않습니다 (ADR 0108, ADR 0084 대체).** ultracode 는
+  이제 effort 와 따로 켜고 끄는 토글이라, 켜 두었다고 워커를 세션 모델로 돌릴 이유가 없어졌습니다.
+  스테이지별로 모델과 effort 를 고르는 지금의 고정이 더 싸고 빠릅니다. 적대검토는 ultracode 에서도
+  종전 고정(Opus 세션은 opus · low, 그 밖은 sonnet 스테이지별)으로 돌고, `/ywr-harness:verify` 는 항상
+  `ywr-harness:verifier` 를 띄웁니다. 적대검토에 `args.ultracode`·`args.effort` 를 넘기던 호출은 오류 없이
+  무시되고, 로그 한 줄과 `stats.worker_pins.ignored` 로 그 사실을 알립니다.
+- **세션 시작 시 모델 alias 가 오래된 모델로 갈 수 있는 설정을 알려 줍니다 (ADR 0107).** 새 SessionStart
+  훅이 `ANTHROPIC_DEFAULT_*_MODEL`·`CLAUDE_CODE_SUBAGENT_MODEL`(값과 무관), full id 로 된 `ANTHROPIC_MODEL`·설정의
+  `model`, 비어 있지 않은 `modelOverrides`, 클라우드 provider(`CLAUDE_CODE_USE_BEDROCK` 등)를 찾으면 한 줄로
+  안내합니다. 환경변수와 사용자·프로젝트 설정 파일을 읽으며, 아무것도 바꾸거나 막지 않습니다. 해당
+  설정이 없으면 아무 출력도 없습니다. 새 세션, `--resume`, fork 때만 돌고 `/clear`·compaction 때는 돌지 않습니다.
+- eval 케이스는 모델을 full id 대신 `opus` alias 로 고정합니다. 새 Opus 가 나오면 따로 수정하지 않아도
+  그 모델로 측정합니다. 멤버가 직접 돌리는 `claude plugin eval ywr-harness@ywrlabs` 도 이제 `opus` alias 를
+  따르므로, 셸에 `ANTHROPIC_DEFAULT_OPUS_MODEL` 같은 override 가 있으면 결과 JSON 에 드러나지 않은 채 다른
+  모델로 돕니다. 돌리기 전에 그런 변수를 지우세요 (세션 시작 안내가 찾아 줍니다).
+- 반영하려면 플러그인을 업데이트하세요. `harness-init` 로 받은 파일(`scripts/harness/`)은 바뀌지 않았습니다.
+
 ## v0.58.0 — 2026-09-28
 
 - **`/ywr-harness:slice-close` 는 계속 사람이 입력해야 실행되고, 그 이유를 적었습니다 (ADR 0105).**

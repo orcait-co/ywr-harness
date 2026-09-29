@@ -39,25 +39,25 @@ $ok = (Assert-Text 'T2 SKILL.md names the reference file by its plugin path, and
         @([regex]::Escape('${CLAUDE_PLUGIN_ROOT}/skills/slice-close/reference.md')) `
         @('git diff --name-only <old-base> <new-base>', 'did not re-confirm', 'min\(4, ceil')) -and $ok
 $ok = (Assert-Text 'T3 reference.md carries the moved detail (rebase overlap command, ignored-tree forms, shard partition)' $ref `
-        @('git diff --name-only <old-base> <new-base>', 'review basis: reviewed at <sha>, rebased onto <sha>, overlap: none', 'did not re-confirm', 'none checked', 'exact partition of `files`', 'stats\.worker_pins') `
-        @('`/slice-close`', '`/verify`', "Workflow\(\{\s*name:\s*'adversarial-review'")) -and $ok
+        @('git diff --name-only <old-base> <new-base>', 'review basis: reviewed at <sha>, rebased onto <sha>, overlap: none', 'did not re-confirm', 'none checked', 'exact partition of `files`') `
+        @('`/slice-close`', '`/verify`', "Workflow\(\{\s*name:\s*'adversarial-review'", '(?m)^## Ultracode')) -and $ok
 
 # --- C: the ADR 0090 contract lines -----------------------------------------------------------------
 $ok = (Assert-Text 'C1 stage 1: the range goes straight to the emitter, whose scope: FAILED is the range check (ADR 0041)' $skill `
         @('pass it to `--range` as given', 'the emitter is the\s+range check \(ADR 0041\)', 'scope: FAILED') `
         @('Sanity-check it first', 'git rev-parse')) -and $ok
-$ok = (Assert-Text 'C2 stage 2 scope: exclusions named, lockstep noted, ~8 counts what remains, effort slot in the template' $skill `
-        @("the emitter's file list minus the exclusions", 'drift gate passed', 'declared handoff', 'lockstep: manifest-gate PASS', 'more than ~8 files remain after\s+the exclusions', 'recall lever', "(?m)^\s+effort: '<only beside ultracode") `
-        @("files: \[<the emitter's file list>\]", 'for round-trip-bound finders only')) -and $ok
+$ok = (Assert-Text 'C2 stage 2 scope: exclusions named, lockstep noted, ~8 counts what remains, no ultracode/effort slot (ADR 0108)' $skill `
+        @("the emitter's file list minus the exclusions", 'drift gate passed', 'declared handoff', 'lockstep: manifest-gate PASS', 'more than ~8 files remain after\s+the exclusions', 'recall lever', 'ultracode changes neither \(ADR 0108\)', 'stats\.worker_pins') `
+        @("files: \[<the emitter's file list>\]", 'for round-trip-bound finders only', '(?m)^\s+(ultracode|effort):')) -and $ok
 $ok = (Assert-Text 'C3 disposition: also_at sites and 1-1 split rejections are the closer''s to read' $skill `
         @('also_at', 'rejected\[\]', 'split 1\u20131', 'rejected_count') `
         @('Then judge each one \*instance vs class\*')) -and $ok
 $ok = (Assert-Text 'C4 fix gates: the emitter over the fix''s own files, suite-level iteration' $skill `
         @([regex]::Escape('harness_gates.py" <every file the fix touched>'), 'never a default run', 'own test file\s+directly') `
         @('re-run the emitter over the fix diff')) -and $ok
-$ok = (Assert-Text 'C5 fix checks: batched legs, at most 4, per-finding verdicts, critical gets its own, general-purpose under ultracode' $skill `
-        @('ADR 0090', '\*\*batched\*\*', 'at most 4 findings per leg', 'leg of its own for a fix that touches a declared\s+critical surface', '\*\*per finding\*\* exactly `fixed: true\|false`', '`general-purpose` under ultracode') `
-        @('spawn ONE skeptic leg', 'For a \*\*high or medium\*\* finding')) -and $ok
+$ok = (Assert-Text 'C5 fix checks: batched legs, at most 4, per-finding verdicts, critical gets its own, the pinned worker under ultracode too' $skill `
+        @('ADR 0090', '\*\*batched\*\*', 'at most 4 findings per leg', 'leg of its own for a fix that touches a declared\s+critical surface', '\*\*per finding\*\* exactly `fixed: true\|false`', 'ultracode or not, ADR 0108') `
+        @('spawn ONE skeptic leg', 'For a \*\*high or medium\*\* finding', '`general-purpose` under ultracode')) -and $ok
 $ok = (Assert-Text 'C6 stage 3: mapper first, no run: line means no verify spawn and a verbatim scope statement' $skill `
         @([regex]::Escape('scripts/verify_map.py" [--range <a>..<b>]'), 'No `run:` line', 'do \*\*not\*\*\s+invoke the verify skill', 'scope statement, \*\*not\*\* a pass', '/ywr-harness:verify <a>\.\.<b>') `
         @('(?m)^Invoke `/ywr-harness:verify`')) -and $ok

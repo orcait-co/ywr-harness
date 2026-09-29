@@ -453,9 +453,12 @@ if (-not $inTree) {
 # runs on the operator's session default — on a Premium seat that is the Fable weekly cap — and two
 # operators with different defaults get incomparable scores (org guide: workers never inherit the
 # session model). Fable is never a worker pin here: it is the separate, smaller weekly cap. The
-# pin must be a FULL id, matched case-sensitively and end-anchored (ADR 0103): a bare alias
-# (`opus`) resolves to whatever the latest model is at run time, so a rollover would move the
-# series with no commit; a suffixed form (`claude-opus-5-5[1m]`) is not a model id.
+# pin must be a bare family ALIAS, matched case-sensitively and anchored (ADR 0107, narrowing ADR
+# 0103's full id): a full id freezes the suite on one release, so the next one would run an older
+# model (org guide: aliases only, each on the newest model). What an alias moves is recorded, not
+# frozen: every ledger row names the ids the run RESOLVED, read from the trace (spec 0014 §4.3). A
+# suffixed form (`opus[1m]`) is refused too: the case needs no long context, and one spelling keeps
+# the one-model rule exact.
 # The key and type sets are the documented ones (plugin-evals reference, read 2026-09-14). A
 # documented key this list lacks fails loudly here and is added in the same reviewed commit —
 # the alternative is a silent list that lets an unknown key through to a paid run.
@@ -472,7 +475,7 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
     $promptKeys = @('schema_version', 'name', 'description', 'tags', 'plugins', 'runs', 'expected_outcome',
                     'model', 'max_turns', 'timeout_seconds', 'allowed_tools', 'append_system_prompt', 'env')
     $graderTypes = @('regex', 'tool_used', 'tool_order', 'file_exists', 'llm', 'baseline')
-    $workerModelRx = '^claude-(opus|sonnet|haiku)-[0-9]+(-[0-9]+)*$'
+    $workerModelRx = '^(opus|sonnet|haiku)$'
     # Top-level keys only (`^name:`): nested YAML lines are indented and stay out of the key set,
     # so an inline map value such as `target: { source: file, path: x }` counts as ONE key.
     # Every OTHER column-0 line inside the block is returned as UNPARSED and refused by the caller:
@@ -521,7 +524,7 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
             Bad "eval case $caseName : model not pinned — the case would run on the operator's session default (org guide: workers never inherit the session model; ADR 0076)"
             $evalBad++
         } elseif ($model -cnotmatch $workerModelRx) {
-            Bad "eval case $caseName : model '$model' is not a full worker model id (claude-opus-*/claude-sonnet-*/claude-haiku-*, digits only after the family) — scores must be comparable across operators and never draw the Fable weekly cap (ADR 0076, ADR 0103)"
+            Bad "eval case $caseName : model '$model' is not a worker model alias (opus/sonnet/haiku, bare) — a full id freezes the suite on an old release, and scores must never draw the Fable weekly cap (ADR 0076, ADR 0107)"
             $evalBad++
         } else {
             $models += $model
@@ -613,10 +616,11 @@ if (-not (Test-Path -LiteralPath $evalDir -PathType Container)) {
     } else {
         Write-Host "eval suite: $guardName absent — the disabled-skills guard's scope is not checked (reported, not failed)" -ForegroundColor Yellow
     }
-    # One suite, one model. The pin is what makes ledger rows comparable across runs and
-    # operators; a model rollover is therefore ALL the cases in one commit, and a partial
-    # rollover — three cases moved, one forgotten — must fail here rather than quietly grade two
-    # models under one ledger (review 2026-09-14, medium).
+    # One suite, one model. A FAMILY change is therefore ALL the cases in one commit, and a partial
+    # one — three cases moved, one forgotten — must fail here rather than quietly grade two
+    # families under one ledger (review 2026-09-14, medium). Since the pin is an alias (ADR 0107) a
+    # release WITHIN the family moves every case at once with no commit, which this rule cannot
+    # see: that series break is caught by the resolved ids each ledger row records (spec 0014 §7).
     $distinctModels = @($models | Sort-Object -Unique)
     if ($distinctModels.Count -gt 1) {
         Bad "eval suite: cases pin DIFFERENT models ($($distinctModels -join ', ')) — one suite, one model: move every case's model: in the same commit so the ledger rows stay comparable (ADR 0076)"

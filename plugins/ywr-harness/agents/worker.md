@@ -1,6 +1,6 @@
 ---
 name: worker
-description: Default delegate for well-scoped implementation, research, or review legs. Model and effort are PINNED (sonnet · effort high) so Agent-tool spawns never inherit a deep-work session's xhigh/max effort. Use for single scoped tasks; for fan-out with per-stage effort control keep using the Workflow agent() path. On an Opus session with ultracode off, use ywr-harness:worker-opus instead.
+description: Default delegate for well-scoped implementation, research, or review legs. Model and effort are PINNED (sonnet · effort high) so Agent-tool spawns never inherit a deep-work session's xhigh/max effort. Use for single scoped tasks; for fan-out with per-stage effort control keep using the Workflow agent() path. On an Opus session, use ywr-harness:worker-opus instead.
 model: sonnet
 effort: high
 disallowedTools: Agent

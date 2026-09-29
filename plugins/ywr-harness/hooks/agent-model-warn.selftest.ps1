@@ -8,7 +8,7 @@
 #
 # The four contract negatives every speaking case carries, in the wrapper so no case can forget them:
 #   - the raw output never contains `permissionDecision`, `updatedInput` or a top-level `decision`
-#     (WARN-ONLY: a hook cannot detect ultracode, so it must never block or ask — ADR 0084/0086);
+#     (WARN-ONLY: a hook cannot see the session model or judge a stated reason — ADR 0086);
 #   - `additionalContext`, when present, sits under hookEventName `PreToolUse` (the runtime drops a
 #     context whose event name does not match);
 #   - neither surface cites a decision number (spec 0006 §3.1, ADR 0019): a bare "ADR NNNN" resolves
@@ -16,8 +16,8 @@
 #     cannot be followed — the prose states the rule instead;
 #   - each surface is ONE line under every reader's notion of a line — no CR/LF and no U+0085/U+2028/
 #     U+2029 (harness_config.CONTROL's class: Python splitlines and a model both break on them).
-# The ADR 0084 guard is case S1: an OMITTED model is byte-silent — ultracode's sanctioned spawn is an
-# unpinned Agent type with no model, so a warning there would fire on the prescribed path.
+# Case S1: an OMITTED model is byte-silent — there is no per-call override to name. For an unpinned type
+# (general-purpose) that means the session model is inherited; the hook does not police that (ADR 0108).
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 $hook = Join-Path $PSScriptRoot 'agent-model-warn.ps1'
@@ -64,9 +64,10 @@ function Assert-Silent([string]$Name, [string]$Out) {
 
 $ok = $true
 $warnCore = @('\[hook:agent-model\]', 'description', 'demonstrably', 'Opus session runs reasoning workers', 'ywr-harness:worker-opus'' with NO per-call model',
-    'Sonnet or Fable session runs its workers on ''sonnet''', '호출별 model 없이 ywr-harness:worker-opus', 'Sonnet·Fable 세션의 워커는 sonnet', 'cannot see the session model', 'overrides a pinned agent', 'ultracode', 'Nothing was blocked',
-    # the rules the removed decision numbers used to stand for, stated on both surfaces
-    '고정이 모두 풀리므로', 'every worker model and effort pin is lifted', '알 수 없어 차단하지 않았습니다', 'cannot tell an ultracode spawn')
+    'Sonnet or Fable session runs its workers on ''sonnet''', '호출별 model 없이 ywr-harness:worker-opus', 'Sonnet·Fable 세션의 워커는 sonnet', 'cannot see the session model', 'overrides a pinned agent', 'Nothing was blocked',
+    # the rules the removed decision numbers used to stand for, stated on both surfaces; ultracode
+    # no longer lifts a pin, and both surfaces say so (ADR 0108)
+    'ultracode 가 켜져 있어도 이 고정은 그대로', 'Ultracode does not lift these pins', '판단할 수 없어 차단하지 않았습니다', 'judge the stated reason')
 
 # W1. the dist #5 shape: general-purpose + explicit opus alias -> warns on both surfaces
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; model = 'opus'; description = 'find endpoints'; prompt = 'Find all API endpoints' })
@@ -120,9 +121,9 @@ $ok = (Assert-Warn 'W8b U+2028/U+2029/U+0085 in model and subagent_type flatten 
           'subagent_type: general-purpose \[hook:forged\] 차단되었습니다\)', "subagent_type 'general-purpose \[hook:forged\] 차단되었습니다'") `
         @('[\u0085\u2028\u2029]')) -and $ok
 
-# S1. THE ADR 0084 GUARD: model omitted -> byte-silent (ultracode's sanctioned spawn, and Explore)
+# S1. model omitted -> byte-silent (no per-call override; an unpinned type inherits — not this hook's call)
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; description = 'd'; prompt = 'p' })
-$ok = (Assert-Silent 'S1 omitted model is byte-silent (ADR 0084 sanctioned spawn)' $out) -and $ok
+$ok = (Assert-Silent 'S1 omitted model is byte-silent' $out) -and $ok
 
 # S2. sonnet / haiku / inherit -> silent
 foreach ($mdl in @('sonnet', 'haiku', 'inherit', 'claude-sonnet-5', 'claude-haiku-4-5')) {

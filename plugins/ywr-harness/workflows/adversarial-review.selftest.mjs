@@ -269,52 +269,57 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   else pass(name);
 }
 
-// 10u. the ultracode mode (ywr-harness ADR 0084). args.ultracode:true lifts BOTH sonnet-tier pins:
-//     every reviewer stage runs on the session model ('inherit' — measured to resolve on top of the
-//     reviewer agentType at 2.1.280) at ONE explicit effort, default 'xhigh' (an 'inherit' effort is
-//     silently dropped for the frontmatter's medium — measured, so the script never sends it). The
-//     haiku dedupe lifts too (owner follow-up, same day): no model (the default subagent inherits the
-//     session model — measured) and the same explicit effort. (Pinned mode's dedupe is now sonnet · low on
-//     the reviewer agent — ADR 0102; ultracode's stays on the default subagent.) The agentType stays (the allowlist is
-//     the no-edit guarantee, not a cost lever only). The stats name the mode so a close can record it.
+// 10u. ultracode is RETIRED (ywr-harness ADR 0108, superseding ADR 0084): args.ultracode / args.effort
+//     no longer lift a pin. An old caller must neither die (a throw would kill its review) nor be told
+//     nothing (it would believe the pins lifted) — so the run keeps every pin, logs '[retired]' once
+//     and names the ignored keys in stats.worker_pins.ignored. Any value is ignored, a string 'true'
+//     and an unknown effort included, because none of them changes what runs.
 {
-  const name = 'ultracode lifts the sonnet and effort pins, keeps agentType';
-  const { result, spawns, logs } = await run({ args: { tier: 'small', ultracode: true, scope: { files: ['f.md'], context: 'c' } } });
+  const name = 'retired ultracode/effort args keep every pin, log once, and report the ignored keys';
+  const cases = [
+    [{ ultracode: true }, ['ultracode']],
+    [{ ultracode: true, effort: 'max' }, ['ultracode', 'effort']],
+    [{ effort: 'xhigh' }, ['effort']],
+    [{ ultracode: 'true', effort: 'ultracode' }, ['ultracode', 'effort']],
+    [{ ultracode: false, effort: null }, []],   // the old default asked for nothing: no log, no ignored key
+  ];
+  let bad = null;
+  for (const [extra, keys] of cases) {
+    const { result, spawns, logs } = await run({ many: 7, args: { tier: 'small', ...extra, scope: { files: ['f.md'], context: 'c' } } });
+    const want = (s) => (/^find:/.test(s.label) ? ['sonnet', 'medium'] : /^(canary$|verify:|dedupe)/.test(s.label) ? ['sonnet', 'low'] : null);
+    const off = spawns.filter((s) => want(s) && (s.model !== want(s)[0] || s.effort !== want(s)[1] || s.agentType !== 'ywr-harness:reviewer'));
+    const wp = result.stats.worker_pins ?? {};
+    if (!spawns.some((s) => /^find:/.test(s.label)) || off.length) bad = `${JSON.stringify(extra)} pins: ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort]))}`;
+    else if (wp.mode !== 'pinned' || JSON.stringify(wp.ignored ?? []) !== JSON.stringify(keys) || (!keys.length && 'ignored' in wp)) bad = `${JSON.stringify(extra)} stats.worker_pins=${JSON.stringify(wp)}`;
+    else if (logs.filter((l) => l.startsWith('[retired]')).length !== (keys.length ? 1 : 0) || !result.digest.includes(' · pins pinned · ')) bad = `${JSON.stringify(extra)} log/digest`;
+    if (bad) break;
+  }
+  if (bad) fail(name, bad); else pass(name);
+}
+{
+  const name = 'a retired ultracode flag does not override an opus session model';
+  const { result, spawns } = await run({ args: { tier: 'small', ultracode: true, sessionModel: 'claude-opus-5-5', scope: { files: ['f.md'], context: 'c' } } });
   const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
-  const off = workers.filter((s) => s.model !== 'inherit' || s.effort !== 'xhigh' || s.agentType !== 'ywr-harness:reviewer');
-  if (!workers.length) fail(name, 'no worker spawns captured');
-  else if (off.length) fail(name, `pins not lifted: ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort, s.agentType]))}`);
-  else if (result.stats.worker_pins?.mode !== 'ultracode' || result.stats.worker_pins?.effort !== 'xhigh') fail(name, `stats.worker_pins=${JSON.stringify(result.stats.worker_pins)}`);
-  else if (!logs.some((l) => l.startsWith('[ultracode]'))) fail(name, 'mode not logged');
+  if (!workers.length || workers.some((s) => s.model !== 'opus' || s.effort !== 'low') || result.stats.worker_pins?.mode !== 'opus-low' || JSON.stringify(result.stats.worker_pins?.ignored) !== '["ultracode"]') fail(name, JSON.stringify([result.stats.worker_pins, workers.map((s) => [s.label, s.model, s.effort])]));
   else pass(name);
 }
 {
-  const name = 'ultracode honours an explicit args.effort';
-  const { spawns } = await run({ args: { tier: 'small', ultracode: true, effort: 'max', scope: { files: ['f.md'], context: 'c' } } });
-  const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
-  if (workers.some((s) => s.effort !== 'max' || s.model !== 'inherit')) fail(name, JSON.stringify(workers.map((s) => [s.label, s.model, s.effort])));
-  else pass(name);
-}
-{
-  const name = 'dedupe grouping: sonnet · low on the reviewer agent when pinned, session model at the ultracode effort otherwise';
+  const name = 'dedupe grouping runs sonnet · low on the reviewer agent when pinned';
   const pinned = (await run({ many: 7 })).spawns.filter((s) => s.phase === 'Dedupe' || /^dedupe/.test(s.label));
-  const ultra = (await run({ many: 7, args: { tier: 'small', ultracode: true, scope: { files: ['f.md'], context: 'c' } } }))
-    .spawns.filter((s) => s.phase === 'Dedupe' || /^dedupe/.test(s.label));
-  if (pinned.length !== 1 || ultra.length !== 1) fail(name, `dedupe spawns pinned=${pinned.length} ultra=${ultra.length} (14 findings must cross >12)`);
+  if (pinned.length !== 1) fail(name, `dedupe spawns pinned=${pinned.length} (14 findings must cross >12)`);
   else if (pinned[0].model !== 'sonnet' || pinned[0].effort !== 'low' || pinned[0].agentType !== 'ywr-harness:reviewer' || pinned[0].label !== 'dedupe:sonnet') fail(name, `pinned dedupe=${JSON.stringify([pinned[0].model, pinned[0].effort, pinned[0].agentType])}`);
-  else if (ultra[0].model !== undefined || ultra[0].effort !== 'xhigh' || ultra[0].agentType) fail(name, `ultra dedupe=${JSON.stringify([ultra[0].model, ultra[0].effort, ultra[0].agentType])}`);
   else pass(name);
 }
 {
   const name = 'default mode reports the pinned worker_pins';
-  const { result } = await run({});
-  if (result.stats.worker_pins?.mode !== 'pinned' || !String(result.stats.worker_pins?.model).startsWith('sonnet')) fail(name, JSON.stringify(result.stats.worker_pins));
+  const { result, logs } = await run({});
+  if (result.stats.worker_pins?.mode !== 'pinned' || !String(result.stats.worker_pins?.model).startsWith('sonnet') || 'ignored' in (result.stats.worker_pins ?? {}) || logs.some((l) => l.startsWith('[retired]'))) fail(name, JSON.stringify(result.stats.worker_pins));
   else pass(name);
 }
 // 10o. the Opus-session mode (ywr-harness ADR 0099). The caller reports its own model id in
-//     args.sessionModel; an opus-family id (outside ultracode) runs EVERY stage — canary, finders,
+//     args.sessionModel; an opus-family id runs EVERY stage — canary, finders,
 //     dedupe, skeptics — on opus at effort low, agentType kept on the reviewer stages. Any other id,
-//     or none, keeps the pinned mode; ultracode wins over it.
+//     or none, keeps the pinned mode.
 {
   const name = 'opus session runs every stage on opus · low';
   const { result, spawns, logs } = await run({ many: 7, args: { tier: 'small', sessionModel: 'claude-opus-5-5[1m]', scope: { files: ['f.md'], context: 'c' } } });
@@ -361,21 +366,8 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   }
   if (bad) fail(name, bad); else pass(name);
 }
-{
-  const name = 'ultracode wins over an opus session model';
-  const { result, spawns } = await run({ args: { tier: 'small', ultracode: true, sessionModel: 'claude-opus-5-5', scope: { files: ['f.md'], context: 'c' } } });
-  const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
-  if (workers.some((s) => s.model !== 'inherit' || s.effort !== 'xhigh') || result.stats.worker_pins?.mode !== 'ultracode') fail(name, JSON.stringify([result.stats.worker_pins, workers.map((s) => [s.label, s.model, s.effort])]));
-  else pass(name);
-}
 await expectThrow('a non-string args.sessionModel is refused',
   { args: { sessionModel: true, scope: { files: ['f.md'], context: 'c' } } }, 'args.sessionModel');
-await expectThrow('non-boolean args.ultracode is refused',
-  { args: { ultracode: 'true', scope: { files: ['f.md'], context: 'c' } } }, 'args.ultracode');
-await expectThrow('args.effort without ultracode is refused',
-  { args: { effort: 'xhigh', scope: { files: ['f.md'], context: 'c' } } }, 'args.effort');
-await expectThrow('an unknown ultracode effort is refused',
-  { args: { ultracode: true, effort: 'ultracode', scope: { files: ['f.md'], context: 'c' } } }, 'args.effort');
 
 // 10a. the worker identity (ywr-harness ADR 0069). Canary, finders and skeptics run as the plugin's
 //     tool-restricted reviewer agent — the allowlist is what removes ~half of the prefix every
@@ -749,12 +741,12 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
 // 12g. whenToUse is model-facing listing text, re-read on every turn of every session with the plugin
 //      installed, so it is English (ADR 0045's split: Korean for members, English for the model).
 //      The clauses are the contract, not the wording: once per slice, the object scope with
-//      gates_passed, the small tier, lensExtra, no re-review of a fix diff, the ultracode/effort args.
+//      gates_passed, the small tier, lensExtra, no re-review of a fix diff, the pins holding under ultracode.
 {
   const name = '12g meta.whenToUse is English and keeps every clause';
   const m = readFileSync(SCRIPT, 'utf8').match(/whenToUse:\s*'((?:[^'\\]|\\.)*)'/);
   const w = m ? m[1] : '';
-  const clauses = ['once per slice', 'files: [...]', 'gates_passed', 'args.tier:"small"', 'args.lensExtra', 'never re-reviewed', 'new mechanism', 'args.ultracode:true', 'args.effort', 'xhigh', 'args.sessionModel'];
+  const clauses = ['once per slice', 'files: [...]', 'gates_passed', 'args.tier:"small"', 'args.lensExtra', 'never re-reviewed', 'new mechanism', 'pins hold under ultracode', 'args.sessionModel'];
   const missing = clauses.filter((c) => !w.includes(c));
   if (!w) fail(name, 'whenToUse literal not found');
   else if (/[가-힣]/.test(w)) fail(name, 'whenToUse carries Hangul — the model-facing listing text is English');
@@ -895,13 +887,6 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   const { result } = await run({ noOmitted: ['boundary-ui-tests'] });
   const d = result.digest ?? '';
   if (!d.includes('COVERAGE LOSS: cap_unreported 1') || d.includes('coverage full')) fail(name, d);
-  else pass(name);
-}
-{
-  const name = '14e digest reports the ultracode pin mode';
-  const { result } = await run({ args: { tier: 'small', ultracode: true, scope: { files: ['f.md'], context: 'c' } } });
-  const d = result.digest ?? '';
-  if (!d.includes(' · pins ultracode · ') || d.includes('pins pinned') || d.includes('pins opus-low')) fail(name, d);
   else pass(name);
 }
 

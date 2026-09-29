@@ -1,6 +1,6 @@
 ---
 name: worker-opus
-description: Opus-session twin of ywr-harness:worker for well-scoped implementation, research, or review legs — PINNED opus · effort low, measured cheaper and faster than the sonnet worker on an Opus session. Use it only when the orchestrating session runs on Opus and ultracode is off; otherwise use ywr-harness:worker, or general-purpose under ultracode. Same body and tool denial as ywr-harness:worker.
+description: Opus-session twin of ywr-harness:worker for well-scoped implementation, research, or review legs — PINNED opus · effort low, measured cheaper and faster than the sonnet worker on an Opus session. Use it only when the orchestrating session runs on Opus (ultracode or not); otherwise use ywr-harness:worker. Same body and tool denial as ywr-harness:worker.
 model: opus
 effort: low
 disallowedTools: Agent

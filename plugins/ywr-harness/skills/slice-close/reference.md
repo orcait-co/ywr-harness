@@ -46,23 +46,6 @@ Sharding buys recall, not time (ADR 0070, ADR 0090):
 - The ~10-requests trigger is about time: finders that make many round-trips are waiting, not
   generating, and a shard gives each one fewer files to wait on.
 
-## Ultracode
-
-`ultracode: true` lifts every model and effort pin in the review (ADR 0084). The canary, the
-finders, the dedupe grouping (when it runs) and the skeptics all run on the session model at ONE
-explicit effort:
-
-- Pass `effort: '<the session's level>'` when you know it. The default is `xhigh`, the level
-  ultracode itself sends. Under a keyword-only opt-in that can be above the session's own level.
-- `effort` without `ultracode: true` throws. In the pinned mode each stage's effort is fixed.
-- The result's `stats.worker_pins` names the mode. Record it in the close record.
-- Stage 2's fix-check legs follow the same rule. They run on `general-purpose` instead of
-  `ywr-harness:worker` or `ywr-harness:worker-opus`, because `general-purpose` inherits the session model and effort and the
-  Agent tool has no effort parameter.
-- The signal is the host's, not the word. The host says ultracode is on for the session, or it
-  confirms the prompt's `ultracode` keyword opt-in. A bare mention of the word is not the opt-in.
-  A missed flag degrades to the pinned mode, which is safe.
-
 ## Rebase
 
 A rebase or merge after the review re-arms it only over the overlap (ADR 0072). This applies when
