@@ -63,8 +63,11 @@ function Assert-Silent([string]$Name, [string]$Out) {
 }
 
 $ok = $true
-$warnCore = @('\[hook:agent-model\]', 'description', 'demonstrably', 'Opus session runs reasoning workers', 'ywr-harness:worker-opus'' with NO per-call model',
-    'Sonnet or Fable session runs its workers on ''sonnet''', '호출별 model 없이 ywr-harness:worker-opus', 'Sonnet·Fable 세션의 워커는 sonnet', 'cannot see the session model', 'overrides a pinned agent', 'Nothing was blocked',
+# guide v1.15's rule (ADR 0109): implementation/research workers sonnet in every session via
+# ywr-harness:worker, mechanical work haiku, opus · low only for review fan-out on an Opus session
+$warnCore = @('\[hook:agent-model\]', 'description', 'demonstrably', 'implementation and research workers run on ''sonnet'' in every session',
+    'subagent_type ''ywr-harness:worker'' with NO per-call model', 'review fan-out \(finders, skeptics\) on an Opus session', 'mechanical work runs on ''haiku''',
+    '구현·조사 워커는 어느 세션이든 sonnet', '호출별 model 없이 ywr-harness:worker 를', 'Opus 세션의 리뷰형 fan-out\(finder·skeptic\)에만', 'cannot see the session model', 'overrides a pinned agent', 'Nothing was blocked',
     # the rules the removed decision numbers used to stand for, stated on both surfaces; ultracode
     # no longer lifts a pin, and both surfaces say so (ADR 0108)
     'ultracode 가 켜져 있어도 이 고정은 그대로', 'Ultracode does not lift these pins', '판단할 수 없어 차단하지 않았습니다', 'judge the stated reason')
@@ -72,7 +75,7 @@ $warnCore = @('\[hook:agent-model\]', 'description', 'demonstrably', 'Opus sessi
 # W1. the dist #5 shape: general-purpose + explicit opus alias -> warns on both surfaces
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; model = 'opus'; description = 'find endpoints'; prompt = 'Find all API endpoints' })
 $ok = (Assert-Warn 'W1 explicit opus alias warns (systemMessage + additionalContext)' $out `
-        (@("모델을 'opus' 로 명시", 'subagent_type: general-purpose', "requested model 'opus'") + $warnCore) @('SCHEMA DRIFT')) -and $ok
+        (@("모델을 'opus' 로 명시", 'subagent_type: general-purpose', "requested model 'opus'") + $warnCore) @('SCHEMA DRIFT', 'worker-opus')) -and $ok
 
 # W2. a full model id names the family too
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; model = 'claude-opus-5-5'; description = 'd'; prompt = 'p' })
@@ -153,21 +156,14 @@ $ok = (Assert-Silent 'S6 malformed stdin is byte-silent, exit 0' $out) -and $ok
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; description = 'compare opus and sonnet'; prompt = 'use opus reasoning' })
 $ok = (Assert-Silent 'S7 opus in description/prompt only is byte-silent' $out) -and $ok
 
-# S8. THE OPUS-SESSION ROUTE: subagent_type exactly ywr-harness:worker-opus + an opus-family model
-#     matches that agent's own opus pin, so nothing is overridden -> byte-silent (alias and full id).
-foreach ($mdl in @('opus', 'claude-opus-5-5', 'Opus')) {
-    $out = Invoke-Hook (New-Payload @{ subagent_type = 'ywr-harness:worker-opus'; model = $mdl; description = 'd'; prompt = 'p' })
-    $ok = (Assert-Silent "S8 ywr-harness:worker-opus + model '$mdl' is byte-silent (matches its own pin)" $out) -and $ok
-}
-
-# W9. the silence is opus-only: a FABLE model on worker-opus overrides its opus pin and still warns
-$out = Invoke-Hook (New-Payload @{ subagent_type = 'ywr-harness:worker-opus'; model = 'fable'; description = 'd'; prompt = 'p' })
-$ok = (Assert-Warn 'W9 ywr-harness:worker-opus + model fable still warns' $out @("'fable'", 'subagent_type: ywr-harness:worker-opus\)') @('SCHEMA DRIFT')) -and $ok
-
-# W10. the silence is an EXACT, case-sensitive type match: a near-miss or another type with opus warns
-foreach ($t in @('ywr-harness:worker', 'worker-opus', 'YWR-HARNESS:WORKER-OPUS', 'ywr-harness:worker-opus2', ' ywr-harness:worker-opus')) {
-    $out = Invoke-Hook (New-Payload @{ subagent_type = $t; model = 'opus'; description = 'd'; prompt = 'p' })
-    $ok = (Assert-Warn "W10 subagent_type '$t' + model opus warns (no exact worker-opus match)" $out @("requested model 'opus'") @('SCHEMA DRIFT')) -and $ok
+# W9. NO type is exempt (ADR 0109 retired the only opus-pinned agent): the retired
+#     ywr-harness:worker-opus name, and every other type, warns on an opus-family model — alias,
+#     full id, any case. A leftover exemption for the old name would be byte-silent here.
+foreach ($t in @('ywr-harness:worker-opus', 'ywr-harness:worker', 'ywr-harness:reviewer', 'Plan')) {
+    foreach ($mdl in @('opus', 'claude-opus-5-5', 'Opus')) {
+        $out = Invoke-Hook (New-Payload @{ subagent_type = $t; model = $mdl; description = 'd'; prompt = 'p' })
+        $ok = (Assert-Warn "W9 subagent_type '$t' + model '$mdl' warns (no exempt type)" $out @("requested model '$mdl'", "subagent_type: $([regex]::Escape($t))\)") @('SCHEMA DRIFT')) -and $ok
+    }
 }
 
 # D1. ANTI-VACUITY: tool_input is not an object -> SCHEMA DRIFT names the keys received, never silence

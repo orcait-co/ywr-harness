@@ -12,12 +12,13 @@
 # permission flow whatever it prints.
 #
 # Speaks ONLY when `tool_input.model` is a string naming the opus or fable family (an alias —
-# `opus`, `fable` — or a full id such as `claude-opus-5-5`), with ONE exception: silent when
-# `subagent_type` is exactly `ywr-harness:worker-opus` and the model is opus-family — that matches
-# the agent's own opus pin, so nothing is overridden (a fable model there still warns). The hook
-# cannot see the session model, so the prose states the org guide's rule for both session kinds:
-# an Opus session routes Agent-tool workers to `ywr-harness:worker-opus` with no per-call model; a
-# Sonnet or Fable session keeps workers on sonnet and names the reason for an opus/fable one.
+# `opus`, `fable` — or a full id such as `claude-opus-5-5`), on every `subagent_type`: since ADR
+# 0109 no plugin agent pins opus, so an opus-family per-call model always overrides a pin or
+# picks the model of an unpinned type. The prose states the org guide's rule, which no longer
+# depends on the session model: implementation and research workers run sonnet in every session
+# (the Agent-tool route is `ywr-harness:worker` with no per-call model), mechanical work haiku,
+# opus · low only for review fan-out on an Opus session, and any other opus/fable worker names its
+# reason in the description.
 # NEVER on an omitted model: this hook names per-call OVERRIDES only. With no model a pinned agent
 # runs its frontmatter pin and Explore/Plan choose their own, while an unpinned type such as
 # `general-purpose` inherits the session model — a leak the org guide's "pass an explicit model"
@@ -85,24 +86,19 @@ if ($model -isnot [string]) { exit 0 }          # omitted (no per-call override 
 $m = $model.Trim()
 if (-not $m -or $m -notmatch '(?i)(^|[-_/.:])(opus|fable)') { exit 0 }
 
-# Silent on the Opus-session route itself: `ywr-harness:worker-opus` pins opus in its own frontmatter,
-# so an opus-family per-call model on it overrides nothing. Exact type match only, and only the opus
-# family — a fable model on worker-opus does override its pin and still warns.
-if ([string]$ti.subagent_type -ceq 'ywr-harness:worker-opus' -and $m -match '(?i)(^|[-_/.:])opus') { exit 0 }
-
 $mShow = Inline $m
 $type = Inline ([string]$ti.subagent_type)
 if (-not $type) { $type = '(unset)' }
 
 $sys = "[hook:agent-model] Agent 호출이 모델을 '${mShow}' 로 명시했습니다 (subagent_type: ${type}). " +
-       '조직 가이드: Opus 세션은 추론 워커(탐색·검증·구현·조사)를 opus · effort low 로 돌립니다 — Agent 호출이라면 호출별 model 없이 ywr-harness:worker-opus 를 쓰세요. ' +
-       'Sonnet·Fable 세션의 워커는 sonnet 이고(기계적 작업은 어느 세션이든 haiku), opus·fable 모델은 꼭 필요한 워커에만 쓰며 그 이유를 호출의 description 에 적습니다. ' +
+       '조직 가이드: 구현·조사 워커는 어느 세션이든 sonnet 입니다 — Agent 호출이라면 호출별 model 없이 ywr-harness:worker 를 쓰세요. ' +
+       '기계적 작업은 haiku 이고, opus · effort low 는 Opus 세션의 리뷰형 fan-out(finder·skeptic)에만 씁니다. 그 밖의 opus·fable 모델은 꼭 필요한 워커에만 쓰며 그 이유를 호출의 description 에 적습니다. ' +
        '호출별 model 은 고정(pinned)된 에이전트의 frontmatter 모델보다 우선합니다. ' +
        'ultracode 가 켜져 있어도 이 고정은 그대로입니다. ' +
        '훅은 세션 모델도 호출 사유도 판단할 수 없어 차단하지 않았습니다 — 안내만 합니다.'
 $ctx = "This Agent spawn requested model '${mShow}' (subagent_type '${type}'), an opus/fable-family model. " +
-       "Org guide: an Opus session runs reasoning workers (finders, skeptics, implementation, research) on opus at effort low — for an Agent-tool spawn that route is subagent_type 'ywr-harness:worker-opus' with NO per-call model. " +
-       "A Sonnet or Fable session runs its workers on 'sonnet' ('haiku' for mechanical work in every session); there an opus or fable model is only for a worker that demonstrably needs it, with the reason in the spawn's description. " +
+       "Org guide: implementation and research workers run on 'sonnet' in every session — for an Agent-tool spawn that route is subagent_type 'ywr-harness:worker' with NO per-call model; mechanical work runs on 'haiku'. " +
+       "Opus at effort low is for review fan-out (finders, skeptics) on an Opus session; any other opus or fable model is only for a worker that demonstrably needs it, with the reason in the spawn's description. " +
        'A per-call model overrides a pinned agent''s frontmatter model, so the ywr-harness:worker / ywr-harness:mech pins do not apply to this call. ' +
        'Ultracode does not lift these pins. ' +
        'Nothing was blocked: a hook cannot see the session model or judge the stated reason, so this note only warns.'

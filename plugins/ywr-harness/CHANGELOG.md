@@ -12,6 +12,19 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.60.0 — 2026-09-29
+
+- **Opus 세션에서도 Agent 도구 워커는 `ywr-harness:worker`(sonnet · high)입니다. `ywr-harness:worker-opus` 는
+  없어졌습니다 (ADR 0109).** Sonnet 5.5 로 다시 측정해 보니, 같은 과제에서 sonnet · high 워커가 opus · low
+  보다 11–21% 빨랐고 품질은 같았습니다(증상만 준 버그 수정 과제에서 hidden test 전부 통과). `worker-opus` 를
+  이름으로 부르던 호출은 "알 수 없는 에이전트" 오류로 바로 드러나니 `ywr-harness:worker` 로 바꾸세요. sonnet ·
+  medium 은 더 빠르지 않거나 회귀를 만들어 채택하지 않았습니다.
+- 적대검토는 그대로입니다. Opus 세션은 모든 단계를 opus · low 로 돌립니다. sonnet 단계는 더 싸지만 빠르지
+  않고, opus 만 찾은 결함 유형이 있어 바꾸지 않았습니다.
+- `agent-model-warn` 훅은 이제 어떤 `subagent_type` 도 예외로 두지 않습니다. opus·fable 모델을 명시한 Agent
+  호출에는 항상 안내하고, 안내문은 조직 가이드 v1.15 규칙(구현·조사 워커는 어느 세션이든 sonnet, 기계적
+  작업은 haiku, opus · low 는 Opus 세션의 리뷰형 fan-out 에만)을 말합니다.
+
 ## v0.59.0 — 2026-09-29
 
 - **ultracode 가 켜져도 워커의 모델·effort 고정이 풀리지 않습니다 (ADR 0108, ADR 0084 대체).** ultracode 는

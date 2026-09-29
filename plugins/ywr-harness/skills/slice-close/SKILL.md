@@ -122,8 +122,9 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    close gate, run once on the final tree.
 2. **Per-finding fix check** (ADR 0090): read each fix against its finding's claim and failure
    scenario. **High and medium** findings go to skeptic legs on the pinned worker agent
-   (`ywr-harness:worker-opus` on an Opus session, `ywr-harness:worker` on any other, ADR 0100;
-   ultracode or not, ADR 0108), **batched**: one leg per
+   (`ywr-harness:worker` on every session model — a single Agent-tool leg, not a review
+   workflow's fan-out, ADR 0109; ultracode or not, ADR 0108),
+   **batched**: one leg per
    group whose fixes touch the same files or the same defect class, **at most 4 findings per leg**,
    and a leg of its own for a fix that touches a declared critical surface. A leg gets its findings
    (severity · title · claim · evidence · `also_at`) plus the files the fixes touched, tries to
