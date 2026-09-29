@@ -212,18 +212,12 @@ def spec_map(root: Path) -> list[tuple[str, str]]:
     for sp in specs:
         rel = hc.norm(str(sp.relative_to(root)))
         try:
-            lines = sp.read_text(encoding="utf-8", errors="replace").splitlines()
+            text = sp.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        fm, block = 0, []
-        for line in lines:
-            if re.match(r"^---[ \t\r]*$", line):
-                fm += 1
-                if fm == 2:
-                    break
-                continue
-            if fm == 1:
-                block.append(line)
+        # The builder's block rule (`hc.fm_block`): a leading HTML comment is skipped, as the
+        # index does — the looser parse here missed such a spec until 0.60.1 (canon #59).
+        block = (hc.fm_block(text) or "").split("\n")
         for p in implements_in(block):
             if isinstance(p, str) and p:
                 out.append((rel, hc.norm(p)))
@@ -259,8 +253,8 @@ def unowned(files: list[str], scope: list[re.Pattern], owned: set[str], ign: lis
 
 
 def frontmatter_at(root: Path, rev: str, path: str) -> str:
-    """The frontmatter block of <path> at <rev>, mirroring build_docs.py: the file must OPEN with
-    `---` and the block ends at the next `---`.
+    """The frontmatter block of <path> at <rev>, by build_docs.py's rule (`hc.fm_block`: a leading
+    HTML comment skipped, the block closed by a line whose strip() is `---`).
 
     Keyed to frontmatter and NOT to file content, which is the single subtlest thing in this gate.
     Both committed outputs are frontmatter-derived — the builder drops `_`-prefixed keys before
@@ -279,15 +273,10 @@ def frontmatter_at(root: Path, rev: str, path: str) -> str:
     blob = git(root, "show", f"{rev}:{path}")
     if not blob:
         return ""  # absent at that rev — the caller treats it as a difference
-    lines = blob.splitlines()
-    if not lines or not re.match(r"^---[ \t\r]*$", lines[0]):
+    block = hc.fm_block(blob)
+    if block is None:
         return "<no-frontmatter>"  # builder skips it entirely; a constant, never the body
-    body: list[str] = []
-    for line in lines[1:]:
-        if line.startswith("---"):
-            break
-        body.append(line)
-    return "\n".join(body)
+    return block
 
 
 def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, list[str]]], list[str], str, str]:

@@ -224,15 +224,19 @@ try {
             @('주요 변경', '외 \d+건', '첫 번째 변경', '첫 버전 안내', '적용 중', 'once per machine')) -and $ok
 
     # 8. state write blocked -> announce ANYWAY with the visible may-repeat note (never a lost
-    #    announcement, never a silent repeat). Read-only file: pwsh Set-Content refuses it on
-    #    both platforms — except for root, who ignores permissions, so root SKIPs (reported).
+    #    announcement, never a silent repeat). Since O49 the write is a rename, and a POSIX rename
+    #    ignores the target file's mode — so off Windows the block is the state DIRECTORY
+    #    (chmod 555: neither the temp file nor the rename can land); on Windows the read-only
+    #    file makes File.Move throw. Root ignores permissions, so root SKIPs (reported).
     $isRoot = (-not $IsWindows) -and ((& id -u 2>$null) -eq '0')
     if ($isRoot) {
         Write-Host 'SKIP — running as root; a read-only state file does not block root writes (1 case)' -ForegroundColor Yellow
     }
     else {
         Set-State '2.4.0'
-        (Get-Item -LiteralPath $stateFile).IsReadOnly = $true
+        $stateParent = Split-Path $stateFile -Parent
+        if ($IsWindows) { (Get-Item -LiteralPath $stateFile).IsReadOnly = $true }
+        else { & chmod 555 $stateParent }
         try {
             $out = Invoke-Hook (New-Payload) $hook
             $ok = (Assert-Announce 'blocked state write: announce with may-repeat note' $out `
@@ -240,8 +244,20 @@ try {
                     @('버전으로 읽을 수 없습니다')) -and $ok
             $ok = (Assert-True 'blocked write: state untouched' ((Get-State) -eq '2.4.0') `
                     "state reads [$(Get-State)] (want 2.4.0)") -and $ok
+            # O49: the write is temp-file-then-rename; a failed rename must remove its temp file.
+            # Windows only: there the temp file lands and the Move onto the read-only target
+            # fails. Off Windows the 555 directory stops the temp write itself, so no temp file
+            # ever exists and the assert could not fail — case 8b covers the POSIX path.
+            if ($IsWindows) {
+                $tmpLeft = @(Get-ChildItem -LiteralPath (Split-Path $stateFile -Parent) -Filter '*.tmp' -Force)
+                $ok = (Assert-True 'blocked write: no temp file left behind' ($tmpLeft.Count -eq 0) `
+                        "left: $($tmpLeft.Name -join ', ')") -and $ok
+            }
         }
-        finally { (Get-Item -LiteralPath $stateFile).IsReadOnly = $false }
+        finally {
+            if ($IsWindows) { (Get-Item -LiteralPath $stateFile).IsReadOnly = $false }
+            else { & chmod 755 $stateParent }
+        }
     }
 
     # 8b. state PATH occupied by a directory -> byte-silent by the decision table's own
@@ -254,8 +270,79 @@ try {
     $ok = (Assert-EmptyStdout 'state path is a directory: silent' $out) -and $ok
     $ok = (Assert-True 'state path directory untouched' (Test-Path -LiteralPath $stateFile -PathType Container) `
             'the state path is no longer a directory — the hook replaced it') -and $ok
+    # O49 on EVERY platform: the temp file lands, the rename onto a directory fails, and the
+    # catch must remove the temp file (case 8's POSIX branch never reaches a failed rename).
+    $tmpLeft8b = @(Get-ChildItem -LiteralPath (Split-Path $stateFile -Parent) -Filter '*.tmp' -Force)
+    $ok = (Assert-True 'state path is a directory: failed rename leaves no temp file' ($tmpLeft8b.Count -eq 0) `
+            "left: $($tmpLeft8b.Name -join ', ')") -and $ok
     Remove-Item -LiteralPath $stateFile -Force
     Set-State '2.5.0'   # restore a file at the state path for the confinement sweep below
+    # 8c. O49: a corrupt interleaved state (`0.59.00.59.0`, two in-place writers) must NOT parse as
+    #     its leading triple. The old front-anchored regex read it as 0.59.0 (< current) and
+    #     announced a bogus update; the boundary lookahead makes it exists-but-unreadable, so it is
+    #     re-seeded silently. The current version here is the fixture plugin's (2.5.0).
+    Set-State '0.59.00.59.0'
+    $out = Invoke-Hook (New-Payload) $hook
+    $ok = (Assert-EmptyStdout 'corrupt interleaved state: byte-silent' $out) -and $ok
+    $ok = (Assert-True 'corrupt interleaved state: re-seeded to exactly the current version' ((Get-State) -eq '2.5.0') `
+            "state reads [$(Get-State)] (want 2.5.0)") -and $ok
+
+    # 8d. O49: after an announce the state dir holds ONLY the state file (the write-then-rename
+    #     temp file is gone) and its bytes are exactly the version — no BOM, no trailing newline.
+    Set-State '2.4.0'
+    $out = Invoke-Hook (New-Payload) $hook
+    $ok = (Assert-Announce 'announce before the write-shape check' $out @('v2\.4\.0 → v2\.5\.0') @('기록 실패')) -and $ok
+    $stateDirPath = Split-Path $stateFile -Parent
+    $names = @(Get-ChildItem -LiteralPath $stateDirPath -Force | ForEach-Object { $_.Name })
+    $ok = (Assert-True 'state dir holds only announced-version after a write (no *.tmp)' `
+        ($names.Count -eq 1 -and $names[0] -eq 'announced-version') "dir contains: $($names -join ', ')") -and $ok
+    $stateBytes = [System.IO.File]::ReadAllBytes($stateFile)
+    $wantBytes = [System.Text.Encoding]::UTF8.GetBytes('2.5.0')
+    $ok = (Assert-True 'state bytes are exactly the version: no BOM, no trailing newline' `
+        (($stateBytes -join ',') -eq ($wantBytes -join ',')) "bytes: $($stateBytes -join ',') (want $($wantBytes -join ','))") -and $ok
+
+    # 8f. a temp file orphaned by a writer killed between write and rename is swept at the next
+    #     successful write once it is over an hour old; a fresh one (a live writer's) is kept.
+    Set-State '2.4.0'
+    $staleTmp = Join-Path $stateDirPath 'announced-version.stale.tmp'
+    $freshTmp = Join-Path $stateDirPath 'announced-version.fresh.tmp'
+    Set-Content -LiteralPath $staleTmp -Value 'x' -NoNewline
+    Set-Content -LiteralPath $freshTmp -Value 'x' -NoNewline
+    (Get-Item -LiteralPath $staleTmp).LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-2)
+    $out = Invoke-Hook (New-Payload) $hook
+    $ok = (Assert-True 'stale temp sweep: an over-an-hour-old temp file is removed' (-not (Test-Path -LiteralPath $staleTmp)) `
+            'announced-version.stale.tmp survived a successful write') -and $ok
+    $ok = (Assert-True 'stale temp sweep: a fresh temp file is kept' (Test-Path -LiteralPath $freshTmp) `
+            'a live writer''s temp file was deleted') -and $ok
+    Remove-Item -LiteralPath $freshTmp -Force -ErrorAction SilentlyContinue
+
+    # 8e. SMOKE check, NOT a mutation-proven guard: 8 hook processes race one stored older version
+    #     against the same fixture home. Afterwards the state must be exactly the current version
+    #     with no temp file left. Reverting Write-State to the old in-place Set-Content did not turn
+    #     this red on the owner's box (2026-09-29 probe) — the O49 interleave needs a timing this
+    #     cannot force — so it is kept for the cheap end-to-end run, not as proof of the fix.
+    Set-State '2.4.0'
+    $racers = 1..8 | ForEach-Object {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
+        foreach ($a in @('-NoProfile', '-File', $hook)) { $psi.ArgumentList.Add($a) }
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $p = [System.Diagnostics.Process]::Start($psi)
+        [pscustomobject]@{ P = $p; Out = $p.StandardOutput.ReadToEndAsync(); Err = $p.StandardError.ReadToEndAsync() }
+    }
+    $payloadRace = New-Payload
+    foreach ($r in $racers) { $r.P.StandardInput.Write($payloadRace); $r.P.StandardInput.Close() }
+    foreach ($r in $racers) { [void]$r.P.WaitForExit(60000) }
+    $raceCodes = @($racers | ForEach-Object { if ($_.P.HasExited) { $_.P.ExitCode } else { -1 } })
+    # A hung racer is killed here, or it keeps writing into the fixture home under later cases.
+    foreach ($r in $racers) { if (-not $r.P.HasExited) { try { $r.P.Kill($true); [void]$r.P.WaitForExit(5000) } catch { } } }
+    $ok = (Assert-True 'race: all 8 hook processes exit 0' (@($raceCodes | Where-Object { $_ -ne 0 }).Count -eq 0) "exit codes: $($raceCodes -join ',')") -and $ok
+    $raceErr = @($racers | ForEach-Object { if ($_.P.HasExited) { $_.Err.Result } } | Where-Object { $_ -and $_.Trim() })
+    $ok = (Assert-True 'race: no hook process wrote to stderr' ($raceErr.Count -eq 0) "stderr: $($raceErr -join ' | ')") -and $ok
+    $ok = (Assert-True 'race: state is exactly the current version afterwards' ((Get-State) -eq '2.5.0' -and ([System.IO.File]::ReadAllBytes($stateFile)).Length -eq 5) `
+            "state reads [$(Get-State)] (want 2.5.0)") -and $ok
+    $raceTmp = @(Get-ChildItem -LiteralPath $stateDirPath -Filter '*.tmp' -Force)
+    $ok = (Assert-True 'race: no temp file left behind' ($raceTmp.Count -eq 0) "left: $($raceTmp.Name -join ', ')") -and $ok
 
     # 9. the hook's own plugin.json unreadable -> reported, never silent (a plugin that cannot
     #    read its own manifest is broken; anti-vacuity posture), and announcements declared OFF

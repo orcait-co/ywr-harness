@@ -555,6 +555,33 @@ Commit $r 'chore: delete a file under the mapped directory'
 $rR3 = Invoke-Retro $r @()
 $ok = (Assert-True 'R3 a deletion under a directory entry fires SPEC for its spec' ($rR3.Out -match 'SPEC:.*0001-s\.md') $rR3.Out) -and $ok
 
+# --- S: a docs source that opens with an HTML comment is read like the builder reads it (canon #59) -
+# spec_map and frontmatter_at kept their own looser parse until 0.60.1 and required line 1 to be `---`;
+# the index (build_docs.split_frontmatter, via hc.fm_block) skips a leading HTML comment. So a spec
+# written `<!-- note -->` + frontmatter was INDEXED as owning its files while the retro read it as
+# owning nothing (a false UNMAPPED), and a frontmatter edit under such a header read as
+# `<no-frontmatter>` on both sides (a silently missed BUILD).
+$s1 = New-Repo 'comment-led-spec' $CFG
+Write-F $s1 'docs/spec/0001-s.md' "<!-- note -->`n---`nid: `"0001`"`ntype: spec`nimplements_in: [`"src/a.py`"]`n---`n# spec`n"
+Write-F $s1 'src/a.py' "a = 1`n"
+Write-F $s1 'src/b.py' "b = 1`n"
+Commit $s1 'chore: add owned and unowned sources'
+$rS1 = Invoke-Retro $s1 @()
+$ok = (Assert-True 'S1 a spec led by an HTML comment owns its file (no UNMAPPED for src/a.py)' ($rS1.Out -notmatch 'UNMAPPED: new file src/a\.py' -and $rS1.Out -notmatch 'DEADMAP') $rS1.Out) -and $ok
+$ok = (Assert-True 'S1 control: the unowned sibling in the same commit still fires UNMAPPED' ($rS1.Out -match 'UNMAPPED: new file src/b\.py') $rS1.Out) -and $ok
+
+$s2 = New-Repo 'comment-led-frontmatter' $CFG
+Write-F $s2 'docs/adr/0001-a.md' "<!-- note -->`n---`nid: `"0001`"`ntype: adr`nstatus: proposed`n---`n# 0001`nbody v1`n"
+Write-F $s2 'docs/index.json' '{"adr":[]}'
+Commit $s2 'docs: add adr under a comment header'
+Write-F $s2 'docs/adr/0001-a.md' "<!-- note -->`n---`nid: `"0001`"`ntype: adr`nstatus: accepted`n---`n# 0001`nbody v1`n"
+Commit $s2 'docs: accept it'
+$rS2 = Invoke-Retro $s2 @()
+$ok = (Assert-True 'S2 BUILD fires for a frontmatter change under a leading HTML comment' ($rS2.Out -match 'BUILD:') $rS2.Out) -and $ok
+Write-F $s2 'docs/adr/0001-a.md' "<!-- note -->`n---`nid: `"0001`"`ntype: adr`nstatus: accepted`n---`n# 0001`nbody v1`n`n## Addendum`nmore prose`n"
+Commit $s2 'docs: append an addendum (body only)'
+$rS3 = Invoke-Retro $s2 @()
+$ok = (Assert-True 'S3 BUILD is SILENT for a body-only edit under a leading HTML comment' ($rS3.Out -notmatch 'BUILD:') $rS3.Out) -and $ok
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_retro selftest: FAILED' -ForegroundColor Red; exit 1 }

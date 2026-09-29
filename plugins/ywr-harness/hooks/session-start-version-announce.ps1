@@ -66,16 +66,36 @@ if (-not $homeDir) { exit 0 }
 $stateDir = Join-Path (Join-Path $homeDir '.claude') 'ywr-harness'
 $stateFile = Join-Path $stateDir 'announced-version'
 
+# Write-then-rename, never an in-place overwrite: concurrent session starts (O49, 2026-09-29)
+# left `0.59.00.59.0` from two in-place writers, and a reader could also catch the file between
+# truncate and write. Each writer fills its own temp file and File.Move(overwrite) swaps it in, so
+# a reader sees the old value or a whole new one. A losing Move (the target held open) is a failed
+# write — the existing may-repeat row — and its temp file is removed.
 function Write-State([string]$Value) {
+    $tmp = $null
     try {
         $ErrorActionPreference = 'Stop'
         if (-not (Test-Path -LiteralPath $stateDir -PathType Container)) {
             New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
         }
-        Set-Content -LiteralPath $stateFile -Value $Value -NoNewline -Encoding utf8
+        $tmp = Join-Path $stateDir ('announced-version.{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+        [System.IO.File]::WriteAllText($tmp, $Value, [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::Move($tmp, $stateFile, $true)
+        # A writer killed between the two calls above leaves its temp file behind. Sweep those
+        # older than an hour (a live writer's is milliseconds old); a sweep failure never fails
+        # the write that already landed.
+        try {
+            Get-ChildItem -LiteralPath $stateDir -Filter 'announced-version.*.tmp' -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTimeUtc -lt [datetime]::UtcNow.AddHours(-1) } |
+                ForEach-Object { try { $_.Delete() } catch { } }
+        }
+        catch { }
         return $true
     }
-    catch { return $false }
+    catch {
+        if ($tmp) { try { [System.IO.File]::Delete($tmp) } catch { } }
+        return $false
+    }
 }
 
 # The first-run seed is an EXCLUSIVE create (FileMode.CreateNew), not Write-State's overwrite:
@@ -119,7 +139,10 @@ try { $stateExists = [bool](Test-Path -LiteralPath $stateFile -ErrorAction Stop)
 $storedRaw = ''
 try { $storedRaw = ([string](Get-Content -LiteralPath $stateFile -Raw -ErrorAction Stop)).Trim() } catch { }
 $stored = $null
-if ($storedRaw -match '^v?(\d+)\.(\d+)\.(\d+)') { $stored = [version]($Matches[0] -replace '^v', '') }
+# The triple must END at a non-digit, non-dot boundary: `0.59.00.59.0` (O49's interleaved write)
+# parsed as 0.59.0 before, so a corrupt value could re-announce or suppress a version. It now
+# reads as exists-but-unreadable and is re-seeded silently; a suffix (`0.18.0rc1`) still parses.
+if ($storedRaw -match '^v?(\d+)\.(\d+)\.(\d+)(?![\d.])') { $stored = [version]($Matches[0] -replace '^v', '') }
 
 if (-not $stored -and -not $stateExists) {
     # First run on this machine — fresh install, or the first version carrying this mechanism;

@@ -33,7 +33,9 @@ different costume. The mapper prints a `scope:` line and warns when a range matc
 
 The converse exists too (ADR 0041): if git cannot resolve the scope at all, the mapper prints
 `scope: FAILED` on stdout and exits **non-zero** — NOTHING was verified. Report that as a broken
-scope and stop; never read it as "nothing to verify".
+scope and stop; never read it as "nothing to verify". An `index: FAILED` line is the same stop for
+a docs index that exists but cannot be read (ADR 0110); `index: ABSENT` means the repo has no index
+yet — quote it, nothing was spec-verified.
 
 ## 2. Check preconditions before running anything
 

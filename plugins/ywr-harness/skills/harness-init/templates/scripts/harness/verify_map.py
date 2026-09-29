@@ -2,9 +2,11 @@
 
 Reads the generated docs index (single source of truth: spec frontmatter `implements_in`), maps
 changed files to owning specs, and prints the verify scripts registered under those specs.
-Advisory — no LLM, no network, nothing executed; exits 0 with ONE exception: a git failure
-resolving the changed-file scope prints a stdout `scope: FAILED` marker and exits non-zero
-(ADR 0041 — an empty advisory output reads as a pass to every consumer).
+Advisory — no LLM, no network, nothing executed; exits 0 with TWO exceptions, each printing a
+stdout FAILED marker and exiting non-zero because an empty advisory output reads as a pass to
+every consumer: a git failure resolving the changed-file scope (`scope: FAILED`, ADR 0041), and a
+docs index that exists but cannot be read (`index: FAILED`, ADR 0110). An ABSENT index is a
+stdout `index: ABSENT` line with exit 0 — a repo with no docs corpus yet.
 
 Usage:
   python verify_map.py                       # working tree vs HEAD + untracked
@@ -41,11 +43,12 @@ hc.pin_utf8()
 
 # ---------------------------------------------------------------------------------------------
 # Staleness-stamp recomputation (ADR 0043). MUST mirror docs/build_docs.py exactly — the file
-# rule (fm_digest: sorted NNNN-*.md, 0000- excluded) and the block rule (split_frontmatter:
-# CRLF fold, lead-HTML-comment skip, opening '---' line, closing line strip() == '---'). The two
-# implementations are held together by the pairing selftest (build-docs.selftest.ps1): change
-# one side alone and that suite fails. A shared import was rejected because build_docs.py stays
-# a standalone stdlib file (spec 0001) — this is the deliberate, selftest-gated duplication.
+# rule (fm_digest: sorted NNNN-*.md, 0000- excluded) and the block rule (`hc.fm_block`, the
+# builder's split_frontmatter: CRLF fold, lead-HTML-comment skip, opening '---' line, closing
+# line strip() == '---'). The two implementations are held together by the pairing selftest
+# (build-docs.selftest.ps1): change one side alone and that suite fails. A shared import was
+# rejected because build_docs.py stays a standalone stdlib file (spec 0001) — this is the
+# deliberate, selftest-gated duplication.
 #
 # The corpus location is DERIVED, never assumed: the builder resolves adr/ and spec/ as siblings
 # of its own file, and it writes index.json into that same directory — so the corpus dirs are
@@ -55,20 +58,6 @@ hc.pin_utf8()
 # relocated-corpus case.
 # ---------------------------------------------------------------------------------------------
 _FM_FILE_RE = re.compile(r"^\d{4}-.*\.md$")
-
-
-def _fm_block(text: str) -> str | None:
-    text = text.replace("\r\n", "\n")
-    lead = re.match(r"\s*<!--.*?-->\s*", text, re.DOTALL)
-    if lead and text[lead.end():].startswith("---\n"):
-        text = text[lead.end():]
-    if not text.startswith("---\n"):
-        return None
-    lines = text.split("\n")
-    for idx in range(1, len(lines)):
-        if lines[idx].strip() == "---":
-            return "\n".join(lines[1:idx])
-    return None
 
 
 def fm_digest(docs_dir: Path) -> str:
@@ -81,7 +70,7 @@ def fm_digest(docs_dir: Path) -> str:
             if not _FM_FILE_RE.match(fn) or fn.startswith("0000-"):
                 continue
             try:
-                block = _fm_block((directory / fn).read_text(encoding="utf-8", errors="replace"))
+                block = hc.fm_block((directory / fn).read_text(encoding="utf-8", errors="replace"))
             except OSError:
                 block = None
             h.update(("%s/%s\0%s\0" % (kind, fn, block or "")).encode("utf-8"))
@@ -135,13 +124,26 @@ def main() -> int:
     for w in warns:
         hc.warn(w)
 
-    try:
-        index = json.loads((root / cfg["index"]).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        print(f"{cfg['index']} unreadable ({type(e).__name__}) — run: pwsh docs/build.ps1",
-              file=sys.stderr)
+    # ADR 0110: an ABSENT index is a repo with no docs corpus yet — stated on stdout, exit 0. An
+    # index that exists but cannot be read as an object with a `spec` list is a broken build, the
+    # scope-failure class (ADR 0041): until 0.60.1 it went to stderr with exit 0, and a consumer
+    # reading stdout plus the exit code saw a clean "nothing mapped" run (canon #59).
+    index_path = root / cfg["index"]
+    if not index_path.exists() and not index_path.is_symlink():  # a dangling link is FAILED below
+        hc.say(f"index: ABSENT — {cfg['index']} does not exist, so no spec owns any file and "
+               "nothing below is spec-verified; build it: pwsh docs/build.ps1")
         return 0
-    specs = index.get("spec", [])
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        if not isinstance(index, dict) or not isinstance(index.get("spec", []), list):
+            raise ValueError("not an object with a 'spec' list")
+    except (OSError, ValueError) as e:
+        print(f"{cfg['index']} unreadable ({type(e).__name__}: {e})", file=sys.stderr)
+        hc.say(f"index: FAILED — {cfg['index']} exists but cannot be read ({type(e).__name__}); "
+               "NOTHING was mapped or verified. This run must not be read as a pass (ADR 0110); "
+               "rebuild: pwsh docs/build.ps1")
+        return 1
+    specs = index.get("spec", [])  # a non-object entry is REFUSED per entry in the loop below
 
     # Staleness signal (ADR 0043). The committed index carries a digest of the corpus
     # frontmatter; recompute it and ADVISE when the sources have moved on — the local mid-slice

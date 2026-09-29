@@ -971,6 +971,24 @@ $x6cfg = Join-Path $x6 '.harness.json'
 $rX6 = Invoke-Gates $x6 @()
 $ok = (Assert-True 'X6 an artifacts change is critical since ADR 0068 (check reaches command composition)' ($rX6.Out -match 'declaration keys changed \(artifacts\)' -and $rX6.Out -match 'review tier: full — critical surface touched \(\.harness\.json') $rX6.Out) -and $ok
 
+# X7: `docs` is a safe key, but `docs.customer.panels[].module` names a .py file the docs builder
+# IMPORTS and CI runs (ADR 0060) — so a change confined to that sub-path is reported as its own
+# dotted key and the safe-set test fails on it: critical, though the top-level key is `docs`
+# (ADR 0110, canon #59). Mutation anchor: DECL_UNSAFE_SUBPATHS = () turns X7 red and leaves X8 green.
+$CFG_X7 = $CFG_X.Replace('"handoff": ""', '"handoff": "", "docs": { "site_title": "T", "customer": { "panels": [ { "module": "a.py" } ] } }')
+$x7 = New-Repo 'decl-panels' $CFG_X7 @()
+$x7cfg = Join-Path $x7 '.harness.json'
+(Get-Content -Raw -LiteralPath $x7cfg).Replace('"module": "a.py"', '"module": "b.py"') | Set-Content -LiteralPath $x7cfg -NoNewline
+$rX7 = Invoke-Gates $x7 @()
+$ok = (Assert-True 'X7 a docs.customer.panels-only change names the dotted key' ($rX7.Out -match 'declaration keys changed \(docs, docs\.customer\.panels\)') $rX7.Out) -and $ok
+$ok = (Assert-True 'X7 and forces critical on .harness.json' ($rX7.Out -match 'review tier: full — critical surface touched \(\.harness\.json' -and $rX7.Out -notmatch 'confined to metadata keys') $rX7.Out) -and $ok
+
+# X8: the control — another `docs` field alone stays metadata (the sub-path test must not widen `docs`).
+$x8 = New-Repo 'decl-docs-title' $CFG_X7 @()
+$x8cfg = Join-Path $x8 '.harness.json'
+(Get-Content -Raw -LiteralPath $x8cfg).Replace('"site_title": "T"', '"site_title": "U"') | Set-Content -LiteralPath $x8cfg -NoNewline
+$rX8 = Invoke-Gates $x8 @()
+$ok = (Assert-True 'X8 a docs.site_title-only change is still confined to metadata keys' ($rX8.Out -match 'declaration change confined to metadata keys \(docs\) — not counted as critical' -and $rX8.Out -notmatch 'critical surface touched' -and $rX8.Out -notmatch 'declaration keys changed') $rX8.Out) -and $ok
 # --- H: handoff declaration forms (ADR 0040) ----------------------------------------------------
 # A trailing '/' declares a per-work-line directory and the emitter must say so — the slice-close
 # instruction is "update the handoff the emitter named", so the form has to be visible where it
@@ -1008,9 +1026,10 @@ $ok = (Assert-True 'Y1 nothing below the marker is computed (no gates window, no
 $ok = (Assert-True 'Y1 the stderr diagnostic is legible text, not bytes-repr' ($rY1.Out -match 'git failed: fatal' -and $rY1.Out -notmatch "git failed: b'") $rY1.Out) -and $ok
 
 # Y2: verify_map shares the scope path and the same contract (its silence read as "nothing to
-# verify" to the /verify skill). It reads the docs index BEFORE resolving scope — that earlier
-# unreadable-index return is a REPORTED advisory degrade, not this class — so the fixture needs
-# a minimal index for the run to reach the scope path at all.
+# verify" to the /verify skill). It reads the docs index BEFORE resolving scope — an unreadable
+# index returns first with `index: FAILED` and exit 1 (ADR 0110), an absent one with `index:
+# ABSENT` and exit 0 — so the fixture needs a minimal valid index for the run to reach the scope
+# path at all.
 New-Item -ItemType Directory -Force -Path (Join-Path $y1 'docs') | Out-Null
 Set-Content -LiteralPath (Join-Path $y1 'docs/index.json') -Value '{"spec": []}' -NoNewline
 $vmap = Join-Path $PSScriptRoot 'verify_map.py'

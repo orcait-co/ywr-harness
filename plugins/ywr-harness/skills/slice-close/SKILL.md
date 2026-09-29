@@ -151,7 +151,7 @@ Run the mapper first (zero tokens), over the stage-1 range when there was one:
 python "${CLAUDE_PLUGIN_ROOT}/scripts/verify_map.py" [--range <a>..<b>]
 ```
 
-- **`scope: FAILED`** → stop, as in stage 1. **`index: STALE`** → rebuild the docs index (stage
+- **`scope: FAILED`** or **`index: FAILED`** → stop, as in stage 1. **`index: STALE`** → rebuild the docs index (stage
   5's regeneration) and re-run before reading the output.
 - **No `run:` line** (no owning spec, no registered script, or only `REFUSED:` lines) → do **not**
   invoke the verify skill; quote the mapper's output verbatim as the verify verdict. "No registered

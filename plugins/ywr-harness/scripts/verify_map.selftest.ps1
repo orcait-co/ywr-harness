@@ -114,10 +114,31 @@ $rD2 = Invoke-Map $d2 @()
 $ok = (Assert-True 'D2 unparseable config warns and does not crash' ($rD2.Out -match 'unreadable') $rD2.Out) -and $ok
 $ok = (Assert-True 'D2 unparseable config exits 0' ($rD2.Code -eq 0) "exit=$($rD2.Code)") -and $ok
 
+# --- D3: a config whose top level / sections have the wrong JSON type must not crash (canon #59) ---
+# load() read every section with .get(), so a list at the top level or a scalar section raised a
+# traceback (exit 1) where `docs` alone had a warn-and-default path. Each wrong-typed value now
+# warns by name and reads as empty; the run still maps and exits 0.
+$d3a = New-Repo 'config-toplevel-list' '[1, 2]' $GOOD_INDEX
+$rD3a = Invoke-Map $d3a @()
+$ok = (Assert-True 'D3 a list at the config top level warns, no traceback, exit 0' ($rD3a.Code -eq 0 -and $rD3a.Out -notmatch 'Traceback' -and $rD3a.Out -match 'expected an object at the top level') "exit=$($rD3a.Code): $($rD3a.Out)") -and $ok
+$d3b = New-Repo 'config-wrong-sections' '{ "verify": "x", "review": [1], "retro": 5, "groups": 5 }' $GOOD_INDEX
+$rD3b = Invoke-Map $d3b @()
+$ok = (Assert-True 'D3 wrong-typed sections: no traceback, exit 0' ($rD3b.Code -eq 0 -and $rD3b.Out -notmatch 'Traceback') "exit=$($rD3b.Code): $($rD3b.Out)") -and $ok
+$ok = (Assert-True 'D3 verify: "x" warned as not an object' ($rD3b.Out -match 'verify: expected an object') $rD3b.Out) -and $ok
+$ok = (Assert-True 'D3 review: [1] warned as not an object' ($rD3b.Out -match 'review: expected an object') $rD3b.Out) -and $ok
+$ok = (Assert-True 'D3 retro: 5 warned as not an object' ($rD3b.Out -match 'retro: expected an object') $rD3b.Out) -and $ok
+$ok = (Assert-True 'D3 groups: 5 warned as not a list' ($rD3b.Out -match 'groups: expected a list') $rD3b.Out) -and $ok
+# FALSY wrong types must warn too: `raw.get(key) or {}` read [] / "" / 0 as {} before the type
+# check ran (review 2026-09-29, low), so these loaded as defaults with no signal.
+$d3c = New-Repo 'config-falsy-sections' '{ "verify": "", "review": [], "retro": 0, "groups": "" }' $GOOD_INDEX
+$rD3c = Invoke-Map $d3c @()
+$ok = (Assert-True 'D3 falsy wrong-typed sections each warn (verify/review/retro/groups)' ($rD3c.Code -eq 0 -and
+        $rD3c.Out -match 'verify: expected an object' -and $rD3c.Out -match 'review: expected an object' -and
+        $rD3c.Out -match 'retro: expected an object' -and $rD3c.Out -match 'groups: expected a list') "exit=$($rD3c.Code): $($rD3c.Out)") -and $ok
 # --- E: missing index names the rebuild command -------------------------------------------------
 $e = New-Repo 'no-index' $GOOD_CFG $null
 $rE = Invoke-Map $e @()
-$ok = (Assert-True 'E missing index warns with the rebuild command' ($rE.Out -match 'run: pwsh docs/build\.ps1') $rE.Out) -and $ok
+$ok = (Assert-True 'E missing index names the rebuild command' ($rE.Out -match 'build it: pwsh docs/build\.ps1') $rE.Out) -and $ok
 $ok = (Assert-True 'E missing index exits 0' ($rE.Code -eq 0) "exit=$($rE.Code)") -and $ok
 
 # --- F: an empty range must not read as a verified range ---------------------------------------
@@ -257,6 +278,34 @@ $ok = (Assert-True 'N owned files under a directory entry are not listed unmappe
 $ok = (Assert-True 'N a leading ./ on the entry reads the same (git never prints ./)' ($rN.Out -match 'spec 0006 — Dotted' -and $rN.Out -match 'changed: apps/api/app/legacy/y\.py') $rN.Out) -and $ok
 $ok = (Assert-True 'N an entry of / owns nothing — never the whole repo' ($rN.Out -notmatch 'spec 0005') $rN.Out) -and $ok
 
+# --- O: the docs index has three states — ABSENT (exit 0), unreadable (FAILED, exit 1) (ADR 0110) ---
+# An unreadable index used to print to stderr and exit 0, so a consumer reading stdout plus the exit
+# code saw a clean "nothing mapped" run. It is now the scope-failure class (ADR 0041): a stdout
+# `index: FAILED` marker and a non-zero exit. An ABSENT index is a repo with no corpus yet — a stdout
+# `index: ABSENT` line, exit 0. An entry that is not an object is skipped with a warning, exit 0.
+$oa = New-Repo 'index-absent' $GOOD_CFG $null
+$rOa = Invoke-Map $oa @()
+$ok = (Assert-True 'O1 an ABSENT index prints index: ABSENT and exits 0' ($rOa.Code -eq 0 -and $rOa.Out -match 'index: ABSENT') "exit=$($rOa.Code): $($rOa.Out)") -and $ok
+$ok = (Assert-True 'O1 an ABSENT index is not called FAILED' ($rOa.Out -notmatch 'index: FAILED') $rOa.Out) -and $ok
+
+$ob = New-Repo 'index-invalid-json' $GOOD_CFG '{ not json'
+$rOb = Invoke-Map $ob @()
+$ok = (Assert-True 'O2 an invalid-JSON index prints index: FAILED and exits 1' ($rOb.Code -eq 1 -and $rOb.Out -match 'index: FAILED') "exit=$($rOb.Code): $($rOb.Out)") -and $ok
+$ok = (Assert-True 'O2 an invalid-JSON index is not called ABSENT' ($rOb.Out -notmatch 'index: ABSENT') $rOb.Out) -and $ok
+
+$oc1 = New-Repo 'index-not-object' $GOOD_CFG '[1]'
+$rOc1 = Invoke-Map $oc1 @()
+$ok = (Assert-True 'O3 a valid-JSON index that is a list prints index: FAILED and exits 1' ($rOc1.Code -eq 1 -and $rOc1.Out -match 'index: FAILED' -and $rOc1.Out -notmatch 'Traceback') "exit=$($rOc1.Code): $($rOc1.Out)") -and $ok
+$oc2 = New-Repo 'index-spec-not-list' $GOOD_CFG '{"spec": 3}'
+$rOc2 = Invoke-Map $oc2 @()
+$ok = (Assert-True 'O3 an index whose spec is not a list prints index: FAILED and exits 1' ($rOc2.Code -eq 1 -and $rOc2.Out -match 'index: FAILED' -and $rOc2.Out -notmatch 'Traceback') "exit=$($rOc2.Code): $($rOc2.Out)") -and $ok
+
+$O_INDEX = '{ "spec": [ "not-an-object", 5, { "id": "0001", "title": "Pipeline", "implements_in": ["apps/api/app/pipeline.py"] } ] }'
+$od = New-Repo 'index-non-object-entry' $GOOD_CFG $O_INDEX
+$rOd = Invoke-Map $od @('apps/api/app/pipeline.py')
+$ok = (Assert-True 'O4 a non-object spec entry does not crash (exit 0, no traceback)' ($rOd.Code -eq 0 -and $rOd.Out -notmatch 'Traceback' -and $rOd.Out -notmatch 'index: FAILED') "exit=$($rOd.Code): $($rOd.Out)") -and $ok
+$ok = (Assert-True 'O4 the non-object entries are warned (not an object)' ($rOd.Out -match 'not an object') $rOd.Out) -and $ok
+$ok = (Assert-True 'O4 the valid spec in the same index still maps its file' ($rOd.Out -match 'spec 0001 — Pipeline') $rOd.Out) -and $ok
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'verify_map selftest: FAILED' -ForegroundColor Red; exit 1 }

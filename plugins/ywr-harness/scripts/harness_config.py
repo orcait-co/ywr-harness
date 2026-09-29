@@ -183,6 +183,26 @@ def owned(entries, path: str) -> bool:
     return any(owns(e, path) for e in entries)
 
 
+def fm_block(text: str) -> str | None:
+    """The frontmatter block of a docs source, or None — the docs builder's `split_frontmatter`
+    rule exactly (ADR 0043): CRLF fold, a leading HTML comment skipped, an opening `---` line, a
+    closing line whose strip() is `---`. The ONE reader-side copy: `verify_map` (staleness
+    digest) and `harness_retro` (spec map, frontmatter delta) both call it — the retro kept its
+    own looser parse until 0.60.1 and missed a spec whose frontmatter follows a comment (canon
+    #59). build_docs.py stays standalone (spec 0001); build-docs.selftest.ps1 pairs the two."""
+    text = text.replace("\r\n", "\n")
+    lead = re.match(r"\s*<!--.*?-->\s*", text, re.DOTALL)
+    if lead and text[lead.end():].startswith("---\n"):
+        text = text[lead.end():]
+    if not text.startswith("---\n"):
+        return None
+    lines = text.split("\n")
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            return "\n".join(lines[1:idx])
+    return None
+
+
 def safe_path(value: str, field: str, warns: list[str]) -> str:
     v = norm(value)
     if v and UNSAFE.search(v):
@@ -789,6 +809,18 @@ def find_repo_root(start: Path) -> Path:
     return cur
 
 
+def _section(raw: dict, key: str, warns: list[str]) -> dict:
+    """One object-valued top-level section; anything else is warned and read as empty. Typed
+    BEFORE any falsy fallback: `"review": []` or `"verify": ""` must warn, not read as {}."""
+    val = raw.get(key)
+    if val is None:
+        return {}
+    if not isinstance(val, dict):
+        warns.append(f"{key}: expected an object — ignored")
+        return {}
+    return val
+
+
 def load(root: Path) -> tuple[dict, list[str]]:
     """Return (config, warnings). Warnings are RETURNED, never printed here — the caller decides
     where they go, and a silently swallowed warning about a refused value would look exactly like
@@ -819,16 +851,19 @@ def load(root: Path) -> tuple[dict, list[str]]:
     except (OSError, json.JSONDecodeError) as e:
         warns.append(f".harness.json unreadable ({type(e).__name__}) — using defaults")
         return cfg, warns
+    # Every section below is read with .get(), so a non-object top level or section raised a
+    # traceback instead of reaching the warn-and-default path `docs` always had (canon #59).
+    if not isinstance(raw, dict):
+        warns.append(f".harness.json: expected an object at the top level, got "
+                     f"{type(raw).__name__} — using defaults")
+        return cfg, warns
 
-    docs = raw.get("docs") or {}
-    if not isinstance(docs, dict):
-        warns.append("docs: expected an object — ignored")
-        docs = {}
+    docs = _section(raw, "docs", warns)
     if docs.get("index"):
         cfg["index"] = safe_path(docs["index"], "docs.index", warns) or DEFAULTS["index"]
     cfg["customer"] = customer_decl(docs.get("customer"), root, warns)
 
-    ver = raw.get("verify") or {}
+    ver = _section(raw, "verify", warns)
     runner = str(ver.get("runner") or DEFAULTS["runner"])
     if runner not in RUNNERS:
         warns.append(
@@ -849,7 +884,7 @@ def load(root: Path) -> tuple[dict, list[str]]:
     if raw.get("handoff"):
         cfg["handoff"] = safe_path(raw["handoff"], "handoff", warns)
 
-    rev = raw.get("review") or {}
+    rev = _section(raw, "review", warns)
     if rev.get("canon"):
         cfg["review_canon"] = safe_path(rev["canon"], "review.canon", warns) or DEFAULTS["review_canon"]
     for key in ("docs_only", "harness_layer", "critical"):
@@ -887,7 +922,7 @@ def load(root: Path) -> tuple[dict, list[str]]:
     elif der:
         warns.append("review.derived: expected a list of {source, copies} mappings — ignored")
 
-    ret = raw.get("retro") or {}
+    ret = _section(raw, "retro", warns)
     if ret.get("ignore_file"):
         cfg["retro_ignore_file"] = (
             safe_path(ret["ignore_file"], "retro.ignore_file", warns) or DEFAULTS["retro_ignore_file"]
@@ -915,7 +950,13 @@ def load(root: Path) -> tuple[dict, list[str]]:
     elif art is not None:
         cfg["artifacts"]["malformed"] = "expected an object with 'readme' and 'items'"
 
-    for i, g in enumerate(raw.get("groups") or []):
+    raw_groups = raw.get("groups")
+    if raw_groups is None:
+        raw_groups = []
+    elif not isinstance(raw_groups, list):
+        warns.append("groups: expected a list of {name, match, gates} objects — ignored")
+        raw_groups = []
+    for i, g in enumerate(raw_groups):
         if not isinstance(g, dict) or not g.get("name") or not g.get("match"):
             warns.append(f"groups[{i}]: needs 'name' and 'match' — ignored")
             continue
@@ -954,7 +995,7 @@ def load(root: Path) -> tuple[dict, list[str]]:
             "strip_prefix": g_strip,
             "gates": gates,
         })
-    if raw.get("groups") and not cfg["groups"]:
+    if raw_groups and not cfg["groups"]:
         warns.append("groups: every entry was rejected — no deterministic gate will be emitted")
     return cfg, warns
 

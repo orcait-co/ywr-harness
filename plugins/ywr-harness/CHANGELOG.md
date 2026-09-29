@@ -12,6 +12,22 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.60.1 — 2026-09-29
+
+- **`verify_map` 가 docs index 를 읽지 못하면 이제 실패로 끝납니다 (ADR 0110).** index 파일이 있는데
+  깨졌거나 형식이 틀리면 stdout 에 `index: FAILED` 를 찍고 non-zero 로 종료합니다 — 예전에는 stderr 한
+  줄만 남기고 exit 0 이라 "매핑할 것 없음"과 구분되지 않았습니다. index 가 아예 없으면 `index: ABSENT`
+  를 찍고 exit 0 입니다(아직 docs 코퍼스가 없는 저장소).
+- **`.harness.json` 의 `verify` / `review` / `retro` 섹션이나 최상위가 객체가 아니면 traceback 대신
+  경고하고 기본값을 씁니다.** `docs` 섹션이 이미 그렇게 동작하던 것과 같아졌습니다. `groups` 가 리스트가
+  아닐 때도 같습니다.
+- **slice retro 가 docs 빌더와 같은 규칙으로 frontmatter 를 읽습니다.** 앞에 HTML 주석이 있는 spec 의
+  `implements_in` 을 놓치던 문제가 고쳐졌습니다.
+- **`.harness.json` 의 `docs.customer.panels` 변경은 이제 critical 로 분류됩니다 (ADR 0110).** panel
+  모듈은 docs 빌드가 import 하는 코드라, `docs` 전체를 메타데이터로 보던 규칙에서 이 경로만 뺐습니다.
+- 세션이 동시에 시작될 때 버전 안내 상태 파일이 `0.59.00.59.0` 처럼 깨지던 문제를 고쳤습니다 — 이제
+  임시 파일에 쓴 뒤 교체하고, 깨진 값은 조용히 다시 기록합니다.
+
 ## v0.60.0 — 2026-09-29
 
 - **Opus 세션에서도 Agent 도구 워커는 `ywr-harness:worker`(sonnet · high)입니다. `ywr-harness:worker-opus` 는

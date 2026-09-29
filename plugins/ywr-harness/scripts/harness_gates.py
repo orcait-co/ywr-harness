@@ -65,6 +65,18 @@ SMALL_MAX_LINES = 150
 # critical is the posture the whole mechanism stands on.
 DECL_FILE = ".harness.json"
 DECL_SAFE_KEYS = {"docs", "handoff"}
+# Sub-paths of a safe key that reach code execution, reported as their own dotted key so the
+# safe-set test fails on them (ADR 0110, canon #59): `docs.customer.panels[].module` names a .py
+# file the docs builder IMPORTS (ADR 0060), and CI runs that build.
+DECL_UNSAFE_SUBPATHS = (("docs", "customer", "panels"),)
+
+
+def _dig(v, path: tuple):
+    for k in path:
+        if not isinstance(v, dict):
+            return None
+        v = v.get(k)
+    return v
 
 
 def _drop_comment_keys(v):
@@ -79,7 +91,8 @@ def _drop_comment_keys(v):
 
 def decl_changed_keys(root: Path, rev_range: str | None) -> list[str] | None:
     """Top-level declaration keys whose comment-stripped values differ between the diff base and
-    the working tree, or None when that cannot be determined — the caller treats unknown as
+    the working tree (plus the dotted name of any changed DECL_UNSAFE_SUBPATHS entry), or None
+    when that cannot be determined — the caller treats unknown as
     critical, never as safe (a newly added declaration and an unparseable side both land here).
     Base = the left side of --range when given, else HEAD; a three-dot range uses the left rev
     as-is, which for A...B can only over-approximate the change set — erring toward critical.
@@ -101,7 +114,10 @@ def decl_changed_keys(root: Path, rev_range: str | None) -> list[str] | None:
     old, new = _drop_comment_keys(old), _drop_comment_keys(new)
     if not isinstance(old, dict) or not isinstance(new, dict):
         return None
-    return sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+    keys = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+    keys += [".".join(sub) for sub in DECL_UNSAFE_SUBPATHS
+             if sub[0] in keys and _dig(old, sub) != _dig(new, sub)]
+    return keys
 
 
 def changed_lines(root: Path, rev_range: str | None, is_exempt=None) -> tuple[int, int] | None:
