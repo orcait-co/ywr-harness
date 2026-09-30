@@ -27,6 +27,9 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host 'SKIP [harness_retro] git absent (reported, not silent)' -ForegroundColor Yellow
     Remove-FixtureRoot $fxBase; exit 0
 }
+# ~450 git calls (fixture builds plus the retro's own): the worker binary, not the cmd\git.exe launcher
+# (lib Use-GitWorkerBinary, ADR 0111). Left in place — under `pwsh -File` the process ends with it.
+$null = Use-GitWorkerBinary
 
 $ok = $true
 

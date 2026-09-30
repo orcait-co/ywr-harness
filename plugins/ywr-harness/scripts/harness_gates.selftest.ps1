@@ -49,17 +49,9 @@ if (-not $py) {
 #     origin (`git config --system --show-origin --list`) — only the hop is gone. PATH is restored
 #     at every exit (the trap and both `exit` lines) so a dot-sourced run leaves the session as it
 #     found it; under `pwsh -File` (the runner's shape) the process ends anyway.
-$gitPathBefore = $null
-if ($IsWindows) {
-    $gitCmd = (Get-Command git -ErrorAction SilentlyContinue).Source
-    if ($gitCmd -and (Split-Path -Leaf (Split-Path -Parent $gitCmd)) -eq 'cmd') {
-        $gitReal = Join-Path (Split-Path -Parent (Split-Path -Parent $gitCmd)) 'mingw64\bin'
-        if (Test-Path -LiteralPath (Join-Path $gitReal 'git.exe') -PathType Leaf) {
-            $gitPathBefore = $env:PATH
-            $env:PATH = $gitReal + [IO.Path]::PathSeparator + $env:PATH
-        }
-    }
-}
+#     The guard itself moved to lib/selftest-lib.ps1 (`Use-GitWorkerBinary`, ADR 0111) when three more
+#     git-bound suites adopted it; this header still owns the measurement.
+$gitPathBefore = Use-GitWorkerBinary
 function Restore-GitPath { if ($null -ne $gitPathBefore) { $env:PATH = $gitPathBefore } }
 # A fixture commit that FAILS is not a fixture: every current site's next assertion would go red
 # (the file it added stays untracked and changes the diff), but the helper does not lean on that —

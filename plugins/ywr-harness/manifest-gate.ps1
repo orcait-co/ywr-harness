@@ -688,6 +688,10 @@ if (-not $inTree) {
                 $lines = $text -split "`n"
                 $hitHere = $false
                 for ($i = 0; $i -lt $lines.Count; $i++) {
+                    # Both patterns start with the literal, case-sensitive `ADR` (the static Matches
+                    # is ordinal-case), so a line without it cannot match either: a plain substring
+                    # test spares ~1.2 s of regex work per run over the tracked files (ADR 0111).
+                    if (-not $lines[$i].Contains('ADR')) { continue }
                     $nums = @(foreach ($m in [regex]::Matches($lines[$i], $adrRefRx)) {
                             foreach ($num in [regex]::Matches($m.Groups[1].Value, '0\d{3}')) { $num.Value }
                         })

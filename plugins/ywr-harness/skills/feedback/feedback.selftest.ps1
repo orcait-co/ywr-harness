@@ -396,6 +396,68 @@ $ok = (Assert-Text 'S1 SKILL.md: user-invoked only, namespaced references, both 
           'inbox lists every open dist issue', 'ADR 0085') `
         @('`/feedback`', '`/harness-init`', 'label `upstream-report`', 'with label upstream-report', "label: 'upstream-report' is absent")) -and $ok
 
+# =================================================================================================
+# G. The absent-`claude` lookup's module auto-loading switch (ADR 0111): off for that ONE lookup,
+#    restored to the exact prior value on every path, nothing but Get-Command inside the try.
+# =================================================================================================
+# The switch is production code and its failure modes are silent (a missing restore leaves every
+# LATER cmdlet from a not-yet-loaded module "not recognized" only when the script reaches it). So the
+# guard reads the REAL feedback.ps1: an AST check of the shape, then the extracted snippet run in fresh
+# `pwsh -NoProfile -File` children. Not caught by this guard (stated): a cmdlet added INSIDE the try
+# that is already loaded at that point, and a change to the lookup's ~1.4 s speedup itself.
+$alPs = [System.Management.Automation.Language.Parser]
+$alErr = $null; $alTok = $null
+$alAst = $alPs::ParseFile($script, [ref]$alTok, [ref]$alErr)
+$alTry = @($alAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $n.Body.Extent.Text -match 'Get-Command\s+claude\b' }, $true))
+$alFail = @()
+$alSnippet = ''
+if ($alErr.Count) { $alFail += "feedback.ps1 has parse errors: $($alErr[0].Message)" }
+elseif ($alTry.Count -ne 1) { $alFail += "want exactly one try around 'Get-Command claude', found $($alTry.Count)" }
+else {
+    $t = $alTry[0]
+    $stmts = @($t.Parent.Statements)
+    $ti = [array]::IndexOf($stmts, $t)
+    $isPrefAssign = { param($s, $var) $s -is [System.Management.Automation.Language.AssignmentStatementAst] -and $s.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and $s.Left.VariablePath.UserPath -eq $var }
+    if ($ti -lt 2 -or -not (& $isPrefAssign $stmts[$ti - 2] 'alPrev') -or -not (& $isPrefAssign $stmts[$ti - 1] 'PSModuleAutoLoadingPreference') -or $stmts[$ti - 1].Right.Extent.Text -notmatch "^'None'$") {
+        $alFail += "the try must be immediately preceded by `$alPrev = <saved value> then `$PSModuleAutoLoadingPreference = 'None' (nothing between them and the try)"
+    } else { $alSnippet = $alAst.Extent.Text.Substring($stmts[$ti - 2].Extent.StartOffset, $t.Extent.EndOffset - $stmts[$ti - 2].Extent.StartOffset) }
+    if ($t.Body.Statements.Count -ne 1) { $alFail += "the try body holds $($t.Body.Statements.Count) statements (want only the lookup)" }
+    $inTry = @($t.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() })
+    if (@($inTry | Where-Object { $_ -ne 'Get-Command' }).Count -or -not $inTry.Count) { $alFail += "commands inside the try: $($inTry -join ', ') (want only Get-Command — an autoloaded cmdlet there would run with auto-loading off)" }
+    if (-not $t.Finally) { $alFail += 'the try has no finally' }
+    else {
+        if (@($t.Finally.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)).Count) { $alFail += 'the finally runs a command (restore by assignment only: with auto-loading off a cmdlet there may not resolve)' }
+        if (-not (@($t.Finally.Statements) | Where-Object { & $isPrefAssign $_ 'PSModuleAutoLoadingPreference' })) { $alFail += 'the finally does not assign $PSModuleAutoLoadingPreference' }
+    }
+    if ($t.CatchClauses.Count) { $alFail += 'the try has a catch clause (the restore path must be the finally alone)' }
+    $alAssigns = @($alAst.FindAll({ param($n) & $isPrefAssign $n 'PSModuleAutoLoadingPreference' }, $true))
+    if ($alAssigns.Count -ne 2) { $alFail += "want exactly 2 assignments to `$PSModuleAutoLoadingPreference in feedback.ps1 (off, restore), found $($alAssigns.Count)" }
+}
+$ok = (Assert-True 'G1 feedback.ps1: auto-loading is switched off only for the claude lookup (try holds Get-Command alone, finally restores by assignment, two assignments in the file)' ($alFail.Count -eq 0) ($alFail -join ' · ')) -and $ok
+
+function Invoke-AutoLoadProbe([string]$Name, [string]$Prior) {
+    $p = Join-Path $fx "alprobe-$Name.ps1"
+    $body = @($Prior, $alSnippet, '"AL=$PSModuleAutoLoadingPreference"; "ARCHIVE=" + [bool](Get-Command Compress-Archive -ErrorAction SilentlyContinue)') | Where-Object { $_ }
+    Set-Content -LiteralPath $p -Value ($body -join "`n") -Encoding utf8
+    return (& $pwshExe -NoProfile -File $p 2>&1 | Out-String)
+}
+$archiveAvail = [bool](Get-Module -ListAvailable -Name Microsoft.PowerShell.Archive)
+if (-not $alSnippet) {
+    $ok = (Assert-True 'G2 the extracted lookup leaves module auto-loading working in a fresh child' $false 'G1 could not extract the snippet') -and $ok
+    $ok = (Assert-True 'G3 the extracted lookup restores a prior enum None exactly (not widened to All)' $false 'G1 could not extract the snippet') -and $ok
+} else {
+    # Prior UNSET (the -File default): restored to All, so a cmdlet from a NOT-yet-loaded module still resolves.
+    $o2 = Invoke-AutoLoadProbe 'unset' ''
+    if ($archiveAvail) {
+        $ok = (Assert-Text 'G2 the extracted lookup leaves module auto-loading working in a fresh child (prior unset -> All; a cmdlet from a not-yet-loaded module resolves after it)' $o2 @('(?m)^AL=All\s*$', '(?m)^ARCHIVE=True\s*$') @('(?m)^AL=None')) -and $ok
+    } else {
+        Write-Host 'SKIP [G2 auto-load restore] Microsoft.PowerShell.Archive is not installed here, so no not-yet-loaded module cmdlet can prove the restore (reported, not silent)' -ForegroundColor Yellow
+    }
+    # Prior ENUM None (a profile can set it typed): the enum's value is 0, falsy — a truthiness test restores All.
+    $o3 = Invoke-AutoLoadProbe 'enumnone' '$PSModuleAutoLoadingPreference = [System.Management.Automation.PSModuleAutoLoadingPreference]::None'
+    $ok = (Assert-Text 'G3 the extracted lookup restores a prior enum None exactly (stays None, not widened to All)' $o3 @('(?m)^AL=None\s*$') @('(?m)^AL=All')) -and $ok
+}
+
 # --- META: the harness itself must be able to fail ------------------------------------------------
 $meta = (Assert-Text 'META probe' 'abc' @('zzz') @() 6>$null)
 $ok = (Assert-True 'META a MustMatch miss is reported as a failure' (-not $meta) 'Assert-Text passed on a non-matching text') -and $ok

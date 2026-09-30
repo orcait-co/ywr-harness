@@ -16,6 +16,10 @@ $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
 $base = Join-Path ([IO.Path]::GetTempPath()) ("ywrh-gate-neg-" + [guid]::NewGuid().ToString('N'))
 $results = @()
+# The git worker binary ahead of the cmd\git.exe launcher (lib Use-GitWorkerBinary, ADR 0111): the
+# canon-shape cases run the gate's release-lockstep git calls in-process, and the runspaces inherit
+# this PATH. Left in place — under `pwsh -File` the process ends with it.
+$null = Use-GitWorkerBinary
 
 # Teardown is exception-safe and refuses anything outside the temp root.
 trap {
@@ -59,13 +63,31 @@ function Get-TreeState([string]$root) {
     }
     return $state
 }
+# The PRE-reset scan is cheap: (length, mtime) per entry, no read. It only decides what to RESTORE — a
+# signature that equals the last known-pristine one means "leave it", so a mutation that keeps both
+# length and mtime would be missed here, and Assert-FixturePristine (the full SHA-256 state, unchanged
+# and run AFTER every reset) then throws: a miss is a loud abort, never a leaked fixture. Hashing the
+# whole tree BEFORE the reset too was 128 x ~250 files = 19.6 s of a 118 s suite (2026-09-29 profile,
+# ADR 0111). The signature is re-taken after each asserted reset, so it never depends on whether
+# Copy-Item preserves mtimes on the OS.
+function Get-TreeSig([string]$root) {
+    $sig = [System.Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    $rootFull = [IO.Path]::GetFullPath($root).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    foreach ($e in [IO.Directory]::EnumerateFileSystemEntries($rootFull, '*', [IO.SearchOption]::AllDirectories)) {
+        $rel = $e.Substring($rootFull.Length).Replace('\', '/')
+        $mode = if ($IsWindows) { '' } else { ' ' + [IO.File]::GetUnixFileMode($e) }
+        if ([IO.Directory]::Exists($e)) { $sig[$rel + '/'] = 'dir' + $mode }
+        else { $fi = [IO.FileInfo]::new($e); $sig[$rel] = "$($fi.Length)|$($fi.LastWriteTimeUtc.Ticks)$mode" }
+    }
+    return $sig
+}
 function New-Fixture([string]$name, [scriptblock]$build) {
     # $build lays the pristine tree at the path it is given; the working tree is one copy of it.
     $pristine = Join-Path $base "$name.pristine"
     & $build $pristine
     $work = Join-Path $base $name
     Copy-Item -LiteralPath $pristine -Destination $work -Recurse -Force
-    return @{ name = $name; pristine = $pristine; work = $work; state = (Get-TreeState $pristine) }
+    return @{ name = $name; pristine = $pristine; work = $work; state = (Get-TreeState $pristine); sig = (Get-TreeSig $work) }
 }
 function Assert-FixturePristine($fx) {
     $have = Get-TreeState $fx.work
@@ -74,8 +96,8 @@ function Assert-FixturePristine($fx) {
     if ($diff.Count) { throw "fixture '$($fx.name)' reset NOT pristine — a case would see a previous case's mutation: $(($diff | Select-Object -First 5) -join ', ')" }
 }
 function Reset-Fixture($fx) {
-    $want = $fx.state
-    $have = Get-TreeState $fx.work
+    $want = $fx.sig
+    $have = Get-TreeSig $fx.work
     # Remove what the snapshot does not have, then restore what differs or is gone. Shallowest first
     # (an ancestor's path is always the shorter): one recursive remove takes a whole added `.git`, and
     # its ~400 entries are then already gone — removing each one deepest-first was ~2.5 s of a 2.7 s
@@ -92,6 +114,7 @@ function Reset-Fixture($fx) {
         Copy-Item -LiteralPath (Join-Path $fx.pristine $rel) -Destination $p -Force
     }
     Assert-FixturePristine $fx
+    $fx.sig = Get-TreeSig $fx.work
     return $fx.work
 }
 $pluginFx = New-Fixture 'plugin' { param($p) Copy-Item -LiteralPath $src -Destination $p -Recurse -Force }

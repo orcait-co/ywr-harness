@@ -15,6 +15,10 @@ $fxBase = New-FixtureRoot 'harness-init-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 
 $ok = $true
+# The git worker binary ahead of the cmd\git.exe launcher (lib Use-GitWorkerBinary, ADR 0111): the
+# in-process runspaces below inherit this PATH, so init.ps1's own git calls take the short path too.
+# Left in place — under `pwsh -File` the process ends with it.
+$null = Use-GitWorkerBinary
 # In-process invocation (ADR 0071 option E, 2026-09-02): init.ps1 runs in a NEW RUNSPACE of this
 # pwsh through the lib's Invoke-ScriptInRunspace — no child process, no cold start (1.95 s → ~0.5 s
 # per run on the owner's box, paid on every Invoke-Init line — 57 when this landed), and a child's isolation kept (default

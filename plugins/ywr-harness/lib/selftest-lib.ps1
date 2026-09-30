@@ -1,8 +1,9 @@
-# Shared selftest core. Five things live here, added in the order the duplication justified
+# Shared selftest core. Six things live here, added in the order the duplication justified
 # them: the empty-MustNotMatch guard with the match loops it protects, the
 # fixture lifecycle, — on their third copy / first measured failure — the boolean
-# `Assert-True` verdict and the child-output decoding pin, and the in-process script
-# runner that replaced the per-case child pwsh in the spawn-bound suites (ADR 0071 option E).
+# `Assert-True` verdict and the child-output decoding pin, the in-process script
+# runner that replaced the per-case child pwsh in the spawn-bound suites (ADR 0071 option E),
+# and the git worker-binary bypass (ADR 0111).
 #
 # The guard half is the single owner of the empty-MustNotMatch rule.
 #
@@ -56,6 +57,41 @@ Set-StrictMode -Off
 # process-global and dies with the process; the console still RENDERS non-ASCII per its own code
 # page, which is a display concern and not what an assertion reads.
 try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch { }
+
+# --- git worker binary (ADR 0111) -----------------------------------------------------------------
+# On Windows the PATH `git` is Git for Windows' cmd\git.exe LAUNCHER: it spawns mingw64\bin\git.exe and
+# waits, so every git call costs two processes. harness_gates.selftest measured it first (2026-09-02,
+# `status` x10: 68 ms via the launcher, 49 ms direct; the 2026-09-29 profile re-measured rev-parse
+# 97 vs 56 ms and status 115 vs 62 ms), and the copy of its guard had spread to release.selftest
+# by the time three more git-bound suites (retro, init, manifest-gate) were worth adopting it. The
+# worker binary is what the launcher would have run: both print the same `--exec-path` and read the
+# same `--system` gitconfig (checked 2026-09-02) — only the hop is gone.
+#   Get-GitWorkerDir     PURE (no PATH change): the directory holding the worker, or '' — non-Windows,
+#                        a `git` that is not <root>\cmd\git.exe, or a root without mingw64\bin\git.exe.
+#                        Guarded on the exact layout; any other shape leaves PATH alone.
+#   Use-GitWorkerBinary  prepends that directory to $env:PATH and returns the PATH it replaced, or
+#                        $null when nothing changed. A suite that must not leak the change past its own
+#                        end restores with `if ($null -ne $before) { $env:PATH = $before }`; under
+#                        `pwsh -File` (every runner's shape) the process ends and the PATH dies with it.
+# NOT for a suite whose subject is a narrowed PATH (feedback.selftest builds its own on purpose) or
+# whose subject is the launcher itself.
+function Get-GitWorkerDir {
+    [OutputType([string])]
+    param([string]$GitPath)
+    if (-not $IsWindows -or [string]::IsNullOrWhiteSpace($GitPath)) { return '' }
+    if ((Split-Path -Leaf (Split-Path -Parent $GitPath)) -ne 'cmd') { return '' }
+    $dir = Join-Path (Split-Path -Parent (Split-Path -Parent $GitPath)) 'mingw64\bin'
+    if (Test-Path -LiteralPath (Join-Path $dir 'git.exe') -PathType Leaf) { return $dir }
+    return ''
+}
+function Use-GitWorkerBinary {
+    param()
+    $dir = Get-GitWorkerDir ((Get-Command git -ErrorAction SilentlyContinue).Source)
+    if (-not $dir) { return $null }
+    $before = $env:PATH
+    $env:PATH = $dir + [IO.Path]::PathSeparator + $before
+    return $before
+}
 
 # --- in-process script runner (ADR 0071 option E, 2026-09-02) ------------------------------------
 # Runs a .ps1 by path in a NEW RUNSPACE of this process: no pwsh cold start (~0.8 s on Windows, paid
