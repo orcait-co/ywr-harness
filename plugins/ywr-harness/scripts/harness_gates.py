@@ -687,6 +687,20 @@ def main() -> int:
         hc.say(f"  [{g['name']}] {len(fs)} file(s)")
         if not g["gates"]:
             hc.say("    (no gate declared for this group — nothing deterministic runs on it)")
+        # A deleted file is never a file-scoped argument (ADR 0112): nothing is left to check, a
+        # plain one fails the tool for nothing, and a `[id]` one is globbed by eslint/prettier onto
+        # a sibling that then passes. Dropped before the unsafe check (a deleted name is not an
+        # ungated file) and said on parenthesized lines, like the exclusions below.
+        absent = (hc.absent_files(root, fs)
+                  if any(hc.gate_is_scoped(gate) for gate in g["gates"]) else [])
+        if absent:
+            hc.say(f"    ({len(absent)} changed file(s) absent from the working tree — deleted, "
+                   "or removed from disk while still staged — nothing on disk for this group's "
+                   "file-scoped gates to read)")
+            for f in absent:
+                hc.say(f"    (absent: {f})")
+            gone = set(absent)
+            fs = [f for f in fs if f not in gone]
         # A filename is repo-supplied text: one containing a space, quote or '#' cannot be passed
         # through `sh -c` (or past either output parser) as one argument, so it is left OUT of the
         # gate's argument list. Never silent — an excluded file is an ungated file.

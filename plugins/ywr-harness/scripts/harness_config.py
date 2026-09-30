@@ -19,7 +19,9 @@ ignored because those values "would flow into plugin hook commands" (plugins-ref
 - Path values are refused if they contain a shell metacharacter or `..`. Every token that reaches
   a command position — script paths from here AND from the docs index, plus the changed-file
   arguments of a file-scoped gate — additionally passes `token_ok()` in the form it will actually
-  be composed (post `strip_prefix`), and `as_arg()` neutralizes a leading dash.
+  be composed (post `strip_prefix`), and `as_arg()` neutralizes a leading dash. A changed-file
+  argument alone passes the wider `file_arg_ok()` (`( ) [ ]` too, always single-quoted — ADR
+  0112), and a changed file absent from the working tree is never one.
 - A refused value IS echoed in the warning — the reader has to see what was refused — but never
   reaches a printed command. Those are separate properties, asserted separately.
 - A file that cannot be an argument is EXCLUDED from the gate's arguments and reported as ungated:
@@ -247,6 +249,23 @@ def token_ok(tok: str) -> bool:
     honestly named `a..b.py` stays gated. (`safe_path`'s coarser substring rule is left as it is:
     it guards declaration-time path values and predates this gate.)"""
     return (bool(tok) and bool(SAFE_TOKEN.match(tok))
+            and ".." not in tok.split("/") and not tok.startswith("/"))
+
+
+# A changed-file ARGUMENT is held to a wider set than every other command-position value (ADR
+# 0112): `( ) [ ]` too — Next.js route groups and dynamic segments. They are shlex-unsafe, so
+# compose() always single-quotes them, a literal in sh and in pwsh 7. A file argument always sits
+# after the runner, where no consumer reads a word; cwd, script paths and runner elements do not
+# (the CI awk table reads `$1`/`$2`/`$4` unquoted, fact 65), so they stay on `token_ok`. Read by
+# `unsafe_files()` and `gate_command()`'s file filter ONLY. `@`/`+` stay out (ADR 0112 option C:
+# emitted bare, and a leading `@` splats in PowerShell).
+FILE_ARG = re.compile(r"^[A-Za-z0-9._/()\[\]-]+\Z")
+
+
+def file_arg_ok(tok: str) -> bool:
+    """`token_ok` for a changed-file argument: the same `..`-segment and leading-`/` rules over
+    FILE_ARG. Never use it for a value that is emitted unquoted."""
+    return (bool(tok) and bool(FILE_ARG.match(tok))
             and ".." not in tok.split("/") and not tok.startswith("/"))
 
 
@@ -1260,8 +1279,17 @@ def unsafe_files(group: dict, files: list[str]) -> list[str]:
     """Changed files that cannot be passed to a gate command as arguments, in their post-strip
     form. Reported by the caller so the coverage loss is stated rather than silent: a filename is
     repo-supplied text too — `sh -c` would re-split one containing a space, and both output
-    parsers truncate one containing '#'."""
-    return sorted(f for f in files if not token_ok(strip_group_prefix(f, group["strip_prefix"])))
+    parsers truncate one containing '#'. `( ) [ ]` are admitted (ADR 0112, `file_arg_ok`)."""
+    return sorted(f for f in files if not file_arg_ok(strip_group_prefix(f, group["strip_prefix"])))
+
+
+def absent_files(root: Path, files: list[str]) -> list[str]:
+    """Changed files no longer in the working tree — a deletion in a range or worktree scope. A
+    file-scoped gate is never handed one (ADR 0112): a deleted plain path fails eslint, prettier
+    and ruff for nothing to check, and a deleted `[id]` path is read by eslint and prettier as a
+    GLOB that checks a sibling (`i/`, `d/`) and passes. `lexists`, so a symlink or a submodule
+    path is still passed as before."""
+    return sorted(f for f in files if not os.path.lexists(root / f))
 
 
 def gate_command(gate, group: dict, files: list[str], warns: list[str] | None = None) -> str:
@@ -1294,7 +1322,7 @@ def gate_command(gate, group: dict, files: list[str], warns: list[str] | None = 
         parts = [*RUNNERS[gate["runner"]], as_arg(script)]
     if gate_is_scoped(gate):
         rel = sorted(r for r in (strip_group_prefix(f, group["strip_prefix"]) for f in files)
-                     if token_ok(r))
+                     if file_arg_ok(r))
         if not rel:
             # Emitting the bare command here would be worse than emitting nothing: a file-scoped
             # gate with no file list is a WHOLE-TREE run (`ruff check` lints everything), so a

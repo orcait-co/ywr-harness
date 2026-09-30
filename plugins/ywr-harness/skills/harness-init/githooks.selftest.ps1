@@ -418,6 +418,33 @@ print("    false   # whole-program: gate on slice files or newly introduced only
     Write-File $g3 '.harness.json' '{ "groups": [ { "name": "docs", "match": "^docs/", "gates": ["shellcheck"] } ] }'
     $rG3b = Invoke-Hook $g3 $preCommit $null
     $ok = (Assert-True 'G3b a matched non-ASCII path is still EXCLUDED from file-scoped gate arguments — reported, and no gate runs on it' ($rG3b.Code -eq 0 -and $rG3b.Out -match 'could not be passed' -and $rG3b.Out -match 'matched group\(s\) \[docs\], but none yields a runnable file-scoped gate' -and $rG3b.Out -notmatch 'shellcheck docs/') "exit=$($rG3b.Code) out=$($rG3b.Out)") -and $ok
+
+    # G4: END-TO-END, a route-path file argument (ADR 0112). The real emitter single-quotes
+    # `src/app/(admin)/…` and `src/app/[id]/…`; the hook's `set -f` runner split and its `sh -c` must
+    # hand both to the gate literally. A stub `shellcheck` first on PATH prints the argv it RECEIVED.
+    # The decoy `src/app/i/page.sh` is committed, not staged: a glob of `[id]` would hand IT over.
+    $g4 = New-Repo 'pc-e2e-routes'
+    New-Item -ItemType Directory -Force -Path (Join-Path $g4 'scripts/harness') | Out-Null
+    foreach ($n in @('harness_config.py', 'harness_gates.py')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "templates/scripts/harness/$n") -Destination (Join-Path $g4 "scripts/harness/$n") -Force
+    }
+    Write-File $g4 '.harness.json' '{ "groups": [ { "name": "sh", "match": "^src/", "gates": ["shellcheck"] } ] }'
+    Write-File $g4 'src/app/i/page.sh' "echo i`n"
+    & git -C $g4 add -A 2>$null
+    & git -C $g4 commit -q -m 'emitter + declaration + decoy' 2>$null
+    Write-File $g4 'src/app/(admin)/page.sh' "echo a`n"
+    Write-File $g4 'src/app/[id]/page.sh' "echo b`n"
+    & git -C $g4 add -A 2>$null
+    $g4Stub = Join-Path $fxBase 'g4-stub'
+    Write-File $g4Stub 'shellcheck' "#!/bin/sh`nprintf 'STUB shellcheck '`nfor a in `"`$@`"; do printf '<%s>' `"`$a`"; done`nprintf '\n'`n"
+    if (-not $IsWindows) { & chmod +x (Join-Path $g4Stub 'shellcheck') }
+    $g4Path = $env:PATH
+    try {
+        $env:PATH = $g4Stub + [IO.Path]::PathSeparator + $env:PATH
+        $rG4 = Invoke-Hook $g4 $preCommit $null
+    } finally { $env:PATH = $g4Path }
+    $ok = (Assert-True 'G4 route-path files reach the file-scoped gate literally, one argument each, and the hook passes' ($rG4.Code -eq 0 -and $rG4.Out -match 'STUB shellcheck <src/app/\(admin\)/page\.sh><src/app/\[id\]/page\.sh>') "exit=$($rG4.Code) out=$($rG4.Out)") -and $ok
+    $ok = (Assert-True 'G4 the committed decoy is not globbed in, and nothing is reported excluded' ($rG4.Out -notmatch 'src/app/i/page\.sh' -and $rG4.Out -notmatch 'could not be passed') $rG4.Out) -and $ok
 }
 
 # =================================================================================================

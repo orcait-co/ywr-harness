@@ -479,6 +479,69 @@ $ok = (Assert-True 'P3 the warn names the real loss — file-scoped coverage onl
 $ok = (Assert-True 'P3 the excluded file is still named' ($rP3.Out -match 'excluded: src/a b\.py') $rP3.Out) -and $ok
 $ok = (Assert-True 'P3 the whole-program gate actually emits (the claim rests on it running)' ($rP3.Out -match 'uv run pytest -m ''not db'' -q') $rP3.Out) -and $ok
 
+# --- P4: `( ) [ ]` are admitted as FILE arguments, single-quoted; a deleted file is never one ----
+# ADR 0112 (dist #7 item 3): Next.js route groups `(admin)` and dynamic segments `[id]`. The four
+# characters are shlex-unsafe, so compose() quotes them. The deleted `[id]` sibling is the measured
+# hazard: eslint/prettier read a MISSING `[x]` path as a glob and check `x`'s sibling instead — so
+# a deletion is dropped and said, never passed. `$`, `{`, `@`, `+` stay excluded (option C).
+$CFG_ROUTES = @'
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "groups": [
+    { "name": "web", "match": "^src/", "cwd": "", "strip_prefix": "src/", "gates": ["eslint"] },
+    { "name": "gone", "match": "^old/", "cwd": "", "strip_prefix": "old/", "gates": ["eslint", "tsc"] }
+  ]
+}
+'@
+$p4 = New-Repo 'route-paths' $CFG_ROUTES @('src/app/(admin)/page.ts', 'src/app/[id]/page.ts', 'src/app/[id]/gone.ts', 'old/[x]/a.ts')
+Invoke-FixtureCommit $p4 'routes'
+foreach ($f in @('src/app/(admin)/page.ts', 'src/app/[id]/page.ts')) { Add-Content -LiteralPath (Join-Path $p4 $f) -Value 'y' }
+Remove-Item -LiteralPath (Join-Path $p4 'src/app/[id]/gone.ts'), (Join-Path $p4 'old/[x]/a.ts')
+foreach ($f in @('src/a$b.ts', 'src/{c}.ts', 'src/@modal/p.ts', 'src/+page.ts')) {
+    $full = Join-Path $p4 $f
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $full) | Out-Null
+    Set-Content -LiteralPath $full -Value 'x' -NoNewline
+}
+$rP4 = Invoke-Gates $p4 @()
+$p4Run = @(($rP4.Out -split "`n") | Where-Object { $_ -notmatch '^\s*warn:' -and $_ -match '^\s{4}[^ (]' })
+$ok = (Assert-True 'P4 route-group and dynamic-segment files reach the file-scoped gate, single-quoted' ([bool]($p4Run -cmatch "^    npx eslint 'app/\(admin\)/page\.ts' 'app/\[id\]/page\.ts'\r?$")) "lines: $($p4Run -join ' | ')") -and $ok
+$ok = (Assert-True 'P4 and they are not reported as excluded' ($rP4.Out -notmatch 'excluded: src/app/') $rP4.Out) -and $ok
+$ok = (Assert-True 'P4 a deleted [id] file is not passed — it would glob onto a sibling' (-not ($p4Run -match 'gone\.ts')) "lines: $($p4Run -join ' | ')") -and $ok
+$ok = (Assert-True 'P4 the deletion is said, parenthesized, with its name' ($rP4.Out -match '\n    \(1 changed file\(s\) absent from the working tree — deleted, or removed from disk while still staged — nothing on disk' -and $rP4.Out -match '\n    \(absent: src/app/\[id\]/gone\.ts\)') $rP4.Out) -and $ok
+$ok = (Assert-True 'P4 a deleted file is not called ungated or excluded' ($rP4.Out -notmatch 'excluded: src/app/\[id\]/gone') $rP4.Out) -and $ok
+$ok = (Assert-True 'P4 $ { @ + stay excluded (ADR 0112 option C) and are named — * and ? cannot be Windows filenames, AD1 holds them' ($rP4.Out -match 'excluded: src/a\$b\.ts' -and $rP4.Out -match 'excluded: src/\{c\}\.ts' -and $rP4.Out -match 'excluded: src/@modal/p\.ts' -and $rP4.Out -match 'excluded: src/\+page\.ts') $rP4.Out) -and $ok
+$ok = (Assert-True 'P4 a group whose only file was deleted skips its file-scoped gate, keeps its whole-program one' ($rP4.Out -match '\n  \[gone\] 1 file\(s\)\r?\n    \(1 changed file\(s\) absent' -and [bool]($p4Run -match '^\s{4}npx tsc --noEmit') -and -not ($p4Run -match 'eslint\s*$')) "lines: $($p4Run -join ' | ')`n$($rP4.Out)") -and $ok
+
+# P4b (review 2026-09-30, low): a file STAGED and then removed from disk is committed from the index,
+# yet no file-scoped tool can read it — the note must not call it a deletion alone, and it must not
+# be dropped silently. Staged-list scope, as the pre-commit hook calls the emitter.
+$p4b = New-Repo 'staged-then-removed' $CFG_ROUTES @('src/app/[id]/new.ts')
+& git -C $p4b add -A 2>$null
+Remove-Item -LiteralPath (Join-Path $p4b 'src/app/[id]/new.ts')
+$rP4b = Invoke-Gates $p4b @('src/app/[id]/new.ts')
+$ok = (Assert-True 'P4b a staged file missing from disk is reported absent with both causes named, never passed' ($rP4b.Out -match 'removed from disk while still staged' -and $rP4b.Out -match '\(absent: src/app/\[id\]/new\.ts\)' -and $rP4b.Out -notmatch "npx eslint 'app/") $rP4b.Out) -and $ok
+
+# --- P5: the widening is FILE arguments only — cwd and script paths keep token_ok ----------------
+# cwd is emitted unquoted (`cd <cwd> &&`, the CI awk table reads `$2`), a script path as `$1`/`$4`;
+# a `(` there would be a subshell or a glob for sh. Mutation anchor for the other direction of P4:
+# widening token_ok instead of the file predicate turns these refusals into composed commands.
+$CFG_P5 = @'
+{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "groups": [
+    { "name": "paren", "match": "^a/", "cwd": "w(x)", "strip_prefix": "a/", "gates": ["ruff"] },
+    { "name": "brack", "match": "^b/", "cwd": "w[x]", "strip_prefix": "b/", "gates": ["ruff"] },
+    { "name": "scr", "match": "^c/", "cwd": "", "strip_prefix": "", "gates": [ { "runner": "python", "script": "tools/(gen).py", "files": true } ] }
+  ]
+}
+'@
+$p5 = New-Repo 'widen-files-only' $CFG_P5 @('a/x.py', 'b/y.py', 'c/z.py', 'tools/(gen).py')
+$rP5 = Invoke-Gates $p5 @()
+$p5Run = @(($rP5.Out -split "`n") | Where-Object { $_ -notmatch '^\s*warn:' -and $_ -match '^\s{4}[^ (]' })
+$ok = (Assert-True 'P5 a cwd with ( ) is still refused, never composed' (-not ($p5Run -match 'cd w\(x\)|cd ''w\(x\)''')) "lines: $($p5Run -join ' | ')") -and $ok
+$ok = (Assert-True 'P5 a cwd with [ ] is still refused, never composed' (-not ($p5Run -match 'cd w\[x\]|cd ''w\[x\]''')) "lines: $($p5Run -join ' | ')") -and $ok
+$ok = (Assert-True 'P5 a script-gate path with ( ) is still refused' (-not ($p5Run -match '\(gen\)') -and $rP5.Out -match 'tools/\(gen\)\.py') "lines: $($p5Run -join ' | ')`n$($rP5.Out)") -and $ok
+
 # --- Q: excluding EVERY file must not escalate the gate to the whole tree -----------------------
 # A file-scoped gate with no file list is a whole-tree run (`ruff check` lints everything). So a
 # group whose every changed filename is unusable as an argument must SKIP its gate, not emit a bare
@@ -1654,6 +1717,22 @@ for name, argv in entries:
 for tok in ("a#b", "#c", "a\nb", "a\rb", "a.py\n"):
     if hc.token_ok(tok):
         fails.append(f"token_ok accepts {tok!r} — a repo-supplied value could carry it to a consumer's line parse")
+    if hc.file_arg_ok(tok):
+        fails.append(f"file_arg_ok accepts {tok!r} — a changed file could carry it to a consumer's line parse")
+# ADR 0112: `( ) [ ]` widen the FILE predicate only. token_ok must keep refusing them (cwd, script
+# paths and runner elements are emitted unquoted), and a file argument carrying them round-trips.
+for tok in ("app/(admin)/page.ts", "app/[id]/page.ts", "(g)/[x].py"):
+    if hc.token_ok(tok):
+        fails.append(f"token_ok accepts {tok!r} — the widening leaked into the unquoted positions (ADR 0112)")
+    if not hc.file_arg_ok(tok):
+        fails.append(f"file_arg_ok refuses {tok!r} — the dist #7 route paths are excluded again")
+    s = hc.compose(["npx", "eslint", tok], "web")
+    if shlex.split(s) != ["cd", "web", "&&", "npx", "eslint", tok] or f"'{tok}'" not in s:
+        fails.append(f"a route-path file argument does not round-trip single-quoted: {s!r}")
+for tok in ("a b.ts", "a$b.ts", "s*t.ts", "q?.ts", "{c}.ts", "@modal/p.ts", "+page.ts", "a'b.ts",
+            "../x.ts", "/abs.ts", "a;b.ts", "a|b.ts", "a`b.ts"):
+    if hc.file_arg_ok(tok):
+        fails.append(f"file_arg_ok accepts {tok!r} — outside ADR 0112's ( ) [ ] widening")
 print("AD-OK" if not fails else "AD-FAIL: " + " | ".join(fails))
 '@
 $rAD1 = (& $py.Source $adScript $PSScriptRoot 2>&1 | Out-String)
@@ -1710,7 +1789,9 @@ if (-not $bashExe) {
     $runSh = Get-RunBlock $ciLines 'Run the emitted gate commands'
     $ok = (Assert-True 'AD2 both CI step scripts are found in the template' ($extractSh -and $runSh -and $extractSh -match 'cmds\.txt' -and $runSh -match 'sh -c "\$c"') "extract=[$extractSh] run=[$runSh]") -and $ok
     $CFG_AD = $CFG.Replace('    { "name": "web",', '    { "name": "lib", "match": "^lib/.*\\.py$", "cwd": "", "strip_prefix": "", "gates": ["pytest-nondb"] },' + "`n" + '    { "name": "web",')
-    $ad = New-Repo 'ad-quoting' $CFG_AD @('api/app.py', 'lib/x.py')
+    # `api/(g)/[id].py`: a changed FILE argument that needs quoting (ADR 0112) — the CI's sed/awk
+    # extraction and `sh -c` must hand it over as one literal argument too.
+    $ad = New-Repo 'ad-quoting' $CFG_AD @('api/app.py', 'lib/x.py', 'api/(g)/[id].py')
     $adWork = Join-Path $fxBase 'ad-work'           # outside the fixture repo: the emitter must not see it
     $adStub = Join-Path $adWork 'stub'
     New-Item -ItemType Directory -Force -Path $adStub | Out-Null
@@ -1746,7 +1827,8 @@ bash '$w/run.sh'
     $ok = (Assert-True 'AD2 the awk runner table still reads runner + cwd around the quoted element' ($adGho -match '(?m)^runners= uv $' -and $adGho -match '(?m)^uv_dirs= \. api $') "github_output=[$adGho]") -and $ok
     $ok = (Assert-True 'AD2 the CI run step exits 0 over the extracted commands' ($adCode -eq 0) "exit=$adCode`n$rAD2") -and $ok
     $ok = (Assert-True 'AD2 sh -c hands pytest `not db` as ONE argument — from the cwd group and from the root' ($rAD2 -match 'STUB uv api <run><pytest><-m><not db><-q>' -and $rAD2 -match 'STUB uv ad-quoting <run><pytest><-m><not db><-q>') $rAD2) -and $ok
-    $ok = (Assert-True 'AD2 the file-scoped gate still receives its file as one argument' ($rAD2 -match 'STUB uv api <run><ruff><check><app\.py>') $rAD2) -and $ok
+    $ok = (Assert-True 'AD2 the file-scoped gate still receives its files as one argument each — a route-path one literally (ADR 0112)' ($rAD2 -match 'STUB uv api <run><ruff><check><\(g\)/\[id\]\.py><app\.py>') $rAD2) -and $ok
+    $ok = (Assert-True 'AD2 the route-path file argument sits quoted in cmds.txt, and the runner table is unchanged by it' ($adCmds -match "(?m)^cd api && uv run ruff check '\(g\)/\[id\]\.py' app\.py$") "cmds.txt=[$adCmds]") -and $ok
     $ok = (Assert-True 'AD2 no split element reaches the runner (the issue #6 shape: <not><db>)' ($rAD2 -notmatch '<not><db>') $rAD2) -and $ok
 }
 
