@@ -397,8 +397,8 @@ $ok = (Assert-Text 'S1 SKILL.md: user-invoked only, namespaced references, both 
         @('`/feedback`', '`/harness-init`', 'label `upstream-report`', 'with label upstream-report', "label: 'upstream-report' is absent")) -and $ok
 
 # =================================================================================================
-# G. The absent-`claude` lookup's module auto-loading switch (ADR 0111): off for that ONE lookup,
-#    restored to the exact prior value on every path, nothing but Get-Command inside the try.
+# G. The git / gh / claude lookups' module auto-loading switch (ADR 0111, ADR 0113): off for those
+#    lookups alone, restored to the exact prior value on every path, nothing but Get-Command inside the try.
 # =================================================================================================
 # The switch is production code and its failure modes are silent (a missing restore leaves every
 # LATER cmdlet from a not-yet-loaded module "not recognized" only when the script reaches it). So the
@@ -421,7 +421,14 @@ else {
     if ($ti -lt 2 -or -not (& $isPrefAssign $stmts[$ti - 2] 'alPrev') -or -not (& $isPrefAssign $stmts[$ti - 1] 'PSModuleAutoLoadingPreference') -or $stmts[$ti - 1].Right.Extent.Text -notmatch "^'None'$") {
         $alFail += "the try must be immediately preceded by `$alPrev = <saved value> then `$PSModuleAutoLoadingPreference = 'None' (nothing between them and the try)"
     } else { $alSnippet = $alAst.Extent.Text.Substring($stmts[$ti - 2].Extent.StartOffset, $t.Extent.EndOffset - $stmts[$ti - 2].Extent.StartOffset) }
-    if ($t.Body.Statements.Count -ne 1) { $alFail += "the try body holds $($t.Body.Statements.Count) statements (want only the lookup)" }
+    # Every statement is `$x = Get-Command <name> ...` (one command, nothing else), and the names are exactly git, gh, claude.
+    $alNames = @()
+    foreach ($st in @($t.Body.Statements)) {
+        $cmds = @($st.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+        if ($st -isnot [System.Management.Automation.Language.AssignmentStatementAst] -or $cmds.Count -ne 1 -or $cmds[0].GetCommandName() -ne 'Get-Command' -or $cmds[0].CommandElements.Count -lt 2) { $alFail += "a try statement is not a single Get-Command assignment: '$($st.Extent.Text)'"; continue }
+        $alNames += [string]$cmds[0].CommandElements[1].Extent.Text
+    }
+    if ((@($alNames | Sort-Object) -join ',') -cne 'claude,gh,git') { $alFail += "the try looks up '$($alNames -join ', ')' (want exactly git, gh, claude)" }
     $inTry = @($t.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() })
     if (@($inTry | Where-Object { $_ -ne 'Get-Command' }).Count -or -not $inTry.Count) { $alFail += "commands inside the try: $($inTry -join ', ') (want only Get-Command — an autoloaded cmdlet there would run with auto-loading off)" }
     if (-not $t.Finally) { $alFail += 'the try has no finally' }
@@ -433,7 +440,7 @@ else {
     $alAssigns = @($alAst.FindAll({ param($n) & $isPrefAssign $n 'PSModuleAutoLoadingPreference' }, $true))
     if ($alAssigns.Count -ne 2) { $alFail += "want exactly 2 assignments to `$PSModuleAutoLoadingPreference in feedback.ps1 (off, restore), found $($alAssigns.Count)" }
 }
-$ok = (Assert-True 'G1 feedback.ps1: auto-loading is switched off only for the claude lookup (try holds Get-Command alone, finally restores by assignment, two assignments in the file)' ($alFail.Count -eq 0) ($alFail -join ' · ')) -and $ok
+$ok = (Assert-True 'G1 feedback.ps1: auto-loading is switched off only for the git/gh/claude lookups (try holds those Get-Command assignments alone, finally restores by assignment, two assignments in the file)' ($alFail.Count -eq 0) ($alFail -join ' · ')) -and $ok
 
 function Invoke-AutoLoadProbe([string]$Name, [string]$Prior) {
     $p = Join-Path $fx "alprobe-$Name.ps1"

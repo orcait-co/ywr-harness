@@ -62,8 +62,24 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $pluginRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $pwshExe = (Get-Command pwsh).Source
-$gitCmd = Get-Command git -ErrorAction SilentlyContinue
-$ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+# An ABSENT command makes Get-Command fall through to module auto-discovery over every PSModulePath
+# directory (~1.4 s measured on the owner's box, 2026-09-29: 1,4xx ms absent vs ~280 ms with it off) —
+# and `gh` is optional for a member, so its absence is the common case. Module auto-loading is switched
+# off for THESE lookups alone and restored in the finally (ADR 0111, widened to git and gh by ADR 0113).
+# It must be assigned at this script's own scope: the same assignment inside a helper function was
+# measured to change nothing (1.4 s both ways). It must not stay off — with it 'None' even
+# Remove-Variable was "not recognized" in a -File run, so a later cmdlet would fail — and the finally
+# restores by assignment only (no cmdlet): the prior value, or 'All', the documented default. The
+# test is `-ne $null`, never truthiness: the enum value None is 0, so a prior 'None' is falsy.
+# A command that IS on PATH resolves exactly as before; git, gh and claude are executables, never module functions.
+$alPrev = $PSModuleAutoLoadingPreference
+$PSModuleAutoLoadingPreference = 'None'
+try {
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+}
+finally { $PSModuleAutoLoadingPreference = $(if ($null -ne $alPrev) { $alPrev } else { 'All' }) }
 
 function Say([string]$m, [string]$Color = 'Gray') { Write-Host $m -ForegroundColor $Color }
 function Invoke-GitLines([string[]]$GitArgs) {
@@ -197,19 +213,6 @@ foreach ($rp in $regPaths) {
 $registeredLine = if ($registered.Count) { $registered -join ' · ' } elseif ($regRead) { 'none (registry read, no ywr-harness entry — a --plugin-dir or in-tree copy is running)' } else { 'registry not found (a --plugin-dir or in-tree copy is running)' }
 
 $claudeVer = 'not on PATH (a wrapper account may run it under another name — say which in the description)'
-# An ABSENT command makes Get-Command fall through to module auto-discovery over every PSModulePath
-# directory (~1.4 s measured on the owner's box, 2026-09-29: 1,4xx ms absent vs ~280 ms with it off).
-# Module auto-loading is switched off for THIS ONE lookup and restored in the finally (ADR 0111). It
-# must be assigned at this script's own scope: the same assignment inside a helper function was
-# measured to change nothing (1.4 s both ways). It must not stay off — with it 'None' even
-# Remove-Variable was "not recognized" in a -File run, so a later cmdlet would fail — and the finally
-# restores by assignment only (no cmdlet): the prior value, or 'All', the documented default. The
-# test is `-ne $null`, never truthiness: the enum value None is 0, so a prior 'None' is falsy.
-# A command that IS on PATH resolves exactly as before; `claude` is an executable, never a module function.
-$alPrev = $PSModuleAutoLoadingPreference
-$PSModuleAutoLoadingPreference = 'None'
-try { $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue }
-finally { $PSModuleAutoLoadingPreference = $(if ($null -ne $alPrev) { $alPrev } else { 'All' }) }
 if ($claudeCmd) {
     try { $cv = @(& $claudeCmd.Source --version 2>&1 | Select-Object -First 1); if ($cv.Count) { $claudeVer = ([string]$cv[0]).Trim() } } catch { $claudeVer = 'on PATH, --version failed' }
 }
