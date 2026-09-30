@@ -306,6 +306,39 @@ $rOd = Invoke-Map $od @('apps/api/app/pipeline.py')
 $ok = (Assert-True 'O4 a non-object spec entry does not crash (exit 0, no traceback)' ($rOd.Code -eq 0 -and $rOd.Out -notmatch 'Traceback' -and $rOd.Out -notmatch 'index: FAILED') "exit=$($rOd.Code): $($rOd.Out)") -and $ok
 $ok = (Assert-True 'O4 the non-object entries are warned (not an object)' ($rOd.Out -match 'not an object') $rOd.Out) -and $ok
 $ok = (Assert-True 'O4 the valid spec in the same index still maps its file' ($rOd.Out -match 'spec 0001 — Pipeline') $rOd.Out) -and $ok
+
+# --- P: the retro's ignore register exempts here too (ADR 0115) ------------------------------------
+# The unmapped list calls itself "a slice-retro UNMAPPED finding in the making"; until 0.60.5 the
+# mapper read no register, so a file the register exempts (the canon's scaffold template copies)
+# was listed as debt the retro never reports. One reader now (harness_config.load_ignore). An
+# exempt file is COUNTED on its own line, never dropped silently; a bad line is warned.
+$p = New-Repo 'ignore-register' $GOOD_CFG $GOOD_INDEX
+New-Item -ItemType Directory -Force -Path (Join-Path $p '.githooks') | Out-Null
+Set-Content -LiteralPath (Join-Path $p '.githooks/slice-retro-ignore') -Value "# copies owned elsewhere`n`napps/api/app/copies/.*\.py`n([bad`n" -NoNewline
+$rP = Invoke-Map $p @('apps/api/app/copies/one.py', 'apps/api/app/loose.py', 'apps/api/app/pipeline.py')
+$pUnmapped = ($rP.Out -split 'unmapped product files')[1]
+$ok = (Assert-True 'P a register-exempt file is NOT listed unmapped' ($null -ne $pUnmapped -and $pUnmapped -notmatch 'copies/one\.py') $rP.Out) -and $ok
+$ok = (Assert-True 'P an unowned file the register does not name is still listed' ($pUnmapped -match 'apps/api/app/loose\.py') $rP.Out) -and $ok
+$ok = (Assert-True 'P the exemption is counted, naming the register (never silent)' ($rP.Out -match 'exempt by the ignore register \(\.githooks/slice-retro-ignore\): 1 unowned product file') $rP.Out) -and $ok
+$ok = (Assert-True 'P a bad register line is warned with its line number; the good line still applies' ($rP.Out -match '\.githooks/slice-retro-ignore:4: not a valid regex') $rP.Out) -and $ok
+$ok = (Assert-True 'P an owned file is unaffected (still mapped, exit 0)' ($rP.Code -eq 0 -and $rP.Out -match 'spec 0001 — Pipeline') "exit=$($rP.Code): $($rP.Out)") -and $ok
+
+# A declared retro.ignore_file is the register read — the same key the retro honors.
+$P2_CFG = $GOOD_CFG.TrimEnd().TrimEnd('}') + ",`n  `"retro`": { `"ignore_file`": `"meta/exempt.txt`" }`n}"
+$p2 = New-Repo 'ignore-register-declared' $P2_CFG $GOOD_INDEX
+New-Item -ItemType Directory -Force -Path (Join-Path $p2 'meta') | Out-Null
+Set-Content -LiteralPath (Join-Path $p2 'meta/exempt.txt') -Value 'apps/api/app/loose\.py' -NoNewline
+$rP2 = Invoke-Map $p2 @('apps/api/app/loose.py')
+$ok = (Assert-True 'P2 a declared retro.ignore_file is the register the mapper reads' ($rP2.Out -notmatch 'unmapped product files' -and $rP2.Out -match 'exempt by the ignore register \(meta/exempt\.txt\): 1 ') $rP2.Out) -and $ok
+
+# The register is read only when something is unmapped (ADR 0115 Decision 2): an all-owned change
+# set says nothing about a bad register line, and an ABSENT register exempts nothing — the unowned
+# file is listed and no count line appears.
+$rP3 = Invoke-Map $p @('apps/api/app/pipeline.py')
+$ok = (Assert-True 'P3 an all-owned change set does not read the register (no register warning, no count line)' ($rP3.Code -eq 0 -and $rP3.Out -notmatch 'slice-retro-ignore' -and $rP3.Out -notmatch 'exempt by the ignore register') $rP3.Out) -and $ok
+$p3 = New-Repo 'ignore-register-absent' $GOOD_CFG $GOOD_INDEX
+$rP3b = Invoke-Map $p3 @('apps/api/app/copies/one.py')
+$ok = (Assert-True 'P3 an absent register exempts nothing: the file is listed, no count line, no warning' ((($rP3b.Out -split 'unmapped product files')[1]) -match 'copies/one\.py' -and $rP3b.Out -notmatch 'exempt by the ignore register' -and $rP3b.Out -notmatch 'slice-retro-ignore') $rP3b.Out) -and $ok
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'verify_map selftest: FAILED' -ForegroundColor Red; exit 1 }

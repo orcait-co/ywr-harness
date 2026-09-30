@@ -22,6 +22,10 @@ The committed index carries a frontmatter digest (`fm_digest`, ADR 0043); this s
 it and prints an `index: STALE` advisory line when the docs sources have moved on — the local
 mid-slice complement to CI's on-merge drift gate. A missing stamp is reported, never silent.
 
+Unowned product files are listed as unmapped unless the slice retro's ignore register
+(`retro.ignore_file`) exempts them — one register for both readers (ADR 0115); an exempt file is
+counted, never dropped silently.
+
 Repo-specific values come from `.harness.json` via harness_config — one reader, one validator.
 """
 
@@ -209,6 +213,18 @@ def main() -> int:
             hits[sid] = {"title": spec.get("title", ""), "matched": matched, "verify": verify}
 
     unmapped = sorted(f for f in files if scope_re.match(f) and not hc.owned(owned, f)) if scope_re else []
+    # The retro's ignore register exempts the same files here (ADR 0115): the list below calls
+    # itself "a slice-retro UNMAPPED finding in the making", which needs both readers on one
+    # register. Before 0.60.5 the mapper read none, so every slice touching a scaffold template
+    # copy the register exempts listed it as debt the retro would never report. One register is
+    # necessary, not sufficient: the SCOPES stay two declarations (`verify.product_scope` here,
+    # `retro.source_scope` there), so a file inside the first and outside the second is still
+    # listed — the repo keeps the two in step (ADR 0115 Consequences). Exempt files are COUNTED,
+    # never dropped silently; a bad register line is warned at the end like any refusal, and only
+    # on a run with something unmapped to filter (no list, no read — case P3).
+    ign = hc.load_ignore(root, cfg["retro_ignore_file"], refused) if unmapped else []
+    exempt = [f for f in unmapped if hc.any_match(ign, f)]
+    unmapped = [f for f in unmapped if not hc.any_match(ign, f)]
 
     if not hits:
         hc.say(f"{len(files)} changed file(s) map to no spec — no registered verify script.")
@@ -241,6 +257,9 @@ def main() -> int:
         hc.say("unmapped product files (no spec owner — a slice-retro UNMAPPED finding in the making):")
         for f in unmapped:
             hc.say(f"  {f}")
+    if exempt:
+        hc.say(f"exempt by the ignore register ({cfg['retro_ignore_file']}): {len(exempt)} unowned "
+               "product file(s) — recorded debt or a stated exemption, not listed as unmapped")
     for w in refused:
         hc.warn(w)
     return 0

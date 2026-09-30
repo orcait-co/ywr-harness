@@ -12,6 +12,17 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.60.5 — 2026-09-30
+
+- **`/ywr-harness:verify` 가 slice-retro ignore register(`.githooks/slice-retro-ignore`)에 등록된 파일을 더 이상
+  "unmapped product files" 로 표시하지 않습니다 (ADR 0115).** 예전에는 register 가 면제한 파일(생성 코드,
+  plumbing 등)도 "slice-retro UNMAPPED finding in the making" 으로 나왔지만, 정작 slice retro 는 그 파일을 보고하지
+  않았습니다. 이제 두 도구가 같은 register 를 읽고, 면제된 파일은 목록 대신
+  `exempt by the ignore register (…): N unowned product file(s)` 한 줄로 개수만 표시됩니다. register 에 잘못된
+  정규식 줄이 있으면 실행 끝에 줄 번호와 함께 경고합니다.
+- 적용: 플러그인 업데이트 후 `/ywr-harness:harness-init` 을 다시 실행해 레포의 `scripts/harness/` 를
+  갱신하세요.
+
 ## v0.60.4 — 2026-09-30
 
 - **`/ywr-harness:feedback` 가 `gh`(또는 `git`)가 설치되지 않은 PC에서 실행당 약 1.3초 빨라졌습니다 (ADR 0113).** `git` · `gh` ·

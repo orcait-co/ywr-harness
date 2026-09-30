@@ -418,31 +418,22 @@ $out = $g.Out
 Record 'placement-skip-cache-shape' ($g.Code -eq 0 -and $out -match 'dogfood placements: skipped' -and $out -match 'release lockstep: skipped — not the canon dogfood shape') "exit=$($g.Code) skip-said=$([bool]($out -match 'dogfood placements: skipped')) lockstep-skip-said=$([bool]($out -match 'release lockstep: skipped'))"
 
 # --- release lockstep (ADR 0073) ----------------------------------------------------------------
-# Canon-shape fixtures that ARE git repos — the check needs a tag to compare against, so these are
-# the only fixtures in this suite that spawn anything since option E: git, five spawns per fixture
-# (init · config · add · commit · tag — measured 2026-09-03 on this box under review-agent load:
-# 183 + 60 + 692 + 411 + 64 ms, ≈1.4 s) plus the gate's own three or four (≈0.5 s on top of a
-# gate run); the eight fixtures below cost the suite roughly 25–35 s (whole-suite figure in
-# SESSION_HANDOFF slice 9). The plain canon-shape fixtures above are not git repos and must
-# report the check SKIPPED, never pass it silently. Identity rides on the commit as `-c` flags so
-# no fixture depends on a repo-local or global identity (the harness_gates.selftest precedent).
+# Canon-shape fixtures that ARE git repos — the check needs a tag to compare against. ONE such repo is
+# built per suite run (handoff O31, ADR 0111): the canon shape at version 9.9.9 with README.md as LF and
+# a non-ASCII-named file, then init · config · add · commit · tag once (measured 2026-09-03 on this box
+# under review-agent load: 183 + 60 + 692 + 411 + 64 ms, ≈1.4 s) and packed, so `.git` holds a handful
+# of files instead of ~400 (Assert-FixturePristine hashes every file of it after every reset). Each case
+# then resets that tree — zero fixture spawns per case; the ten cases paid the ≈1.4 s ten times —
+# and applies ONLY its working-tree mutation. A case that corrupts `.git` (lockstep-git-fails-after-tag
+# writes `.git/index`) is undone by the reset like any other mutation, and so is any index refresh the
+# gate's own `git diff` writes; the asserted reset proves it. The gate's own three or four git calls
+# (≈0.5 s on top of a gate run) stay per case. The plain canon-shape fixtures above are not git
+# repos and must report the check SKIPPED, never pass it silently. Identity rides on the commit as `-c`
+# flags so no fixture depends on a repo-local or global identity (the harness_gates.selftest precedent).
 $gitHere = [bool](Get-Command git -ErrorAction SilentlyContinue)
-function New-LockstepRepo([string]$tag, [string]$version, [scriptblock]$BeforeCommit = $null) {
-    $repo = New-CanonShape $tag
-    $mfp = Join-Path $repo 'plugins/ywr-harness/.claude-plugin/plugin.json'
-    $j = Get-Content -LiteralPath $mfp -Raw | ConvertFrom-Json
-    $j.version = $version
-    $j | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $mfp -NoNewline
-    Set-LockstepChangelogTop $repo $version
-    if ($BeforeCommit) { & $BeforeCommit $repo }
-    & git -C $repo init -q 2>$null | Out-Null
-    & git -C $repo config core.autocrlf false 2>$null | Out-Null
-    & git -C $repo add -A 2>$null | Out-Null
-    & git -C $repo -c user.name=selftest -c user.email=selftest@example.invalid commit -q -m fixture 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "lockstep fixture '$tag': git commit failed (exit $LASTEXITCODE)" }
-    & git -C $repo tag "ywr-harness--v$version" 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "lockstep fixture '$tag': git tag failed (exit $LASTEXITCODE)" }
-    return $repo
+$lockFx = $null   # built inside the $gitHere branch below; every case resets it
+function New-LockstepRepo([string]$tag) {
+    return Reset-Fixture $lockFx
 }
 # The release-notes canon (ADR 0030) must stay green in these fixtures or the exit code stops
 # isolating the lockstep check: the top CHANGELOG entry follows the fixture's version.
@@ -461,28 +452,56 @@ function Set-LockstepVersion([string]$repo, [string]$version) {
 }
 
 if (-not $gitHere) {
-    Write-Host 'SKIP [lockstep-*] git not on PATH — the four release-lockstep fixture cases did not run (reported, not silent)' -ForegroundColor Yellow
+    Write-Host 'SKIP [lockstep-*] git not on PATH — the ten release-lockstep fixture cases did not run (reported, not silent)' -ForegroundColor Yellow
 } else {
+    # The one lockstep repo (see the section comment): version 9.9.9 in plugin.json and the CHANGELOG top,
+    # README.md committed as LF (the CR-only case rewrites it), and a NON-ASCII-named file committed
+    # (ADR 0102 re-ask, review F6). The name is part of the shared base: no other case touches it, so it
+    # equals the tag there and moves no other case's expected count.
+    $latin1 = [System.Text.Encoding]::Latin1
+    $koName = [string]::new([char[]]@(0xD55C, 0xAE00)) + '-notes.md'
+    $koBody = "ko line one`nko line two`n"
+    $lockFx = New-Fixture 'lockstep' {
+        param($repo)
+        Copy-Item -LiteralPath $canonFx.pristine -Destination $repo -Recurse -Force
+        Set-LockstepVersion $repo '9.9.9'
+        $p = Join-Path $repo 'plugins/ywr-harness/README.md'
+        $lf = $latin1.GetString([IO.File]::ReadAllBytes($p)).Replace("`r`n", "`n")
+        [IO.File]::WriteAllBytes($p, $latin1.GetBytes($lf))
+        [IO.File]::WriteAllBytes((Join-Path $repo "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody))
+        # --template= : no sample hooks in `.git`, so the asserted reset hashes fewer files.
+        & git -C $repo init -q --template= 2>$null | Out-Null
+        & git -C $repo config core.autocrlf false 2>$null | Out-Null
+        & git -C $repo add -A 2>$null | Out-Null
+        & git -C $repo -c user.name=selftest -c user.email=selftest@example.invalid commit -q -m fixture 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "lockstep fixture: git commit failed (exit $LASTEXITCODE)" }
+        & git -C $repo tag 'ywr-harness--v9.9.9' 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "lockstep fixture: git tag failed (exit $LASTEXITCODE)" }
+        # One pack instead of a loose object per file (repack -d also removes the packed loose ones).
+        & git -C $repo repack -a -d -q 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "lockstep fixture: git repack failed (exit $LASTEXITCODE)" }
+    }
+
     # The tag names plugin.json's version and the tree equals the tag: the lockstep holds.
-    $r = New-LockstepRepo 'lockstep-identical' '9.9.9'
+    $r = New-LockstepRepo 'lockstep-identical'
     $g = Run-GateAt $r
     Record 'lockstep-identical' ($g.rc -eq 0 -and $g.out -match 'release lockstep: plugins/ywr-harness identical to tag ywr-harness--v9\.9\.9') "exit=$($g.rc) identical-said=$([bool]($g.out -match 'identical to tag'))"
 
     # The #3 shape: a shipped file moves after the tag, plugin.json still names the released version.
-    $r = New-LockstepRepo 'lockstep-moved-unbumped' '9.9.9'
+    $r = New-LockstepRepo 'lockstep-moved-unbumped'
     Add-Content -LiteralPath (Join-Path $r 'plugins/ywr-harness/README.md') -Value "`nmoved after the tag" -NoNewline
     $g = Run-GateAt $r
     Record 'lockstep-moved-unbumped' ($g.rc -eq 1 -and $g.out -match 'release lockstep BROKEN: 1 file\(s\).*plugins/ywr-harness/README\.md') "exit=$($g.rc) broken-named=$([bool]($g.out -match 'lockstep BROKEN'))"
 
     # An untracked NEW file under the shipped tree is the same defect — `git diff` alone misses it.
-    $r = New-LockstepRepo 'lockstep-untracked-new-file' '9.9.9'
+    $r = New-LockstepRepo 'lockstep-untracked-new-file'
     Set-Content -LiteralPath (Join-Path $r 'plugins/ywr-harness/NEW-SHIPPED-FILE.md') -Value 'new after the tag' -NoNewline
     $g = Run-GateAt $r
     Record 'lockstep-untracked-new-file' ($g.rc -eq 1 -and $g.out -match 'release lockstep BROKEN: 1 file\(s\).*NEW-SHIPPED-FILE\.md') "exit=$($g.rc) broken-named=$([bool]($g.out -match 'lockstep BROKEN'))"
 
     # The remedy: the same move WITH the bump in the same tree — no tag names the new version, so
     # there is nothing to compare and the check says exactly that.
-    $r = New-LockstepRepo 'lockstep-bumped-unreleased' '9.9.9'
+    $r = New-LockstepRepo 'lockstep-bumped-unreleased'
     Add-Content -LiteralPath (Join-Path $r 'plugins/ywr-harness/README.md') -Value "`nmoved after the tag" -NoNewline
     Set-LockstepVersion $r '9.9.10'
     $g = Run-GateAt $r
@@ -492,13 +511,7 @@ if (-not $gitHere) {
     # refresh nudge already use (review 2026-09-03, medium): a .gitattributes renormalization
     # between the tag and now must not fail a release whose content did not move. The tag holds
     # README.md as LF; the working tree then carries it as CRLF, and only that.
-    $latin1 = [System.Text.Encoding]::Latin1
-    $r = New-LockstepRepo 'lockstep-cr-only-not-drift' '9.9.9' {
-        param($repo)
-        $p = Join-Path $repo 'plugins/ywr-harness/README.md'
-        $lf = $latin1.GetString([IO.File]::ReadAllBytes($p)).Replace("`r`n", "`n")
-        [IO.File]::WriteAllBytes($p, $latin1.GetBytes($lf))
-    }
+    $r = New-LockstepRepo 'lockstep-cr-only-not-drift'
     $p = Join-Path $r 'plugins/ywr-harness/README.md'
     $crlf = $latin1.GetString([IO.File]::ReadAllBytes($p)).Replace("`n", "`r`n")
     [IO.File]::WriteAllBytes($p, $latin1.GetBytes($crlf))
@@ -509,21 +522,21 @@ if (-not $gitHere) {
     # broken-manifest precedent): a tag that WOULD be checked, and the check cannot run.
     # (1) plugin.json unreadable while the tag exists: the lockstep line must say NOT CHECKED,
     # never "identical" and never "no local tag".
-    $r = New-LockstepRepo 'lockstep-unreadable-manifest-with-tag' '9.9.9'
+    $r = New-LockstepRepo 'lockstep-unreadable-manifest-with-tag'
     Set-Content -LiteralPath (Join-Path $r 'plugins/ywr-harness/.claude-plugin/plugin.json') -Value '{ not json' -NoNewline
     $g = Run-GateAt $r
     Record 'lockstep-unreadable-manifest-with-tag' ($g.rc -eq 1 -and $g.out -match 'release lockstep: plugin.json version unreadable .*NOT CHECKED' -and $g.out -notmatch 'identical to tag' -and $g.out -notmatch 'no local tag') "exit=$($g.rc) not-checked-said=$([bool]($g.out -match 'NOT CHECKED'))"
     # (2) git itself fails AFTER the tag is confirmed: a corrupt index kills `diff` and `ls-files`
     # (both read it) while `rev-parse` of a tag ref does not — the check must fail as NOT
     # CHECKED, not report BROKEN over an empty list and not report identical.
-    $r = New-LockstepRepo 'lockstep-git-fails-after-tag' '9.9.9'
+    $r = New-LockstepRepo 'lockstep-git-fails-after-tag'
     [IO.File]::WriteAllBytes((Join-Path $r '.git/index'), [byte[]](1..24))
     $g = Run-GateAt $r
     Record 'lockstep-git-fails-after-tag' ($g.rc -eq 1 -and $g.out -match 'release lockstep: git diff / ls-files against ywr-harness--v9\.9\.9 failed .*NOT CHECKED' -and $g.out -notmatch 'lockstep BROKEN' -and $g.out -notmatch 'identical to tag') "exit=$($g.rc) not-checked-said=$([bool]($g.out -match 'NOT CHECKED'))"
 
     # A version the tag name cannot be derived from must not route to the no-tag PASS (review
     # 2026-09-03, low): the manifest check accepts a suffix, a ref name does not.
-    $r = New-LockstepRepo 'lockstep-version-suffix-not-checked' '9.9.9'
+    $r = New-LockstepRepo 'lockstep-version-suffix-not-checked'
     $mfp = Join-Path $r 'plugins/ywr-harness/.claude-plugin/plugin.json'
     $j = Get-Content -LiteralPath $mfp -Raw | ConvertFrom-Json
     $j.version = '9.9.9 rc'
@@ -531,16 +544,11 @@ if (-not $gitHere) {
     $g = Run-GateAt $r
     Record 'lockstep-version-suffix-not-checked' ($g.rc -eq 1 -and $g.out -match "release lockstep: plugin.json version '9\.9\.9 rc' is not a plain major\.minor\.patch.*NOT CHECKED" -and $g.out -notmatch 'no local tag') "exit=$($g.rc) not-checked-said=$([bool]($g.out -match 'not a plain major'))"
 
-    # A NON-ASCII tracked name (ADR 0102 re-ask, review F6): the -z list and the per-file re-ask
+    # The NON-ASCII tracked name of the base (ADR 0102 re-ask, review F6): the -z list and the per-file re-ask
     # must see the name as itself. The console encoding is forced to Latin-1 around the gate run
     # (the in-process gate inherits this suite's UTF-8 pin, which would hide a missing pin): a
     # misdecoded name matches no path, --quiet exits 0, and the moved file would read identical.
-    $koName = [string]::new([char[]]@(0xD55C, 0xAE00)) + '-notes.md'
-    $koBody = "ko line one`nko line two`n"
-    $r = New-LockstepRepo 'lockstep-non-ascii-moved' '9.9.9' {
-        param($repo)
-        [IO.File]::WriteAllBytes((Join-Path $repo "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody))
-    }
+    $r = New-LockstepRepo 'lockstep-non-ascii-moved'
     [IO.File]::WriteAllBytes((Join-Path $r "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody + "moved after the tag`n"))
     $encKeep = [Console]::OutputEncoding
     try { [Console]::OutputEncoding = [Text.Encoding]::Latin1; $g = Run-GateAt $r } finally { [Console]::OutputEncoding = $encKeep }
@@ -548,10 +556,7 @@ if (-not $gitHere) {
 
     # The same name with a CR-only change is identical (git 2.34 lists it in --name-only; the
     # re-ask must drop it — the non-ASCII pathspec has to reach git intact for that).
-    $r = New-LockstepRepo 'lockstep-non-ascii-cr-only' '9.9.9' {
-        param($repo)
-        [IO.File]::WriteAllBytes((Join-Path $repo "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody))
-    }
+    $r = New-LockstepRepo 'lockstep-non-ascii-cr-only'
     [IO.File]::WriteAllBytes((Join-Path $r "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody.Replace("`n", "`r`n")))
     try { [Console]::OutputEncoding = [Text.Encoding]::Latin1; $g = Run-GateAt $r } finally { [Console]::OutputEncoding = $encKeep }
     Record 'lockstep-non-ascii-cr-only' ($g.rc -eq 0 -and $g.out -match 'release lockstep: plugins/ywr-harness identical to tag ywr-harness--v9\.9\.9') "exit=$($g.rc) identical-said=$([bool]($g.out -match 'identical to tag')) broken-said=$([bool]($g.out -match 'lockstep BROKEN'))"
@@ -574,17 +579,16 @@ $canonGuess = Split-Path -Parent $src
 if ($canonGuess) { $canonGuess = Split-Path -Parent $canonGuess }
 $realAdrDir = if ($canonGuess) { Join-Path $canonGuess 'docs/adr' } else { '' }
 $badNum = '09' + '99'
+# ONE such repo per suite run (handoff O31, ADR 0111), built lazily in the branch below: the canon
+# shape minus the owner's gitignored eval results, the docs/adr/ stubs, then init · config · add -A once.
+# Each case resets it (asserted) and pays ONE spawn — `git add` of only the paths the case wrote — in
+# place of init · config · add -A over ~250 files (≈0.7 s for the add alone, measured 2026-09-30); the
+# stub ADR files are already in the snapshot's index, and the case's $Untracked files are written after
+# that add so they stay untracked. The snapshot holds one commit, for packing only — the check reads
+# the index (`git ls-files`), and a case's `git add` stays uncommitted.
+$adrFx = $null
 function New-AdrRefRepo([string]$tag, [hashtable]$Files, [hashtable]$Untracked = @{}) {
-    $repo = New-CanonShape $tag
-    # The copy carries the owner's gitignored eval results; tracked in the fixture, a model answer
-    # quoting a foreign number would fail the control on one machine only.
-    Remove-Item -LiteralPath (Join-Path $repo 'plugins/ywr-harness/evals/results') -Recurse -Force -ErrorAction SilentlyContinue
-    $ad = Join-Path $repo 'docs/adr'
-    New-Item -ItemType Directory -Force -Path $ad | Out-Null
-    # 0000-template.md is left out: it is a scaffold placement, and an empty copy reads as drift.
-    foreach ($a in @(Get-ChildItem -LiteralPath $realAdrDir -File -Filter '*.md' | Where-Object { $_.Name -match '^\d{4}-' -and $_.Name -notmatch '^0000-' })) {
-        [IO.File]::WriteAllText((Join-Path $ad $a.Name), '')
-    }
+    $repo = Reset-Fixture $adrFx
     $put = {
         param($set)
         foreach ($k in $set.Keys) {
@@ -594,16 +598,39 @@ function New-AdrRefRepo([string]$tag, [hashtable]$Files, [hashtable]$Untracked =
         }
     }
     & $put $Files
-    & git -C $repo init -q 2>$null | Out-Null
-    & git -C $repo config core.autocrlf false 2>$null | Out-Null
-    & git -C $repo add -A 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "adr-ref fixture '$tag': git add failed (exit $LASTEXITCODE)" }
+    if ($Files.Count) {
+        & git -C $repo add -- @($Files.Keys) 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "adr-ref fixture '$tag': git add failed (exit $LASTEXITCODE)" }
+    }
     & $put $Untracked
     return $repo
 }
 if (-not $gitHere -or -not $realAdrDir -or -not (Test-Path -LiteralPath $realAdrDir -PathType Container)) {
     Write-Host 'SKIP [adr-ref] needs git and the canon''s docs/adr/ (a dist or consumer copy has none) — reported, not silent' -ForegroundColor Yellow
 } else {
+    $adrFx = New-Fixture 'adr-ref' {
+        param($repo)
+        Copy-Item -LiteralPath $canonFx.pristine -Destination $repo -Recurse -Force
+        # The copy carries the owner's gitignored eval results; tracked in the fixture, a model answer
+        # quoting a foreign number would fail the control on one machine only.
+        Remove-Item -LiteralPath (Join-Path $repo 'plugins/ywr-harness/evals/results') -Recurse -Force -ErrorAction SilentlyContinue
+        $ad = Join-Path $repo 'docs/adr'
+        New-Item -ItemType Directory -Force -Path $ad | Out-Null
+        # 0000-template.md is left out: it is a scaffold placement, and an empty copy reads as drift.
+        foreach ($a in @(Get-ChildItem -LiteralPath $realAdrDir -File -Filter '*.md' | Where-Object { $_.Name -match '^\d{4}-' -and $_.Name -notmatch '^0000-' })) {
+            [IO.File]::WriteAllText((Join-Path $ad $a.Name), '')
+        }
+        & git -C $repo init -q --template= 2>$null | Out-Null
+        & git -C $repo config core.autocrlf false 2>$null | Out-Null
+        & git -C $repo add -A 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "adr-ref fixture: git add failed (exit $LASTEXITCODE)" }
+        # Commit + pack only so `.git` is a few files, not a loose object per tracked file (the asserted
+        # reset hashes every one after every case); the check reads the index, never HEAD.
+        & git -C $repo -c user.name=selftest -c user.email=selftest@example.invalid commit -q -m fixture 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "adr-ref fixture: git commit failed (exit $LASTEXITCODE)" }
+        & git -C $repo repack -a -d -q 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "adr-ref fixture: git repack failed (exit $LASTEXITCODE)" }
+    }
     # Control: nothing added. The copied plugin's own references all resolve, so the unresolved
     # cases below fail for their one added line and nothing else.
     $r = New-AdrRefRepo 'adr-ref-control' @{}

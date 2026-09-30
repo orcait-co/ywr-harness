@@ -224,32 +224,8 @@ def spec_map(root: Path) -> list[tuple[str, str]]:
     return out
 
 
-def load_ignore(root: Path, rel: str, warns: list[str]) -> list[re.Pattern]:
-    """Compiled patterns from the ignore register. Comments and blanks are skipped; the file
-    doubles as the visible spec-debt list, so its comments carry meaning for the reader."""
-    pats: list[re.Pattern] = []
-    p = root / rel
-    if not p.is_file():
-        return pats
-    try:
-        for i, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
-            rx = hc.compile_re(f"^(?:{s})$", f"{rel}:{i}", warns)
-            if rx:
-                pats.append(rx)
-    except OSError as e:
-        warns.append(f"{rel}: unreadable ({type(e).__name__}) — no file is exempt from UNMAPPED")
-    return pats
-
-
-def any_match(pats: list[re.Pattern], path: str) -> bool:
-    return any(p.search(path) for p in pats)
-
-
 def unowned(files: list[str], scope: list[re.Pattern], owned: set[str], ign: list[re.Pattern]) -> list[str]:
-    return [f for f in files if any_match(scope, f) and not hc.owned(owned, f) and not any_match(ign, f)]
+    return [f for f in files if hc.any_match(scope, f) and not hc.owned(owned, f) and not hc.any_match(ign, f)]
 
 
 def frontmatter_at(root: Path, rev: str, path: str) -> str:
@@ -340,19 +316,19 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
     scope = [rx for rx in (hc.compile_re(p, "retro.source_scope", warns) for p in cfg["retro"]["source_scope"]) if rx]
     deps = [rx for rx in (hc.compile_re(p, "retro.dep_manifests", warns) for p in cfg["retro"]["dep_manifests"]) if rx]
     migs = [rx for rx in (hc.compile_re(p, "retro.migrations", warns) for p in cfg["retro"]["migrations"]) if rx]
-    ign = load_ignore(root, cfg["retro_ignore_file"], warns)
+    ign = hc.load_ignore(root, cfg["retro_ignore_file"], warns)
 
     f: list[str] = []
 
     # 1) DEP — a dependency manifest moved with no new ADR in scope. Lockfile-only changes are a
     #    version bump, not a decision, and are deliberately not matched by the declaration.
-    if deps and any(any_match(deps, x) for x in files):
+    if deps and any(hc.any_match(deps, x) for x in files):
         if not any(ADR_RX.match(x) for x in new_files):
             f.append("DEP: dependency manifest changed, no new ADR in scope — a new dependency or "
                      "pattern needs an ADR first")
 
     # 2) MIGRATION — a schema migration added with no living spec touched.
-    if migs and any(any_match(migs, x) for x in added):
+    if migs and any(hc.any_match(migs, x) for x in added):
         if not any(SPEC_RX.match(x) for x in edited):
             f.append("MIGRATION: migration added, no spec updated — check which living spec covers "
                      "the schema")
@@ -411,7 +387,7 @@ def coverage(root: Path, cfg: dict, warns: list[str]) -> int:
     pairs = spec_map(root)
     owned = {p for _, p in pairs}
     scope = [rx for rx in (hc.compile_re(p, "retro.source_scope", warns) for p in cfg["retro"]["source_scope"]) if rx]
-    ign = load_ignore(root, cfg["retro_ignore_file"], warns)
+    ign = hc.load_ignore(root, cfg["retro_ignore_file"], warns)
 
     # A disabled check is REPORTED. An unconfigured repo must not read as a clean one.
     for name, decl in (("source_scope", cfg["retro"]["source_scope"]),
@@ -431,7 +407,7 @@ def coverage(root: Path, cfg: dict, warns: list[str]) -> int:
     if scope:
         tracked = hc.git_paths(root, "ls-files")
         un = unowned(tracked, scope, owned, ign)
-        in_scope = [x for x in tracked if any_match(scope, x)]
+        in_scope = [x for x in tracked if hc.any_match(scope, x)]
         if un:
             print(f"-- unowned files (in scope, no spec, not ignored): {len(un)} of {len(in_scope)} in scope")
             for x in un:

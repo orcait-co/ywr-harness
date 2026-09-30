@@ -481,6 +481,33 @@ def compile_re(pattern: str, field: str, warns: list[str]) -> re.Pattern | None:
         return None
 
 
+def load_ignore(root: Path, rel: str, warns: list[str]) -> list[re.Pattern]:
+    """Compiled patterns from the ignore register (`retro.ignore_file`). Comments and blanks are
+    skipped; the file doubles as the visible spec-debt list, so its comments carry meaning for the
+    reader. The ONE reader: the retro's UNMAPPED/--coverage and the mapper's unmapped list both
+    call it (ADR 0115) — until 0.60.5 the mapper read no register and listed a file the register
+    exempts as "a slice-retro UNMAPPED finding in the making", which the retro never fires."""
+    pats: list[re.Pattern] = []
+    p = root / rel
+    if not p.is_file():
+        return pats
+    try:
+        for i, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            rx = compile_re(f"^(?:{s})$", f"{rel}:{i}", warns)
+            if rx:
+                pats.append(rx)
+    except OSError as e:
+        warns.append(f"{rel}: unreadable ({type(e).__name__}) — no file is exempt from UNMAPPED")
+    return pats
+
+
+def any_match(pats: list[re.Pattern], path: str) -> bool:
+    return any(p.search(path) for p in pats)
+
+
 # ---------------------------------------------------------------------------------------------
 # Customer-corpus surface declaration (ADR 0060). `docs.customer` turns on the docs builder's
 # optional program-corpus surface: `<dir>/<Program>/{spec,user-guide,release-notes}.md` → one
