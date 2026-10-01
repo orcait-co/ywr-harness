@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/config-change-audit.ps1"],
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/config-change-audit.mjs"],
             "timeout": 10
           }
         ]
@@ -18,8 +18,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/directory-added-guard.ps1"],
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/directory-added-guard.mjs"],
             "timeout": 15
           }
         ]
@@ -31,8 +31,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/agent-model-warn.ps1"],
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/agent-model-warn.mjs"],
             "timeout": 10
           }
         ]
@@ -43,20 +43,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start-githooks-nudge.ps1"],
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start-githooks-nudge.mjs"],
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "pwsh",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start-version-announce.ps1"],
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start-version-announce.mjs"],
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "pwsh",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start-scaffold-refresh-nudge.ps1"],
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start-scaffold-refresh-nudge.mjs"],
             "timeout": 15
           }
         ]
@@ -66,8 +66,14 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start-model-route-guard.mjs"],
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "pwsh",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start-model-route-guard.ps1"],
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start-node-check.ps1"],
             "timeout": 10
           }
         ]
@@ -78,8 +84,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/subagent-telemetry.ps1"],
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/subagent-telemetry.mjs"],
             "timeout": 10
           }
         ]

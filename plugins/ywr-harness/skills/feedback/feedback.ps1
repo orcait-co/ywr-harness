@@ -20,7 +20,8 @@
 # What the body carries is decided in ADR 0064: the member's description verbatim; the running
 # and registered plugin versions; `claude --version`; OS + pwsh; the repo as owner/repo (parsed
 # from origin — NEVER the URL, which can carry credentials); the refresh-nudge hook's verdict
-# VERBATIM (the hook is invoked with a synthetic SessionStart payload — it writes nothing and
+# VERBATIM (a Node hook since ADR 0116, run with a synthetic SessionStart payload — with no node on
+# PATH the report says so instead of a verdict; it writes nothing and
 # exits 0 by contract, ADR 0033); `init.ps1 -DryRun` output VERBATIM (writes nothing, spec 0009);
 # the local git history of every file the dry run would change; a fingerprint for dedupe. Both
 # readers are called as black boxes on purpose — the placement map lives in init.ps1 and the
@@ -263,18 +264,62 @@ $foreign = [System.Collections.Generic.List[string]]::new()
 $driftKnown = $false
 $drCode = -1
 if ($scaffolded) {
-    $hook = Join-Path $pluginRoot 'hooks/session-start-scaffold-refresh-nudge.ps1'
+    $hook = Join-Path $pluginRoot 'hooks/session-start-scaffold-refresh-nudge.mjs'
     if (Test-Path -LiteralPath $hook -PathType Leaf) {
-        $payload = @{ hook_event_name = 'SessionStart'; session_id = 'ywr-harness-feedback'; source = 'startup'; cwd = $root } | ConvertTo-Json -Compress
-        try {
-            $ho = ($payload | & $pwshExe -NoProfile -ExecutionPolicy Bypass -File $hook 2>&1 | Out-String).Trim()
-            if (-not $ho) { $nudgeText = '(silent — the refresh nudge reported no toolchain drift for this repo against the running plugin copy)' }
-            else {
-                try { $hj = $ho | ConvertFrom-Json; $nudgeText = [string]$hj.systemMessage; if (-not $nudgeText) { $nudgeText = "(hook spoke without a systemMessage: $ho)" } }
-                catch { $nudgeText = "(hook output was not JSON — quoted as-is) $ho" }
-            }
-        } catch { $nudgeText = "(hook invocation failed: $($_.Exception.Message))" }
-    } else { $nudgeText = '(this plugin copy has no hooks/session-start-scaffold-refresh-nudge.ps1 — installed copy inconsistent)' }
+        # The hook is Node (ADR 0116). `node` is found by scanning $env:PATH with .NET calls — NOT
+        # Get-Command: ADR 0113's auto-loading window allows exactly the git, gh and claude lookups
+        # (feedback.selftest G1), and an absent command's Get-Command costs ~1.4 s. Same rule as the
+        # session-start node check: on Windows only a real node.exe counts (an exec'd command is never a
+        # .cmd/.bat shim); elsewhere a regular `node` file with an execute bit (where the runtime cannot
+        # read the mode, existence is enough).
+        $nodeExe = ''
+        $nodeFile = if ([IO.Path]::DirectorySeparatorChar -eq '\') { 'node.exe' } else { 'node' }
+        foreach ($entry in ([string]$env:PATH).Split([IO.Path]::PathSeparator)) {
+            $dir = $entry.Trim().Trim('"')
+            if (-not $dir) { continue }
+            try {
+                $nodeCand = [IO.Path]::Combine($dir, $nodeFile)
+                if (-not [IO.File]::Exists($nodeCand)) { continue }
+                if ($nodeFile -eq 'node') {
+                    # 73 = UserExecute (64) + GroupExecute (8) + OtherExecute (1)
+                    $mode = -1
+                    try { $mode = [int][IO.File]::GetUnixFileMode($nodeCand) } catch { }
+                    if ($mode -ne -1 -and -not ($mode -band 73)) { continue }
+                }
+                $nodeExe = $nodeCand
+                break
+            } catch { continue }   # an entry that is not a valid path cannot hold node
+        }
+        if (-not $nodeExe) {
+            $nudgeText = '(the refresh nudge could not run: node is not on PATH, and the nudge is a Node hook — so no toolchain-drift verdict was read for this repo here; the dry run below is the only drift reader that ran)'
+        } else {
+            $payload = @{ hook_event_name = 'SessionStart'; session_id = 'ywr-harness-feedback'; source = 'startup'; cwd = $root } | ConvertTo-Json -Compress
+            # stdout is the verdict and is all that gets parsed: node's stderr (a NODE_OPTIONS preload's
+            # warning, a deprecation notice) goes to its own temp file and is quoted only when the run
+            # failed (non-zero exit) or its stdout was not JSON — never merged into the JSON.
+            $errFile = [IO.Path]::GetTempFileName()
+            try {
+                $ho = ($payload | & $nodeExe $hook 2>$errFile | Out-String).Trim()
+                $hookExit = $LASTEXITCODE
+                $he = ''
+                try { $he = ([IO.File]::ReadAllText($errFile)).Trim() } catch { }
+                $heNote = if ($he) { " [stderr: $he]" } else { '' }
+                if (-not $ho) {
+                    if ($hookExit -ne 0) { $nudgeText = "(the refresh nudge exited $hookExit with no output$heNote)" }
+                    else { $nudgeText = '(silent — the refresh nudge reported no toolchain drift for this repo against the running plugin copy)' }
+                }
+                else {
+                    try {
+                        $hj = $ho | ConvertFrom-Json; $nudgeText = [string]$hj.systemMessage
+                        if (-not $nudgeText) { $nudgeText = "(hook spoke without a systemMessage: $ho)" }
+                        if ($hookExit -ne 0) { $nudgeText += "`n(the refresh nudge exited $hookExit$heNote)" }
+                    }
+                    catch { $nudgeText = "(hook output was not JSON — quoted as-is) $ho$heNote" }
+                }
+            } catch { $nudgeText = "(hook invocation failed: $($_.Exception.Message))" }
+            finally { try { [IO.File]::Delete($errFile) } catch { } }
+        }
+    } else { $nudgeText = '(this plugin copy has no hooks/session-start-scaffold-refresh-nudge.mjs — installed copy inconsistent)' }
 
     $init = Join-Path $pluginRoot 'skills/harness-init/init.ps1'
     if (Test-Path -LiteralPath $init -PathType Leaf) {

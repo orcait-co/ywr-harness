@@ -1,9 +1,10 @@
-# Self-test for session-start-version-announce.ps1 (ADR 0030).
+# Self-test for session-start-version-announce.mjs (ADR 0030, ADR 0116).
 # Usage: pwsh plugins/ywr-harness/hooks/session-start-version-announce.selftest.ps1
 #
 # The hook's whole verdict comes from three files it resolves itself — its own plugin.json and
-# CHANGELOG.md relative to $PSScriptRoot, and the state file under the env-derived home — so the
-# suite runs a COPY of the hook inside fixture plugin trees (controlled versions and notes) with
+# CHANGELOG.md relative to its own directory, and the state file under the env-derived home — so the
+# suite runs a COPY of the hook (plus hook-lib.mjs, which it imports) inside fixture plugin trees
+# (controlled versions and notes) with
 # USERPROFILE/HOME redirected to a fixture home (the harness-statusline suite's hermetic-home
 # technique; the hook reads the env vars directly for exactly this reason). Every match-based
 # case carries MustNotMatch as well as MustMatch (the empty-MustNotMatch class), enforced by
@@ -17,11 +18,14 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core + fixture lifecycle
 
-$pwshExe = (Get-Command pwsh).Source
-$hookSrc = Join-Path $PSScriptRoot 'session-start-version-announce.ps1'
+$hookSrc = Join-Path $PSScriptRoot 'session-start-version-announce.mjs'
+$hookLibSrc = Join-Path $PSScriptRoot 'hook-lib.mjs'
+# The hook is Node (ADR 0116): absent node is a reported skip locally and a FAIL on CI.
+Assert-NodeOrExit 'session-start-version-announce'
+$nodeExe = (Get-Command node).Source
 
 function Invoke-Hook([string]$Stdin, [string]$HookPath) {
-    $o = ($Stdin | & $pwshExe -NoProfile -File $HookPath 2>&1 | Out-String)
+    $o = ($Stdin | & $nodeExe $HookPath 2>&1 | Out-String)
     $script:HookExit = $LASTEXITCODE
     return $o
 }
@@ -83,8 +87,9 @@ function New-FixturePlugin([string]$Name, [string]$ManifestJson, [string]$Change
     New-Item -ItemType Directory -Force -Path (Join-Path $p '.claude-plugin'), (Join-Path $p 'hooks') | Out-Null
     Set-Content -LiteralPath (Join-Path $p '.claude-plugin/plugin.json') -Value $ManifestJson -Encoding utf8
     if ($null -ne $Changelog) { Set-Content -LiteralPath (Join-Path $p 'CHANGELOG.md') -Value $Changelog -Encoding utf8 }
-    Copy-Item $hookSrc (Join-Path $p 'hooks/hook.ps1')
-    return (Join-Path $p 'hooks/hook.ps1')
+    Copy-Item $hookSrc (Join-Path $p 'hooks/session-start-version-announce.mjs')
+    Copy-Item $hookLibSrc (Join-Path $p 'hooks/hook-lib.mjs')
+    return (Join-Path $p 'hooks/session-start-version-announce.mjs')
 }
 
 $notes = @'
@@ -105,6 +110,9 @@ $notes = @'
 $hook = New-FixturePlugin 'plug' '{"name":"ywr-harness","version":"2.5.0"}' $notes
 $hookNoNotes = New-FixturePlugin 'plug-nonotes' '{"name":"ywr-harness","version":"2.5.0"}' $null
 $hookBroken = New-FixturePlugin 'plug-broken' 'not json {{{' $notes
+# A hand-edited manifest ConvertFrom-Json still read (comments, trailing comma): the announcement must
+# not degrade to the "unreadable manifest" report for it (hook-lib parseJsonLoose, ADR 0116).
+$hookLoose = New-FixturePlugin 'plug-loose' "{`n  // loaded version`n  `"name`": `"ywr-harness`", /* x */`n  `"version`": `"2.5.0`",`n}" $notes
 # A NON-hyphenated suffix passes the gate's front-anchored version-shape check, and the first
 # draft's \b-based section lookup missed exactly this heading (review 2026-08-05, low) — the
 # lookup is token equality against the raw manifest string now, and this fixture pins it.
@@ -143,24 +151,31 @@ try {
 
     # 1b. the first-run seed is an EXCLUSIVE create (ADR 0081 arm, B low: two sessions starting
     #     together both saw the path absent and both welcomed). A timing race between two child
-    #     processes could pass without the fix, so the REAL function is lifted from the hook's
-    #     AST and run against a state file that already exists — the loser's exact position:
-    #     it must refuse ($false) and leave the winner's bytes alone. Its success path is case 1.
-    $ast = [System.Management.Automation.Language.Parser]::ParseFile($hookSrc, [ref]$null, [ref]$null)
-    $fnAst = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'New-StateExclusive' }, $true)
-    $ok = (Assert-True 'exclusive seed: New-StateExclusive exists in the hook' ($null -ne $fnAst) `
-            'function not found — the first-run seed is no longer an exclusive create') -and $ok
-    if ($fnAst) {
-        $seedResult = & {
-            $stateDir = Split-Path $stateFile -Parent
-            . ([scriptblock]::Create($fnAst.Extent.Text))
-            New-StateExclusive '9.9.9'
-        }
-        $ok = (Assert-True 'exclusive seed: an existing state file refuses the seed' ($seedResult -eq $false) `
-                "returned [$seedResult] (want False — a concurrent first run must not seed twice)") -and $ok
-        $ok = (Assert-True 'exclusive seed: the winner''s state is untouched' ((Get-State) -eq '2.5.0') `
-                "state reads [$(Get-State)] (want 2.5.0)") -and $ok
-    }
+    #     processes could pass without the fix, so the REAL function is imported from the hook
+    #     module (the `?lib` query makes it define its functions and run nothing) and run against
+    #     a state file that already exists — the loser's exact position: it must refuse (false)
+    #     and leave the winner's bytes alone. The same call against an absent path is the
+    #     success path (case 1 covers it through the hook; this pins the bytes).
+    $seedDriver = Join-Path $fx 'seed-driver.mjs'
+    Set-Content -LiteralPath $seedDriver -Encoding utf8 -Value @'
+import { pathToFileURL } from 'node:url'
+const m = await import(pathToFileURL(process.argv[2]).href + '?lib')
+if (typeof m.newStateExclusive !== 'function') { process.stdout.write('MISSING'); process.exit(0) }
+process.stdout.write(String(m.newStateExclusive(process.argv[3], process.argv[4], '9.9.9')))
+'@
+    $seedResult = ((& $nodeExe $seedDriver $hook (Split-Path $stateFile -Parent) $stateFile 2>&1) | Out-String).Trim()
+    $ok = (Assert-True 'exclusive seed: newStateExclusive is exported by the hook module' ($seedResult -ne 'MISSING') `
+            'function not exported — the first-run seed is no longer an exclusive create') -and $ok
+    $ok = (Assert-True 'exclusive seed: an existing state file refuses the seed' ($seedResult -eq 'false') `
+            "returned [$seedResult] (want false — a concurrent first run must not seed twice)") -and $ok
+    $ok = (Assert-True 'exclusive seed: the winner''s state is untouched' ((Get-State) -eq '2.5.0') `
+            "state reads [$(Get-State)] (want 2.5.0)") -and $ok
+    $seedDir = Join-Path $fx 'seed-fresh/nested'
+    $seedFresh = ((& $nodeExe $seedDriver $hook $seedDir (Join-Path $seedDir 'announced-version') 2>&1) | Out-String).Trim()
+    $seedBytes = if (Test-Path -LiteralPath (Join-Path $seedDir 'announced-version')) { [IO.File]::ReadAllBytes((Join-Path $seedDir 'announced-version')) } else { @() }
+    $ok = (Assert-True 'exclusive seed: an absent path is created (dir included) with exactly the version bytes' `
+            ($seedFresh -eq 'true' -and ($seedBytes -join ',') -eq (([Text.Encoding]::UTF8.GetBytes('9.9.9')) -join ',')) `
+            "returned [$seedFresh], bytes [$($seedBytes -join ',')]") -and $ok
 
     # 2. state == current -> the permanent steady state costs nothing
     $out = Invoke-Hook (New-Payload) $hook
@@ -318,13 +333,13 @@ try {
 
     # 8e. SMOKE check, NOT a mutation-proven guard: 8 hook processes race one stored older version
     #     against the same fixture home. Afterwards the state must be exactly the current version
-    #     with no temp file left. Reverting Write-State to the old in-place Set-Content did not turn
-    #     this red on the owner's box (2026-09-29 probe) — the O49 interleave needs a timing this
+    #     with no temp file left. Reverting writeState to the old in-place write did not turn
+    #     this red on the owner's box (2026-09-29 probe of the pwsh original) — the O49 interleave needs a timing this
     #     cannot force — so it is kept for the cheap end-to-end run, not as proof of the fix.
     Set-State '2.4.0'
     $racers = 1..8 | ForEach-Object {
-        $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
-        foreach ($a in @('-NoProfile', '-File', $hook)) { $psi.ArgumentList.Add($a) }
+        $psi = [System.Diagnostics.ProcessStartInfo]::new($nodeExe)
+        $psi.ArgumentList.Add($hook)
         $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false
         $p = [System.Diagnostics.Process]::Start($psi)
@@ -344,12 +359,88 @@ try {
     $raceTmp = @(Get-ChildItem -LiteralPath $stateDirPath -Filter '*.tmp' -Force)
     $ok = (Assert-True 'race: no temp file left behind' ($raceTmp.Count -eq 0) "left: $($raceTmp.Name -join ', ')") -and $ok
 
+    # 8g. R3 (Windows): a rename onto the state file fails while another handle holds it open without
+    #     FILE_SHARE_DELETE (a concurrent writer's rename, an antivirus scan). The hook retries those
+    #     codes (5 attempts, 10-50 ms apart), so a hold that ends inside the window still records the
+    #     state AND says nothing about a failed record; a hold that outlives the retries keeps the
+    #     visible may-repeat note and the old state. The hold opens BEFORE the hook starts, so the
+    #     rename's first attempt lands inside it. Other platforms rename over an open file: SKIP.
+    function Invoke-HookWhileLocked([int]$HoldMs) {
+        $lock = [IO.File]::Open($stateFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $psi = [System.Diagnostics.ProcessStartInfo]::new($nodeExe)
+            $psi.ArgumentList.Add($hook)
+            $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+            $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+            $psi.UseShellExecute = $false
+            $p = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $p.StandardOutput.ReadToEndAsync(); $errTask = $p.StandardError.ReadToEndAsync()
+            $p.StandardInput.Write((New-Payload)); $p.StandardInput.Close()
+            while ($sw.ElapsedMilliseconds -lt $HoldMs -and -not $p.HasExited) { Start-Sleep -Milliseconds 5 }
+            if ($sw.ElapsedMilliseconds -lt $HoldMs) { Start-Sleep -Milliseconds ($HoldMs - [int]$sw.ElapsedMilliseconds) }
+        }
+        finally { $lock.Dispose() }
+        [void]$p.WaitForExit(60000)
+        $script:HookExit = $p.ExitCode
+        return $outTask.Result
+    }
+    if (-not $IsWindows) {
+        Write-Host 'SKIP [8g]: a rename over an open file only fails on Windows (2 cases)' -ForegroundColor Yellow
+    }
+    else {
+        Set-State '2.4.0'
+        $out = Invoke-HookWhileLocked 130
+        $ok = (Assert-Announce 'transient lock on the state file: retried, announces with no failed-record note' $out `
+                @('v2\.4\.0 → v2\.5\.0') @('기록 실패', '반복될 수 있습니다')) -and $ok
+        $ok = (Assert-True 'transient lock: the state landed' ((Get-State) -eq '2.5.0') "state reads [$(Get-State)] (want 2.5.0)") -and $ok
+        $tmpLeft = @(Get-ChildItem -LiteralPath (Split-Path $stateFile -Parent) -Filter '*.tmp' -Force)
+        $ok = (Assert-True 'transient lock: no temp file left behind' ($tmpLeft.Count -eq 0) "left: $($tmpLeft.Name -join ', ')") -and $ok
+
+        Set-State '2.4.0'
+        $out = Invoke-HookWhileLocked 2500
+        $ok = (Assert-Announce 'lock outliving the retries: announces WITH the may-repeat note' $out `
+                @('v2\.4\.0 → v2\.5\.0', '기록 실패', '반복될 수 있습니다') @('버전으로 읽을 수 없습니다')) -and $ok
+        $ok = (Assert-True 'lock outliving the retries: state untouched' ((Get-State) -eq '2.4.0') "state reads [$(Get-State)] (want 2.4.0)") -and $ok
+        $tmpLeft = @(Get-ChildItem -LiteralPath (Split-Path $stateFile -Parent) -Filter '*.tmp' -Force)
+        $ok = (Assert-True 'lock outliving the retries: no temp file left behind' ($tmpLeft.Count -eq 0) "left: $($tmpLeft.Name -join ', ')") -and $ok
+
+        # 8h. "another writer landed it": when the rename keeps failing but the target already holds
+        #     EXACTLY the value being written, landState succeeds and removes its temp file; a target
+        #     holding anything else throws (the failure row). Called through the module's `?lib` import
+        #     with the target held open (FileShare.Read) for the whole call, so it is deterministic.
+        $landDriver = Join-Path $fx 'land-driver.mjs'
+        Set-Content -LiteralPath $landDriver -Encoding utf8 -Value @'
+import fs from 'node:fs'
+import { pathToFileURL } from 'node:url'
+const m = await import(pathToFileURL(process.argv[2]).href + '?lib')
+const [, , , target, tmp, value] = process.argv
+fs.writeFileSync(tmp, value)
+try { m.landState(tmp, target, value); process.stdout.write('landed tmp=' + fs.existsSync(tmp)) } catch (e) { process.stdout.write('threw ' + e.code + ' tmp=' + fs.existsSync(tmp)) }
+'@
+        foreach ($c in @(@{ held = '2.5.0'; want = 'landed tmp=False' }, @{ held = '2.4.0'; want = 'threw EPERM tmp=True' })) {
+            Set-State $c.held
+            $lock = [IO.File]::Open($stateFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            try { $r = ((& $nodeExe $landDriver $hook $stateFile (Join-Path (Split-Path $stateFile -Parent) 'announced-version.drv.tmp') '2.5.0' 2>&1) | Out-String).Trim() }
+            finally { $lock.Dispose() }
+            $ok = (Assert-True "landState with the target holding [$($c.held)]: $($c.want)" ($r -eq $c.want) "got [$r]") -and $ok
+            Remove-Item -LiteralPath (Join-Path (Split-Path $stateFile -Parent) 'announced-version.drv.tmp') -Force -ErrorAction SilentlyContinue
+        }
+        Set-State '2.5.0'   # the confinement sweep below wants the state file in place
+    }
+
     # 9. the hook's own plugin.json unreadable -> reported, never silent (a plugin that cannot
     #    read its own manifest is broken; anti-vacuity posture), and announcements declared OFF
     $out = Invoke-Hook (New-Payload) $hookBroken
     $ok = (Assert-Announce 'broken own manifest is reported' $out `
             @('버전으로 읽을 수 없습니다', '버전 안내는 OFF') `
             @('업데이트됨', '주요 변경')) -and $ok
+
+    # 9b. a manifest with comments and a trailing comma still reads: announces normally
+    Set-State '2.4.0'
+    $out = Invoke-Hook (New-Payload) $hookLoose
+    $ok = (Assert-Announce 'loose-JSON own manifest still announces' $out `
+            @('v2\.4\.0 → v2\.5\.0', '업데이트됨', '첫 번째 변경') @('버전으로 읽을 수 없습니다', '기록 실패')) -and $ok
 
     # 10. wrong event name -> silent (defensive event guard, symmetric with siblings)
     $out = Invoke-Hook '{"hook_event_name":"SessionEnd","source":"startup"}' $hook
@@ -372,10 +463,10 @@ try {
     # 13. MUTATION CONFINEMENT, asserted not assumed: after every case above, the hook's entire
     #     write surface — every path it constructs derives from <home>/.claude — contains EXACTLY
     #     one file: the state file. ADR 0030's "bounded to this one file" claim is proved here;
-    #     any stray hook write turns this red. Scoped to .claude deliberately: the child pwsh
-    #     RUNTIME writes its own startup cache under a redirected profile
-    #     (AppData/.../StartupProfileData-NonInteractive — measured 2026-08-05), which is
-    #     ambient host noise, not a hook write.
+    #     any stray hook write turns this red. Scoped to .claude deliberately: the interpreter
+    #     may write its own cache under a redirected profile (the pwsh original's runtime wrote
+    #     AppData/.../StartupProfileData-NonInteractive — measured 2026-08-05), which is ambient
+    #     host noise, not a hook write.
     $claudeDir = Join-Path $fxHome '.claude'
     $written = @(Get-ChildItem -LiteralPath $claudeDir -Recurse -File | ForEach-Object { $_.FullName })
     $ok = (Assert-True 'confinement: exactly the state file under <home>/.claude' `
@@ -388,6 +479,41 @@ finally {
 }
 
 Remove-FixtureRoot $fx
+
+# R1. REGISTRATION. Every case above runs a copy of the script directly, so none sees whether the
+#     runtime ever calls it. The hook is registered WITHOUT a matcher on purpose (the state file is
+#     the filter — re-fires at the same version are silent), so a matcher added later would make it
+#     skip sources. Pins: exactly one registration, event SessionStart, no matcher, exec-form
+#     `node <script>` resolving to this suite's script (ADR 0116).
+$regFails = @()
+try {
+    $hj = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'hooks.json') -Raw | ConvertFrom-Json
+    $sites = @()
+    foreach ($evName in @($hj.hooks.PSObject.Properties.Name | Where-Object { $_ })) {
+        foreach ($grp in @($hj.hooks.$evName | Where-Object { $_ })) {
+            foreach ($h in @($grp.hooks | Where-Object { $_ })) {
+                $parts = @([string]$h.command) + @($h.args | ForEach-Object { [string]$_ })
+                if (($parts -join ' ') -match 'session-start-version-announce\.(ps1|mjs)') { $sites += [pscustomobject]@{ Event = $evName; Group = $grp; H = $h } }
+            }
+        }
+    }
+    $wantArgs = @('${CLAUDE_PLUGIN_ROOT}/hooks/session-start-version-announce.mjs')
+    if ($sites.Count -ne 1) { $regFails += "want exactly 1 registration of session-start-version-announce (.mjs or the retired .ps1), found $($sites.Count)" }
+    else {
+        $s = $sites[0]
+        $gotArgs = @($s.H.args | ForEach-Object { [string]$_ })
+        if ($s.Event -cne 'SessionStart') { $regFails += "event '$($s.Event)' (want SessionStart)" }
+        if ($null -ne $s.Group.PSObject.Properties['matcher'] -and [string]$s.Group.matcher) { $regFails += "matcher '$($s.Group.matcher)' (want none — the state file is the filter)" }
+        if ([string]$s.H.type -cne 'command' -or [string]$s.H.command -cne 'node') { $regFails += "handler type/command '$($s.H.type)'/'$($s.H.command)' (want command/node)" }
+        if (($gotArgs -join "`0") -cne ($wantArgs -join "`0")) { $regFails += "args [$($gotArgs -join ' ')] (want exec form [$($wantArgs -join ' ')])" }
+        else {
+            $resolved = Join-Path (Split-Path $PSScriptRoot -Parent) ($gotArgs[-1] -replace '^\$\{CLAUDE_PLUGIN_ROOT\}/', '')
+            if ([IO.Path]::GetFullPath($resolved) -ne [IO.Path]::GetFullPath($hookSrc)) { $regFails += "args resolve to '$resolved', not this suite's script '$hookSrc'" }
+        }
+    }
+} catch { $regFails += "hooks.json unreadable: $($_.Exception.Message)" }
+$ok = (Assert-True 'R1 hooks.json registers this script once: SessionStart, no matcher, exec-form node <script>' `
+        (-not $regFails.Count) ($regFails -join ' · ')) -and $ok
 
 # META — proves this file's WIRING to the shared empty-MustNotMatch guard: a wrapper that
 # dropped the -MustNotMatch passthrough would leave the core intact and every case above unguarded.

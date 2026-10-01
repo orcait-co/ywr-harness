@@ -1,5 +1,5 @@
-# Self-test for config-change-audit.ps1 (field-name fix; harness-scope gate).
-# Self-contained, no fixtures needed. Usage: pwsh .claude/hooks/config-change-audit.selftest.ps1
+# Self-test for config-change-audit.mjs (field-name fix; harness-scope gate).
+# Self-contained, no fixtures needed. Usage: pwsh plugins/ywr-harness/hooks/config-change-audit.selftest.ps1
 #
 # The fixtures below fed `config_source` from 2026-07-23 to 2026-07-25 and were green the
 # whole time while the hook could not fire on a single real payload. Cases 1/2 now use the
@@ -7,10 +7,12 @@
 # regression: any payload lacking `source` must produce a drift banner, never silence.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
-$hook = Join-Path $PSScriptRoot 'config-change-audit.ps1'
+$hook = Join-Path $PSScriptRoot 'config-change-audit.mjs'
+# The hook is Node (ADR 0116): absent node is a reported skip locally and a FAIL on CI.
+Assert-NodeOrExit 'config-change-audit'
 
 function Invoke-Hook([string]$Stdin) {
-    $o = ($Stdin | & pwsh -NoProfile -File $hook 2>&1 | Out-String)
+    $o = ($Stdin | & node $hook 2>&1 | Out-String)
     $script:HookExit = $LASTEXITCODE
     return $o
 }
@@ -90,12 +92,75 @@ $ok = (Assert-SystemMessage 'control-only source reports drift' $out @('SCHEMA D
 $out = Invoke-Hook '{"hook_event_name":"ConfigChange","source":123}'
 $ok = (Assert-SystemMessage 'non-string source reports drift' $out @('SCHEMA DRIFT', '문자열이 아니어서') @('세션 중 변경됨', '123 세션')) -and $ok
 
-# Inline() is one class copied into three hooks (spec 0006 §3.1): this copy must stay byte-identical
-# to agent-model-warn.ps1's, or the three banners stop flattening the same characters.
-$inlineRx = '(?ms)^function Inline\(.*?^\}'
-$mineInline = [regex]::Match(([IO.File]::ReadAllText($hook) -replace "`r`n", "`n"), $inlineRx).Value
-$refInline = [regex]::Match(([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'agent-model-warn.ps1')) -replace "`r`n", "`n"), $inlineRx).Value
-$ok = (Assert-True 'Inline() is byte-identical to agent-model-warn.ps1''s' ([bool]$mineInline -and $mineInline -ceq $refInline) "this: $mineInline | agent-model-warn: $refInline") -and $ok
+# 11. PSCustomObject member access and `-ne` were case-insensitive in the original; the port keeps both:
+#     a lowercase event name and case-drifted KEYS still produce the banner (a case-sensitive lookup would
+#     see no `source` and report drift).
+$out = Invoke-Hook '{"Hook_Event_Name":"configchange","SOURCE":"user_settings","File_Path":"/x/y"}'
+$ok = (Assert-SystemMessage 'case-drifted keys and a lowercase event name still audit' $out `
+        @('\[hook:config-audit\] user_settings 세션 중 변경됨 \(/x/y\)') @('SCHEMA DRIFT')) -and $ok
+# 12. file_path goes through PowerShell's [string] cast: a number renders as its digits, true as True,
+#     an array as its elements joined by a space (never "undefined"/"null"/a JSON dump); null is absent.
+$out = Invoke-Hook '{"hook_event_name":"ConfigChange","source":"user_settings","file_path":42}'
+$ok = (Assert-SystemMessage 'numeric file_path renders as its digits' $out @('user_settings 세션 중 변경됨 \(42\) \(') @('SCHEMA DRIFT', 'undefined')) -and $ok
+$out = Invoke-Hook '{"hook_event_name":"ConfigChange","source":"user_settings","file_path":true}'
+$ok = (Assert-SystemMessage 'boolean file_path renders as True' $out @('(?-i)변경됨 \(True\) \(') @('SCHEMA DRIFT', 'undefined')) -and $ok   # (?-i): the assertion core matches case-insensitively
+$out = Invoke-Hook '{"hook_event_name":"ConfigChange","source":"user_settings","file_path":["a","b"]}'
+$ok = (Assert-SystemMessage 'array file_path renders space-joined' $out @('변경됨 \(a b\) \(') @('SCHEMA DRIFT', 'a,b')) -and $ok
+$out = Invoke-Hook '{"hook_event_name":"ConfigChange","source":"user_settings","file_path":null}'
+$ok = (Assert-SystemMessage 'null file_path is no path' $out @('user_settings 세션 중 변경됨 \(대부분') @('SCHEMA DRIFT', 'null', '변경됨 \(\)')) -and $ok
+# 13. the drift banner's key list is payload text too: a key carrying a line break or U+2028 flattens, and the
+#     list is sorted case-insensitively (the original's Sort-Object).
+$out = Invoke-Hook '{"hook_event_name":"ConfigChange","x\n[hook:forged]\u2028y":1,"Alpha":2,"beta":3}'
+$ok = (Assert-SystemMessage 'a hostile key name in the drift banner flattens; keys sort case-insensitively' $out `
+        @('SCHEMA DRIFT', '수신된 키: Alpha, beta, hook_event_name, x \[hook:forged\] y\.') @('[\r\n\u2028]')) -and $ok
+# 14. a payload string stays a string (spec 0006 §3.1): ConvertFrom-Json turned an ISO-date-shaped source into a
+#     DateTime, which then read as "not a string" and reported drift.
+$out = Invoke-Hook '{"hook_event_name":"ConfigChange","source":"2026-01-02T03:04:05Z"}'
+$ok = (Assert-SystemMessage 'a date-shaped source string is still a tier name' $out @('\] 2026-01-02T03:04:05Z 세션 중 변경됨') @('SCHEMA DRIFT')) -and $ok
+
+# Inline(): the hook owns no copy — it imports hook-lib.mjs's inline(), the one class every Node hook
+# shares (hook-lib.selftest.ps1 holds that function's behaviour). The flattening cases above (8-10, 13)
+# are behavioural through the real hook. A local Inline/inline would split the class again.
+$src = [IO.File]::ReadAllText($hook)
+$importsInline = [regex]::IsMatch($src, "(?m)^import\s*\{[^}]*\binline\b[^}]*\}\s*from\s*'\./hook-lib\.mjs'")
+$ownCopy = [regex]::IsMatch($src, '(?i)\bfunction\s+inline\b|\b(?:const|let|var)\s+inline\b')
+$ok = (Assert-True 'inline() is imported from hook-lib.mjs and the hook defines no Inline/inline of its own' `
+        ($importsInline -and -not $ownCopy) "imports inline from hook-lib: $importsInline · defines its own: $ownCopy") -and $ok
+
+# R1. REGISTRATION. Every case above pipes a payload straight into the script, so none of them sees whether
+#     the runtime ever calls it, and the manifest gate checks only that a handler's path resolves — not its
+#     event key or matcher. This pins the wiring (exec form, ADR 0116); that it FIRES is a live probe's to show.
+$regFails = @()
+try {
+    $hj = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'hooks.json') -Raw | ConvertFrom-Json
+    $sites = @()
+    foreach ($evName in @($hj.hooks.PSObject.Properties.Name | Where-Object { $_ })) {
+        foreach ($grp in @($hj.hooks.$evName | Where-Object { $_ })) {
+            foreach ($h in @($grp.hooks | Where-Object { $_ })) {
+                $parts = @([string]$h.command) + @($h.args | ForEach-Object { [string]$_ })
+                if (($parts -join ' ') -match 'config-change-audit\.(ps1|mjs)') { $sites += [pscustomobject]@{ Event = $evName; Matcher = [string]$grp.matcher; H = $h } }
+            }
+        }
+    }
+    $wantArgs = @('${CLAUDE_PLUGIN_ROOT}/hooks/config-change-audit.mjs')
+    $wantMatcher = 'user_settings|project_settings|local_settings|policy_settings'   # never `skills` (fires on every skill load)
+    if ($sites.Count -ne 1) { $regFails += "want exactly 1 registration of config-change-audit (.mjs or the retired .ps1), found $($sites.Count)" }
+    else {
+        $s1 = $sites[0]
+        $gotArgs = @($s1.H.args | ForEach-Object { [string]$_ })
+        if ($s1.Event -cne 'ConfigChange') { $regFails += "event '$($s1.Event)' (want ConfigChange)" }
+        if ($s1.Matcher -cne $wantMatcher) { $regFails += "matcher '$($s1.Matcher)' (want '$wantMatcher')" }
+        if ([string]$s1.H.type -cne 'command' -or [string]$s1.H.command -cne 'node') { $regFails += "handler type/command '$($s1.H.type)'/'$($s1.H.command)' (want command/node)" }
+        if (($gotArgs -join "`0") -cne ($wantArgs -join "`0")) { $regFails += "args [$($gotArgs -join ' ')] (want exec form [$($wantArgs -join ' ')])" }
+        else {
+            $resolved = Join-Path (Split-Path $PSScriptRoot -Parent) ($gotArgs[-1] -replace '^\$\{CLAUDE_PLUGIN_ROOT\}/', '')
+            if ([IO.Path]::GetFullPath($resolved) -ne [IO.Path]::GetFullPath($hook)) { $regFails += "args resolve to '$resolved', not this suite's script '$hook'" }
+        }
+        if ([string]$s1.H.timeout -ne '10') { $regFails += "timeout '$($s1.H.timeout)' (want 10)" }
+    }
+} catch { $regFails += "hooks.json unreadable: $($_.Exception.Message)" }
+$ok = (Assert-True 'R1 hooks.json registers this script once: ConfigChange, the four settings tiers (no skills), exec-form node <script>' `
+        (-not $regFails.Count) ($regFails -join ' · ')) -and $ok
 
 # META — every case above already carried a negative, so the empty-MustNotMatch guard in
 # Assert-SystemMessage is PREVENTIVE here rather than a fix. That is exactly why it needs this

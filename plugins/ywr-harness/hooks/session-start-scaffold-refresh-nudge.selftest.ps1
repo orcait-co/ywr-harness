@@ -1,4 +1,4 @@
-# Self-test for session-start-scaffold-refresh-nudge.ps1 (ADR 0033).
+# Self-test for session-start-scaffold-refresh-nudge.mjs (ADR 0033).
 # Usage: pwsh plugins/ywr-harness/hooks/session-start-scaffold-refresh-nudge.selftest.ps1
 #
 # Fixture provenance: the scaffolded fixtures are placed by the REAL init.ps1 (one run, then
@@ -16,15 +16,20 @@
 # class), enforced by the shared assertion core.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core + fixture lifecycle
-$hook = Join-Path $PSScriptRoot 'session-start-scaffold-refresh-nudge.ps1'
+$hook = Join-Path $PSScriptRoot 'session-start-scaffold-refresh-nudge.mjs'
+$hookLib = Join-Path $PSScriptRoot 'hook-lib.mjs'   # the hook imports it: every copied hook needs it beside it
 $init = Join-Path $PSScriptRoot '../skills/harness-init/init.ps1'
 $templates = Join-Path $PSScriptRoot '../skills/harness-init/templates'
+# The hook is Node (ADR 0116): absent node is a reported skip locally and a FAIL on CI.
+Assert-NodeOrExit 'session-start-scaffold-refresh-nudge'
 
-# Resolved BEFORE any case clears $env:PATH — `& pwsh` resolves at call time and would fail.
+# Resolved BEFORE any case clears $env:PATH — `& pwsh` / `& node` resolve at call time and would fail.
+# pwsh runs init.ps1 (the scaffold fixture); node runs the hook under test.
 $pwshExe = (Get-Command pwsh).Source
+$nodeExe = (Get-Command node).Source
 
 function Invoke-Hook([string]$Stdin, [string]$HookPath = $hook) {
-    $o = ($Stdin | & $pwshExe -NoProfile -File $HookPath 2>&1 | Out-String)
+    $o = ($Stdin | & $nodeExe $HookPath 2>&1 | Out-String)
     $script:HookExit = $LASTEXITCODE
     return $o
 }
@@ -216,6 +221,45 @@ $ok = (Assert-Nudge 'a 4-component stamp naming the same release reads as EQUALS
         @('NEWER합니다', '/ywr-harness:harness-init을 실행하지 마세요', '기준이 STALE',
         'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
+# 1g. the shapes a hand-edited or tool-written stamp takes (ADR 0042), read through the bounded 64-byte
+#     read: BOM + `v` prefix + CRLF + a second line still names the running release; a two-component
+#     stamp is padded, not compared against -1; five components, junk and a non-ASCII byte (the .NET
+#     ASCII decode turns it into `?`) are unreadable and degrade to direction-blind.
+$stampCases = @(
+    @{ N = 'BOM, v prefix, CRLF and a second line still read as the running release'; Text = ([string][char]0xFEFF + "v$mfVer`r`nsecond line")
+       Want = @('EQUALS', 'hand-edit'); Not = @('NEWER합니다', 'OLDER합니다', 'direction-blind', 'SCHEMA DRIFT') },
+    @{ N = 'an upper-case V prefix reads too'; Text = "V$mfVer"
+       Want = @('EQUALS'); Not = @('NEWER합니다', 'OLDER합니다', 'direction-blind', 'SCHEMA DRIFT') },
+    @{ N = 'a two-component stamp below the running version is OLDER'; Text = '0.1'
+       Want = @('v0\.1', 'OLDER합니다'); Not = @('NEWER합니다', 'EQUALS', 'direction-blind', 'SCHEMA DRIFT') },
+    @{ N = 'five components is invalid -> direction-blind'; Text = '1.2.3.4.5'
+       Want = @('direction-blind'); Not = @('NEWER합니다', 'OLDER합니다', 'EQUALS', 'SCHEMA DRIFT') },
+    @{ N = 'a component beyond Int32 is invalid -> direction-blind'; Text = '99999999999.0.0'
+       Want = @('direction-blind'); Not = @('NEWER합니다', 'OLDER합니다', 'EQUALS', 'SCHEMA DRIFT') },
+    @{ N = 'junk is invalid -> direction-blind'; Text = 'not-a-version'
+       Want = @('direction-blind'); Not = @('NEWER합니다', 'OLDER합니다', 'EQUALS', 'SCHEMA DRIFT') },
+    @{ N = 'a non-ASCII byte makes the token unreadable -> direction-blind'; Text = "$mfVer$([char]0xE9)"
+       Want = @('direction-blind'); Not = @('NEWER합니다', 'OLDER합니다', 'EQUALS', 'SCHEMA DRIFT') },
+    @{ N = 'an empty stamp -> direction-blind'; Text = ''
+       Want = @('direction-blind'); Not = @('NEWER합니다', 'OLDER합니다', 'EQUALS', 'SCHEMA DRIFT') }
+)
+$sci = 0
+foreach ($sc in $stampCases) {
+    $sci++
+    $sd = Join-Path $fx "repo-stamp$sci"
+    Copy-Item -LiteralPath $stale -Destination $sd -Recurse -Force
+    [IO.File]::WriteAllBytes((Join-Path $sd '.harness-version'), [Text.UTF8Encoding]::new($false).GetBytes($sc.Text))
+    $out = Invoke-Hook (New-Payload @{ cwd = $sd })
+    $ok = (Assert-Nudge "1g $($sc.N)" $out $sc.Want $sc.Not) -and $ok
+}
+# a stamp that is a DIRECTORY is not a stamp (Leaf only) -> direction-blind, and the hook must not hang or fail
+$sdir = Join-Path $fx 'repo-stampdir'
+Copy-Item -LiteralPath $stale -Destination $sdir -Recurse -Force
+Remove-Item -LiteralPath (Join-Path $sdir '.harness-version') -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $sdir '.harness-version') | Out-Null
+$out = Invoke-Hook (New-Payload @{ cwd = $sdir })
+$ok = (Assert-Nudge '1g a .harness-version directory is no stamp' $out @('direction-blind') @('NEWER합니다', 'OLDER합니다', 'EQUALS', 'SCHEMA DRIFT')) -and $ok
+
 # 2. freshly scaffolded repo -> byte-silent (the permanent steady state must cost nothing)
 $out = Invoke-Hook (New-Payload @{ cwd = $fresh })
 $ok = (Assert-EmptyStdout 'fresh scaffold silent' $out) -and $ok
@@ -228,6 +272,36 @@ $ok = (Assert-EmptyStdout 'seed edits silent' $out) -and $ok
 #    variance legitimate, so raw byte identity would nudge every clone forever
 $out = Invoke-Hook (New-Payload @{ cwd = $crlf })
 $ok = (Assert-EmptyStdout 'CRLF-only difference silent' $out) -and $ok
+
+# 4b. EXACT bytes modulo CR (ADR 0033): "everything else — content, encoding, BOM — stays exact". The
+#     pwsh original compared with `-ne`, which ignores letter case and the culture-ignorable U+00AD and
+#     NUL, so those three differences passed as identical; the Node port compares ordinally, and each
+#     is drift here. A leading BOM is the encoding case the contract names.
+function Add-ByteVariant([string]$Name, [scriptblock]$Mutate) {
+    $d = Join-Path $fx $Name
+    Copy-Item -LiteralPath $base -Destination $d -Recurse -Force
+    $p = Join-Path $d 'docs/build.sh'
+    [IO.File]::WriteAllBytes($p, [byte[]](& $Mutate ([IO.File]::ReadAllBytes($p))))
+    return $d
+}
+$byteCases = @(
+    @{ N = 'a letter-case-only difference is drift'; Mutate = { param($b) $b = [byte[]]$b.Clone(); for ($i = 0; $i -lt $b.Length; $i++) { if ($b[$i] -ge 97 -and $b[$i] -le 122) { $b[$i] -= 32; break } }; $b } },
+    @{ N = 'an appended NUL byte is drift'; Mutate = { param($b) $b + [byte[]]@(0) } },
+    @{ N = 'an appended U+00AD (soft hyphen as a Latin1 byte) is drift'; Mutate = { param($b) $b + [byte[]]@(0xAD) } },
+    @{ N = 'a leading UTF-8 BOM is drift'; Mutate = { param($b) [byte[]]@(0xEF, 0xBB, 0xBF) + $b } },
+    @{ N = 'a lone CR is only a line-ending difference, never drift'; Mutate = { param($b) $b + [byte[]]@(13, 13) }; Silent = $true }
+)
+$bci = 0
+foreach ($bc in $byteCases) {
+    $bci++
+    $bd = Add-ByteVariant "repo-bytes$bci" $bc.Mutate
+    $out = Invoke-Hook (New-Payload @{ cwd = $bd })
+    if ($bc.Silent) { $ok = (Assert-EmptyStdout "4b $($bc.N)" $out) -and $ok }
+    else {
+        $ok = (Assert-Nudge "4b $($bc.N)" $out @('1개의 벤더링된 툴체인 파일', 'docs/build\.sh') `
+                @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\(missing\)', '\(unreadable\)')) -and $ok
+    }
+}
 
 # 5. marker-less post-commit -> silent: init.ps1 refuses a foreign file, so a re-run would
 #    change nothing — a nudge here would nag forever (the 0029 foreign-value shape)
@@ -270,20 +344,57 @@ else {
 $out = Invoke-Hook ([char]0xFEFF + (New-Payload @{ cwd = $stale }))
 $ok = (Assert-Nudge 'BOM-prefixed stdin' $out @('repo-stale') @('SCHEMA DRIFT')) -and $ok
 
+# 11b. PowerShell semantics the Node port keeps (ADR 0116): member access and the event compare are
+#      case-insensitive, `[string]` casts the cwd and `.Trim()` strips it.
+$out = Invoke-Hook (@{ Hook_Event_Name = 'sessionstart'; CWD = $stale } | ConvertTo-Json -Compress)
+$ok = (Assert-Nudge 'case-drifted keys and event name still read' $out @('repo-stale', '2개의 벤더링된 툴체인 파일') @('SCHEMA DRIFT')) -and $ok
+$out = Invoke-Hook (New-Payload @{ cwd = "  $stale `t " })
+$ok = (Assert-Nudge 'cwd padded with whitespace is trimmed' $out @('repo-stale', '2개의 벤더링된 툴체인 파일') @('SCHEMA DRIFT')) -and $ok
+
+# 11c. a non-ASCII work tree path: git's output is decoded as UTF-8 once with quotepath off (CLAUDE.md,
+#      issue #40), and the files under it are read by path — so the verdict and the name are intact.
+if ($gitOk) {
+    $uni = Join-Path $fx 'repo-유니코드 é'
+    Copy-Item -LiteralPath $stale -Destination $uni -Recurse -Force
+    $out = Invoke-Hook (New-Payload @{ cwd = $uni })
+    $ok = (Assert-Nudge 'non-ASCII work tree path is named intact and compared' $out `
+            @('repo-유니코드 é', '2개의 벤더링된 툴체인 파일') @('SCHEMA DRIFT', '\\[0-7]{3}', '�')) -and $ok
+}
+
+# 11d. A directory name and a payload key are attacker-authorable text (a cloned repo's, a host's) and a model
+#      reads this output: the banner echoes both through inline(), so no control or Unicode line separator
+#      survives. U+2028 and U+0085 are legal in a Windows file name; a C0 control is added where the OS allows one.
+$hostileName = 'repo-hostile' + [char]0x2028 + 'dir' + [char]0x85 + 'x' + $(if (-not $IsWindows) { [string][char]7 } else { '' })
+$hostile = Join-Path $fx $hostileName
+$hostileMade = $false
+try { Copy-Item -LiteralPath $stale -Destination $hostile -Recurse -Force -ErrorAction Stop; $hostileMade = $true } catch { }
+if ($gitOk -and $hostileMade) {
+    $out = Invoke-Hook (New-Payload @{ cwd = $hostile })
+    $ok = (Assert-Nudge '11d a path carrying U+2028, U+0085 (and a C0 off Windows) is echoed flattened' $out `
+            @('repo-hostile dir x', '2개의 벤더링된 툴체인 파일') @('SCHEMA DRIFT', '[\u0000-\u0009\u000B-\u001F\u007F\u0085\u2028\u2029]')) -and $ok
+}
+else { Write-Host 'SKIP [11d] the hostile-named work tree could not be created here (or no git) — not run (reported, not silent)' -ForegroundColor Yellow }
+$out = Invoke-Hook '{"hook_event_name":"SessionStart","x\u2028[hook:forged]y":1}'
+$ok = (Assert-Nudge '11e a payload key carrying U+2028 is flattened in the SCHEMA DRIFT banner' $out `
+        @('SCHEMA DRIFT', '수신된 키: hook_event_name, x \[hook:forged\]y\.') @('[\u2028]', 'EXTRACTION DRIFT')) -and $ok
+
 # 12. EXTRACTION DRIFT, not silence, when the plugin's own init.ps1 stops carrying literal
 #     maps: a byte-identical copy of the hook runs from a fake plugin tree whose init.ps1
-#     parses but assigns $TOOLCHAIN non-literally. The copy IS the shipped code — what moves
-#     is $PSScriptRoot, which is the resolution path under test.
+#     parses but assigns $TOOLCHAIN non-literally. The copy IS the shipped code (hook-lib.mjs
+#     beside it) — what moves is the script's own directory, which is the resolution path under test.
+#     The hook reads init.ps1's literals with its own lexer (Node has no PowerShell AST), so 12/12b/12c
+#     and 12d-12h below pin exactly which shapes that reader accepts.
 $fakeBroken = Join-Path $fx 'fake-broken'
 New-Item -ItemType Directory -Force -Path (Join-Path $fakeBroken 'hooks') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $fakeBroken 'skills/harness-init/templates') | Out-Null
-Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.mjs')
+Copy-Item -LiteralPath $hookLib -Destination (Join-Path $fakeBroken 'hooks/hook-lib.mjs')
 Set-Content -LiteralPath (Join-Path $fakeBroken 'skills/harness-init/init.ps1') -Value @'
 $TOOLCHAIN = Get-ChildItem
 $GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
 $GUARD_MARKER = 'ywr-harness:post-commit'
 '@
-$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.ps1')
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.mjs')
 $ok = (Assert-Nudge 'unreadable placement map reports EXTRACTION DRIFT, not silence' $out `
         @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵') `
         @('템플릿과 다릅니다', '제안만 합니다', 'SCHEMA DRIFT')) -and $ok
@@ -296,14 +407,15 @@ $ok = (Assert-Nudge 'unreadable placement map reports EXTRACTION DRIFT, not sile
 $fakePartial = Join-Path $fx 'fake-partial'
 New-Item -ItemType Directory -Force -Path (Join-Path $fakePartial 'hooks') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $fakePartial 'skills/harness-init/templates') | Out-Null
-Copy-Item -LiteralPath $hook -Destination (Join-Path $fakePartial 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Copy-Item -LiteralPath $hook -Destination (Join-Path $fakePartial 'hooks/session-start-scaffold-refresh-nudge.mjs')
+Copy-Item -LiteralPath $hookLib -Destination (Join-Path $fakePartial 'hooks/hook-lib.mjs')
 Set-Content -LiteralPath (Join-Path $fakePartial 'skills/harness-init/init.ps1') -Value @'
 $suffix = 'harness_gates.py'
 $TOOLCHAIN = [ordered]@{ 'scripts/harness/harness_gates.py' = 'scripts/harness/' + $suffix }
 $GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
 $GUARD_MARKER = 'ywr-harness:post-commit'
 '@
-$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakePartial 'hooks/session-start-scaffold-refresh-nudge.ps1')
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakePartial 'hooks/session-start-scaffold-refresh-nudge.mjs')
 $ok = (Assert-Nudge 'partial literal fails extraction whole, never a fragment' $out `
         @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵') `
         @('템플릿과 다릅니다', '\(missing\)', 'SCHEMA DRIFT')) -and $ok
@@ -314,13 +426,14 @@ $ok = (Assert-Nudge 'partial literal fails extraction whole, never a fragment' $
 $fakeNoSent = Join-Path $fx 'fake-nosentinel'
 New-Item -ItemType Directory -Force -Path (Join-Path $fakeNoSent 'hooks') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $fakeNoSent 'skills/harness-init/templates') | Out-Null
-Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeNoSent 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeNoSent 'hooks/session-start-scaffold-refresh-nudge.mjs')
+Copy-Item -LiteralPath $hookLib -Destination (Join-Path $fakeNoSent 'hooks/hook-lib.mjs')
 Set-Content -LiteralPath (Join-Path $fakeNoSent 'skills/harness-init/init.ps1') -Value @'
 $TOOLCHAIN = [ordered]@{ 'docs/README.md' = 'docs/README.md' }
 $GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
 $GUARD_MARKER = 'ywr-harness:post-commit'
 '@
-$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeNoSent 'hooks/session-start-scaffold-refresh-nudge.ps1')
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeNoSent 'hooks/session-start-scaffold-refresh-nudge.mjs')
 $ok = (Assert-Nudge 'sentinel-less map reports EXTRACTION DRIFT, not permanent silence' $out `
         @('EXTRACTION DRIFT', 'sentinel', 'UNKNOWN, 확인되지 않았습니다') `
         @('템플릿과 다릅니다', 'SCHEMA DRIFT')) -and $ok
@@ -330,14 +443,129 @@ $ok = (Assert-Nudge 'sentinel-less map reports EXTRACTION DRIFT, not permanent s
 $fakeTmpl = Join-Path $fx 'fake-tmpl'
 New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmpl 'hooks') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmpl 'skills/harness-init') | Out-Null
-Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.mjs')
+Copy-Item -LiteralPath $hookLib -Destination (Join-Path $fakeTmpl 'hooks/hook-lib.mjs')
 Copy-Item -LiteralPath $init -Destination (Join-Path $fakeTmpl 'skills/harness-init/init.ps1')
 Copy-Item -LiteralPath $templates -Destination (Join-Path $fakeTmpl 'skills/harness-init/templates') -Recurse
 Remove-Item -LiteralPath (Join-Path $fakeTmpl 'skills/harness-init/templates/docs/build_docs.py') -Force
-$out = Invoke-Hook (New-Payload @{ cwd = $fresh }) (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.ps1')
+$out = Invoke-Hook (New-Payload @{ cwd = $fresh }) (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.mjs')
 $ok = (Assert-Nudge 'missing template reports EXTRACTION DRIFT naming the file' $out `
         @('EXTRACTION DRIFT', '템플릿이 없습니다', 'templates/docs/build_docs\.py') `
         @('템플릿과 다릅니다', 'SCHEMA DRIFT')) -and $ok
+
+# 12d-12h. THE LITERAL READER'S BOUNDARY. The pwsh original walked init.ps1's AST; the Node hook lexes
+#     it, so what it accepts is pinned here, one fake plugin tree (real templates, the hook + hook-lib)
+#     per init.ps1 shape. Accepted: a literal table behind comments and decoys, double-quoted constants,
+#     a trailing separator. Refused (EXTRACTION DRIFT, never a fragment and never silence): a value that
+#     expands, a parenthesized or member-accessed table, a computed or piped marker, an unterminated
+#     string, and a first assignment that is not a literal (the AST walk took the FIRST one).
+function New-FakeTree([string]$Name, [string]$InitText) {
+    $t = Join-Path $fx $Name
+    New-Item -ItemType Directory -Force -Path (Join-Path $t 'hooks') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $t 'skills/harness-init') | Out-Null
+    Copy-Item -LiteralPath $hook -Destination (Join-Path $t 'hooks/session-start-scaffold-refresh-nudge.mjs')
+    Copy-Item -LiteralPath $hookLib -Destination (Join-Path $t 'hooks/hook-lib.mjs')
+    Copy-Item -LiteralPath $templates -Destination (Join-Path $t 'skills/harness-init/templates') -Recurse
+    Set-Content -LiteralPath (Join-Path $t 'skills/harness-init/init.ps1') -Value $InitText
+    return (Join-Path $t 'hooks/session-start-scaffold-refresh-nudge.mjs')
+}
+$gLit = @'
+$GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
+$GUARD_MARKER = 'ywr-harness:post-commit'
+'@
+$tcLit = @'
+$TOOLCHAIN = [ordered]@{ 'scripts/harness/harness_gates.py' = 'scripts/harness/harness_gates.py' }
+'@
+$tcDecoys = @'
+# $TOOLCHAIN = [ordered]@{ 'decoy/in-comment' = 'decoy/in-comment' }
+<# $GUARD_MARKER = 'decoy-in-block-comment' #>
+$note = "$TOOLCHAIN = 1"
+$TOOLCHAIN = [ordered]@{
+    # a comment inside the table
+    'scripts/harness/harness_gates.py' = 'scripts/harness/harness_gates.py'   # trailing comment
+    "docs/README.md" = "docs/README.md";
+}
+'@
+$ok = (Assert-Nudge '12d a literal table behind comments and decoys is read, and only its two files are compared' `
+        (Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-decoys' ($tcDecoys + "`n" + $gLit))) `
+        @('1개의 벤더링된 툴체인 파일', 'harness_gates\.py') @('EXTRACTION DRIFT', 'SCHEMA DRIFT', 'harness-gates\.yml', 'decoy')) -and $ok
+$refused = [ordered]@{
+    'an expanding value'                    = ("`$d = 'scripts'`n" + '$TOOLCHAIN = [ordered]@{ ''scripts/harness/harness_gates.py'' = "$d/harness/harness_gates.py" }' + "`n" + $gLit)
+    'a parenthesized table'                 = ('$TOOLCHAIN = (' + $tcLit.Substring('$TOOLCHAIN = '.Length) + ')' + "`n" + $gLit)
+    'a member access on the table'          = ($tcLit + '.Keys' + "`n" + $gLit)
+    'a computed marker'                     = ($tcLit + "`n" + '$GUARDED = [ordered]@{ ''githooks/post-commit'' = ''.githooks/post-commit'' }' + "`n" + '$GUARD_MARKER = ''ywr-harness:'' + ''post-commit''')
+    'a piped marker'                        = ($tcLit + "`n" + $gLit + ' | Out-Null')
+    'an unterminated string'                = ($tcLit + "`n" + $gLit + "`n" + '$x = ''oops')
+    'a non-literal FIRST assignment'        = ('$TOOLCHAIN = Get-ChildItem' + "`n" + $tcLit + "`n" + $gLit)
+    'an empty table'                        = ('$TOOLCHAIN = [ordered]@{}' + "`n" + $gLit)
+    'an expanding value whose $( ) holds quotes' = ('$TOOLCHAIN = [ordered]@{ ''scripts/harness/harness_gates.py'' = "docs/$(Join-Path "a" "b")/x.md" }' + "`n" + $gLit)
+    # keys are TEMPLATE paths, so the repeat differs only in case: on a case-insensitive filesystem a last-one-wins reading would
+    # build a VALID map and nudge, so only the refusal banners (on a case-sensitive one the missing template banners too — green either way)
+    'a repeated key (a PowerShell parse error)' = ('$TOOLCHAIN = [ordered]@{ ''scripts/harness/harness_gates.py'' = ''scripts/harness/harness_gates.py''; ''SCRIPTS/harness/harness_gates.py'' = ''scripts/harness/harness_gates.py'' }' + "`n" + $gLit)
+}
+$rfi = 0
+foreach ($name in $refused.Keys) {
+    $rfi++
+    $out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree "fake-refused$rfi" $refused[$name])
+    $ok = (Assert-Nudge "12e $name -> EXTRACTION DRIFT, never a fragment or silence" $out `
+            @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다') @('템플릿과 다릅니다', '\(missing\)', 'SCHEMA DRIFT')) -and $ok
+}
+
+# 12f. LEXING PINS, asserted by VALUE. Each fake init.ps1 below maps REAL template keys to destinations that exist
+#      nowhere in the repo, so the destination text the reader extracted is exactly the name the banner prints
+#      as `<dest> (missing)`. The expected values are the ones PowerShell's own parser gives (checked with
+#      [Parser]::ParseInput, LF and CRLF): `''` is one quote, `` `t `` a tab, `` `" `` and `""` a double quote, a
+#      here-string body has no trailing CR, and a `$( )` holding quotes is ONE expandable string (so the map
+#      line after it is still read, not swallowed). Decoy maps inside comments, a single- and a double-quoted
+#      here-string are ignored — a decoy that won would name templates/x and EXTRACTION-DRIFT.
+function Join-Init([string[]]$Lines, [string]$Eol = "`n") { return (($Lines -join $Eol) + $Eol) }
+$gLines = @('$GUARDED = [ordered]@{ ''githooks/post-commit'' = ''.githooks/post-commit'' }', '$GUARD_MARKER = ''ywr-harness:post-commit''')
+$quoteLines = @(
+    '# $TOOLCHAIN = [ordered]@{ ''x'' = ''y'' }',
+    '$decoy1 = @''',
+    '$TOOLCHAIN = [ordered]@{ ''x'' = ''y'' }',
+    '''@',
+    '$decoy2 = @"',
+    '$TOOLCHAIN = [ordered]@{ ''x2'' = ''y2'' }',
+    '"@',
+    '$joined = "x $(Join-Path "a" "b") y"',
+    '$lone = "x $(Write-Output ''say "hi'') y"',   # a lone " inside a single-quoted string inside $( ): only nesting keeps the next lines intact
+    '$TOOLCHAIN = [ordered]@{',
+    '    # a comment inside the table',
+    '    ''scripts/harness/harness_gates.py'' = ''scripts/harness/harness_gates.py''   # trailing comment',
+    '    ''docs/README.md'' = ''docs/it''''s.md''',
+    '    ''docs/build.sh'' = "docs/a`tb.sh"',
+    '    ''docs/build.ps1'' = "docs/q`"x.ps1"',
+    '    ''docs/build_docs.py'' = "docs/r""y.ps1"',
+    '}'
+) + $gLines
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-quoting' (Join-Init $quoteLines))
+$ok = (Assert-Nudge '12f quoting forms, decoys in here-strings and a $( ) holding quotes: the extracted values are the AST values' $out `
+        @('5개의 벤더링된 툴체인 파일', 'harness_gates\.py', "docs/it's\.md \(missing\)", 'docs/a\tb\.sh \(missing\)', 'docs/q"x\.ps1 \(missing\)', 'docs/r"y\.ps1 \(missing\)') `
+        @('EXTRACTION DRIFT', 'SCHEMA DRIFT', '\+\d+ more', 'x2', 'templates/x')) -and $ok
+$hereLines = @(
+    '$TOOLCHAIN = [ordered]@{',
+    '    ''scripts/harness/harness_gates.py'' = ''scripts/harness/harness_gates.py''',
+    '    ''docs/check_docs.py'' = @"',
+    'docs/hs.py',
+    '"@',
+    '    ''docs/adr/README.md'' = @''',
+    'docs/hs2.py',
+    '''@',
+    '}',
+    '$GUARDED = [ordered]@{ ''githooks/post-commit'' = ''.githooks/post-commit'' }',
+    '$GUARD_MARKER = @"',
+    'ywr-harness:post-commit',
+    '"@'
+)
+# R2: the same fixture under LF and under CRLF — a CR kept before the closing "@ / '@ would end up in the value
+# (`docs/hs.py\r`) and in the GUARD_MARKER, which then no longer matches the guarded file: the post-commit is dropped.
+foreach ($eol in @(@{ N = 'LF'; V = "`n" }, @{ N = 'CRLF'; V = "`r`n" })) {
+    $out = Invoke-Hook (New-Payload @{ cwd = $ourspc }) (New-FakeTree "fake-here-$($eol.N)" (Join-Init $hereLines $eol.V))
+    $ok = (Assert-Nudge "12g here-string values and a here-string GUARD_MARKER under $($eol.N): no trailing CR, the guarded file is recognised" $out `
+            @('3개의 벤더링된 툴체인 파일', 'docs/hs\.py \(missing\)', 'docs/hs2\.py \(missing\)', '\.githooks[\\/]post-commit') `
+            @('EXTRACTION DRIFT', 'SCHEMA DRIFT', '\r', 'harness_gates')) -and $ok
+}
 
 # 13b-13f. STALE-BASIS PROBE (ADR 0039): a byte-identical hook copy runs from a fake VERSIONED
 #          CACHE layout (<plugins>/cache/<marketplace>/<name>/<version>) with the real init.ps1
@@ -351,11 +579,12 @@ $staleCopy = Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/0.0.1'
 New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy 'hooks') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy '.claude-plugin') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy 'skills/harness-init') | Out-Null
-Copy-Item -LiteralPath $hook -Destination (Join-Path $staleCopy 'hooks/session-start-scaffold-refresh-nudge.ps1')
+Copy-Item -LiteralPath $hook -Destination (Join-Path $staleCopy 'hooks/session-start-scaffold-refresh-nudge.mjs')
+Copy-Item -LiteralPath $hookLib -Destination (Join-Path $staleCopy 'hooks/hook-lib.mjs')
 Copy-Item -LiteralPath $init -Destination (Join-Path $staleCopy 'skills/harness-init/init.ps1')
 Copy-Item -LiteralPath $templates -Destination (Join-Path $staleCopy 'skills/harness-init/templates') -Recurse
 Set-Content -LiteralPath (Join-Path $staleCopy '.claude-plugin/plugin.json') -Value '{"name":"ywr-harness","version":"0.0.1"}'
-$staleHook = Join-Path $staleCopy 'hooks/session-start-scaffold-refresh-nudge.ps1'
+$staleHook = Join-Path $staleCopy 'hooks/session-start-scaffold-refresh-nudge.mjs'
 $fakeRegPath = Join-Path $fakePlugins 'installed_plugins.json'
 # ConvertTo-Json owns the backslash escaping — hand-built JSON with Windows paths is how a
 # fixture silently tests nothing on one platform.
@@ -461,6 +690,37 @@ $ok = (Assert-Nudge 'corrupted version shapes are skipped, the usable entry is n
         @('비교 기준이 STALE합니다', 'v6\.6\.6', '/reload-plugins') `
         @('1\.0\.0 2\.0\.0', 'version unknown', '리프레시: 이 저장소에서', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
+# 13j-13k. THE TWO JSON FILES THE HOOK READS PARSE AS LENIENTLY AS ConvertFrom-Json DID (PowerShell 7:
+#      `//` and `/* */` comments, trailing commas, single-quoted strings, unquoted keys). A strict parse of
+#      either would silently turn a hand-edited, commented file into "no manifest" / "no registry" — the
+#      wrong version named in the banner, or the stale-basis verdict lost. 13j: the plugin manifest
+#      carries comments and a trailing comma; 13k: the registry is single-quoted with unquoted keys,
+#      comments and trailing commas. `#` comments stay refused (the registry falls back, 13e's way).
+$manifestPath = Join-Path $staleCopy '.claude-plugin/plugin.json'
+Set-Content -LiteralPath $manifestPath -Value @'
+// manifest, hand-annotated
+{ "name": "ywr-harness", /* the running copy */ "version": "0.0.1", }
+'@
+Set-FakeRegistry @(@{ scope = 'user'; installPath = (Join-Path $fakePlugins 'cache/ywrlabs/ywr-harness/9.9.9'); version = '9.9.9'; lastUpdated = '2026-08-07T01:00:00Z' })
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge '13j a commented manifest with a trailing comma still names the running version' $out `
+        @('비교 기준이 STALE합니다', 'v0\.0\.1', 'v9\.9\.9', '2개의 벤더링된 툴체인 파일') `
+        @('version unknown', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+Set-Content -LiteralPath $manifestPath -Value '{"name":"ywr-harness","version":"0.0.1"}'
+Set-Content -LiteralPath $fakeRegPath -Value @"
+// hand-edited registry
+{ 'plugins': { 'ywr-harness@ywrlabs': [ { scope: 'user', installPath: 'X:/elsewhere/ywr-harness/9.9.9', version: '9.9.9', /* when */ lastUpdated: '2026-08-07T01:00:00Z', }, ], }, }
+"@
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge '13k a commented single-quoted registry with unquoted keys and trailing commas still reads' $out `
+        @('비교 기준이 STALE합니다', 'v0\.0\.1', 'v9\.9\.9', '/reload-plugins') `
+        @('리프레시: 이 저장소에서', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+Set-Content -LiteralPath $fakeRegPath -Value "# not a comment in JSON`n{ `"plugins`": { `"ywr-harness@ywrlabs`": [ { `"scope`": `"user`", `"installPath`": `"X:/elsewhere`", `"version`": `"9.9.9`" } ] } }"
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
+$ok = (Assert-Nudge '13k2 a #-commented registry is unparseable -> the normal nudge, as before' $out `
+        @('2개의 벤더링된 툴체인 파일', '리프레시: 이 저장소에서 /ywr-harness:harness-init') `
+        @('기준이 STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
 # 14. plain non-repo directory -> silent on BOTH branches (with git: rev-parse fails; without
 #     git: no scripts/harness at cwd), so this case runs unguarded
 $out = Invoke-Hook (New-Payload @{ cwd = $plain })
@@ -486,6 +746,14 @@ $out = Invoke-Hook (New-Payload @{})
 $ok = (Assert-Nudge 'schema drift is reported, not swallowed' $out `
         @('SCHEMA DRIFT', '수신된 키: hook_event_name, session_id, source') `
         @('템플릿과 다릅니다', 'EXTRACTION DRIFT')) -and $ok
+
+# 17b. the received-key list sorts case-insensitively (the original's Sort-Object); a null or blank cwd is drift too
+$out = Invoke-Hook '{"hook_event_name":"SessionStart","Zeta":1,"alpha":2,"Beta":3}'
+$ok = (Assert-Nudge 'drift key list sorts case-insensitively' $out @('SCHEMA DRIFT', '수신된 키: alpha, Beta, hook_event_name, Zeta\.') @('EXTRACTION DRIFT')) -and $ok
+foreach ($cj in @('null', '""', '"   "')) {
+    $out = Invoke-Hook ('{"hook_event_name":"SessionStart","cwd":' + $cj + '}')
+    $ok = (Assert-Nudge "cwd $cj reports SCHEMA DRIFT" $out @('SCHEMA DRIFT') @('EXTRACTION DRIFT')) -and $ok
+}
 
 # 18. wrong event name -> silent (defensive event guard, symmetric with siblings)
 $out = Invoke-Hook '{"hook_event_name":"SessionEnd","cwd":"C:\\x","source":"startup"}'
@@ -522,6 +790,41 @@ $ok = (Assert-True 'non-mutation: drifted placement not "refreshed"' `
         'repo-stale/scripts/harness/harness_gates.py changed — the hook reverted the drift it only reports') -and $ok
 
 Remove-FixtureRoot $fx
+
+# R1. REGISTRATION. Every case above pipes a payload straight into the script, so none of them sees
+#     whether the runtime ever calls it. This pins the wiring: SessionStart, no matcher (deliberate —
+#     see the hook header), exec-form `node <script>` (ADR 0116) and the 15 s timeout. That it FIRES
+#     is still only a live `--plugin-dir` probe's to show.
+$regFails = @()
+try {
+    $hj = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'hooks.json') -Raw | ConvertFrom-Json
+    $sites = @()
+    foreach ($evName in @($hj.hooks.PSObject.Properties.Name | Where-Object { $_ })) {
+        foreach ($grp in @($hj.hooks.$evName | Where-Object { $_ })) {
+            foreach ($h in @($grp.hooks | Where-Object { $_ })) {
+                $parts = @([string]$h.command) + @($h.args | ForEach-Object { [string]$_ })
+                if (($parts -join ' ') -match 'session-start-scaffold-refresh-nudge\.(ps1|mjs)') { $sites += [pscustomobject]@{ Event = $evName; Matcher = [string]$grp.matcher; H = $h } }
+            }
+        }
+    }
+    $wantArgs = @('${CLAUDE_PLUGIN_ROOT}/hooks/session-start-scaffold-refresh-nudge.mjs')
+    if ($sites.Count -ne 1) { $regFails += "want exactly 1 registration of session-start-scaffold-refresh-nudge (.mjs or the retired .ps1), found $($sites.Count)" }
+    else {
+        $s = $sites[0]
+        $gotArgs = @($s.H.args | ForEach-Object { [string]$_ })
+        if ($s.Event -cne 'SessionStart') { $regFails += "event '$($s.Event)' (want SessionStart)" }
+        if ($s.Matcher) { $regFails += "matcher '$($s.Matcher)' (want none — registered without one on purpose)" }
+        if ([string]$s.H.type -cne 'command' -or [string]$s.H.command -cne 'node') { $regFails += "handler type/command '$($s.H.type)'/'$($s.H.command)' (want command/node)" }
+        if (($gotArgs -join "`0") -cne ($wantArgs -join "`0")) { $regFails += "args [$($gotArgs -join ' ')] (want exec form [$($wantArgs -join ' ')])" }
+        else {
+            $resolved = Join-Path (Split-Path $PSScriptRoot -Parent) ($gotArgs[-1] -replace '^\$\{CLAUDE_PLUGIN_ROOT\}/', '')
+            if ([IO.Path]::GetFullPath($resolved) -ne [IO.Path]::GetFullPath($hook)) { $regFails += "args resolve to '$resolved', not this suite's script '$hook'" }
+        }
+        if ([string]$s.H.timeout -ne '15') { $regFails += "timeout '$($s.H.timeout)' (want 15)" }
+    }
+} catch { $regFails += "hooks.json unreadable: $($_.Exception.Message)" }
+$ok = (Assert-True 'R1 hooks.json registers this script once: SessionStart, no matcher, exec-form node <script>' `
+        (-not $regFails.Count) ($regFails -join ' · ')) -and $ok
 
 # META — proves this file's WIRING to the shared empty-MustNotMatch guard: a wrapper that
 # dropped the -MustNotMatch passthrough would leave the core intact and every case above unguarded.

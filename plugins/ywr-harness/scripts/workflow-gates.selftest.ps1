@@ -25,11 +25,8 @@ $liveDir = 'workflows'
 # does not exist — the exact reason git is installed in that image rather than skipped around.
 # CI's ubuntu runner does have node and runs this same file, so absence THERE means the gate
 # stopped running and must be loud.
-function Resolve-NodeVerdict([bool]$NodePresent, [bool]$OnCi) {
-    if ($NodePresent) { return @{ Verdict = 'run'; Message = '' } }
-    if ($OnCi) { return @{ Verdict = 'fail'; Message = 'node absent on CI — a missing interpreter is not a pass' } }
-    return @{ Verdict = 'skip'; Message = 'node absent (reported, not silent) — CI ubuntu runs this gate; the pwsh Linux image has no node' }
-}
+# The verdict function itself, `Resolve-NodeVerdict`, lives in lib/selftest-lib.ps1 (ADR 0116): the
+# Node hooks' suites share it, so there is ONE copy of the convention. M1-M3 below still pin it.
 
 function New-Fixture([string]$Name, [hashtable]$Files) {
     $rootDir = Join-Path $fxBase $Name

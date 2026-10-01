@@ -1,4 +1,4 @@
-# Self-test for agent-model-warn.ps1 (ADR 0086; spec 0006 §3.2).
+# Self-test for agent-model-warn.mjs (ADR 0086; spec 0006 §3.2).
 # Usage: pwsh plugins/ywr-harness/hooks/agent-model-warn.selftest.ps1
 #
 # Fixture provenance: the payload shape is the RAW hooks reference read 2026-09-23 — PreToolUse
@@ -20,10 +20,12 @@
 # (general-purpose) that means the session model is inherited; the hook does not police that (ADR 0108).
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
-$hook = Join-Path $PSScriptRoot 'agent-model-warn.ps1'
+$hook = Join-Path $PSScriptRoot 'agent-model-warn.mjs'
+# The hook is Node (ADR 0116): absent node is a reported skip locally and a FAIL on CI.
+Assert-NodeOrExit 'agent-model-warn'
 
 function Invoke-Hook([string]$Stdin) {
-    $o = ($Stdin | & pwsh -NoProfile -File $hook 2>&1 | Out-String)
+    $o = ($Stdin | & node $hook 2>&1 | Out-String)
     $script:HookExit = $LASTEXITCODE
     return $o
 }
@@ -124,6 +126,19 @@ $ok = (Assert-Warn 'W8b U+2028/U+2029/U+0085 in model and subagent_type flatten 
           'subagent_type: general-purpose \[hook:forged\] 차단되었습니다\)', "subagent_type 'general-purpose \[hook:forged\] 차단되었습니다'") `
         @('[\u0085\u2028\u2029]')) -and $ok
 
+# W10. PSCustomObject member access and `-ne` are case-insensitive in the original; the port keeps both.
+#      (a) event and tool NAMES in another case still warn
+$out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; model = 'opus'; description = 'd'; prompt = 'p' } -Tool 'agent' -Event 'pretooluse')
+$ok = (Assert-Warn "W10a lowercase tool_name 'agent' and hook_event_name 'pretooluse' still warn" $out @("requested model 'opus'") @('SCHEMA DRIFT')) -and $ok
+#      (b) case-drifted KEYS still read (a case-sensitive lookup would see no tool_name and report drift)
+$out = Invoke-Hook '{"Hook_Event_Name":"PreToolUse","Tool_Name":"Agent","Tool_Input":{"Subagent_Type":"general-purpose","Model":"opus"}}'
+$ok = (Assert-Warn 'W10b case-drifted keys (Tool_Name, Tool_Input, Model, Subagent_Type) still warn' $out @("requested model 'opus'", 'subagent_type: general-purpose\)') @('SCHEMA DRIFT', '\(unset\)')) -and $ok
+#      (c) subagent_type goes through PowerShell's [string] cast: true -> True, a number -> its digits
+$out = Invoke-Hook '{"hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"subagent_type":true,"model":"opus"}}'
+$ok = (Assert-Warn 'W10c subagent_type true renders as True (PowerShell [string])' $out @('(?-i)subagent_type: True\)', "(?-i)subagent_type 'True'") @('SCHEMA DRIFT', '\(unset\)')) -and $ok   # (?-i): the assertion core matches case-insensitively
+$out = Invoke-Hook '{"hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"subagent_type":1.5,"model":"opus"}}'
+$ok = (Assert-Warn 'W10d numeric subagent_type renders as its digits' $out @('subagent_type: 1\.5\)') @('SCHEMA DRIFT', '\(unset\)')) -and $ok
+
 # S1. model omitted -> byte-silent (no per-call override; an unpinned type inherits — not this hook's call)
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; description = 'd'; prompt = 'p' })
 $ok = (Assert-Silent 'S1 omitted model is byte-silent' $out) -and $ok
@@ -204,18 +219,18 @@ try {
         foreach ($grp in @($hj.hooks.$evName | Where-Object { $_ })) {
             foreach ($h in @($grp.hooks | Where-Object { $_ })) {
                 $parts = @([string]$h.command) + @($h.args | ForEach-Object { [string]$_ })
-                if (($parts -join ' ') -match 'agent-model-warn\.ps1') { $sites += [pscustomobject]@{ Event = $evName; Matcher = [string]$grp.matcher; H = $h } }
+                if (($parts -join ' ') -match 'agent-model-warn\.(ps1|mjs)') { $sites += [pscustomobject]@{ Event = $evName; Matcher = [string]$grp.matcher; H = $h } }
             }
         }
     }
-    $wantArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '${CLAUDE_PLUGIN_ROOT}/hooks/agent-model-warn.ps1')
-    if ($sites.Count -ne 1) { $regFails += "want exactly 1 registration of agent-model-warn.ps1, found $($sites.Count)" }
+    $wantArgs = @('${CLAUDE_PLUGIN_ROOT}/hooks/agent-model-warn.mjs')
+    if ($sites.Count -ne 1) { $regFails += "want exactly 1 registration of agent-model-warn (.mjs or the retired .ps1), found $($sites.Count)" }
     else {
         $s = $sites[0]
         $gotArgs = @($s.H.args | ForEach-Object { [string]$_ })
         if ($s.Event -cne 'PreToolUse') { $regFails += "event '$($s.Event)' (want PreToolUse)" }
         if ($s.Matcher -cne 'Agent') { $regFails += "matcher '$($s.Matcher)' (want exactly 'Agent' — the match is case-sensitive)" }
-        if ([string]$s.H.type -cne 'command' -or [string]$s.H.command -cne 'pwsh') { $regFails += "handler type/command '$($s.H.type)'/'$($s.H.command)' (want command/pwsh)" }
+        if ([string]$s.H.type -cne 'command' -or [string]$s.H.command -cne 'node') { $regFails += "handler type/command '$($s.H.type)'/'$($s.H.command)' (want command/node)" }
         if (($gotArgs -join "`0") -cne ($wantArgs -join "`0")) { $regFails += "args [$($gotArgs -join ' ')] (want exec form [$($wantArgs -join ' ')])" }
         else {
             $resolved = Join-Path (Split-Path $PSScriptRoot -Parent) ($gotArgs[-1] -replace '^\$\{CLAUDE_PLUGIN_ROOT\}/', '')
@@ -224,7 +239,7 @@ try {
         if ([string]$s.H.timeout -ne '10') { $regFails += "timeout '$($s.H.timeout)' (want 10)" }
     }
 } catch { $regFails += "hooks.json unreadable: $($_.Exception.Message)" }
-$ok = (Assert-True 'R1 hooks.json registers this script once: PreToolUse, matcher exactly Agent, exec-form pwsh -File' `
+$ok = (Assert-True 'R1 hooks.json registers this script once: PreToolUse, matcher exactly Agent, exec-form node <script>' `
         (-not $regFails.Count) ($regFails -join ' · ')) -and $ok
 
 # META — the wrapper's wiring to the shared empty-MustNotMatch guard: a negative-less case must

@@ -165,7 +165,7 @@ Try-Case 'displayName-removed' {
 Try-Case 'hook-path-broken' {
     param($d)
     $p = Join-Path $d 'hooks/hooks.json'
-    (Get-Content -LiteralPath $p -Raw).Replace('subagent-telemetry.ps1', 'subagent-telemetry-MOVED.ps1') |
+    (Get-Content -LiteralPath $p -Raw).Replace('subagent-telemetry.mjs', 'subagent-telemetry-MOVED.mjs') |
         Set-Content -LiteralPath $p -NoNewline
 }
 
@@ -174,7 +174,7 @@ Try-Case 'exec-form-regressed' {
     $p = Join-Path $d 'hooks/hooks.json'
     $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
     $h = $j.hooks.SubagentStop[0].hooks[0]
-    $h.command = '"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-telemetry.ps1"'
+    $h.command = '"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-telemetry.mjs"'
     $h.PSObject.Properties.Remove('args')
     $j | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $p -NoNewline
 }
@@ -272,6 +272,16 @@ Try-Case 'rn-url-diverged' {
         Set-Content -LiteralPath $p -NoNewline
 }
 
+# The same divergence from the OTHER side: the hook is Node now (ADR 0116), and the gate must read
+# the `.mjs` constant — a gate still pointed at the retired `.ps1` would read an empty URL for the
+# hook and fail as "link missing" for the wrong reason, or pass vacuously if it skipped the check.
+Try-Case 'rn-url-hook-diverged' {
+    param($d)
+    $p = Join-Path $d 'hooks/session-start-version-announce.mjs'
+    (Get-Content -LiteralPath $p -Raw) -replace 'artifact/[0-9a-f-]+#rn', 'artifact/00000000-0000-0000-0000-000000000000#rn' |
+        Set-Content -LiteralPath $p -NoNewline
+}
+
 # The interpolation trap ADR 0045 makes reachable in every hook: Korean letters are legal in a
 # PS variable name, so "$ver를" interpolates an undefined variable named ver를 as EMPTY — the
 # value silently vanishes from the member banner (measured live 2026-08-11; the hook suites'
@@ -279,7 +289,8 @@ Try-Case 'rn-url-diverged' {
 # CLASS on a non-comment line; the comment-skip is what keeps hooks free to DOCUMENT the trap.
 Try-Case 'hangul-glued-variable' {
     param($d)
-    $p = Join-Path $d 'hooks/session-start-githooks-nudge.ps1'
+    # A hook that stays pwsh (ADR 0116: the gate scans hooks/*.ps1 only — the trap cannot exist in .mjs).
+    $p = Join-Path $d 'hooks/session-start-node-check.ps1'
     Add-Content -LiteralPath $p -Value "`n`$probe = `"지금 `$ver를 실행`"`n"
 }
 

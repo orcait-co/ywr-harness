@@ -12,6 +12,20 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.61.0 — 2026-10-01
+
+- **플러그인 훅이 PowerShell 에서 Node 로 바뀌어, 훅 한 번이 약 0.8–1.3초에서 약 0.07–0.26초로 빨라졌습니다 (ADR 0116).**
+  세션 시작, 설정 변경, 디렉터리 추가, Agent 호출, 서브에이전트 종료 때 도는 훅 8개가 모두 대상입니다. 예전 시간의
+  대부분은 스크립트가 하는 일이 아니라 `pwsh` 기동과 첫 cmdlet 의 모듈 로드였습니다. 경고 문구와 telemetry 기록 내용은
+  그대로이고, 주석이나 끝 쉼표가 있는 settings 파일도 예전처럼 읽습니다.
+- 이제 이 훅들에는 `node` 가 `PATH` 에 있어야 합니다. 없으면 이벤트마다 훅 오류가 표시되고(아무것도 차단되지는
+  않습니다), **세션을 시작할 때 새 훅 `session-start-node-check` 가 설치 방법을 안내합니다** (Windows
+  `winget install OpenJS.NodeJS.LTS`, macOS `brew install node`). 설치 후 Claude Code 를 다시 시작하면 안내가 사라집니다.
+- scaffold 갱신 안내(`session-start-scaffold-refresh-nudge`)가 파일을 정확히 비교합니다. 예전에는 대소문자만 다른
+  파일을 같다고 봤으므로, 그런 레포에서는 이번에 처음 안내가 뜰 수 있습니다.
+- 적용: 플러그인 업데이트만 하면 됩니다. `harness-init` 재실행은 필요 없습니다. `pwsh` 와 `python` 은 지금처럼
+  필요합니다(skill 스크립트와 gate).
+
 ## v0.60.5 — 2026-09-30
 
 - **`/ywr-harness:verify` 가 slice-retro ignore register(`.githooks/slice-retro-ignore`)에 등록된 파일을 더 이상

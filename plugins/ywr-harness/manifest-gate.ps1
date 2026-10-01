@@ -107,7 +107,7 @@ if (-not (Test-Path -LiteralPath $hkPath)) {
 #   2. The artifact release-notes-tab URL appears in BOTH the hook and the CHANGELOG header;
 #      they must agree — one link, two shipped surfaces, zero drift.
 $clPath = Join-Path $root 'CHANGELOG.md'
-$vaPath = Join-Path $root 'hooks/session-start-version-announce.ps1'
+$vaPath = Join-Path $root 'hooks/session-start-version-announce.mjs'   # Node since ADR 0116: the `rnUrl` constant is the same literal URL the regex below reads
 if (-not (Test-Path -LiteralPath $clPath)) {
     Bad 'CHANGELOG.md missing — the version-announce hook would ship without its release-notes canon (ADR 0030)'
 } else {
@@ -147,6 +147,10 @@ if (-not (Test-Path -LiteralPath $clPath)) {
 # Comment lines are skipped (they legitimately QUOTE the trap); a hit inside a single-quoted
 # (inert) string is still refused — bracing it is cheaper than carving a quote-context parser
 # into this gate, and the braced form is correct in both contexts.
+# Scope is `hooks/*.ps1` ONLY, on purpose (ADR 0116 moved the hooks to Node): a JS template literal
+# interpolates only through `${...}`, which is always braced, so "$var한글" cannot silently read an
+# undefined variable there — the trap does not exist in `.mjs`. The pwsh hook that remains
+# (session-start-node-check.ps1) is still scanned.
 $hookGlued = 0
 foreach ($hf in @(Get-ChildItem -LiteralPath (Join-Path $root 'hooks') -File -Filter '*.ps1' -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notmatch '\.selftest\.' })) {

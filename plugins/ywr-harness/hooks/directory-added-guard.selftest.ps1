@@ -1,4 +1,4 @@
-# Self-test for directory-added-guard.ps1 (harness-scope gate).
+# Self-test for directory-added-guard.mjs (harness-scope gate).
 # Usage: pwsh plugins/ywr-harness/hooks/directory-added-guard.selftest.ps1
 #
 # Fixture provenance matters here: the payload shape asserted below is the hooks reference's
@@ -20,10 +20,12 @@
 # refuse any Hangul in the guard's own prose — and it carries a relay instruction to the model.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
-$hook = Join-Path $PSScriptRoot 'directory-added-guard.ps1'
+$hook = Join-Path $PSScriptRoot 'directory-added-guard.mjs'
+# The hook is Node (ADR 0116): absent node is a reported skip locally and a FAIL on CI.
+Assert-NodeOrExit 'directory-added-guard'
 
 function Invoke-Hook([string]$Stdin) {
-    $o = ($Stdin | & pwsh -NoProfile -File $hook 2>&1 | Out-String)
+    $o = ($Stdin | & node $hook 2>&1 | Out-String)
     $script:HookExit = $LASTEXITCODE
     return $o
 }
@@ -148,6 +150,51 @@ try {
             @('UNKNOWN, not absent', 'settings\.json') `
             @('Loaded from it', 'SCHEMA DRIFT')) -and $ok
 
+    # 7a. settings KEYS match case-insensitively (the original's `-contains` did), and a UTF-8 BOM in front of
+    #     the file does not make it unparseable (Get-Content dropped it; a Windows editor writes one) — a BOM
+    #     read as garbage would report a real file as UNKNOWN.
+    $ci = New-TempDir 'ci'; $dirs += $ci
+    New-Item -ItemType Directory -Path (Join-Path $ci '.claude') -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $ci '.claude/settings.json'), [byte[]](0xEF, 0xBB, 0xBF) + [Text.UTF8Encoding]::new($false).GetBytes('{"ENABLEDPLUGINS":{},"extraknownmarketplaces":{}}'))
+    $out = Invoke-Hook (New-Payload @{ directory = $ci; source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'BOM-prefixed settings with case-drifted keys is parsed, names both keys' $out `
+            @('(?-i)enabledPlugins \+ extraKnownMarketplaces from its settings') @('UNKNOWN', 'SCHEMA DRIFT')) -and $ok
+
+    # 7b. an EMPTY settings file parses to nothing — no keys, no claim, and not UNKNOWN (ConvertFrom-Json
+    #     emitted nothing for it); a UTF-16 file (Windows PowerShell 5.1's default redirect encoding) is
+    #     decoded by its BOM rather than reported as unparseable.
+    $emp = New-TempDir 'emp'; $dirs += $emp
+    New-Item -ItemType Directory -Path (Join-Path $emp '.claude') -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $emp '.claude/settings.json'), [byte[]]@())
+    $out = Invoke-Hook (New-Payload @{ directory = $emp; source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'empty settings file claims nothing and is not UNKNOWN' $out `
+            @('was added as a working directory') @('Loaded from it', 'UNKNOWN', 'enabledPlugins', 'SCHEMA DRIFT')) -and $ok
+    $u16 = New-TempDir 'u16'; $dirs += $u16
+    New-Item -ItemType Directory -Path (Join-Path $u16 '.claude') -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $u16 '.claude/settings.json'), [byte[]](0xFF, 0xFE) + [Text.Encoding]::Unicode.GetBytes('{"enabledPlugins":{}}'))
+    $out = Invoke-Hook (New-Payload @{ directory = $u16; source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'UTF-16 settings file is decoded by its BOM' $out `
+            @('(?-i)enabledPlugins from its settings') @('UNKNOWN', 'extraKnownMarketplaces', 'SCHEMA DRIFT')) -and $ok
+
+    # 7c. a settings file with comments, a trailing comma, a single-quoted string and an unquoted key parses as
+    #     ConvertFrom-Json parsed it (hook-lib parseJsonLoose) — not UNKNOWN; a `#` comment, which
+    #     ConvertFrom-Json refused too, still reports UNKNOWN.
+    $cmt = New-TempDir 'cmt'; $dirs += $cmt
+    New-Item -ItemType Directory -Path (Join-Path $cmt '.claude') -Force | Out-Null
+    $lf = [string][char]10
+    [IO.File]::WriteAllText((Join-Path $cmt '.claude/settings.json'),
+        ('{' + $lf + '  // plugins this project turns on' + $lf + '  "enabledPlugins": { ''x@y'': true, },' + $lf + '  /* block */ extraKnownMarketplaces: {},' + $lf + '}'),
+        [Text.UTF8Encoding]::new($false))
+    $out = Invoke-Hook (New-Payload @{ directory = $cmt; source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'commented settings file with trailing commas is parsed, names both keys' $out `
+            @('(?-i)enabledPlugins \+ extraKnownMarketplaces from its settings') @('UNKNOWN', 'SCHEMA DRIFT')) -and $ok
+    $hsh = New-TempDir 'hsh'; $dirs += $hsh
+    New-Item -ItemType Directory -Path (Join-Path $hsh '.claude') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $hsh '.claude/settings.json'), ('{ # not a JSON comment' + $lf + ' "enabledPlugins": {} }'), [Text.UTF8Encoding]::new($false))
+    $out = Invoke-Hook (New-Payload @{ directory = $hsh; source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'a # comment is still unparseable (ConvertFrom-Json refused it too)' $out `
+            @('UNKNOWN, not absent') @('enabledPlugins from its settings', 'SCHEMA DRIFT')) -and $ok
+
     # 8. CLAUDE.local.md carries a SECOND precondition the other instruction files do
     #    not (review low) — env set: merges only while the local settings source is on
     $env:CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = '1'
@@ -208,9 +255,9 @@ try {
 
     # 11b. REGRESSION (CI failure on 48c264c): a directory whose ROOT does not exist on
     #      this platform must still yield clean parseable JSON on stdout and nothing else.
-    #      Join-Path/Test-Path fail NON-TERMINATING there, so the guard's try/catch only
-    #      catches it because the block promotes $ErrorActionPreference to Stop. The bogus
-    #      root is chosen per platform so the case reproduces on both, which the original
+    #      The pwsh original's Join-Path/Test-Path failed NON-TERMINATING there; the Node probe is
+    #      fs.existsSync, which answers false for an unusable root, so there is no stderr to leak.
+    #      The bogus root is chosen per platform so the case reproduces on both, which the original
     #      Windows-only run could not do.
     $bogusRoot = if ($IsWindows) {
         $used = @([IO.DriveInfo]::GetDrives() | ForEach-Object { $_.Name.Substring(0, 1).ToUpper() })
@@ -233,6 +280,20 @@ try {
     $out = Invoke-Hook ([char]0xFEFF + (New-Payload @{ directory = $bare; source = 'slash_command' }))
     $ok = (Assert-SystemMessage 'BOM-prefixed stdin' $out @($bareRx) @('SCHEMA DRIFT')) -and $ok
 
+    # 13a. PSCustomObject member access and `-ne` were case-insensitive in the original; the port keeps both:
+    #      case-drifted KEYS and a lowercase event name still read (a case-sensitive lookup would see no
+    #      `directory` and report drift). The drift key list sorts case-insensitively too.
+    $out = Invoke-Hook (@{ Hook_Event_Name = 'directoryadded'; DIRECTORY = $bare; Source = 'register_repo_root' } | ConvertTo-Json -Compress)
+    $ok = (Assert-SystemMessage 'case-drifted keys and a lowercase event name still guard' $out `
+            @($bareRx, 'source: register_repo_root') @('SCHEMA DRIFT')) -and $ok
+    $out = Invoke-Hook '{"hook_event_name":"DirectoryAdded","zeta":1,"Alpha":2,"beta":3}'
+    $ok = (Assert-SystemMessage 'drift key list sorts case-insensitively' $out @('Keys received: Alpha, beta, hook_event_name, zeta\.') @('was added as a working directory')) -and $ok
+    # 13b. a trimmed directory: .NET Trim() semantics (padding spaces and U+00A0 drop; the filesystem checks
+    #      run on the trimmed path, so a padded real directory is still enumerated)
+    $out = Invoke-Hook (New-Payload @{ directory = ('  ' + $rich + [char]0x00A0); source = 'slash_command' })
+    $ok = (Assert-SystemMessage 'padded directory is trimmed and still enumerated' $out `
+            @('skills from \.claude/skills', 'extraKnownMarketplaces from its settings') @('SCHEMA DRIFT', 'UNKNOWN')) -and $ok
+
     # 14. wrong event name -> silent (defensive event guard, symmetric with siblings)
     $out = Invoke-Hook '{"hook_event_name":"CwdChanged","directory":"C:\\x","source":"slash_command"}'
     $ok = (Assert-EmptyStdout 'wrong event silent' $out) -and $ok
@@ -247,12 +308,50 @@ finally {
 }
 
 
-# Inline() is one class copied into three hooks (spec 0006 §3.1): this copy must stay byte-identical
-# to agent-model-warn.ps1's, or the three banners stop flattening the same characters.
-$inlineRx = '(?ms)^function Inline\(.*?^\}'
-$mineInline = [regex]::Match(([IO.File]::ReadAllText($hook) -replace "`r`n", "`n"), $inlineRx).Value
-$refInline = [regex]::Match(([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'agent-model-warn.ps1')) -replace "`r`n", "`n"), $inlineRx).Value
-$ok = (Assert-True 'Inline() is byte-identical to agent-model-warn.ps1''s' ([bool]$mineInline -and $mineInline -ceq $refInline) "this: $mineInline | agent-model-warn: $refInline") -and $ok
+# Inline(): the hook owns no copy — it imports hook-lib.mjs's inline(), the one class every Node hook
+# shares (hook-lib.selftest.ps1 holds that function's behaviour). The flattening cases above (11a) are
+# behavioural through the real hook. A local Inline/inline would split the class again.
+$src = [IO.File]::ReadAllText($hook)
+$importsInline = [regex]::IsMatch($src, "(?m)^import\s*\{[^}]*\binline\b[^}]*\}\s*from\s*'\./hook-lib\.mjs'")
+$ownCopy = [regex]::IsMatch($src, '(?i)\bfunction\s+inline\b|\b(?:const|let|var)\s+inline\b')
+$ok = (Assert-True 'inline() is imported from hook-lib.mjs and the hook defines no Inline/inline of its own' `
+        ($importsInline -and -not $ownCopy) "imports inline from hook-lib: $importsInline · defines its own: $ownCopy") -and $ok
+
+# R1. REGISTRATION. Every case above pipes a payload straight into the script, so none of them sees whether
+#     the runtime ever calls it. This pins the wiring: DirectoryAdded with NO matcher (the matcher for this
+#     event filters on `source`, and the guard must not be bypassable by a future third value), exec-form
+#     node <script> (ADR 0116). That it FIRES is a live probe's to show.
+$regFails = @()
+try {
+    $hj = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'hooks.json') -Raw | ConvertFrom-Json
+    $sites = @()
+    foreach ($evName in @($hj.hooks.PSObject.Properties.Name | Where-Object { $_ })) {
+        foreach ($grp in @($hj.hooks.$evName | Where-Object { $_ })) {
+            foreach ($h in @($grp.hooks | Where-Object { $_ })) {
+                $parts = @([string]$h.command) + @($h.args | ForEach-Object { [string]$_ })
+                if (($parts -join ' ') -match 'directory-added-guard\.(ps1|mjs)') { $sites += [pscustomobject]@{ Event = $evName; Matcher = [string]$grp.matcher; H = $h } }
+            }
+        }
+    }
+    $wantArgs = @('${CLAUDE_PLUGIN_ROOT}/hooks/directory-added-guard.mjs')
+    if ($sites.Count -ne 1) { $regFails += "want exactly 1 registration of directory-added-guard (.mjs or the retired .ps1), found $($sites.Count)" }
+    else {
+        $s1 = $sites[0]
+        $gotArgs = @($s1.H.args | ForEach-Object { [string]$_ })
+        if ($s1.Event -cne 'DirectoryAdded') { $regFails += "event '$($s1.Event)' (want DirectoryAdded)" }
+        if ($s1.Matcher) { $regFails += "matcher '$($s1.Matcher)' (want none — a matcher on source is bypassable)" }
+        if ([string]$s1.H.type -cne 'command' -or [string]$s1.H.command -cne 'node') { $regFails += "handler type/command '$($s1.H.type)'/'$($s1.H.command)' (want command/node)" }
+        if (($gotArgs -join "`0") -cne ($wantArgs -join "`0")) { $regFails += "args [$($gotArgs -join ' ')] (want exec form [$($wantArgs -join ' ')])" }
+        else {
+            $resolved = Join-Path (Split-Path $PSScriptRoot -Parent) ($gotArgs[-1] -replace '^\$\{CLAUDE_PLUGIN_ROOT\}/', '')
+            if ([IO.Path]::GetFullPath($resolved) -ne [IO.Path]::GetFullPath($hook)) { $regFails += "args resolve to '$resolved', not this suite's script '$hook'" }
+        }
+        if ([string]$s1.H.timeout -ne '15') { $regFails += "timeout '$($s1.H.timeout)' (want 15)" }
+    }
+} catch { $regFails += "hooks.json unreadable: $($_.Exception.Message)" }
+$ok = (Assert-True 'R1 hooks.json registers this script once: DirectoryAdded, no matcher, exec-form node <script>' `
+        (-not $regFails.Count) ($regFails -join ' · ')) -and $ok
+
 # META — every case above already carried a negative (the file's header rule), so the
 # empty-MustNotMatch guard is PREVENTIVE here. This case is what keeps a preventive guard from
 # being deleted with nothing turning red. The guard lives in the shared assertion core, so what is

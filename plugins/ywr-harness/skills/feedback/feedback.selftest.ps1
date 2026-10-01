@@ -3,10 +3,11 @@
 #
 # The network boundary is `gh`, and every case that would cross it runs against a FAKE gh: a
 # `gh.ps1` written into a fixture directory and put FIRST on a PATH that holds only that directory,
-# pwsh's, and git's (so the real gh, python and claude are unreachable for the child — the
-# "claude: not on PATH" line is deterministic here). Where gh shares a directory with pwsh or git
-# (GitHub's ubuntu runner: /usr/bin), the gh-absent PATH is a private directory of links to just
-# those two — see the $noGhOk block. PowerShell resolves `gh` to the .ps1 on both
+# pwsh's, git's and node's (node runs the refresh-nudge hook feedback.ps1 quotes, ADR 0116; the real
+# gh, python and claude are unreachable for the child — the "claude: not on PATH" line is
+# deterministic here, unless node's directory also holds claude). Where gh shares a directory with
+# pwsh, git or node (GitHub's ubuntu runner: /usr/bin), the gh-absent PATH is a private directory of
+# links to just those three — see the $noGhOk block. PowerShell resolves `gh` to the .ps1 on both
 # Windows and Linux, and `& <script>.ps1` sets $LASTEXITCODE from the script's `exit`, which is
 # the contract feedback.ps1 reads. The fake logs every argv it receives (one line per call,
 # fields joined by U+001F) so the assertions read what gh WAS ASKED, not what a mock returned.
@@ -32,6 +33,11 @@ if (-not $gitOk) {
     exit 0
 }
 $gitDir = Split-Path (Get-Command git).Source -Parent
+# The refresh nudge feedback.ps1 quotes is a Node hook (ADR 0116), found by a PATH scan: absent node is
+# a reported skip locally and a FAIL on CI, and the narrowed child PATHs below must carry node's directory.
+Assert-NodeOrExit 'feedback'
+$nodeExe = (Get-Command node).Source
+$nodeDir = Split-Path $nodeExe -Parent
 $sep = [IO.Path]::PathSeparator
 
 $ok = $true
@@ -74,8 +80,9 @@ switch ($sub) {
 }
 '@ | Set-Content -LiteralPath (Join-Path $fakeDir 'gh.ps1') -Encoding utf8
 
-$pathWithGh = "$fakeDir$sep$(Split-Path $pwshExe -Parent)$sep$gitDir"
-$pathNoGh = "$(Split-Path $pwshExe -Parent)$sep$gitDir"
+$pathWithGh = "$fakeDir$sep$(Split-Path $pwshExe -Parent)$sep$gitDir$sep$nodeDir"
+$pathNoGh = "$(Split-Path $pwshExe -Parent)$sep$gitDir$sep$nodeDir"
+$pathNoNode = "$fakeDir$sep$(Split-Path $pwshExe -Parent)$sep$gitDir"      # B1c: node genuinely absent (checked there)
 # "gh absent" must be TRUE, not assumed: on GitHub's ubuntu runner pwsh, git AND gh all live in
 # /usr/bin, so a PATH of "pwsh dir + git dir" still resolves the real (unauthenticated) gh — the
 # first CI run of this suite failed F1 on exactly that ("not authenticated" where "not on PATH" was
@@ -88,7 +95,7 @@ if ($ghLeak) {
     $binNoGh = Join-Path $fx 'bin-nogh'
     New-Item -ItemType Directory -Force -Path $binNoGh | Out-Null
     try {
-        foreach ($t in @($pwshExe, (Get-Command git).Source)) {
+        foreach ($t in @($pwshExe, (Get-Command git).Source, $nodeExe)) {
             New-Item -ItemType SymbolicLink -Path (Join-Path $binNoGh (Split-Path $t -Leaf)) -Target $t -ErrorAction Stop | Out-Null
         }
         $pathNoGh = $binNoGh
@@ -234,6 +241,50 @@ if ($scaffReady) {
     $ok = (Assert-True 'B1b the fingerprint search asked gh for ALL open dist issues matching the quoted fingerprint — no -l label filter' `
             ($listCall.Count -eq 1 -and $listCall[0] -match 'orcait-co/ywr-harness' -and $listCall[0] -match "-S$([char]0x1F)`"fb[0-9a-f]{10}`"" -and $listCall[0] -match "--state$([char]0x1F)open" `
              -and -not (Test-LabelArg $listCall[0]) -and $listCall[0] -notmatch 'upstream-report') "calls: $($calls -join ' | ')") -and $ok
+
+    # B1c (ADR 0116): the refresh nudge is a Node hook and feedback.ps1 finds node by scanning PATH — no
+    # Get-Command (G1 below: ADR 0113's window allows exactly git, gh, claude). With node absent the report
+    # must SAY the verdict could not be read — never a silent pass, never a fabricated "no drift" line —
+    # while the dry run, which needs no node, still runs and still names the drifted files.
+    $env:PATH = $pathNoNode; $nodeLeak = Get-Command node -ErrorAction SilentlyContinue; $env:PATH = $savedPath
+    if ($nodeLeak) {
+        Write-Host "SKIP [B1c node-absent premise] node still resolves on a PATH of pwsh + git directories ($($nodeLeak.Source)) — B1c is NOT run (reported, not silent)" -ForegroundColor Yellow
+    } else {
+        $out = Invoke-Feedback @('-Description', 'node absent', '-Target', $scaff, '-OutDir', $outDir) $pathNoNode
+        $textB1c = Read-Body (Get-BodyPath $out)
+        $ok = (Assert-Text 'B1c no node on PATH: the nudge section says the hook could not run; the dry run still names both files' ("$out`n=====`n$textB1c") `
+                @('the refresh nudge could not run: node is not on PATH', 'no toolchain-drift verdict was read',
+                  'harness-init -> .*\(dry run — nothing written\)', '~ scripts/harness/harness_gates\.py \(toolchain refreshed from canon\)',
+                  '2 toolchain file\(s\) a re-run would change: `\.githooks/pre-commit`, `scripts/harness/harness_gates\.py`') `
+                @('\[hook:scaffold-refresh-nudge\]', 'silent — the refresh nudge reported no toolchain drift', 'hook invocation failed', 'hook output was not JSON', 'Traceback') `
+                @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }), $(if (-not $textB1c) { 'no body written' }))) -and $ok
+    }
+
+    # B1d/B1e (N4): node's stderr is not part of the verdict. A NODE_OPTIONS preload that writes to stderr on every
+    # run must not turn the hook's JSON into "not JSON" (the verdict is still the hook's systemMessage, and the noise
+    # stays out of the report); a run that FAILS (the preload throws -> exit 1, no stdout) says so and quotes stderr.
+    $savedNodeOptions = $env:NODE_OPTIONS
+    $noisy = Join-Path $fx 'stderr-noise.cjs'
+    Set-Content -LiteralPath $noisy -Value 'process.stderr.write("PRELOAD-STDERR-NOISE\n")' -Encoding utf8
+    $boom = Join-Path $fx 'preload-boom.cjs'
+    Set-Content -LiteralPath $boom -Value 'throw new Error("PRELOAD-BOOM")' -Encoding utf8
+    try {
+        $env:NODE_OPTIONS = "--require `"$($noisy -replace '\\', '/')`""
+        $out = Invoke-Feedback @('-Description', 'noisy stderr', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh
+        $textB1d = Read-Body (Get-BodyPath $out)
+        $ok = (Assert-Text 'B1d node stderr noise does not break the verdict: the nudge is still parsed and quoted, the noise is not in the report' ("$out`n=====`n$textB1d") `
+                @('\[hook:scaffold-refresh-nudge\]', '2 toolchain file\(s\) a re-run would change') `
+                @('PRELOAD-STDERR-NOISE', 'hook output was not JSON', 'the refresh nudge exited', 'Traceback') `
+                @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }), $(if (-not $textB1d) { 'no body written' }))) -and $ok
+        $env:NODE_OPTIONS = "--require `"$($boom -replace '\\', '/')`""
+        $out = Invoke-Feedback @('-Description', 'failing node', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh
+        $textB1e = Read-Body (Get-BodyPath $out)
+        $ok = (Assert-Text 'B1e a failing node run is reported with its exit code and stderr, never as a silent pass' ("$out`n=====`n$textB1e") `
+                @('the refresh nudge exited 1 with no output', 'PRELOAD-BOOM', 'harness-init -> .*\(dry run — nothing written\)') `
+                @('silent — the refresh nudge reported no toolchain drift', '\[hook:scaffold-refresh-nudge\]') `
+                @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }), $(if (-not $textB1e) { 'no body written' }))) -and $ok
+    }
+    finally { $env:NODE_OPTIONS = $savedNodeOptions }
 
     # B2: a similar report exists -> named on the summary line (informational, exit still 0)
     $env:YWR_FAKE_GH_MODE = 'similar'; Reset-GhLog

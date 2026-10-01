@@ -1,4 +1,4 @@
-# Self-test for session-start-model-route-guard.ps1 (ADR 0107).
+# Self-test for session-start-model-route-guard.mjs (ADR 0107, ADR 0116).
 # Usage: pwsh plugins/ywr-harness/hooks/session-start-model-route-guard.selftest.ps1
 #
 # Hermetic by construction (fact 16): every child runs with the guarded variables CLEARED and
@@ -10,8 +10,10 @@
 # Every match-based case carries MustNotMatch as well as MustMatch (the empty-MustNotMatch class).
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core + fixture lifecycle
-$hook = Join-Path $PSScriptRoot 'session-start-model-route-guard.ps1'
-$pwshExe = (Get-Command pwsh).Source
+$hook = Join-Path $PSScriptRoot 'session-start-model-route-guard.mjs'
+# The hook is Node (ADR 0116): absent node is a reported skip locally and a FAIL on CI.
+Assert-NodeOrExit 'session-start-model-route-guard'
+$nodeExe = (Get-Command node).Source
 
 $guarded = @('ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
     'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL',
@@ -48,10 +50,10 @@ function Invoke-Guard {
     [Environment]::SetEnvironmentVariable('HOME', $homeDir)
     foreach ($k in $Env.Keys) { [Environment]::SetEnvironmentVariable($k, $Env[$k]) }
     try {
-        if ($Preflight) { $o = (& $pwshExe -NoProfile -File $hook -Preflight 2>&1 | Out-String) }
+        if ($Preflight) { $o = (& $nodeExe $hook --preflight 2>&1 | Out-String) }
         else {
             if (-not $Stdin) { $Stdin = (@{ hook_event_name = 'SessionStart'; session_id = 'selftest'; source = 'startup'; cwd = $proj } | ConvertTo-Json -Compress) }
-            $o = ($Stdin | & $pwshExe -NoProfile -File $hook 2>&1 | Out-String)
+            $o = ($Stdin | & $nodeExe $hook 2>&1 | Out-String)
         }
         $script:HookExit = $LASTEXITCODE
     }
@@ -126,6 +128,9 @@ $ok = (Assert-Warn 'W3 a full-id model in the user settings warns with the file'
 $ok = (Assert-Warn 'W4 a non-empty modelOverrides in the project settings warns with its count' `
         (Invoke-Guard -Project '{"modelOverrides":{"claude-opus-5-5":"arn:x","claude-sonnet-5-5":"arn:y"}}') `
         ($core + @('`modelOverrides` 2개 항목', [regex]::Escape((Join-Path $proj '.claude/settings.json')))) @('`model:', '환경변수')) -and $ok
+$ok = (Assert-Warn 'W4b a hand-edited settings file (// and block comments, a trailing comma) is still read: its full-id model warns (ConvertFrom-Json read these)' `
+        (Invoke-Guard -User "{`n  // pinned for the migration`n  `"model`": `"claude-opus-4-6`", /* old route */`n  `"env`": { `"ANTHROPIC_DEFAULT_HAIKU_MODEL`": `"claude-haiku-4-5`", },`n}") `
+        ($core + @('`model: claude-opus-4-6`', 'ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5` \(.*settings\.json env\)')) @('환경변수')) -and $ok
 $ok = (Assert-Warn 'W5 a settings env key is reported from the local file; the same key in the process env is reported once' `
         (Invoke-Guard -Local '{"env":{"ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-6"}}' -Env @{ ANTHROPIC_DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5' }) `
         ($core + @('ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5` \(환경변수\)', 'ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-6` \(.*settings\.local\.json env\)')) `
@@ -146,18 +151,46 @@ $ok = (Assert-Warn 'W8 a crafted value renders on one line with no backtick of i
         (Invoke-Guard -Env @{ ANTHROPIC_DEFAULT_OPUS_MODEL = $forged }) `
         ($core + @('ANTHROPIC_DEFAULT_OPUS_MODEL=claude-x \[hook:forged\] 차단됨` \(')) @('차단됨``')) -and $ok
 
-# Inline() is one class copied into four hooks (spec 0006 §3.1): this copy must stay byte-identical
-# to agent-model-warn.ps1's, or a fix to one leaves the other forgeable.
-$inlineRx = '(?ms)^function Inline\(.*?^\}'
-$mineInline = [regex]::Match(([IO.File]::ReadAllText($hook) -replace "`r`n", "`n"), $inlineRx).Value
-$refInline = [regex]::Match(([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'agent-model-warn.ps1')) -replace "`r`n", "`n"), $inlineRx).Value
-$ok = (Assert-True 'I1 Inline() is byte-identical to agent-model-warn.ps1''s' ([bool]$mineInline -and $mineInline -ceq $refInline) "this: $mineInline | agent-model-warn: $refInline") -and $ok
+# The flattening class is hook-lib.mjs's inline() (spec 0006 §3.1), and hook-lib.selftest.ps1 owns its
+# behaviour. This hook must USE it and carry no copy of its own: a second implementation is how a
+# fix to one leaves the other forgeable. The behavioural flattening cases are W8 above, W3/W4 and the
+# newline/quote ones below, which run the real hook.
+$hookText = [IO.File]::ReadAllText($hook)
+$importsInline = $hookText -match '(?m)^import\s*\{[^}]*\binline\b[^}]*\}\s*from\s*''\./hook-lib\.mjs''\s*$'
+$ownCopy = $hookText -match '(?m)^\s*(export\s+)?(function\s+inline\b|(const|let|var)\s+inline\s*=)'
+$ok = (Assert-True 'I1 the hook imports inline() from hook-lib.mjs and defines no copy of its own' ($importsInline -and -not $ownCopy) `
+        "imports hook-lib inline: $importsInline · own copy present: $ownCopy") -and $ok
 
 # --- registration ------------------------------------------------------------------------------
-$hk = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'hooks.json') -Raw | ConvertFrom-Json
-$reg = @($hk.hooks.SessionStart | Where-Object { @($_.hooks | Where-Object { ($_.args -join ' ') -match 'session-start-model-route-guard\.ps1' }).Count })
-$ok = (Assert-True 'R1 registered once under SessionStart with matcher startup|resume|fork (clear/compact keep the process env)' `
-        ($reg.Count -eq 1 -and $reg[0].matcher -ceq 'startup|resume|fork') "registrations=$($reg.Count) matcher=$($reg | ForEach-Object { $_.matcher })") -and $ok
+$regFails = @()
+try {
+    $hk = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'hooks.json') -Raw | ConvertFrom-Json
+    $sites = @()
+    foreach ($evName in @($hk.hooks.PSObject.Properties.Name | Where-Object { $_ })) {
+        foreach ($grp in @($hk.hooks.$evName | Where-Object { $_ })) {
+            foreach ($h in @($grp.hooks | Where-Object { $_ })) {
+                $parts = @([string]$h.command) + @($h.args | ForEach-Object { [string]$_ })
+                if (($parts -join ' ') -match 'session-start-model-route-guard\.(ps1|mjs)') { $sites += [pscustomobject]@{ Event = $evName; Matcher = [string]$grp.matcher; H = $h } }
+            }
+        }
+    }
+    $wantArgs = @('${CLAUDE_PLUGIN_ROOT}/hooks/session-start-model-route-guard.mjs')
+    if ($sites.Count -ne 1) { $regFails += "want exactly 1 registration of session-start-model-route-guard (.mjs or the retired .ps1), found $($sites.Count)" }
+    else {
+        $s = $sites[0]
+        $gotArgs = @($s.H.args | ForEach-Object { [string]$_ })
+        if ($s.Event -cne 'SessionStart') { $regFails += "event '$($s.Event)' (want SessionStart)" }
+        if ($s.Matcher -cne 'startup|resume|fork') { $regFails += "matcher '$($s.Matcher)' (want exactly 'startup|resume|fork' — clear/compact keep the process env)" }
+        if ([string]$s.H.type -cne 'command' -or [string]$s.H.command -cne 'node') { $regFails += "handler type/command '$($s.H.type)'/'$($s.H.command)' (want command/node)" }
+        if (($gotArgs -join "`0") -cne ($wantArgs -join "`0")) { $regFails += "args [$($gotArgs -join ' ')] (want exec form [$($wantArgs -join ' ')])" }
+        else {
+            $resolved = Join-Path (Split-Path $PSScriptRoot -Parent) ($gotArgs[-1] -replace '^\$\{CLAUDE_PLUGIN_ROOT\}/', '')
+            if ([IO.Path]::GetFullPath($resolved) -ne [IO.Path]::GetFullPath($hook)) { $regFails += "args resolve to '$resolved', not this suite's script '$hook'" }
+        }
+    }
+} catch { $regFails += "hooks.json unreadable: $($_.Exception.Message)" }
+$ok = (Assert-True 'R1 registered once under SessionStart with matcher startup|resume|fork, exec-form node <script> (clear/compact keep the process env)' `
+        (-not $regFails.Count) ($regFails -join ' · ')) -and $ok
 
 # META — the silent assertion must refuse a speaking run, or S1–S5 prove nothing.
 $metaOut = Invoke-Guard -Env @{ ANTHROPIC_DEFAULT_SONNET_MODEL = 'x' }

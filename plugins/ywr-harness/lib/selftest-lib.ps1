@@ -29,7 +29,7 @@
 # identical apart from a contract divergence that failed open.
 #
 # The MustMatch/MustNotMatch DISCIPLINE is still not in scope for helpers with no such pair —
-# .claude/hooks/subagent-telemetry.selftest.ps1 (Pass/Fail calls), scripts/ci-local and
+# hooks/subagent-telemetry.selftest.ps1 (Pass/Fail calls), scripts/ci-local and
 # scripts/ci/resolve-base (Assert-True over booleans), and
 # scripts/ci/harness-pins.selftest.ps1, which is MustMatch-only ON PURPOSE and says so
 # in its own comment. Folding those in would mean inventing negatives for assertions
@@ -238,6 +238,124 @@ function Assert-True {
     $fail = @()
     if (-not $Condition) { $fail = @($(if ($Detail) { $Detail } else { 'condition was false' })) }
     return (Write-CaseVerdict -Name $Name -Fail $fail)
+}
+
+# --- node dependency and Inline() parity (ADR 0116) ---------------------------------------------
+# The Node hooks (hooks/*.mjs) and the suites that exercise them need `node`. The pwsh Linux image
+# ships WITHOUT node, so a hard failure there would report Linux breakage that does not exist; CI's
+# ubuntu runner has node, so absence THERE means the gate stopped running and must be loud. Local
+# absence is a reported skip, never a silent one. `$env:CI`, like every sibling suite: GitHub Actions
+# sets it and so does any other runner a consumer's CI uses.
+function Resolve-NodeVerdict([bool]$NodePresent, [bool]$OnCi) {
+    if ($NodePresent) { return @{ Verdict = 'run'; Message = '' } }
+    if ($OnCi) { return @{ Verdict = 'fail'; Message = 'node absent on CI — a missing interpreter is not a pass' } }
+    return @{ Verdict = 'skip'; Message = 'node absent (reported, not silent) — CI ubuntu runs this suite; the pwsh Linux image has no node' }
+}
+
+# The node-dependent suite's opening move: returns $true when the suite may run. A skip prints its
+# reason and exits 0 (the runner counts a SKIP line); a CI absence is a FAIL and exits 1.
+function Assert-NodeOrExit([string]$Suite) {
+    $v = Resolve-NodeVerdict ([bool](Get-Command node -ErrorAction SilentlyContinue)) ([bool]$env:CI)
+    if ($v.Verdict -eq 'fail') { Write-Host "FAIL [node]: $($v.Message)" -ForegroundColor Red; exit 1 }
+    if ($v.Verdict -eq 'skip') { Write-Host "SKIP [$Suite]: $($v.Message)" -ForegroundColor Yellow; exit 0 }
+}
+
+# Inline() is ONE character class in two implementations: hooks/hook-lib.mjs's inline() (every Node
+# hook imports it) and the `function Inline` the one remaining pwsh hook, session-start-node-check.ps1,
+# carries. Before the Node port the pwsh suites compared their text byte-for-byte with
+# agent-model-warn.ps1's; that reference is now
+# JavaScript, so the guarantee is BEHAVIOURAL: the pwsh function, extracted from the hook's own
+# source and run in-process, and the Node function must return the same code units for every probe
+# — each member of the class (C0, DEL, NEL, LS, PS, backtick) and its neighbours (U+0080-0084,
+# U+0086-00A0, U+2027, U+202A-202F, ...) alone, between letters and at either edge, the .NET-vs-JS
+# whitespace differences (U+FEFF, U+180E, U+3000), and the cap's boundary (79/80/81 chars, a
+# surrogate pair straddling the cut, a second Max). A divergence in either implementation turns the
+# caller's suite red, because it compares its own copy against the one Node module; hook-lib.selftest
+# pins inline() on its own, and each Node hook's suite asserts it imports inline() and defines none.
+function Assert-InlineParity {
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$HookPath
+    )
+    $v = Resolve-NodeVerdict ([bool](Get-Command node -ErrorAction SilentlyContinue)) ([bool]$env:CI)
+    if ($v.Verdict -eq 'fail') { return (Assert-True -Name $Name -Condition $false -Detail $v.Message) }
+    if ($v.Verdict -eq 'skip') { Write-Host "SKIP [$Name]: $($v.Message)" -ForegroundColor Yellow; return $true }
+
+    $hookLib = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../hooks/hook-lib.mjs'))
+    $src = [IO.File]::ReadAllText($HookPath) -replace "`r`n", "`n"
+    $fn = [regex]::Match($src, '(?ms)^function Inline\(.*?^\}').Value
+    if (-not $fn) { return (Assert-True -Name $Name -Condition $false -Detail "no 'function Inline' in $HookPath") }
+
+    $A = 0x41; $B = 0x42
+    $units = @(0..0xA0) + @(0x1680, 0x180E) + @(0x2000..0x200F) + @(0x2027..0x202F) + @(0x205F, 0x2060, 0x3000, 0xFEFF, 0xFFFE)
+    $probes = [Collections.Generic.List[object]]::new()
+    foreach ($u in $units) {
+        foreach ($c in @(@($A, $u, $B), @($u, $A), @($A, $u), @($u), @($u, $u, $A, $u, $u))) {
+            $probes.Add(@{ c = [int[]]$c; m = $null })
+        }
+    }
+    foreach ($len in 78..82) { $probes.Add(@{ c = [int[]](@($A) * $len); m = 80 }) }
+    foreach ($k in 0..3) {
+        # a flattened char, then a surrogate pair, whose first unit lands before / on / after the cut
+        $probes.Add(@{ c = [int[]](@($A) * (77 + $k) + @(0x2028) + @($A) * 5); m = 80 })
+        $probes.Add(@{ c = [int[]](@($A) * (77 + $k) + @(0xD83D, 0xDE00) + @($A) * 5); m = 80 })
+    }
+    $probes.Add(@{ c = [int[]](@(0x20) * 5 + @($A) * 400); m = 300 })
+    $probes.Add(@{ c = [int[]](@($A) * 299 + @(0x20, 0x20, $B)); m = 300 })
+    $probes.Add(@{ c = [int[]](@($A) * 400); m = $null })
+    $probes.Add(@{ c = [int[]]@(); m = $null })
+
+    $runner = [scriptblock]::Create($fn + @'
+
+foreach ($p in $args[0]) {
+    $s = -join ($p.c | ForEach-Object { [char]$_ })
+    $r = if ($null -eq $p.m) { Inline $s } else { Inline $s $p.m }
+    [string]::Join(',', [int[]][char[]]$r)
+}
+'@)
+    $got = @(& $runner $probes)
+
+    $js = @'
+import fs from 'node:fs'
+import { pathToFileURL } from 'node:url'
+const lib = await import(pathToFileURL(process.argv[2]).href)
+const probes = JSON.parse(fs.readFileSync(0, 'utf8'))
+const out = probes.map(p => {
+  const s = String.fromCharCode(...p.c)
+  const r = p.m === null ? lib.inline(s) : lib.inline(s, p.m)
+  return Array.from({ length: r.length }, (_, i) => r.charCodeAt(i)).join(',')
+})
+process.stdout.write(JSON.stringify(out))
+'@
+    $tmp = [IO.Path]::Combine([IO.Path]::GetTempPath(), "inline-parity-$PID-$([guid]::NewGuid().ToString('N')).mjs")
+    $errTmp = "$tmp.err"
+    try {
+        [IO.File]::WriteAllText($tmp, $js, [Text.UTF8Encoding]::new($false))
+        $json = ($probes | ForEach-Object { @{ c = @($_.c); m = $_.m } } | ConvertTo-Json -Compress -Depth 5)
+        if ($probes.Count -eq 1) { $json = "[$json]" }
+        # stdout alone is parsed as JSON; stderr goes to its own file, so a node warning cannot corrupt it
+        $raw = ($json | & node $tmp $hookLib 2>$errTmp | Out-String)
+        $nodeExit = $LASTEXITCODE
+        $nodeErr = if (Test-Path -LiteralPath $errTmp) { [IO.File]::ReadAllText($errTmp) } else { '' }
+    }
+    finally { Remove-Item -LiteralPath $tmp, $errTmp -Force -ErrorAction SilentlyContinue }
+    if ($nodeExit -ne 0) { return (Assert-True -Name $Name -Condition $false -Detail "node exit ${nodeExit}: $raw $nodeErr") }
+    try { $want = @($raw | ConvertFrom-Json) } catch { return (Assert-True -Name $Name -Condition $false -Detail "node stdout is not JSON: $raw $nodeErr") }
+
+    $fails = @()
+    if ($got.Count -ne $probes.Count -or $want.Count -ne $probes.Count) {
+        $fails += "probe count: $($probes.Count) sent, $($got.Count) from pwsh Inline, $($want.Count) from hook-lib inline"
+    }
+    else {
+        for ($i = 0; $i -lt $probes.Count -and $fails.Count -lt 3; $i++) {
+            if ($got[$i] -cne $want[$i]) {
+                $fails += "probe [$(($probes[$i].c | ForEach-Object { '{0:X4}' -f $_ }) -join ' ')] max=$($probes[$i].m): pwsh Inline -> [$($got[$i])], hook-lib inline -> [$($want[$i])]"
+            }
+        }
+    }
+    if ($fails.Count -and $nodeErr) { $fails += "node stderr: $nodeErr" }   # shown on failure only: a warning alone is not a divergence
+    return (Assert-True -Name $Name -Condition (-not $fails.Count) -Detail ($fails -join ' | '))
 }
 
 # --- fixture lifecycle --------------------------------------------------------
