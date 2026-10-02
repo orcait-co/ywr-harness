@@ -50,13 +50,12 @@
 // folding. Settings files parse as leniently as ConvertFrom-Json did (hook-lib's parseJsonLoose:
 // comments, trailing commas, single-quoted strings, unquoted keys) and must then be JSON objects
 // (the original also read a one-element array as its element); what does not parse is skipped.
-// Paths join with psJoin() — PowerShell's Join-Path string shape — so the shown path is unchanged.
+// Paths join with hook-lib's psJoin() — PowerShell's Join-Path string shape — so the shown path is unchanged.
 // The hook never exits the process on the hook path: it returns, so stdout drains; --preflight sets
 // process.exitCode for the same reason.
 import fs from 'node:fs'
 import os from 'node:os'
-import path from 'node:path'
-import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit } from './hook-lib.mjs'
+import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit, psJoin } from './hook-lib.mjs'
 
 const familyKeys = [
   ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'opus'], ['ANTHROPIC_DEFAULT_SONNET_MODEL', 'sonnet'],
@@ -74,13 +73,6 @@ const isOn = v => { const t = netTrim(psString(v)); return t !== '' && !/^(0|fal
 /** PowerShell's `[hashtable]` key semantics for the variable names: ASCII case-insensitive. */
 const fold = k => k.replace(/[A-Z]/g, c => c.toLowerCase())
 const mapGet = (map, k) => map.get(fold(k))
-
-/** PowerShell Join-Path's string shape: no doubled separator at the join, `/` becomes `\` on Windows, dot segments and the rest stay as typed. */
-function psJoin(parent, child) {
-  const c = child.replace(/^[\\/]+/, '')
-  const joined = /[\\/]$/.test(parent) ? parent + c : parent + path.sep + c
-  return path.sep === '\\' ? joined.replace(/\//g, '\\') : joined
-}
 
 // One finding = { key, text (Korean, for the member), en (English, for --preflight) }.
 function getEnvFinding(map, where) {

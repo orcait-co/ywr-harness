@@ -58,18 +58,11 @@
 //
 // Comparisons of the event and tool names are case-insensitive, as the pwsh original's `-ne` was.
 // The hook never exits the process: it returns, so stdout drains and the exit code stays 0.
-import { readStdin, parseJson, isObject, getProp, psString, ieq, netTrim, inline, emit } from './hook-lib.mjs'
-
-// Drift-key order: case-insensitive, locale-aware (the original's Sort-Object was culture-aware), with
-// an ordinal tiebreak so the order is deterministic. Exact parity with Sort-Object across cultures is
-// not possible; the received keys of a real payload are lowercase ASCII and sort identically.
-const collator = new Intl.Collator(undefined, { sensitivity: 'accent' })
+import { readStdin, parseJson, isObject, getProp, psString, ieq, netTrim, inline, emit, driftKeys } from './hook-lib.mjs'
 
 // SCHEMA DRIFT names the missing field and the keys received (Korean: the member reads it).
 function drift(payload, missing) {
-  let keys = '(none)'
-  const k = Object.keys(payload).sort((a, b) => collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0))
-  if (k.length) keys = inline(k.join(', '), 300)
+  const keys = driftKeys(payload)
   emit({ systemMessage: `[hook:agent-model] SCHEMA DRIFT — PreToolUse(Agent) 페이로드에 ${missing} 없어, 이 경고 훅이 요청된 모델을 읽을 수 없습니다. 수신된 키: ${keys}. hooks 레퍼런스의 PreToolUse 입력 형식을 다시 확인하세요. 호출은 차단하지 않았습니다.` })
 }
 

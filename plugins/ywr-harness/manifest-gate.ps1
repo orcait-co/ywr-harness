@@ -94,10 +94,35 @@ if (-not (Test-Path -LiteralPath $hkPath)) {
                 }
             }
         }
+
+        # `modules` (Claude Mods, ADR 0117): the reference allows exactly ONE path, relative to
+        # hooks.json, to a module named .js/.mjs/.cjs/.jsx/.ts/.mts/.cts/.tsx. A second entry, a missing
+        # file or another suffix is a module the host will not load — and nothing at session start says
+        # so on a member machine (the reason reaches the debug log only), so it fails here.
+        if ($null -ne $hk.PSObject.Properties['modules']) {
+            $mods = @($hk.modules)
+            if ($mods.Count -ne 1 -or $mods[0] -isnot [string] -or -not $mods[0]) {
+                Bad "hooks.json: 'modules' must hold exactly one path (got $($mods.Count))"
+            } else {
+                $modPath = [IO.Path]::GetFullPath((Join-Path (Split-Path $hkPath) $mods[0]))
+                $referenced += $modPath
+                # Confined to the plugin root: a `../` path can exist in this checkout and still not be
+                # in the shipped tree. The suffix compare is case-SENSITIVE (`-cnotin`): `.MJS` is not
+                # a suffix the reference names, and a Linux host may not read it as one.
+                $rootFull = [IO.Path]::GetFullPath($root).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+                if (-not $modPath.StartsWith($rootFull, [StringComparison]::Ordinal)) {
+                    Bad "hooks.json: module '$($mods[0])' resolves outside the plugin root"
+                } elseif ([IO.Path]::GetExtension($modPath) -cnotin '.js', '.mjs', '.cjs', '.jsx', '.ts', '.mts', '.cts', '.tsx') {
+                    Bad "hooks.json: module '$($mods[0])' has a suffix the host does not load"
+                } elseif (-not (Test-Path -LiteralPath $modPath -PathType Leaf)) {
+                    Bad "hooks.json: module path does not exist -> $($mods[0])"
+                } else { Good "modules -> $(Split-Path $modPath -Leaf)" }
+            }
+        }
     }
 }
 
-# --- release-notes canon (ADR 0030) ----------------------------------------------------------
+# --- release-notes canon (ADR 0030)----------------------------------------------------------
 # The version-announce hook renders CHANGELOG.md at session start on member machines; these are
 # the two agreements that make that rendering true. Both are canon-side checks on purpose — the
 # hook itself degrades gracefully when the canon is wrong, so a defect here would otherwise ship

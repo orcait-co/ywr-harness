@@ -84,11 +84,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun } from './hook-lib.mjs'
-
-// Drift-key order and the registry's `lastUpdated` order: case-insensitive, locale-aware (the
-// original's Sort-Object and `-gt` were culture-aware), ordinal tiebreak for the key list.
-const collator = new Intl.Collator(undefined, { sensitivity: 'accent' })
+import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys, collator } from './hook-lib.mjs'
 
 // Test-Path -PathType Container / Leaf, promoted so every failure (a root that does not exist on
 // this platform, an illegal path) reads as "not there". Leaf is a regular file: the stamp read below
@@ -447,9 +443,7 @@ function parent(p) {
 }
 
 function drift(payload) {
-  let keys = '(none)'
-  const k = Object.keys(payload).sort((a, b) => collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0))
-  if (k.length) keys = inline(k.join(', '), 300)
+  const keys = driftKeys(payload)
   emit({ systemMessage: `[hook:scaffold-refresh-nudge] SCHEMA DRIFT — SessionStart 페이로드에 'cwd' 필드가 없어, 이 저장소의 벤더링된 툴체인이 설치된 플러그인과 일치하는지 확인할 수 없습니다. 수신된 키: ${keys}. 페이로드 형식을 다시 확인하고 hooks/session-start-scaffold-refresh-nudge.mjs을 수정하세요 (ADR 0033).` })
 }
 

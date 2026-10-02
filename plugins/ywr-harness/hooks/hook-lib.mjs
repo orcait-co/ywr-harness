@@ -284,6 +284,31 @@ export function inline(text, max = 80) {
   return t
 }
 
+// Drift-key order: case-insensitive, locale-aware (the pwsh originals' Sort-Object was culture-aware),
+// with an ordinal tiebreak so the order is deterministic. Exact parity with Sort-Object across cultures
+// is not possible; the received keys of a real payload are lowercase ASCII and sort identically.
+// Exported for scaffold-refresh-nudge's `lastUpdated` order, which the original compared the same way.
+export const collator = new Intl.Collator(undefined, { sensitivity: 'accent' })
+
+/**
+ * The received keys a SCHEMA DRIFT banner names: `collator` order with an ordinal tiebreak, joined
+ * by ', ' and `inline`d at 300; '(none)' for an object without keys.
+ */
+export function driftKeys(payload) {
+  const k = Object.keys(payload).sort((a, b) => collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0))
+  return k.length ? inline(k.join(', '), 300) : '(none)'
+}
+
+/**
+ * PowerShell Join-Path's string shape: no doubled separator at the join, `/` becomes `\` on Windows,
+ * dot segments and the rest stay as typed (path.join would normalize them).
+ */
+export function psJoin(parent, child) {
+  const c = child.replace(/^[\\/]+/, '')
+  const joined = /[\\/]$/.test(parent) ? parent + c : parent + path.sep + c
+  return path.sep === '\\' ? joined.replace(/\//g, '\\') : joined
+}
+
 /** One compact JSON line on stdout (UTF-8). */
 export function emit(obj) {
   process.stdout.on('error', () => { })

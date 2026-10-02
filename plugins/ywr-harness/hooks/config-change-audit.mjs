@@ -33,18 +33,12 @@
 // §3.1): a payload string stays a string (ConvertFrom-Json turned an ISO-date-shaped one into a
 // DateTime, which then read as "not a string"), and the drift key order is Intl.Collator's. The hook
 // never exits the process: it returns, so stdout drains and the exit code stays 0.
-import { readStdin, parseJson, isObject, getProp, psString, ieq, inline, emit } from './hook-lib.mjs'
-
-// Drift-key order: case-insensitive, locale-aware (the original's Sort-Object was culture-aware), with
-// an ordinal tiebreak so the order is deterministic (same rule as agent-model-warn.mjs).
-const collator = new Intl.Collator(undefined, { sensitivity: 'accent' })
+import { readStdin, parseJson, isObject, getProp, psString, ieq, inline, emit, driftKeys } from './hook-lib.mjs'
 
 // Judged on what the banner would echo: a non-string `source`, or one that flattens to nothing
 // (control bytes and backticks only), is drift — never a tier-less banner.
 function drift(payload) {
-  let keys = '(none)'
-  const k = Object.keys(payload).sort((a, b) => collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0))
-  if (k.length) keys = inline(k.join(', '), 300)
+  const keys = driftKeys(payload)
   emit({ systemMessage: `[hook:config-audit] SCHEMA DRIFT — ConfigChange 페이로드의 'source' 필드가 없거나 비어 있거나 문자열이 아니어서, 어떤 설정 계층이 변경되었는지 확인할 수 없습니다. 수신된 키: ${keys}. hooks 레퍼런스의 ConfigChange 입력 형식이 바뀌었을 수 있습니다 — 플러그인 쪽 문제이니 /ywr-harness:feedback 으로 알려 주세요.` })
 }
 

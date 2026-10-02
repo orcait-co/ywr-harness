@@ -44,7 +44,7 @@
 // be JSON OBJECTS (the original also read a one-element array by member enumeration; the manifest
 // parses as leniently as ConvertFrom-Json did, via hook-lib's parseJsonLoose); a version
 // component over Int32 is an unparseable version, as the original's failed [version] cast was (which
-// also wrote an error record to stderr there); the shown state path joins with psJoin() below,
+// also wrote an error record to stderr there); the shown state path joins with hook-lib's psJoin(),
 // which keeps Join-Path's string shape (`..` segments stay as typed) rather than path.join's.
 //
 // The module is importable: with a `?lib` query on its URL (the selftest's seed-exclusivity case) it
@@ -54,7 +54,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, emit, sleep } from './hook-lib.mjs'
+import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, emit, sleep, psJoin } from './hook-lib.mjs'
 
 // One link, two shipped surfaces: this constant and the CHANGELOG header. manifest-gate.ps1
 // asserts the two agree, so neither can drift alone.
@@ -62,13 +62,6 @@ const rnUrl = 'https://claude.ai/code/artifact/a4387fdf-63d1-4a3d-9c8e-c362c9215
 
 const hooksDir = path.dirname(fileURLToPath(import.meta.url))
 const INT_MAX = 2147483647   // .NET [version] components are Int32; a larger one fails the cast
-
-/** PowerShell Join-Path's string shape: no doubled separator at the join, `/` becomes `\` on Windows, dot segments and the rest stay as typed. */
-function psJoin(parent, child) {
-  const c = child.replace(/^[\\/]+/, '')
-  const joined = /[\\/]$/.test(parent) ? parent + c : parent + path.sep + c
-  return path.sep === '\\' ? joined.replace(/\//g, '\\') : joined
-}
 
 /** A .NET space (Char.IsWhiteSpace) — the class of regex `\s`/`\S` in the pwsh original. */
 function isWs(ch) { return netTrim(ch) === '' }

@@ -119,12 +119,18 @@ function Reset-Fixture($fx) {
 }
 $pluginFx = New-Fixture 'plugin' { param($p) Copy-Item -LiteralPath $src -Destination $p -Recurse -Force }
 
-function Try-Case([string]$tag, [scriptblock]$mutate) {
+# -Expect: the case's own Bad line must be in the output, so an exit 1 from some OTHER check the
+# mutation happens to trip cannot stand in for the check under test (review 2026-10-02, C9).
+function Try-Case([string]$tag, [scriptblock]$mutate, [string]$Expect = '') {
     $dir = Reset-Fixture $pluginFx
     & $mutate $dir
     $g = Invoke-Gate (Join-Path $dir 'manifest-gate.ps1')
     $rc = $g.Code
-    if ($rc -eq 1) { Write-Host "PASS [$tag] gate exited 1 as required" -ForegroundColor Green }
+    if ($rc -eq 1 -and $Expect -and $g.Out -notmatch $Expect) {
+        Write-Host "FAIL [$tag] gate exited 1 but not on the check under test (no line matching '$Expect')" -ForegroundColor Red
+        $rc = 'other-check'
+    }
+    elseif ($rc -eq 1) { Write-Host "PASS [$tag] gate exited 1 as required" -ForegroundColor Green }
     elseif ($g.Aborted) { Write-Host "FAIL [$tag] gate ABORTED — not an exit code, nothing was proven: $(($g.Out -split "`n")[0])" -ForegroundColor Red }
     else { Write-Host "FAIL [$tag] gate exited $rc — mutation NOT caught" -ForegroundColor Red }
     $script:results += [pscustomobject]@{ case = $tag; exit = $rc }
@@ -178,6 +184,48 @@ Try-Case 'exec-form-regressed' {
     $h.PSObject.Properties.Remove('args')
     $j | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $p -NoNewline
 }
+
+# `modules` (ADR 0117): a moved module file, a second entry, and a suffix the host does not load.
+Try-Case 'module-path-broken' {
+    param($d)
+    $p = Join-Path $d 'hooks/hooks.json'
+    (Get-Content -LiteralPath $p -Raw).Replace('"./delegation-ledger.mjs"', '"./delegation-ledger-MOVED.mjs"') |
+        Set-Content -LiteralPath $p -NoNewline
+} -Expect 'module path does not exist'
+
+Try-Case 'module-two-entries' {
+    param($d)
+    $p = Join-Path $d 'hooks/hooks.json'
+    (Get-Content -LiteralPath $p -Raw).Replace('"./delegation-ledger.mjs"', '"./delegation-ledger.mjs", "./hook-lib.mjs"') |
+        Set-Content -LiteralPath $p -NoNewline
+} -Expect "'modules' must hold exactly one path"
+
+Try-Case 'module-bad-suffix' {
+    param($d)
+    $p = Join-Path $d 'hooks/hooks.json'
+    Copy-Item -LiteralPath (Join-Path $d 'hooks/delegation-ledger.mjs') -Destination (Join-Path $d 'hooks/delegation-ledger.txt')
+    (Get-Content -LiteralPath $p -Raw).Replace('"./delegation-ledger.mjs"', '"./delegation-ledger.txt"') |
+        Set-Content -LiteralPath $p -NoNewline
+} -Expect 'has a suffix the host does not load'
+
+# An upper-case suffix: the reference names lower-case suffixes, so `-notin`'s case folding is wrong.
+Try-Case 'module-suffix-case' {
+    param($d)
+    $p = Join-Path $d 'hooks/hooks.json'
+    Copy-Item -LiteralPath (Join-Path $d 'hooks/delegation-ledger.mjs') -Destination (Join-Path $d 'hooks/delegation-ledger2.MJS')
+    (Get-Content -LiteralPath $p -Raw).Replace('"./delegation-ledger.mjs"', '"./delegation-ledger2.MJS"') |
+        Set-Content -LiteralPath $p -NoNewline
+} -Expect 'has a suffix the host does not load'
+
+# A module that exists in this checkout but outside the plugin root never ships.
+Try-Case 'module-outside-root' {
+    param($d)
+    $p = Join-Path $d 'hooks/hooks.json'
+    $outside = Join-Path (Split-Path -Parent $d) 'outside-module.mjs'
+    Copy-Item -LiteralPath (Join-Path $d 'hooks/delegation-ledger.mjs') -Destination $outside -Force
+    (Get-Content -LiteralPath $p -Raw).Replace('"./delegation-ledger.mjs"', '"../../outside-module.mjs"') |
+        Set-Content -LiteralPath $p -NoNewline
+} -Expect 'resolves outside the plugin root'
 
 Try-Case 'no-events' {
     param($d)

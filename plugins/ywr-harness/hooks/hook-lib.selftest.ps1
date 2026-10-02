@@ -104,6 +104,23 @@ if (mode === 'unit') {
     [loose('{ # c' + LF + ' "a": 1 }'), loose('{ "a": 1,, }'), loose('{ "a": tru }'), loose('{ "a": "x }'), loose('{ "a": 1 /* x')].join(','),
     'THROW,THROW,THROW,THROW,THROW')
   eq('netTrim is .NET Trim', lib.netTrim(ch(0xa0, 0x20, 9) + 'x' + ch(0x85, 0xa0)) + '|' + (lib.netTrim(ch(0xfeff)).length), 'x|1')
+  // driftKeys: the SCHEMA DRIFT key list every drift banner shares
+  eq('driftKeys: no keys -> (none)', lib.driftKeys({}), '(none)')
+  eq('driftKeys: case-insensitive order, ordinal tiebreak (A before a), comma-joined',
+    lib.driftKeys({ cwd: 1, a: 2, Session_id: 3, A: 4, b: 5 }), 'A, a, b, cwd, Session_id')
+  eq('driftKeys: a key is flattened and the list capped at 300 (inline)',
+    [lib.driftKeys({ ['x' + ch(10) + 'y']: 1 }), lib.driftKeys({ [z(400)]: 1 })].join('|'), 'x y|' + z(299) + ell)
+  eq('driftKeys: a lone key that flattens to nothing gives the empty string, never (none) (the hooks printed that)',
+    [lib.driftKeys({ [ch(1)]: 1 }), lib.driftKeys({ [ch(0x60, 0x2028)]: 1 })].join('|'), '|')
+  // psJoin: Join-Path's string shape on this platform's separator
+  {
+    const S = path.sep
+    eq('psJoin: one separator at the join (none doubled, a leading one on the child dropped)',
+      [lib.psJoin('r', 'a'), lib.psJoin('r' + S, 'a'), lib.psJoin('r', S + S + 'a'), lib.psJoin('r/', '/a')].join(' '),
+      ['r' + S + 'a', 'r' + S + 'a', 'r' + S + 'a', S === '/' ? 'r/a' : 'r' + S + 'a'].join(' '))
+    eq('psJoin: dot segments stay as typed; / becomes the Windows separator, never the reverse',
+      lib.psJoin('r', '../b/./c'), S === '/' ? 'r/../b/./c' : 'r' + S + '..' + S + 'b' + S + '.' + S + 'c')
+  }
 }
 if (mode === 'stdin') {
   const text = lib.readStdin()
