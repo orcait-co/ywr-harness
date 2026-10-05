@@ -124,7 +124,7 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   eq('agent-tool: loop kind, ids, ts; no per-row schema or session', [d.loop, d.agent_id, d.turn_id, d.ts, 'schema' in d, 'session_id' in d],
     ['agent-tool', 'a1', 't1', '2026-10-02T01:02:03.456Z', false, false])
   eq('agent-tool: spawn row', d.spawn, { tool_use_id: 'tu1', subagent_type: 'ywr-harness:mech', provider: 'ywr-harness/user', model_param: null,
-    parent_model: 'claude-opus-5-5', model: 'claude-haiku-4-5', denied: false, fork: false, background: false, parent_agent_id: null })
+    parent_model: 'claude-opus-5-5', model: 'claude-haiku-4-5', denied: false, fork: false, background: false, teammate: false, parent_agent_id: null })
   eq('file: step_fields names the tuple order once', f.step_fields, ['index', 'model', 'effort', 'message_count', 'stop_reason', 'input_tokens',
     'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'usage_model'])
   eq('agent-tool: both steps as tuples, in order, with their usage; usage_model null when it equals model', d.steps,
@@ -172,6 +172,19 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   eq('a null step result records null stop, tokens and usage_model, not a throw', docs[0].steps[0].slice(4), [null, null, null, null, null, null])
   eq('resumed agent: its second run still carries the spawn row', [docs[2].loop, docs[2].spawn?.model_param, docs[2].spawn?.background], ['agent-tool', 'haiku', true])
   eq('an errored loop is written with its reason', [docs[1].complete.reason, docs[1].steps.length], ['error', 1])
+}
+
+// 4b. an agent-team teammate (2.1.289+: `agent.spawn` with `isTeammate`): kind stays agent-tool, the row flags it
+{
+  const E = engine()
+  await spawn(E, { tool_use_id: null, subagentType: 'researcher', parentModel: 'claude-opus-5-5', isTeammate: true }, { model: 'claude-sonnet-5-5', agentId: 'T1' })
+  await step(E, { turnId: 'tT', index: 0, model: 'claude-sonnet-5-5', messageCount: 1, agentId: 'T1' }, [], null)
+  await complete(E, { durationMs: 2, turnId: 'tT', agentId: 'T1', reason: 'answer' }, {})
+  const d = E.writes[0][1].loops[0]
+  eq('teammate: agent-tool kind, schema 2', [d.loop, d.agent_id, E.writes[0][1].schema], ['agent-tool', 'T1', 2])
+  eq('teammate: the whole spawn row (null tool_use_id joins by agentId)', d.spawn, { tool_use_id: null, subagent_type: 'researcher', provider: null,
+    model_param: null, parent_model: 'claude-opus-5-5', model: 'claude-sonnet-5-5', denied: false, fork: false, background: false, teammate: true,
+    parent_agent_id: null })
 }
 
 // 5. not adopted: a root without .harness.json gets nothing, the turn still gets its result

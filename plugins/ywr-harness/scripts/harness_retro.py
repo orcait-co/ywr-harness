@@ -25,6 +25,7 @@ principle; the hook's `|| true` keeps the commit untouched).
                                            # resolves as HEAD^1..HEAD (first-parent, ADR 0043)
   python harness_retro.py main~3..HEAD     # a whole slice — absorbs mid-slice false positives
   python harness_retro.py --coverage       # full unowned / dead-mapping audit
+  python harness_retro.py --delegations    # the delegation ledger's report (ADR 0120)
   SLICE_RETRO=0 git commit ...             # skip once
 
 A check whose declaration is empty is DISABLED, and the disablement is reported under --coverage.
@@ -39,6 +40,7 @@ once per slice rather than never.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -421,19 +423,198 @@ def coverage(root: Path, cfg: dict, warns: list[str]) -> int:
     return 0
 
 
-def main() -> int:
-    # The skip hatch is read before anything else so it costs nothing when set.
-    if os.environ.get("SLICE_RETRO") == "0":
-        return 0
+# The delegation ledger (ADR 0117/0118) — the slot files the plugin's hooks module writes. Read only,
+# on request (ADR 0120): the ledger is session-scoped, the per-commit run is commit-scoped.
+LEDGER_DIR = (".claude", "telemetry", "delegations")
+SLOT_RX = re.compile(r"^slot-[0-9]{2}\.json$")
+LEDGER_SCHEMA = 2
+TOKENS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+# `teammate` is read, not written: an `agent-tool` loop whose spawn row says `teammate: true` (an
+# agent-team teammate raises `agent.spawn` from Claude Code 2.1.289).
+KIND_ORDER = {"main": 0, "agent-tool": 1, "teammate": 2, "unspawned": 3}
+SPAWNED = ("agent-tool", "teammate")
 
+
+def _count(v: object) -> int:
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else 0
+
+
+def _names(v: object) -> list[str]:
+    return sorted({x for x in v if isinstance(x, str) and x}) if isinstance(v, list) else []
+
+
+def read_slots(d: Path) -> tuple[list[tuple[str, dict]], list[str]]:
+    """(name, document) for every readable schema-2 slot, and one `name (reason)` per skipped one.
+    A write is a non-atomic whole-file rewrite (ADR 0118), so a partial file is an expected skip."""
+    docs: list[tuple[str, dict]] = []
+    skipped: list[str] = []
+    try:
+        entries = sorted(d.iterdir(), key=lambda x: x.name)
+    except OSError as e:
+        return docs, [f"{d.name}/ (unreadable directory: {e.strerror or type(e).__name__})"]
+    for p in entries:
+        if not SLOT_RX.match(p.name):
+            continue
+        if not p.is_file():
+            skipped.append(f"{p.name} (not a regular file)")
+            continue
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except OSError as e:
+            skipped.append(f"{p.name} (unreadable: {e.strerror or type(e).__name__})")
+            continue
+        except ValueError:
+            skipped.append(f"{p.name} (not JSON — a write in flight or a partial file)")
+            continue
+        if (not isinstance(doc, dict) or doc.get("schema") != LEDGER_SCHEMA
+                or not isinstance(doc.get("step_fields"), list) or not isinstance(doc.get("loops"), list)):
+            skipped.append(f"{p.name} (not a schema {LEDGER_SCHEMA} slot)")
+            continue
+        docs.append((p.name, doc))
+    return docs, skipped
+
+
+def loop_tokens(loop: dict, fields: list) -> tuple[dict[str, int], bool]:
+    """A loop's token sums and whether they are the host's own (`complete.usage`, summed over every
+    request, dropped steps included). Without it the kept steps are summed, read by `step_fields`
+    NAME (ADR 0118: a step is a tuple; a field the file lacks reads as absent)."""
+    done = loop.get("complete")
+    usage = done.get("usage") if isinstance(done, dict) else None
+    if isinstance(usage, dict):
+        return {k: _count(usage.get(k)) for k in TOKENS}, True
+    sums = dict.fromkeys(TOKENS, 0)
+    steps = loop.get("steps")
+    for st in steps if isinstance(steps, list) else []:
+        row = dict(zip(fields, st)) if isinstance(st, list) else {}
+        for k in TOKENS:
+            sums[k] += _count(row.get(k))
+    return sums, False
+
+
+def _fmt_row(key: tuple, agg: dict) -> str:
+    kind, stype, mparam, models, efforts = key
+    who = kind if kind not in SPAWNED else f"{kind} {stype or '?'} (model_param {mparam or 'none'})"
+    tok = agg["tokens"]
+    line = (f"   {who} · {models or '?'} · {efforts or '-'} — {agg['loops']} loop(s), "
+            f"{agg['ms'] / 1000:.1f} s, tokens in {tok['input_tokens']:,} · out {tok['output_tokens']:,} · "
+            f"cache read {tok['cache_read_input_tokens']:,} · cache write {tok['cache_creation_input_tokens']:,}")
+    if agg["from_steps"]:
+        line += f" ({agg['from_steps']} loop(s) without complete.usage — kept steps summed)"
+    return line
+
+
+def delegations(root: Path, warns: list[str]) -> int:
+    d = root.joinpath(*LEDGER_DIR)
+    rel = "/".join(LEDGER_DIR)
+    print("[slice-retro] delegation ledger (ADR 0120)")
+    if not d.is_dir():
+        print(f"-- no ledger at {rel} — the hooks module writes it on Claude Code 2.1.287+, only in a "
+              "root holding .harness.json (ADR 0117)")
+        for w in warns:
+            hc.warn(w)
+        return 0
+    docs, skipped = read_slots(d)
+
+    # Sessions across files: ADR 0118's LRU residual can split one session over two slots. A null id
+    # is grouped per file — every id-less session writes the same header, so the id joins nothing.
+    sessions: dict[str, dict] = {}
+    for name, doc in docs:
+        sid = doc.get("session_id")
+        key = sid if isinstance(sid, str) and sid else f"(no session id) {name}"
+        s = sessions.setdefault(key, {"slots": [], "loops": [], "loops_dropped": 0, "updated": ""})
+        s["slots"].append(name)
+        s["loops_dropped"] += _count(doc.get("loops_dropped"))
+        upd = doc.get("updated")
+        if isinstance(upd, str) and upd > s["updated"]:
+            s["updated"] = upd
+        fields = doc["step_fields"]
+        s["loops"].extend((lp, fields) for lp in doc["loops"] if isinstance(lp, dict))
+
+    n_loops = sum(len(s["loops"]) for s in sessions.values())
+    print(f"-- {rel}: {len(docs)} slot file(s), {len(sessions)} session(s), {n_loops} loop(s)")
+    d6 = {"on_main": 0, "same_effort": 0, "sessions": 0, "evicted": 0, "no_main": 0}
+    dropped = {"loops": 0, "steps": 0}
+    for key, s in sorted(sessions.items(), key=lambda kv: kv[1]["updated"], reverse=True):
+        mains = [lp for lp, _ in s["loops"] if lp.get("loop") == "main"]
+        main_models = {m for lp in mains for m in _names(lp.get("models"))}
+        main_efforts = {e for lp in mains for e in _names(lp.get("efforts"))}
+        print(f"-- session {key} · {', '.join(s['slots'])} · updated {s['updated'] or '?'} · main: "
+              + (f"{'+'.join(sorted(main_models)) or '?'} [{'+'.join(sorted(main_efforts)) or '-'}]"
+                 if mains else "no main loop recorded"))
+        rows: dict[tuple, dict] = {}
+        on_main = same = 0
+        for lp, fields in s["loops"]:
+            kind = lp.get("loop") if isinstance(lp.get("loop"), str) else "?"
+            spawn = lp.get("spawn") if isinstance(lp.get("spawn"), dict) else {}
+            if kind == "agent-tool" and spawn.get("teammate") is True:
+                kind = "teammate"
+            models, efforts = _names(lp.get("models")), _names(lp.get("efforts"))
+            rk = (kind, spawn.get("subagent_type") if kind in SPAWNED else None,
+                  spawn.get("model_param") if kind in SPAWNED else None,
+                  "+".join(models), "+".join(efforts))
+            agg = rows.setdefault(rk, {"loops": 0, "ms": 0, "from_steps": 0,
+                                       "tokens": dict.fromkeys(TOKENS, 0)})
+            agg["loops"] += 1
+            done = lp.get("complete") if isinstance(lp.get("complete"), dict) else {}
+            agg["ms"] += _count(done.get("duration_ms"))
+            tok, host = loop_tokens(lp, fields)
+            for k in TOKENS:
+                agg["tokens"][k] += tok[k]
+            agg["from_steps"] += 0 if host else 1
+            dropped["steps"] += _count(lp.get("steps_dropped"))
+            if kind != "unspawned":
+                continue
+            # ADR 0117: `unspawned` is a workflow worker only while no spawn row was evicted.
+            if _count(lp.get("spawn_rows_evicted")):
+                d6["evicted"] += 1
+            elif not mains:
+                d6["no_main"] += 1
+            elif main_models & set(models):
+                on_main += 1
+                # Unknown on both sides (Haiku sends no effort) is no evidence of an inherit.
+                same += 1 if main_efforts and set(efforts) == main_efforts else 0
+        for rk in sorted(rows, key=lambda k: (KIND_ORDER.get(k[0], 9), k)):
+            print(_fmt_row(rk, rows[rk]))
+        if on_main:
+            print(f"   unspawned on the main model: {on_main} (same effort as main: {same})")
+            d6["sessions"] += 1
+        d6["on_main"] += on_main
+        d6["same_effort"] += same
+        dropped["loops"] += s["loops_dropped"]
+
+    print(f"-- ADR 0117 D6: {d6['on_main']} unspawned loop(s) on their session's main model in "
+          f"{d6['sessions']} session(s); {d6['same_effort']} also at the main loop's effort (the inherit "
+          "signature — a heuristic: a pin equal to the session's effort reads the same)")
+    if d6["evicted"] or d6["no_main"]:
+        print(f"   not attributed: {d6['evicted']} with spawn rows evicted (may be Agent-tool loops), "
+              f"{d6['no_main']} in a session with no main loop recorded")
+    print(f"-- caps: {dropped['loops']} loop(s) dropped by the file caps, {dropped['steps']} step row(s) "
+          "dropped by the per-loop cap" if dropped["loops"] or dropped["steps"] else "-- caps: nothing dropped")
+    for x in skipped:
+        print(f"-- skipped: {x}")
+    for w in warns:
+        hc.warn(w)
+    return 0
+
+
+def main() -> int:
     ap = argparse.ArgumentParser(description="Deterministic slice retrospective (advisory).")
     ap.add_argument("--repo", dest="repo", default=None)
     ap.add_argument("--coverage", action="store_true")
+    ap.add_argument("--delegations", action="store_true")
     ap.add_argument("range", nargs="?", default=None)
     args = ap.parse_args()
+    # The skip hatch belongs to the per-commit run (ADR 0120): an explicit --delegations request is
+    # never silenced by it. Read after parsing, so an abbreviated flag (`--deleg`) is the same request.
+    if os.environ.get("SLICE_RETRO") == "0" and not args.delegations:
+        return 0
+    if args.delegations and (args.coverage or args.range):
+        ap.error("--delegations takes no range and does not combine with --coverage")
 
     root = Path(args.repo).resolve() if args.repo else hc.find_repo_root(Path.cwd())
     cfg, warns = hc.load(root)
+    if args.delegations:
+        return delegations(root, warns)
 
     try:
         if args.coverage:

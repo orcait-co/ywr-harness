@@ -12,6 +12,22 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.62.1 — 2026-10-06
+
+- **위임 기록 장부를 읽는 보고서가 추가됐습니다: `python scripts/harness/harness_retro.py --delegations` (ADR 0120).**
+  v0.62.0 의 장부(`.claude/telemetry/delegations/slot-*.json`)를 세션별로 묶어, 루프 종류(main · Agent 도구 ·
+  workflow 워커)·모델·effort 마다 루프 수, 소요 시간, 토큰을 보여줍니다. D6 줄(ADR 0117)은 메인 루프와 같은
+  모델로 돈 workflow 워커 루프 수이고, 그중 effort 까지 같은 수를 따로 붙입니다. 이 둘째 숫자가 모델을 지정하지 않은
+  워커가 세션 모델을 물려받은 것으로 보이는 루프입니다 — 추정치이며, 보고서도 그렇게 표시합니다. 어느 spawn 인지
+  가릴 수 없는 루프와 메인 루프 기록이 없는 세션의 루프는 따로 셉니다.
+- 읽기만 합니다. 파일을 쓰거나 지우지 않고, 커밋마다 도는 slice retro 출력에는 나오지 않습니다. 직접 실행할 때만 나오며,
+  `SLICE_RETRO=0` 이 설정된 셸에서도 실행됩니다.
+  쓰는 중이라 반쯤 기록된 파일이나 형식이 다른 파일은 건너뛰고, 건너뛴 파일과 이유를 출력합니다.
+- Claude Code 2.1.289 부터 agent team 의 teammate 도 `agent.spawn` 을 일으킵니다. 장부의 spawn 기록에는
+  `teammate` 필드가 생겼고(teammate 면 `true`, 그 밖의 spawn 은 `false`), `--delegations` 보고서는 teammate 루프를 Agent 도구 위임과 섞지 않고 `teammate` 행으로 따로
+  묶습니다. 장부 형식(schema 2)은 그대로이며, 이전 기록은 그대로 읽힙니다.
+- 적용: 플러그인 업데이트 후 `/ywr-harness:harness-init` 을 다시 실행하면 레포의 `scripts/harness/harness_retro.py` 가 갱신됩니다.
+
 ## v0.62.0 — 2026-10-02
 
 - **첫 Claude Mod: 위임 기록 장부(`hooks/delegation-ledger.mjs`)가 추가됐습니다 (ADR 0117, ADR 0118).** 메인 루프의 한 턴,

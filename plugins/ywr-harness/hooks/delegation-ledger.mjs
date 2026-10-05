@@ -6,7 +6,9 @@
 // every request the loop made (`turn.step`: the model the engine resolved, the effort it sends, the
 // usage the API reported), the loop's end (`turn.complete`: reason, duration, summed usage) and, for
 // an Agent-tool spawn, the spawn itself (`agent.spawn`: type, the per-call model as given, the parent
-// model, the resolved model). A Workflow `agent()` worker raises no `agent.spawn` (fact 89), so its
+// model, the resolved model). An agent-team teammate raises `agent.spawn` too from Claude Code 2.1.289
+// (`e.isTeammate`); its loop keeps the `agent-tool` kind and its spawn row says `teammate: true`, which
+// is what the reader splits on (schema 2 unchanged — the field is additive). A Workflow `agent()` worker raises no `agent.spawn` (fact 89), so its
 // loop is written with `spawn: null` and `loop: 'unspawned'` — its steps still name the model and
 // effort it ran on, which is the one place a silent inherit is visible.
 //
@@ -105,6 +107,7 @@ export function spawnRow(e, r) {
     denied: !!(r && typeof r === 'object' && r.deny),
     fork: !!e.fork,
     background: !!e.background,
+    teammate: !!e.isTeammate,
     parent_agent_id: e.parentAgentId ?? null,
   }
 }

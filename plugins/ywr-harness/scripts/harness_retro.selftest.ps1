@@ -585,6 +585,100 @@ Write-F $s2 'docs/adr/0001-a.md' "<!-- note -->`n---`nid: `"0001`"`ntype: adr`ns
 Commit $s2 'docs: append an addendum (body only)'
 $rS3 = Invoke-Retro $s2 @()
 $ok = (Assert-True 'S3 BUILD is SILENT for a body-only edit under a leading HTML comment' ($rS3.Out -notmatch 'BUILD:') $rS3.Out) -and $ok
+
+# --- DL: --delegations reads the delegation ledger's slot files (ADR 0120) -----------------------
+# No git needed: the report reads files only. DL2 is the D6 counter's control and its exclusions in
+# one session split over two slots (ADR 0118's LRU residual), one of them with step_fields REORDERED
+# and no complete.usage, so a positional step read sums the wrong column.
+$dl = Join-Path $fxBase 'delegations'
+New-Item -ItemType Directory -Force -Path $dl | Out-Null
+Write-F $dl '.harness.json' '{}'
+$rDL1 = Invoke-Retro $dl @('--delegations')
+$ok = (Assert-True 'DL1 no ledger directory: one line naming where the module writes, exit 0' ($rDL1.Code -eq 0 -and $rDL1.Out -match 'no ledger at \.claude/telemetry/delegations') "exit=$($rDL1.Code): $($rDL1.Out)") -and $ok
+
+$fieldsStd = '["index","model","effort","message_count","stop_reason","input_tokens","output_tokens","cache_read_input_tokens","cache_creation_input_tokens","usage_model"]'
+$fieldsRev = '["usage_model","cache_creation_input_tokens","cache_read_input_tokens","output_tokens","input_tokens","stop_reason","message_count","effort","model","index"]'
+function DlLoop([string]$Kind, [string]$Models, [string]$Efforts, [int]$Evicted, [string]$Usage, [string]$Steps, [string]$Spawn = 'null', [int]$StepsDropped = 0) {
+    $c = if ($Usage) { "{`"reason`":`"answer`",`"aborted`":false,`"duration_ms`":1500,`"usage`":$Usage}" } else { '{"reason":"answer","aborted":false,"duration_ms":1500,"usage":null}' }
+    return "{`"ts`":`"t`",`"loop`":`"$Kind`",`"agent_id`":null,`"turn_id`":`"u`",`"spawn`":$Spawn,`"spawn_rows_evicted`":$Evicted,`"steps`":$Steps,`"steps_dropped`":$StepsDropped,`"models`":$Models,`"efforts`":$Efforts,`"complete`":$c}"
+}
+$u = '{"model":"m","input_tokens":5,"output_tokens":7,"cache_read_input_tokens":100,"cache_creation_input_tokens":3}'
+$mech = '{"subagent_type":"ywr-harness:mech","model_param":null,"model":"claude-haiku-4-5"}'
+$loopsA = @(
+    (DlLoop 'main' '["claude-opus-5-5"]' '["xhigh"]' 0 $u '[]'),
+    (DlLoop 'unspawned' '["claude-opus-5-5"]' '["xhigh"]' 0 $u '[]'),      # inherit signature
+    (DlLoop 'unspawned' '["claude-opus-5-5"]' '["low"]' 0 $u '[]'),        # opus · low pin: on main, other effort
+    (DlLoop 'unspawned' '["claude-haiku-4-5"]' '[]' 0 $u '[]'),            # pinned elsewhere: not counted
+    (DlLoop 'agent-tool' '["claude-haiku-4-5"]' '[]' 0 $u '[]' $mech)
+) -join ','
+Write-F $dl '.claude/telemetry/delegations/slot-00.json' "{`"schema`":2,`"session_id`":`"sess-A`",`"slot`":0,`"updated`":`"2026-10-02T01:00:00Z`",`"step_fields`":$fieldsStd,`"loops_dropped`":2,`"loops`":[$loopsA]}"
+# Second file of the same session: an evicted-spawn unspawned on the main model (not attributed) and a
+# loop whose tokens come from its steps, read by NAME under a reversed step_fields.
+$stepsRev = '[[null,40,30,20,10,"end_turn",3,"xhigh","claude-opus-5-5",0],[null,1,1,1,1,"end_turn",4,"xhigh","claude-opus-5-5",1]]'
+$loopsB = @(
+    (DlLoop 'unspawned' '["claude-opus-5-5"]' '["xhigh"]' 3 $u '[]'),
+    (DlLoop 'main' '["claude-opus-5-5"]' '["xhigh"]' 0 '' $stepsRev 'null' 5)
+) -join ','
+Write-F $dl '.claude/telemetry/delegations/slot-07.json' "{`"schema`":2,`"session_id`":`"sess-A`",`"slot`":7,`"updated`":`"2026-10-02T02:00:00Z`",`"step_fields`":$fieldsRev,`"loops_dropped`":0,`"loops`":[$loopsB]}"
+# Skips, each named: a partial write, a schema-1 file; ignored without a word: a non-slot name.
+Write-F $dl '.claude/telemetry/delegations/slot-03.json' '{"schema":2,"session_id":"sess-B","loo'
+Write-F $dl '.claude/telemetry/delegations/slot-04.json' '{"schema":1,"session_id":"sess-C"}'
+Write-F $dl '.claude/telemetry/delegations/notes.json' 'not a slot'
+$rDL2 = Invoke-Retro $dl @('--delegations')
+$o = $rDL2.Out
+$ok = (Assert-True 'DL2 exit 0; two readable files, ONE session (merged by session_id), seven loops' ($rDL2.Code -eq 0 -and $o -match '2 slot file\(s\), 1 session\(s\), 7 loop\(s\)' -and $o -match 'session sess-A · slot-00\.json, slot-07\.json') "exit=$($rDL2.Code): $o") -and $ok
+$ok = (Assert-True 'DL2 D6 counts the two unspawned loops on the main model, one at its effort' ($o -match 'ADR 0117 D6: 2 unspawned loop\(s\) on their session''s main model in 1 session\(s\); 1 also at the main loop''s effort') $o) -and $ok
+$ok = (Assert-True 'DL2 the evicted-spawn loop is reported apart, never counted' ($o -match 'not attributed: 1 with spawn rows evicted') $o) -and $ok
+$ok = (Assert-True 'DL2 steps are read by step_fields NAME (reversed fields: in 11 · out 21 · read 31 · write 41)' ($o -match 'main · claude-opus-5-5 · xhigh — 2 loop\(s\), 3\.0 s, tokens in 16 · out 28 · cache read 131 · cache write 44 \(1 loop\(s\) without complete\.usage') $o) -and $ok
+$ok = (Assert-True 'DL2 an agent-tool row names its type and model_param' ($o -match 'agent-tool ywr-harness:mech \(model_param none\) · claude-haiku-4-5') $o) -and $ok
+$ok = (Assert-True 'DL2 caps are surfaced (2 loops, 5 steps dropped)' ($o -match 'caps: 2 loop\(s\) dropped by the file caps, 5 step row\(s\)') $o) -and $ok
+$ok = (Assert-True 'DL2 the partial and the schema-1 file are each named as skipped; notes.json is not read' ($o -match 'skipped: slot-03\.json \(not JSON' -and $o -match 'skipped: slot-04\.json \(not a schema 2 slot\)' -and $o -notmatch 'notes\.json') $o) -and $ok
+
+# DL3: a null session id groups per FILE (every id-less session writes the same header).
+Write-F $dl '.claude/telemetry/delegations/slot-03.json' "{`"schema`":2,`"session_id`":null,`"slot`":3,`"updated`":`"x`",`"step_fields`":$fieldsStd,`"loops_dropped`":0,`"loops`":[$(DlLoop 'main' '["m"]' '[]' 0 $u '[]')]}"
+Write-F $dl '.claude/telemetry/delegations/slot-04.json' "{`"schema`":2,`"session_id`":null,`"slot`":4,`"updated`":`"y`",`"step_fields`":$fieldsStd,`"loops_dropped`":0,`"loops`":[$(DlLoop 'main' '["m"]' '[]' 0 $u '[]')]}"
+$rDL3 = Invoke-Retro $dl @('--delegations')
+$ok = (Assert-True 'DL3 two null-id files stay two sessions' ($rDL3.Out -match '4 slot file\(s\), 3 session\(s\)' -and $rDL3.Out -match 'session \(no session id\) slot-03\.json' -and $rDL3.Out -match 'session \(no session id\) slot-04\.json') $rDL3.Out) -and $ok
+
+# DL4: usage errors — the report takes no range and does not combine with --coverage.
+$rDL4 = Invoke-Retro $dl @('--delegations', 'HEAD~1..HEAD')
+$rDL4b = Invoke-Retro $dl @('--delegations', '--coverage')
+$ok = (Assert-True 'DL4 --delegations with a range or --coverage is a usage error (exit 2)' ($rDL4.Code -eq 2 -and $rDL4b.Code -eq 2 -and $rDL4.Out -match 'takes no range') "range exit=$($rDL4.Code), coverage exit=$($rDL4b.Code): $($rDL4.Out)") -and $ok
+
+# DL5: unknown effort on both sides is no inherit signature (a Haiku main loop sends none); a session
+# with no main loop is counted apart; a directory at a slot name is named as skipped.
+$dl5 = Join-Path $fxBase 'delegations-5'
+New-Item -ItemType Directory -Force -Path $dl5 | Out-Null
+Write-F $dl5 '.harness.json' '{}'
+# A teammate (2.1.289+) is written as an agent-tool loop whose spawn row says teammate: true.
+$mate = '{"subagent_type":"researcher","model_param":null,"model":"claude-sonnet-5-5","teammate":true}'
+# Controls: `teammate: false` (every non-teammate spawn the 0.62.1 writer emits) and a non-boolean "true"
+# stay agent-tool — the reader re-kinds on the boolean true only.
+$notMate = '{"subagent_type":"Explore","model_param":null,"model":"claude-haiku-4-5","teammate":false}'
+$strMate = '{"subagent_type":"Plan","model_param":null,"model":"claude-haiku-4-5","teammate":"true"}'
+$loops5 = @((DlLoop 'main' '["claude-haiku-4-5"]' '[]' 0 $u '[]'), (DlLoop 'unspawned' '["claude-haiku-4-5"]' '[]' 0 $u '[]'),
+    (DlLoop 'agent-tool' '["claude-sonnet-5-5"]' '["high"]' 0 $u '[]' $mate),
+    (DlLoop 'agent-tool' '["claude-haiku-4-5"]' '[]' 0 $u '[]' $notMate),
+    (DlLoop 'agent-tool' '["claude-haiku-4-5"]' '[]' 0 $u '[]' $strMate)) -join ','
+Write-F $dl5 '.claude/telemetry/delegations/slot-00.json' "{`"schema`":2,`"session_id`":`"haiku-main`",`"slot`":0,`"updated`":`"a`",`"step_fields`":$fieldsStd,`"loops_dropped`":0,`"loops`":[$loops5]}"
+Write-F $dl5 '.claude/telemetry/delegations/slot-01.json' "{`"schema`":2,`"session_id`":`"no-main`",`"slot`":1,`"updated`":`"b`",`"step_fields`":$fieldsStd,`"loops_dropped`":0,`"loops`":[$(DlLoop 'unspawned' '["m"]' '["low"]' 0 $u '[]')]}"
+New-Item -ItemType Directory -Force -Path (Join-Path $dl5 '.claude/telemetry/delegations/slot-02.json') | Out-Null
+$rDL5 = Invoke-Retro $dl5 @('--delegations')
+$o5 = $rDL5.Out
+$ok = (Assert-True 'DL5 an effort-less main and worker on one model: on the main model, NOT at its effort' ($o5 -match 'ADR 0117 D6: 1 unspawned loop\(s\) on their session''s main model in 1 session\(s\); 0 also at') $o5) -and $ok
+$ok = (Assert-True 'DL5 the no-main session''s worker is counted apart' ($o5 -match 'not attributed: 0 with spawn rows evicted .*1 in a session with no main loop recorded' -and $o5 -match 'session no-main .* main: no main loop recorded') $o5) -and $ok
+$ok = (Assert-True 'DL5 a directory at a slot name is skipped and named' ($o5 -match 'skipped: slot-02\.json \(not a regular file\)') $o5) -and $ok
+$ok = (Assert-True 'DL5 a teammate spawn row reads as its own teammate row, never agent-tool' ($o5 -match 'teammate researcher \(model_param none\) · claude-sonnet-5-5 · high' -and $o5 -notmatch 'agent-tool researcher') $o5) -and $ok
+$ok = (Assert-True 'DL5 teammate false and a non-boolean "true" stay agent-tool rows' ($o5 -match 'agent-tool Explore \(model_param none\)' -and $o5 -match 'agent-tool Plan \(model_param none\)' -and $o5 -notmatch 'teammate (Explore|Plan)') $o5) -and $ok
+
+# DL6: SLICE_RETRO=0 skips the per-commit run, never an explicit --delegations request (ADR 0120).
+$prevSR = $env:SLICE_RETRO
+$env:SLICE_RETRO = '0'
+try { $rDL6 = Invoke-Retro $dl5 @('--delegations'); $rDL6a = Invoke-Retro $dl5 @('--deleg'); $rDL6b = Invoke-Retro $dl5 @('--delegations', 'HEAD~1..HEAD'); $rDL6c = Invoke-Retro $dl5 @('--coverage') }
+finally { if ($null -eq $prevSR) { Remove-Item Env:SLICE_RETRO -ErrorAction SilentlyContinue } else { $env:SLICE_RETRO = $prevSR } }
+$ok = (Assert-True 'DL6 under SLICE_RETRO=0 the report still prints and the usage error still fires' ($rDL6.Out -match 'ADR 0117 D6:' -and $rDL6b.Code -eq 2) "exit=$($rDL6b.Code): $($rDL6.Out)") -and $ok
+$ok = (Assert-True 'DL6 an abbreviated flag (--deleg, argparse prefix) is the same request' ($rDL6a.Out -match 'ADR 0117 D6:') $rDL6a.Out) -and $ok
+$ok = (Assert-True 'DL6 control: SLICE_RETRO=0 still silences --coverage' ($rDL6c.Code -eq 0 -and -not $rDL6c.Out.Trim()) $rDL6c.Out) -and $ok
 Remove-FixtureRoot $fxBase
 
 if (-not $ok) { Write-Host 'harness_retro selftest: FAILED' -ForegroundColor Red; exit 1 }
