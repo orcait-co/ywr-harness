@@ -37,6 +37,10 @@ concurrency:
 jobs:
   gates:
     runs-on: ubuntu-latest
+    # ADR 0123(ADR 0098 옵션 E). 없으면 GitHub 기본값 360분이 걸려, 멈춘 게이트 하나가 런마다 6시간을 청구한다.
+    # 60분은 정본 런(4–8분 실측)의 7배 이상이라 소비 레포의 테스트 게이트에도 여유가 있다 — 넘으면 GitHub 이
+    # "exceeded the maximum execution time" 으로 이름 붙여 실패시키고, 늘리는 것은 정본에서 한다(ADR 0010).
+    timeout-minutes: 60
     steps:
       # ADR 0087 (dist issue #6). 모든 uses: 는 40-hex 커밋 SHA 고정 + `# vX.Y.Z` 주석이다 — 떠다니는
       # 메이저 태그는 이 파일을 리뷰한 적 없는 코드로 옮겨갈 수 있다. 갱신은 정본이 손으로 한다

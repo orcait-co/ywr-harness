@@ -40,7 +40,7 @@ $ok = (Assert-True 'A placement is reported as created' ($rA.Out -match 'harness
 $ok = (Assert-True 'A statusLine is wired' ($sA.statusLine.command -match 'harness-statusline\.js') "got: $($sA.statusLine.command)") -and $ok
 $ok = (Assert-True 'A wiring uses command type' ($sA.statusLine.type -eq 'command') "type=$($sA.statusLine.type)") -and $ok
 $ok = (Assert-True 'A wiring is reported' ($rA.Out -match 'wired') $rA.Out) -and $ok
-$ok = (Assert-True 'A a fresh wiring carries refreshInterval 30' ($sA.statusLine.refreshInterval -eq 30) "refreshInterval=$($sA.statusLine.refreshInterval)") -and $ok
+$ok = (Assert-True 'A a fresh wiring carries NO refreshInterval (ADR 0122)' ($null -eq $sA.statusLine.refreshInterval) "refreshInterval=$($sA.statusLine.refreshInterval)") -and $ok
 
 # --- B: re-run is idempotent --------------------------------------------------------------------
 $rB = Invoke-Install $a @()
@@ -123,40 +123,40 @@ $ok = (Assert-True 'G dry run says so' ($rG.Out -match 'dry run') $rG.Out) -and 
 $ok = (Assert-True 'G dry run wrote no script' (-not (Test-Path -LiteralPath (Join-Path $g 'harness-statusline.js'))) 'script was written') -and $ok
 $ok = (Assert-True 'G dry run wrote no settings' (-not (Test-Path -LiteralPath (Join-Path $g 'settings.json'))) 'settings.json was written') -and $ok
 
-# --- J: refreshInterval on OUR OWN block is add-if-absent (ADR 0059) -----------------------------
-# The upgrade path: an install wired before v0.37.0 has our command but no refreshInterval — a
-# re-run adds it. The counter-case is the one that matters: a member-tuned value, whatever it is,
-# must survive every re-run (the ADR 0015 rule — overwrite semantics here would silently revert a
-# member decision on every install).
-$k = New-Dir 'upgrade-path'
+# --- J: a refreshInterval on OUR OWN block is kept, never added (ADR 0122) ----------------------
+# Installs wired v0.37.0–v0.62.1 carry `refreshInterval: 30`; a member may have tuned it. The script
+# cannot tell the two apart, so a present value — any value — survives every re-run and is named in
+# the output; an absent one is never added back (the add-if-absent upgrade path of ADR 0059 is gone).
+$k = New-Dir 'kept-interval'
 Invoke-Install $k @() | Out-Null
 $kSettingsPath = Join-Path $k 'settings.json'
 $kMap = Get-Content -LiteralPath $kSettingsPath -Raw | ConvertFrom-Json -AsHashtable
-$kMap['statusLine'].Remove('refreshInterval')                       # simulate the pre-0.37 block
-$kMap['keepMe'] = 'yes'                                             # unrelated key must survive the add-write
+$kMap['statusLine']['refreshInterval'] = 30                         # an install wired by v0.37.0–v0.62.1
+$kMap['keepMe'] = 'yes'                                             # unrelated key must survive the re-run
 Set-Content -LiteralPath $kSettingsPath -Value ($kMap | ConvertTo-Json -Depth 20) -Encoding utf8
 $rK = Invoke-Install $k @()
 $sK = Get-Settings $k
-$ok = (Assert-True 'J a pre-0.37 own block gains refreshInterval 30 on re-run' ($sK.statusLine.refreshInterval -eq 30) "refreshInterval=$($sK.statusLine.refreshInterval)") -and $ok
-$ok = (Assert-True 'J the add is reported' ($rK.Out -match 'refreshInterval 30s added') $rK.Out) -and $ok
-$ok = (Assert-True 'J the command wiring is untouched by the add' ($sK.statusLine.command -match 'harness-statusline\.js') "got: $($sK.statusLine.command)") -and $ok
-$ok = (Assert-True 'J unrelated keys survive the add-write' ($sK.keepMe -eq 'yes') 'keepMe lost') -and $ok
-# Member-tuned value survives — any value, including one lower than ours.
+$ok = (Assert-True 'J an old 30 s interval survives a re-run' ($sK.statusLine.refreshInterval -eq 30) "refreshInterval=$($sK.statusLine.refreshInterval)") -and $ok
+$ok = (Assert-True 'J the kept interval is named, with the way out' (($rK.Out -match 'already wired') -and ($rK.Out -match 'refreshInterval 30 kept — no longer wired \(ADR 0122\)')) $rK.Out) -and $ok
+$ok = (Assert-True 'J the command wiring is untouched' ($sK.statusLine.command -match 'harness-statusline\.js') "got: $($sK.statusLine.command)") -and $ok
+$ok = (Assert-True 'J unrelated keys survive the re-run' ($sK.keepMe -eq 'yes') 'keepMe lost') -and $ok
+# A member-tuned value survives too — any value.
 $kMap2 = Get-Content -LiteralPath $kSettingsPath -Raw | ConvertFrom-Json -AsHashtable
 $kMap2['statusLine']['refreshInterval'] = 5
 Set-Content -LiteralPath $kSettingsPath -Value ($kMap2 | ConvertTo-Json -Depth 20) -Encoding utf8
 $rK2 = Invoke-Install $k @()
 $sK2 = Get-Settings $k
 $ok = (Assert-True 'J a member-tuned interval survives a re-run' ($sK2.statusLine.refreshInterval -eq 5) "refreshInterval=$($sK2.statusLine.refreshInterval)") -and $ok
-$ok = (Assert-True 'J the tuned-value run reports already wired, no add' (($rK2.Out -match 'already wired') -and ($rK2.Out -notmatch 'added')) $rK2.Out) -and $ok
-# Dry run on the upgrade path: reports the would-add, writes nothing.
+$ok = (Assert-True 'J the tuned value is named' ($rK2.Out -match 'refreshInterval 5 kept') $rK2.Out) -and $ok
+# Absent on our block: never added back, real run or dry run, and no note.
 $kMap3 = Get-Content -LiteralPath $kSettingsPath -Raw | ConvertFrom-Json -AsHashtable
 $kMap3['statusLine'].Remove('refreshInterval')
 Set-Content -LiteralPath $kSettingsPath -Value ($kMap3 | ConvertTo-Json -Depth 20) -Encoding utf8
 $rK3 = Invoke-Install $k @('-DryRun')
-$sK3 = Get-Settings $k
-$ok = (Assert-True 'J dry run reports the would-add' ($rK3.Out -match 'would add refreshInterval') $rK3.Out) -and $ok
-$ok = (Assert-True 'J dry run writes no refreshInterval' ($null -eq $sK3.statusLine.refreshInterval) "refreshInterval=$($sK3.statusLine.refreshInterval)") -and $ok
+$rK4 = Invoke-Install $k @()
+$sK4 = Get-Settings $k
+$ok = (Assert-True 'J an absent interval is not added back' ($null -eq $sK4.statusLine.refreshInterval) "refreshInterval=$($sK4.statusLine.refreshInterval)") -and $ok
+$ok = (Assert-True 'J neither run mentions refreshInterval when there is none' (($rK3.Out -notmatch 'refreshInterval') -and ($rK4.Out -notmatch 'refreshInterval') -and ($rK4.Out -match 'already wired')) "$($rK3.Out)`n$($rK4.Out)") -and $ok
 
 # --- H: the DEFAULT target follows CLAUDE_CONFIG_DIR (ADR 0046) ----------------------------------
 # No -ClaudeDir. The env var is the scope a multi-account session runs under; a default that

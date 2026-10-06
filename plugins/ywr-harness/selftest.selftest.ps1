@@ -281,16 +281,22 @@ $ok = (Assert-Case 'G5 -Shard 3/3 -Jobs 2: c-pass alone, the gate still runs, gr
 # G8 — -SuiteTimeout (ADR 0098): a suite that hangs is killed WITH its process tree and counted
 # FAILED, the run still finishes and still reports the suite beside it. Its own fixture tree, so G1–G5's
 # counts stay three. The hanging stub starts a grandchild pwsh first and records its PID: the case
-# checks that child is gone too, since a surviving descendant is what kept a CI job alive. The limit
-# is 20 s, not less: under a loaded 2-CPU container a 5 s limit fired while the stub was still
-# spawning (measured 2026-09-27), and a process killed mid-spawn can orphan the child it was
-# starting. The stub writes `ready` once the grandchild runs, so that case reads as what it is.
+# checks that child is gone too, since a surviving descendant is what kept a CI job alive. The judged
+# limit is 8 s, with ONE fallback at 20 s (ADR 0123, ADR 0111's H): under a loaded 2-CPU container a
+# 5 s limit fired while the stub was still spawning (measured 2026-09-27). The stub writes `ready` once
+# the grandchild runs; an attempt whose kill beat `ready` proves nothing about the kill, so it is
+# discarded and the next limit runs — load costs time, never a red. Discarding stops a grandchild whose
+# PID was recorded; one killed between its spawn and that write is left to the runner's tree kill (the
+# 300 s sleep bounds it if that missed). The first attempt is a FORCED miss (`hold` makes the stub sleep
+# before it spawns anything, killed at 1 s), so the discard-and-continue path runs on every run, not
+# only under load (G8F), and spawns no grandchild to orphan.
 $fxHang = Join-Path $fxBase 'hang'
 New-Item -ItemType Directory -Force $fxHang | Out-Null
 $hangRunner = Join-Path $fxHang 'selftest.ps1'
 Copy-Item -LiteralPath $runner -Destination $hangRunner
 [IO.File]::WriteAllText((Join-Path $fxHang 'manifest-gate.ps1'), "Write-Host 'PASS  stub manifest gate'`nexit 0`n")
 [IO.File]::WriteAllText((Join-Path $fxHang 'h-hang.selftest.ps1'), @'
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'hold')) { Start-Sleep -Seconds 300 }
 $kid = Start-Process -FilePath ([Environment]::ProcessPath) -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 300' -NoNewWindow -PassThru
 [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'grandchild.pid'), "$($kid.Id)")
 Write-Host 'PASS [h before the hang]'
@@ -299,19 +305,34 @@ Start-Sleep -Seconds 300
 exit 0
 '@)
 [IO.File]::WriteAllText((Join-Path $fxHang 'p-ok.selftest.ps1'), "Write-Host 'PASS [p one]'`nexit 0`n")
-$hangClock = [Diagnostics.Stopwatch]::StartNew()
-$g8 = Invoke-RunnerFresh $hangRunner @('-Jobs', '2', '-SuiteTimeout', '20')
-$hangClock.Stop()
-$ok = (Assert-Case 'G8 a hung suite is killed at -SuiteTimeout and counted FAILED; the suite beside it still reports' $g8 1 `
-    @('selftests: discovered=2 passed=1 failed=1', 'FAIL — h-hang\.selftest\.ps1', '(?m)^done h-hang\.selftest\.ps1 FAIL \(',
-        'exceeded -SuiteTimeout 20 s and was killed with its process tree', '(?m)^PASS \[h before the hang\]', '(?m)^ok   p-ok\.selftest\.ps1') `
-    @('all gates green', '(?m)^--- p-ok')) -and $ok
-$gcPid = 0
 $gcFile = Join-Path $fxHang 'grandchild.pid'
-$gcRead = (Test-Path -LiteralPath $gcFile) -and [int]::TryParse(([IO.File]::ReadAllText($gcFile)).Trim(), [ref]$gcPid)
-$gcAlive = $gcRead -and [bool](Get-Process -Id $gcPid -ErrorAction SilentlyContinue)
-$stubReady = Test-Path -LiteralPath (Join-Path $fxHang 'ready')
-if ($gcAlive) { Stop-Process -Id $gcPid -Force -ErrorAction SilentlyContinue }
+$readyFile = Join-Path $fxHang 'ready'
+$holdFile = Join-Path $fxHang 'hold'
+$g8Forced = $null
+foreach ($attempt in @(@{ Limit = 1; Hold = $true }, @{ Limit = 8; Hold = $false }, @{ Limit = 20; Hold = $false })) {
+    Remove-Item -LiteralPath $gcFile, $readyFile, $holdFile -Force -ErrorAction SilentlyContinue
+    if ($attempt.Hold) { [IO.File]::WriteAllText($holdFile, '1') }
+    $hangLimit = $attempt.Limit
+    $hangClock = [Diagnostics.Stopwatch]::StartNew()
+    $g8 = Invoke-RunnerFresh $hangRunner @('-Jobs', '2', '-SuiteTimeout', "$hangLimit")
+    $hangClock.Stop()
+    $gcPid = 0
+    $gcRead = (Test-Path -LiteralPath $gcFile) -and [int]::TryParse(([IO.File]::ReadAllText($gcFile)).Trim(), [ref]$gcPid)
+    $gcAlive = $gcRead -and [bool](Get-Process -Id $gcPid -ErrorAction SilentlyContinue)
+    $stubReady = Test-Path -LiteralPath $readyFile
+    if ($gcAlive) { Stop-Process -Id $gcPid -Force -ErrorAction SilentlyContinue }
+    if ($attempt.Hold) { $g8Forced = @{ Run = $g8; Ready = $stubReady; GcRead = $gcRead }; continue }
+    if ($stubReady) { break }
+    if ($hangLimit -lt 20) { Write-Host "INFO [G8 the $hangLimit s kill beat the stub's ready marker (load) — re-run at 20 s]" }
+}
+Remove-Item -LiteralPath $holdFile -Force -ErrorAction SilentlyContinue
+$ok = (Assert-True 'G8F the forced 1 s miss is discarded: killed before ready and before any spawn, and the judged attempt ran after it' `
+    ((-not $g8Forced.Ready) -and (-not $g8Forced.GcRead) -and ($g8Forced.Run.Out -match 'exceeded -SuiteTimeout 1 s') -and ($hangLimit -ge 8)) `
+    "forced ready=$($g8Forced.Ready) pid written=$($g8Forced.GcRead) judged limit=$hangLimit`n$(Format-Nested $g8Forced.Run.Out)") -and $ok
+$ok = (Assert-Case "G8 a hung suite is killed at -SuiteTimeout ($hangLimit s) and counted FAILED; the suite beside it still reports" $g8 1 `
+    @('selftests: discovered=2 passed=1 failed=1', 'FAIL — h-hang\.selftest\.ps1', '(?m)^done h-hang\.selftest\.ps1 FAIL \(',
+        "exceeded -SuiteTimeout $hangLimit s and was killed with its process tree", '(?m)^PASS \[h before the hang\]', '(?m)^ok   p-ok\.selftest\.ps1') `
+    @('all gates green', '(?m)^--- p-ok')) -and $ok
 $ok = (Assert-True 'G8b the hung suite''s grandchild died with it, and the run ended well before the stub''s 300 s' `
     ($stubReady -and $gcRead -and -not $gcAlive -and $hangClock.Elapsed.TotalSeconds -lt 120) `
     "stub ready before the kill=$stubReady (false: the limit fired mid-spawn — load, not the kill) · grandchild pid read=$gcRead alive=$gcAlive · wall $([int]$hangClock.Elapsed.TotalSeconds) s`n$(Format-Nested $g8.Out)") -and $ok

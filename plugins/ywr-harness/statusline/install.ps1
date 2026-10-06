@@ -128,34 +128,27 @@ $current = $null
 if ($settings.ContainsKey('statusLine')) { $current = $settings['statusLine'] }
 $currentCmd = if ($current -is [hashtable] -or $current -is [System.Collections.IDictionary]) { [string]$current['command'] } else { '' }
 
-# The block this script writes carries a 30s refresh timer alongside the command (ADR 0059):
-# event-driven renders go quiet while a session idles on background agents, and the timer keeps
-# the quota/git-state segments current. On a block that already points here, refreshInterval is
-# ADD-IF-ABSENT only — a present value, whatever it is, is a member decision this script cannot
-# see the reasons for (the ADR 0015 rule, same as the foreign-statusLine refusal below).
-$REFRESH_SECONDS = 30
+# The block this script writes is the command alone. Through v0.62.1 it also carried
+# `refreshInterval: 30` (ADR 0059); ADR 0122 dropped it: the payload's rate_limits come from the
+# session's own API responses (fact 97), and the one segment that can move while a session idles — the
+# installed plugin version, read from disk as a restart signal — can wait for the next exchange. A refreshInterval already on our block is left
+# as it is — whether this script or the member put it there cannot be told apart (the ADR 0015 rule,
+# same as the foreign-statusLine refusal below) — and the run says so instead of keeping quiet.
 if (-not $current) {
     if ($DryRun) {
-        Write-Host "  wiring: statusLine absent — would set it (refreshInterval ${REFRESH_SECONDS}s)" -ForegroundColor Yellow
+        Write-Host "  wiring: statusLine absent — would set it" -ForegroundColor Yellow
     } else {
-        $settings['statusLine'] = [ordered]@{ type = 'command'; command = $wanted; refreshInterval = $REFRESH_SECONDS }
+        $settings['statusLine'] = [ordered]@{ type = 'command'; command = $wanted }
         $json = $settings | ConvertTo-Json -Depth 20
         Set-Content -LiteralPath $settingsPath -Value $json -Encoding utf8
-        Write-Host "  wiring: statusLine set — wired (refreshInterval ${REFRESH_SECONDS}s)" -ForegroundColor Green
+        Write-Host "  wiring: statusLine set — wired" -ForegroundColor Green
     }
 } elseif ($currentCmd -eq $wanted) {
     # $current is necessarily a dictionary here — $currentCmd is only non-empty for one.
-    if (-not $current.Contains('refreshInterval')) {
-        if ($DryRun) {
-            Write-Host "  wiring: statusLine already points here — would add refreshInterval ${REFRESH_SECONDS}s" -ForegroundColor Yellow
-        } else {
-            $current['refreshInterval'] = $REFRESH_SECONDS
-            $json = $settings | ConvertTo-Json -Depth 20
-            Set-Content -LiteralPath $settingsPath -Value $json -Encoding utf8
-            Write-Host "  wiring: statusLine already points here — refreshInterval ${REFRESH_SECONDS}s added" -ForegroundColor Green
-        }
-    } else {
-        Write-Host '  wiring: statusLine already points here — already wired' -ForegroundColor Green
+    Write-Host '  wiring: statusLine already points here — already wired' -ForegroundColor Green
+    if ($current.Contains('refreshInterval')) {
+        $kept = if ($null -eq $current['refreshInterval']) { 'null' } else { $current['refreshInterval'] }
+        Write-Host "          refreshInterval $kept kept — no longer wired (ADR 0122); delete it from settings.json if you did not set it yourself" -ForegroundColor Yellow
     }
 } else {
     # Same rule as ADR 0015's hooksPath: a value this script did not write is a decision it cannot
