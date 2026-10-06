@@ -116,15 +116,25 @@ $ok = (Assert-Case 'C legal shape clean' (Invoke-Gate $fxLegal) 0 `
 # an unbalanced paren injected mid-file, not only on this fixture. The failure mode once worried
 # about was the opposite direction (a false alarm on a valid file); the direction that matters is
 # the silent pass.
-# A node version that starts rejecting it does NOT break anything here, so this WARNs rather than
-# fails — it is the trigger to re-verify the reasoning above, not a defect signal.
+# Re-measured 2026-10-06 on node v24.21.0 (Linux parity image): --check now syntax-checks the file and
+# rejects case B's — and rejects case C's legal file too ("Illegal return statement": a workflow body is
+# a function body, its top-level `return` is not module syntax), the real adversarial-review.js
+# included. Either direction makes --check unusable, so both are a PASS — the second only on that
+# exact error. A node whose --check accepts C, or rejects it for any other reason, WARNs rather than
+# fails — the trigger to re-verify the reasoning above, not a defect signal.
 $dOut = (& node --check (Join-Path $fxBroken '.claude/workflows/bad.js') 2>&1 | Out-String)
 $dRc = $LASTEXITCODE
+$dLegalOut = (& node --check (Join-Path $fxLegal '.claude/workflows/good.js') 2>&1 | Out-String)
+$dLegalRc = $LASTEXITCODE
 if ($dRc -eq 0 -and $dOut -notmatch 'SyntaxError') {
     Write-Host 'PASS [D node --check is vacuous on this class]' -ForegroundColor Green
 }
+elseif ($dLegalRc -ne 0 -and $dLegalOut -match 'SyntaxError: Illegal return statement') {
+    Write-Host "PASS [D node --check false-alarms on a legal workflow (rc=$dLegalRc) — unusable the other way]" -ForegroundColor Green
+}
 else {
-    Write-Host "WARN [D]: node --check now rejects the broken workflow (rc=$dRc) — the custom parser is still correct, but re-verify the reasoning above before citing --check as unusable" -ForegroundColor Yellow
+    $dLegalWhy = ($dLegalOut -split "`r?`n" | Where-Object { $_ -match 'Error' } | Select-Object -First 1)
+    Write-Host "WARN [D]: node --check rejects the broken workflow (rc=$dRc) and the legal one gave rc=$dLegalRc $dLegalWhy — the custom parser is still correct, but re-verify the reasoning above before citing --check as unusable" -ForegroundColor Yellow
 }
 
 # E vacuous corpus: an empty directory FAILS both arms rather than printing a green zero.

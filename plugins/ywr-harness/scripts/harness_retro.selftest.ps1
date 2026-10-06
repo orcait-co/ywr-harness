@@ -523,15 +523,17 @@ $rP2 = Invoke-Retro $p2 @()
 $ok = (Assert-True 'P2 an ADR absent at pre (added) is a difference: BUILD fires, exit 0' ($rP2.Code -eq 0 -and $rP2.Out -match 'BUILD:' -and $rP2.Out -notmatch 'FAILED') "exit=$($rP2.Code): $($rP2.Out)") -and $ok
 
 # --- Q: git absent from PATH is the FAILED marker, never a traceback -----------------------------
-# PATH narrowed to python's own directory (fact 42: a tool's directory can carry neighbours — the
-# absence of git there is asserted, not assumed); python is invoked by absolute path.
+# PATH is one empty directory: python is invoked by absolute path, and python's own directory is no
+# narrowing — stock Ubuntu puts git beside it in /usr/bin (fact 42). The absence is still asserted.
+$qBin = Join-Path $fxBase 'q-empty-path'
+$null = New-Item -ItemType Directory -Path $qBin -Force
 $qSavedPath = $env:PATH
 try {
-    $env:PATH = Split-Path -Parent $py.Source
+    $env:PATH = $qBin
     $qGitGone = -not (Get-Command git -ErrorAction SilentlyContinue)
     $rQ = Invoke-Retro $p2 @()
 } finally { $env:PATH = $qSavedPath }
-$ok = (Assert-True 'Q fixture: git is not resolvable on the narrowed PATH' $qGitGone "PATH=$(Split-Path -Parent $py.Source)") -and $ok
+$ok = (Assert-True 'Q fixture: git is not resolvable on the narrowed PATH' $qGitGone "PATH=$qBin") -and $ok
 $ok = (Assert-True 'Q a missing git binary prints the FAILED marker and exits 1, no traceback' ($rQ.Code -eq 1 -and $rQ.Out -match '\[slice-retro\] FAILED — git could not be run' -and $rQ.Out -notmatch 'Traceback') "exit=$($rQ.Code): $($rQ.Out)") -and $ok
 
 # --- R: a directory implements_in entry owns every file below it (ADR 0104, dist issue #7) -------
