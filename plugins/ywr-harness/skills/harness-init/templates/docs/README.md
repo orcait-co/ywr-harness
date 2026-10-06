@@ -62,3 +62,26 @@ the token difference compounds. Read them in your own language via browser trans
 `docs.html` — there is no translation step in the build and no bilingual bodies. Documents
 written for customers are a separate set in the customer's language, and internal ADR/spec
 surfaces are never shipped to them: they contain rejected options, costs, and trade-offs.
+
+## Writing style
+
+Each document type follows its own set of writing rules. People read these documents through a
+browser translator. A model reads some of them in every session. The rules balance the two
+readers. ADR 0125 of the ywr-harness canon records the reasons.
+
+| Rule | Handoff | CLAUDE.md, org guide | New ADR, changed spec section |
+|---|---|---|---|
+| R1. Define each abbreviation, ID or label at its first use, or name the document that defines it | Yes | Yes | Yes |
+| R2. Name the subject of each sentence | Yes | No | Yes |
+| R3. Put no claim inside parentheses; a short reference such as "(ADR 0123)" is allowed | No | Yes | Yes |
+| R4. Put one fact in each sentence | No | Yes | Yes |
+| R5. Write 25 words or fewer in a descriptive sentence and 20 or fewer in a procedure step | No | No | Yes |
+| R6. Use the active voice | No | No | Yes |
+| R7. Use one word for one meaning | No | No | Yes |
+
+STE-lite is R1 to R7. It takes the writing rules of ASD-STE100 and leaves out its dictionary.
+ASD-STE100 is Simplified Technical English, a controlled language for aerospace maintenance
+documents.
+
+The rules apply to new text. Do not rewrite an accepted ADR to follow them. Rewrite a spec
+section when you change that section for another reason.
