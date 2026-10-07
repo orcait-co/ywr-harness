@@ -1,6 +1,6 @@
 ---
 name: mech
-description: Mechanical runner for zero-judgment stages — grep/list/inventory sweeps, format conversion, grouping/dedupe, running a fixed command and reporting its output. Pinned haiku · effort low (org guide mechanical-stage rule). Not for anything needing design or trade-off judgment — that is worker's or the session's job.
+description: Mechanical runner for zero-judgment stages — grep/list/inventory sweeps, format conversion, grouping/dedupe, running a fixed command and reporting its output. Pinned haiku · effort low (org guide mechanical-stage rule); a per-call model or effort overrides the pin, so omit both. Not for anything needing design or trade-off judgment — that is worker's or the session's job.
 model: haiku
 effort: low
 disallowedTools: Agent

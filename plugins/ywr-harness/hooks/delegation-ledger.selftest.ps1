@@ -124,7 +124,7 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   eq('agent-tool: loop kind, ids, ts; no per-row schema or session', [d.loop, d.agent_id, d.turn_id, d.ts, 'schema' in d, 'session_id' in d],
     ['agent-tool', 'a1', 't1', '2026-10-02T01:02:03.456Z', false, false])
   eq('agent-tool: spawn row', d.spawn, { tool_use_id: 'tu1', subagent_type: 'ywr-harness:mech', provider: 'ywr-harness/user', model_param: null,
-    parent_model: 'claude-opus-5-5', model: 'claude-haiku-4-5', denied: false, fork: false, background: false, teammate: false, parent_agent_id: null })
+    parent_model: 'claude-opus-5-5', model: 'claude-haiku-4-5', denied: false, fork: false, background: false, teammate: false, workflow: null, parent_agent_id: null })
   eq('file: step_fields names the tuple order once', f.step_fields, ['index', 'model', 'effort', 'message_count', 'stop_reason', 'input_tokens',
     'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'usage_model'])
   eq('agent-tool: both steps as tuples, in order, with their usage; usage_model null when it equals model', d.steps,
@@ -135,7 +135,7 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   eq('no message text persisted (prompt, description, answers)', [...E.disk.files.values()].some(x => x.text.includes(SECRET)), false)
 }
 
-// 2. a workflow agent() worker: steps with an agentId no spawn named -> 'unspawned'
+// 2. a workflow agent() worker on a host before 2.1.292: steps with an agentId no spawn named -> 'unspawned'
 {
   const E = engine()
   await step(E, { turnId: 'w', index: 0, model: 'claude-sonnet-5-5', effort: 'low', messageCount: 1, agentId: 'wf9' }, [], stepResult('claude-sonnet-5-5', 2))
@@ -143,6 +143,31 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   const d = E.writes[0][1].loops[0]
   eq('unspawned: loop kind, spawn null, the inherited model and effort visible', [d.loop, d.spawn, d.models, d.efforts, d.complete.usage],
     ['unspawned', null, ['claude-sonnet-5-5'], ['low'], null])
+}
+
+// 2b. a workflow agent() worker on 2.1.292+: `agent.spawn` carries `workflow` -> kind 'workflow' (ADR 0126)
+{
+  const E = engine()
+  const ev = { tool_use_id: 'tuW', subagentType: 'workflow-subagent', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-opus-5-5',
+    background: false, fork: false, workflow: { runId: 'wf_f4acc9ea-92d', agentIndex: 1 } }
+  await spawn(E, { ...ev, model: 'haiku' }, { model: 'claude-haiku-4-5', agentId: 'W1' })
+  await spawn(E, { ...ev, workflow: { runId: 'wf_f4acc9ea-92d', agentIndex: 2 } }, { model: 'claude-opus-5-5', agentId: 'W2' })
+  for (const [id, t, m] of [['W1', 'tW1', 'claude-haiku-4-5'], ['W2', 'tW2', 'claude-opus-5-5']]) {
+    await step(E, { turnId: t, index: 0, model: m, messageCount: 1, agentId: id }, [], null)
+    await complete(E, { durationMs: 2, turnId: t, agentId: id, reason: 'answer' }, {})
+  }
+  const [a, b] = last(E)[1].loops
+  eq('workflow: kind workflow, workflow field mapped', [a.loop, a.spawn.workflow, a.spawn.subagent_type, a.spawn.model_param],
+    ['workflow', { run_id: 'wf_f4acc9ea-92d', agent_index: 1 }, 'workflow-subagent', 'haiku'])
+  eq('workflow without a model given: model_param null, resolved model kept', [b.loop, b.spawn.model_param, b.spawn.model, b.spawn.workflow.agent_index],
+    ['workflow', null, 'claude-opus-5-5', 2])
+  const E2 = engine()
+  await spawn(E2, { ...ev, workflow: 'garbage' }, { model: 'm', agentId: 'W3' })
+  await spawn(E2, { ...ev, workflow: {} }, { model: 'm', agentId: 'W4' })
+  for (const [id, t] of [['W3', 'tW3'], ['W4', 'tW4']]) await complete(E2, { durationMs: 1, turnId: t, agentId: id, reason: 'answer' }, {})
+  const [c, d] = last(E2)[1].loops
+  eq('workflow: a non-object is no workflow; an empty object maps to nulls', [c.loop, c.spawn.workflow, d.loop, d.spawn.workflow],
+    ['agent-tool', null, 'workflow', { run_id: null, agent_index: null }])
 }
 
 // 3. the main loop
@@ -184,7 +209,7 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   eq('teammate: agent-tool kind, schema 2', [d.loop, d.agent_id, E.writes[0][1].schema], ['agent-tool', 'T1', 2])
   eq('teammate: the whole spawn row (null tool_use_id joins by agentId)', d.spawn, { tool_use_id: null, subagent_type: 'researcher', provider: null,
     model_param: null, parent_model: 'claude-opus-5-5', model: 'claude-sonnet-5-5', denied: false, fork: false, background: false, teammate: true,
-    parent_agent_id: null })
+    workflow: null, parent_agent_id: null })
 }
 
 // 5. not adopted: a root without .harness.json gets nothing, the turn still gets its result

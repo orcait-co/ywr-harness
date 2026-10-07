@@ -1,6 +1,6 @@
 ---
 name: verifier
-description: Runs a declared verification procedure's commands exactly as printed and reports the results verbatim — pinned sonnet · effort medium. Not for implementation, research or design legs.
+description: Runs a declared verification procedure's commands exactly as printed and reports the results verbatim — pinned sonnet · effort medium; a per-call model or effort overrides the pin, so omit both. Not for implementation, research or design legs.
 model: sonnet
 effort: medium
 disallowedTools: Agent

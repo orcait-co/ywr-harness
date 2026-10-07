@@ -5,12 +5,16 @@
 // What it records, per finished model loop (the main loop's turn, or one run of a subagent's loop):
 // every request the loop made (`turn.step`: the model the engine resolved, the effort it sends, the
 // usage the API reported), the loop's end (`turn.complete`: reason, duration, summed usage) and, for
-// an Agent-tool spawn, the spawn itself (`agent.spawn`: type, the per-call model as given, the parent
+// a spawned agent, the spawn itself (`agent.spawn`: type, the per-call model as given, the parent
 // model, the resolved model). An agent-team teammate raises `agent.spawn` too from Claude Code 2.1.289
 // (`e.isTeammate`); its loop keeps the `agent-tool` kind and its spawn row says `teammate: true`, which
-// is what the reader splits on (schema 2 unchanged — the field is additive). A Workflow `agent()` worker raises no `agent.spawn` (fact 89), so its
-// loop is written with `spawn: null` and `loop: 'unspawned'` — its steps still name the model and
-// effort it ran on, which is the one place a silent inherit is visible.
+// is what the reader splits on (schema 2 unchanged — the field is additive). A Workflow `agent()` worker
+// raises `agent.spawn` from Claude Code 2.1.292 with `e.workflow` ({runId, agentIndex}); its spawn row
+// carries `workflow: {run_id, agent_index}` and its loop is kind `workflow` (ADR 0126), and a row with
+// no `model_param` proves the call gave no model, so the worker inherited the session's. On 2.1.287 to
+// 2.1.291 such a worker raises no `agent.spawn` (fact 89): its loop is written with `spawn: null` and
+// `loop: 'unspawned'`, whose steps still name the model and effort it ran on. On 2.1.292+ `unspawned`
+// means an evicted spawn row.
 //
 // Observe-only, by contract: every hook passes the event on unchanged (`next(e)`, `yield* next(e)`),
 // never rewrites `model`/`effort`, never denies, never draws, and swallows its own failures — the
@@ -49,8 +53,9 @@ export const MAX_STEPS = 200
 export const MAX_OPEN = 256
 // Spawn rows outlive their loop (a resumed agent runs again under the same id), so they are capped
 // separately and higher (a row is ~300 B). An evicted row would make that agent's later run read as
-// `unspawned` — the workflow signal ADR 0117 Decision 6 counts — so each record carries
-// `spawn_rows_evicted`, the session's running count, and a reader discounts `unspawned` when it is > 0.
+// `unspawned` — the workflow signal ADR 0117 Decision 6 counts on hosts before 2.1.292, and a plain
+// eviction after — so each record carries `spawn_rows_evicted`, the session's running count, and a
+// reader discounts `unspawned` when it is > 0.
 export const MAX_SPAWNS = 4096
 // Session loop lists held at once (a `/clear` starts a new session in the same module).
 export const MAX_SESSIONS = 4
@@ -97,6 +102,7 @@ function usageRow(u) {
 }
 
 export function spawnRow(e, r) {
+  const wf = e.workflow && typeof e.workflow === 'object' ? e.workflow : null
   return {
     tool_use_id: e.tool_use_id ?? null,
     subagent_type: e.subagentType ?? null,
@@ -108,6 +114,7 @@ export function spawnRow(e, r) {
     fork: !!e.fork,
     background: !!e.background,
     teammate: !!e.isTeammate,
+    workflow: wf ? { run_id: wf.runId ?? null, agent_index: wf.agentIndex ?? null } : null,
     parent_agent_id: e.parentAgentId ?? null,
   }
 }
@@ -172,7 +179,7 @@ export function createLedger({ maxOpen = MAX_OPEN, maxSpawns = MAX_SPAWNS, maxSt
       const spawn = e.agentId ? (spawns.get(e.agentId) ?? null) : null
       return {
         ts: iso,
-        loop: e.agentId ? (spawn ? 'agent-tool' : 'unspawned') : MAIN,
+        loop: !e.agentId ? MAIN : !spawn ? 'unspawned' : spawn.workflow ? 'workflow' : 'agent-tool',
         agent_id: e.agentId ?? null,
         turn_id: e.turnId ?? null,
         spawn,

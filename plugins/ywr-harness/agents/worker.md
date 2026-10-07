@@ -1,6 +1,6 @@
 ---
 name: worker
-description: Default delegate for well-scoped implementation, research, or review legs, on every session model (Opus included). Model and effort are PINNED (sonnet · effort high) so Agent-tool spawns never inherit the session's model or a deep-work session's xhigh/max effort. Use for single scoped tasks; for fan-out with per-stage effort control keep using the Workflow agent() path.
+description: Default delegate for well-scoped implementation, research, or review legs, on every session model (Opus included). Model and effort are PINNED (sonnet · effort high) so Agent-tool spawns never inherit the session's model or a deep-work session's xhigh/max effort; a per-call model or effort overrides the pin, so omit both. Use for single scoped tasks; for fan-out with per-stage effort control keep using the Workflow agent() path.
 model: sonnet
 effort: high
 disallowedTools: Agent

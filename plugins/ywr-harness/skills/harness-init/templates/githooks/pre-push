@@ -75,16 +75,25 @@ N_COMMITS=$(printf '%s\n' "$COMMITS" | sed '/^$/d' | wc -l | tr -d ' ')
 # --- scan added lines ----------------------------------------------------------------------------
 # `git show -U0 --format=` prints the diff alone. A merge commit prints nothing by default, which is
 # correct: a merge introduces no new content of its own.
+#
+# The scan runs in the C locale, and every grep in it takes `-a`. Under a UTF-8 locale (every Linux
+# CI runner) GNU grep treats a line that is not valid UTF-8 as binary and DROPS it from its output,
+# printing only "binary file matches" on stderr — a CP949 fixture's lines never reached the pattern
+# loop, and the commit was still counted as scanned (dist issue #9). In the C locale every byte is a
+# character, so no line is an encoding error and `[^...]` classes match non-ASCII bytes too; `-a`
+# covers the remaining binary trigger, a NUL byte in a diff that git prints as text.
+LC_ALL=C
+export LC_ALL
 HITS=''
 OLD_IFS=$IFS
 IFS='
 '
 for sha in $COMMITS; do
     [ -n "$sha" ] || continue
-    added=$(git show --format= -U0 --no-color "$sha" 2>/dev/null | grep '^+' | grep -v '^+++')
+    added=$(git show --format= -U0 --no-color "$sha" 2>/dev/null | grep -a '^+' | grep -av '^+++')
     [ -n "$added" ] || continue
     # Exempt lines carrying the marker BEFORE matching, so an allowed line cannot trip a pattern.
-    added=$(printf '%s\n' "$added" | grep -v 'harness:allow-secret')
+    added=$(printf '%s\n' "$added" | grep -av 'harness:allow-secret')
     [ -n "$added" ] || continue
     for entry in $PATTERNS; do
         label=${entry%%|*}
@@ -94,7 +103,7 @@ for sha in $COMMITS; do
         # returns NOTHING — the pattern is silently skipped while the hook still reports a clean
         # scan. A scanner that reports clean because it never ran is the worst failure mode it has.
         # Measured 2026-07-27 on a real push; the selftest now covers a leading-dash pattern.
-        hit=$(printf '%s\n' "$added" | grep -E -m 3 -e "$rx")
+        hit=$(printf '%s\n' "$added" | grep -a -E -m 3 -e "$rx")
         if [ -n "$hit" ]; then
             short=$(git rev-parse --short "$sha" 2>/dev/null)
             HITS="$HITS  [$label] in $short
@@ -109,8 +118,15 @@ if [ -n "$HITS" ]; then
     echo "[harness] pre-push BLOCKED — possible secret in added lines across $N_COMMITS commit(s):"
     printf '%s' "$HITS"
     echo "[harness]"
+    # Each commit's own diff is scanned, so only the commit that ADDS a line can exempt it — a later
+    # commit carrying the marker clears nothing. "Amend" alone fit only a hit in the tip (dist #9).
     echo "[harness] If a hit is a false positive, append the marker  harness:allow-secret  to that line"
-    echo "[harness]   and amend the commit. Push with --no-verify only if you have checked every hit."
+    echo "[harness]   in the commit that adds it: amend if that commit is the tip, rebase to edit it if"
+    echo "[harness]   it is earlier. A later commit cannot clear it — each commit's own diff is scanned."
+    echo "[harness] Push with --no-verify only if you have checked every hit; the CI backstop scans the"
+    echo "[harness]   same commits and fails that run on the same hit."
+    echo "[harness] A test that writes a secret-shaped literal on purpose: put the marker on that line"
+    echo "[harness]   when you write it, and the push is never blocked."
     echo "[harness] If it is real: the secret has NOT left this machine. Rewrite the commit AND rotate"
     echo "[harness]   the credential — a rewritten local commit does not un-leak a key you already used."
     exit 1

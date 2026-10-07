@@ -673,6 +673,34 @@ $ok = (Assert-True 'DL5 a directory at a slot name is skipped and named' ($o5 -m
 $ok = (Assert-True 'DL5 a teammate spawn row reads as its own teammate row, never agent-tool' ($o5 -match 'teammate researcher \(model_param none\) · claude-sonnet-5-5 · high' -and $o5 -notmatch 'agent-tool researcher') $o5) -and $ok
 $ok = (Assert-True 'DL5 teammate false and a non-boolean "true" stay agent-tool rows' ($o5 -match 'agent-tool Explore \(model_param none\)' -and $o5 -match 'agent-tool Plan \(model_param none\)' -and $o5 -notmatch 'teammate (Explore|Plan)') $o5) -and $ok
 
+# DL7: workflow loops (2.1.292+, ADR 0126). Only the unnamed-type worker with no model given counts, and
+# the count must not follow the resolved model: the counted one runs on sonnet (not main's opus), while a
+# worker given `opus` runs on main's model and a named type with no model given (it may pin) is not
+# counted either. Two counted loops against one on main's model: a model-equality rule reads 1, not 2.
+# The unspawned control keeps its old line.
+$dl7 = Join-Path $fxBase 'delegations-7'
+New-Item -ItemType Directory -Force -Path $dl7 | Out-Null
+Write-F $dl7 '.harness.json' '{}'
+$wfGiven = '{"subagent_type":"workflow-subagent","model_param":"haiku","model":"claude-haiku-4-5","teammate":false,"workflow":{"run_id":"wf_a","agent_index":1}}'
+$wfNone = '{"subagent_type":"workflow-subagent","model_param":null,"model":"claude-sonnet-5-5","teammate":false,"workflow":{"run_id":"wf_a","agent_index":2}}'
+$wfNone2 = '{"subagent_type":"workflow-subagent","model_param":null,"model":"claude-sonnet-5-5","teammate":false,"workflow":{"run_id":"wf_b","agent_index":1}}'
+$wfOnMain = '{"subagent_type":"workflow-subagent","model_param":"opus","model":"claude-opus-5-5","teammate":false,"workflow":{"run_id":"wf_a","agent_index":3}}'
+$wfNamed = '{"subagent_type":"ywr-harness:mech","model_param":null,"model":"claude-haiku-4-5","teammate":false,"workflow":{"run_id":"wf_a","agent_index":4}}'
+$loops7 = @((DlLoop 'main' '["claude-opus-5-5"]' '["xhigh"]' 0 $u '[]'),
+    (DlLoop 'workflow' '["claude-haiku-4-5"]' '[]' 0 $u '[]' $wfGiven),
+    (DlLoop 'workflow' '["claude-sonnet-5-5"]' '["low"]' 0 $u '[]' $wfNone),
+    (DlLoop 'workflow' '["claude-sonnet-5-5"]' '["low"]' 0 $u '[]' $wfNone2),
+    (DlLoop 'workflow' '["claude-opus-5-5"]' '["low"]' 0 $u '[]' $wfOnMain),
+    (DlLoop 'workflow' '["claude-haiku-4-5"]' '[]' 0 $u '[]' $wfNamed),
+    (DlLoop 'unspawned' '["claude-opus-5-5"]' '["xhigh"]' 0 $u '[]')) -join ','
+Write-F $dl7 '.claude/telemetry/delegations/slot-00.json' "{`"schema`":2,`"session_id`":`"wf-sess`",`"slot`":0,`"updated`":`"a`",`"step_fields`":$fieldsStd,`"loops_dropped`":0,`"loops`":[$loops7]}"
+$rDL7 = Invoke-Retro $dl7 @('--delegations')
+$o7 = $rDL7.Out
+$ok = (Assert-True 'DL7 workflow rows name their type and model_param, ordered before unspawned' ($o7 -match 'workflow workflow-subagent \(model_param haiku\) · claude-haiku-4-5' -and $o7 -match 'workflow workflow-subagent \(model_param none\) · claude-sonnet-5-5 · low' -and $o7 -match 'workflow ywr-harness:mech \(model_param none\) · claude-haiku-4-5') $o7) -and $ok
+$ok = (Assert-True 'DL7 D6 counts the workflow loops with no model given and no type named, per session and in the summary' ($o7 -match 'workflow with no model given: 2 of 5' -and $o7 -match 'ADR 0126 D6: 2 of 5 workflow loop\(s\) with no model given in 1 session\(s\)') $o7) -and $ok
+$ok = (Assert-True 'DL7 the unspawned heuristic is unchanged and workflow loops stay out of it' ($o7 -match 'ADR 0117 D6: 1 unspawned loop\(s\) on their session''s main model in 1 session\(s\); 1 also at the main loop''s effort') $o7) -and $ok
+$ok = (Assert-True 'DL7 workflow sorts after main and before unspawned' ($o7.IndexOf('workflow workflow-subagent') -lt $o7.IndexOf('   unspawned ·') -and $o7.IndexOf('   main ·') -lt $o7.IndexOf('workflow workflow-subagent')) $o7) -and $ok
+
 # DL6: SLICE_RETRO=0 skips the per-commit run, never an explicit --delegations request (ADR 0120).
 $prevSR = $env:SLICE_RETRO
 $env:SLICE_RETRO = '0'

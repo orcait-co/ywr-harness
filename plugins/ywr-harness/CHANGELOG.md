@@ -12,6 +12,33 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.63.0 — 2026-10-08
+
+- Claude Code 2.1.292 에서 Agent 도구에 `effort` 입력이 생겼습니다. 호출에 `effort` 를 넘기면 에이전트 frontmatter 에
+  고정된 effort 보다 우선합니다(실측: `ywr-harness:worker` 에 `effort: "low"` 를 넘기니 고정값 high 대신 low 로 실행).
+  model 을 넘기면 고정 model 보다 우선하던 것과 같은 규칙입니다(ADR 0127).
+  - Agent 호출 경고 훅이 이제 호출별 effort 가 `xhigh` 나 `max` 일 때도 안내합니다. 고정값이 막으려던 deep-work 세션의
+    수준이 워커로 새는 경우입니다. `low`·`medium`·`high` 에는 조용합니다. 차단하지 않고 안내만 합니다.
+  - `worker`·`verifier`·`mech` 의 설명에 "호출별 model·effort 가 고정값보다 우선하니 둘 다 넘기지 말 것"을 적었습니다.
+- 2.1.292 부터 워크플로 `agent()` 워커도 `agent.spawn` 이벤트를 냅니다. 위임 원장(delegation ledger)이 이 워커의 루프를
+  새 종류 `workflow` 로 기록하고, spawn 행에 실행 id 와 순번(`workflow: {run_id, agent_index}`)을 남깁니다(ADR 0126).
+  - 0.62.4 는 같은 호스트에서 이 루프를 `agent-tool` 로 잘못 분류했습니다.
+  - `harness_retro.py --delegations` 의 D6 줄은 model 을 주지 않은 `workflow` 루프를 세션 모델 상속으로 바로 셉니다.
+    2.1.291 이하 호스트의 `unspawned` 루프는 기존 추정 방식 그대로입니다. 스캐폴드된 저장소에는 다음 `harness-init`
+    실행 때 반영됩니다.
+- Claude Code 2.1.293 부터 Anthropic API 에서 `haiku` 가 Haiku 5.5 를 가리킵니다. 설정 변경은 필요 없습니다.
+  - Haiku 5.5 는 effort 를 받는 첫 Haiku 입니다. 그래서 `ywr-harness:mech` 의 고정값 `effort: low` 가 이제 실제로
+    적용됩니다(Haiku 4.5 에는 전달되지 않았습니다).
+  - 실측(같은 인벤토리 작업, 3회씩): Haiku 5.5 · low 는 3/3 정답에 평균 17.8 초, Haiku 5.5 · medium 은 3/3 에
+    24.3 초, Haiku 4.5 는 2/3 에 53.4 초였습니다. 고정값 low 를 그대로 둡니다.
+  - Bedrock·Vertex·Foundry·Claude Platform on AWS 에서는 `haiku` 가 아직 Haiku 4.5 입니다.
+- `pre-push` 시크릿 스캔이 UTF-8 이 아닌 추가 줄(예: CP949 픽스처)을 건너뛰던 결함을 고쳤습니다(dist #9).
+  - UTF-8 로케일(Linux CI 러너)에서 grep 이 그런 줄을 binary 로 보고 버렸고, 스캔은 그 커밋을 깨끗하다고
+    보고했습니다. 이제 스캔은 C 로케일에서 `grep -a` 로 돌아 모든 추가 줄을 검사합니다. CI 백스톱도 같은 훅을 씁니다.
+  - 차단 메시지가 이제 "마커는 그 줄을 추가한 커밋에 넣어야 한다"고 안내합니다. 이전 커밋이면 amend 가 아니라
+    rebase 입니다. 나중 커밋으로는 해제되지 않습니다.
+  - 스캐폴드된 저장소에는 다음 `harness-init` 실행 때 반영됩니다.
+
 ## v0.62.4 — 2026-10-06
 
 - 훅·스킬·에이전트·워크플로의 동작 변경은 없습니다. `harness-init` 이 까는 `docs/README.md` 에 **Writing style** 절이

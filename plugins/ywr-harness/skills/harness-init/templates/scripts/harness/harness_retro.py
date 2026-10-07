@@ -430,9 +430,12 @@ SLOT_RX = re.compile(r"^slot-[0-9]{2}\.json$")
 LEDGER_SCHEMA = 2
 TOKENS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 # `teammate` is read, not written: an `agent-tool` loop whose spawn row says `teammate: true` (an
-# agent-team teammate raises `agent.spawn` from Claude Code 2.1.289).
-KIND_ORDER = {"main": 0, "agent-tool": 1, "teammate": 2, "unspawned": 3}
-SPAWNED = ("agent-tool", "teammate")
+# agent-team teammate raises `agent.spawn` from Claude Code 2.1.289). `workflow` is a Workflow `agent()`
+# worker's loop from Claude Code 2.1.292 (ADR 0126); `unspawned` is the same worker on 2.1.287-2.1.291.
+KIND_ORDER = {"main": 0, "agent-tool": 1, "teammate": 2, "workflow": 3, "unspawned": 4}
+SPAWNED = ("agent-tool", "teammate", "workflow")
+# The spawn type of a workflow `agent()` call that names no agent type (fact 99, Claude Code 2.1.292).
+WF_TYPE = "workflow-subagent"
 
 
 def _count(v: object) -> int:
@@ -532,7 +535,8 @@ def delegations(root: Path, warns: list[str]) -> int:
 
     n_loops = sum(len(s["loops"]) for s in sessions.values())
     print(f"-- {rel}: {len(docs)} slot file(s), {len(sessions)} session(s), {n_loops} loop(s)")
-    d6 = {"on_main": 0, "same_effort": 0, "sessions": 0, "evicted": 0, "no_main": 0}
+    d6 = {"on_main": 0, "same_effort": 0, "sessions": 0, "evicted": 0, "no_main": 0,
+          "wf": 0, "wf_inherit": 0, "wf_sessions": 0}
     dropped = {"loops": 0, "steps": 0}
     for key, s in sorted(sessions.items(), key=lambda kv: kv[1]["updated"], reverse=True):
         mains = [lp for lp, _ in s["loops"] if lp.get("loop") == "main"]
@@ -542,7 +546,7 @@ def delegations(root: Path, warns: list[str]) -> int:
               + (f"{'+'.join(sorted(main_models)) or '?'} [{'+'.join(sorted(main_efforts)) or '-'}]"
                  if mains else "no main loop recorded"))
         rows: dict[tuple, dict] = {}
-        on_main = same = 0
+        on_main = same = wf = wf_inherit = 0
         for lp, fields in s["loops"]:
             kind = lp.get("loop") if isinstance(lp.get("loop"), str) else "?"
             spawn = lp.get("spawn") if isinstance(lp.get("spawn"), dict) else {}
@@ -562,6 +566,14 @@ def delegations(root: Path, warns: list[str]) -> int:
                 agg["tokens"][k] += tok[k]
             agg["from_steps"] += 0 if host else 1
             dropped["steps"] += _count(lp.get("steps_dropped"))
+            if kind == "workflow":
+                # ADR 0126: no `model_param` on a workflow spawn row means the `agent()` call gave no
+                # model. With no agent type named (`workflow-subagent`, measured) the worker ran on the
+                # session's model — a fact, not a heuristic. A named type may pin its own model, so it
+                # is never counted.
+                wf += 1
+                wf_inherit += 0 if spawn.get("model_param") or spawn.get("subagent_type") != WF_TYPE else 1
+                continue
             if kind != "unspawned":
                 continue
             # ADR 0117: `unspawned` is a workflow worker only while no spawn row was evicted.
@@ -573,8 +585,14 @@ def delegations(root: Path, warns: list[str]) -> int:
                 on_main += 1
                 # Unknown on both sides (Haiku sends no effort) is no evidence of an inherit.
                 same += 1 if main_efforts and set(efforts) == main_efforts else 0
-        for rk in sorted(rows, key=lambda k: (KIND_ORDER.get(k[0], 9), k)):
+        # A key part is None for a spawn row without that field: sort it as "" so str and None never meet.
+        for rk in sorted(rows, key=lambda k: (KIND_ORDER.get(k[0], 9), tuple(x or "" for x in k))):
             print(_fmt_row(rk, rows[rk]))
+        if wf_inherit:
+            print(f"   workflow with no model given: {wf_inherit} of {wf} (inherits the session's model)")
+            d6["wf_sessions"] += 1
+        d6["wf"] += wf
+        d6["wf_inherit"] += wf_inherit
         if on_main:
             print(f"   unspawned on the main model: {on_main} (same effort as main: {same})")
             d6["sessions"] += 1
@@ -584,7 +602,10 @@ def delegations(root: Path, warns: list[str]) -> int:
 
     print(f"-- ADR 0117 D6: {d6['on_main']} unspawned loop(s) on their session's main model in "
           f"{d6['sessions']} session(s); {d6['same_effort']} also at the main loop's effort (the inherit "
-          "signature — a heuristic: a pin equal to the session's effort reads the same)")
+          "signature — a heuristic for hosts before 2.1.292: a pin equal to the session's effort reads "
+          "the same)")
+    print(f"-- ADR 0126 D6: {d6['wf_inherit']} of {d6['wf']} workflow loop(s) with no model given in "
+          f"{d6['wf_sessions']} session(s) (a direct inherit, Claude Code 2.1.292+, no heuristic)")
     if d6["evicted"] or d6["no_main"]:
         print(f"   not attributed: {d6['evicted']} with spawn rows evicted (may be Agent-tool loops), "
               f"{d6['no_main']} in a session with no main loop recorded")

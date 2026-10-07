@@ -542,6 +542,48 @@ $rN = Invoke-PrePush $n $nBase $nTip
 $ok = (Assert-True 'N a generic assigned secret is caught' ($rN.Code -eq 1) "exit=$($rN.Code) out=$($rN.Out)") -and $ok
 $ok = (Assert-True 'N labelled as the generic pattern' ($rN.Out -match 'generic-assigned-secret') $rN.Out) -and $ok
 
+# --- I3/I4: added lines that are not valid text are still scanned (dist issue #9) ----------------
+# Regression. Under a UTF-8 locale — every Linux CI runner — GNU grep dropped each added line that
+# was not valid UTF-8 (a CP949 fixture), printed "binary file matches" on stderr, and the hook still
+# reported the commit scanned and clean. The hook now scans in the C locale with `grep -a`. The
+# suite FORCES a UTF-8 locale for these runs, so the case reproduces on Windows' Git sh as well as
+# on Linux, and proves the hook overrides the caller's locale. I3's generic secret has the CP949
+# bytes INSIDE its quoted value: `grep -a` alone would still miss it under UTF-8 (an invalid byte
+# matches no bracket class there), so the C locale is what I3 measures. I4 is a NUL byte in a diff
+# git prints as text (the `diff` attribute), the binary trigger the C locale does not remove — `-a`
+# is what I4 measures.
+$enc = [Text.Encoding]::ASCII
+$cp949 = [byte[]](0xB0, 0xA1, 0xB0, 0xA1)   # two Hangul syllables in CP949; invalid as UTF-8
+$prevLcAll = $env:LC_ALL
+try {
+    $env:LC_ALL = 'C.UTF-8'
+    $i3 = New-PushRepo 'pp-non-utf8'
+    $i3Base = (& git -C $i3 rev-parse HEAD 2>$null).Trim()
+    [IO.File]::WriteAllBytes((Join-Path $i3 'schema.df'), [byte[]](
+            $enc.GetBytes("aws = $fakeKey ") + $cp949 + $enc.GetBytes("`n") +
+            $enc.GetBytes("api_key = '") + $cp949 + $enc.GetBytes("zK3nQ8vR1tYw0pLm'`n")))
+    & git -C $i3 add -A 2>$null
+    & git -C $i3 commit -q -m 'cp949 fixture' 2>$null
+    $i3Tip = (& git -C $i3 rev-parse HEAD 2>$null).Trim()
+    $rI3 = Invoke-PrePush $i3 $i3Base $i3Tip
+
+    $i4 = New-PushRepo 'pp-nul-text'
+    $i4Base = (& git -C $i4 rev-parse HEAD 2>$null).Trim()
+    Write-File $i4 '.gitattributes' "*.dat diff`n"
+    [IO.File]::WriteAllBytes((Join-Path $i4 'dump.dat'), [byte[]](
+            $enc.GetBytes("aws = $fakeKey ") + [byte[]](0x00) + $enc.GetBytes("`n")))
+    & git -C $i4 add -A 2>$null
+    & git -C $i4 commit -q -m 'nul in a text diff' 2>$null
+    $i4Tip = (& git -C $i4 rev-parse HEAD 2>$null).Trim()
+    $rI4 = Invoke-PrePush $i4 $i4Base $i4Tip
+} finally { $env:LC_ALL = $prevLcAll }
+$ok = (Assert-True 'I3 a non-UTF-8 added line blocks the push under a UTF-8 locale' ($rI3.Code -eq 1 -and $rI3.Out -match 'aws-access-key-id') "exit=$($rI3.Code) out=$($rI3.Out)") -and $ok
+$ok = (Assert-True 'I3 a secret whose value holds non-UTF-8 bytes is caught' ($rI3.Out -match 'generic-assigned-secret') $rI3.Out) -and $ok
+$ok = (Assert-True 'I3 grep treated no line as binary' ($rI3.Out -notmatch '(?i)binary file') $rI3.Out) -and $ok
+$ok = (Assert-True 'I4 a NUL byte in a text diff does not hide the line' ($rI4.Code -eq 1 -and $rI4.Out -match 'aws-access-key-id' -and $rI4.Out -notmatch '(?i)binary file') "exit=$($rI4.Code) out=$($rI4.Out)") -and $ok
+# The block message must fit a hit in an earlier commit: there "amend" changes the wrong commit.
+$ok = (Assert-True 'I3 the block message names the rebase route for a non-tip commit' ($rI3.Out -match 'rebase' -and $rI3.Out -match 'later commit cannot clear') $rI3.Out) -and $ok
+
 # --- SS: the vendored CI's secret-scan step drives THIS pre-push over the run's range ------------
 # Dist issue #6 moved the step's three workflow values out of its run: text into env: (the file's
 # own env-only rule). ci-enabled-plugins WS1 proves no `${{` is left in run: text; this proves the
