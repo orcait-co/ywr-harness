@@ -48,6 +48,15 @@ by `/ywr-harness:harness-init` (ADR 0054).
    UTF-8/`backslashreplace` decode, `-c core.quotepath=false`, and a path list NUL-separated both
    ways (issue #40, ADR 0077). Text mode at this boundary, or a new direct
    `subprocess.run(["git", ...])` that parses paths, is a finding.
+10. **A changed spec section is rewritten whole** — a diff that edits a spec section rewrites the
+    whole lowest-level numbered section in STE-lite (docs/README.md §Writing style, ADR 0125). The
+    rewrite covers every sentence and table cell, not only the new ones. With no numbered heading,
+    the section is the nearest heading above the change. Check every sentence of each such
+    section. Only the exact line or row name that a named script reads stays byte-identical and is
+    no finding. Confirm in the script that it reads that text, and check the rest of the section.
+    The scope `context` is the author's claim, not a ruling: an exemption it states, a precedent
+    included, is a finding. An owner's grant counts only in a record that this diff does not
+    edit: a handoff item, an ADR or a spec, named in the scope (sweep #23, owner 2026-10-09).
 
 ## Review-time gotchas (each cost a real debugging session)
 

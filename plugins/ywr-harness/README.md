@@ -9,6 +9,15 @@ Defects in anything here are fixed **in this repo**, never patched in a consumin
 `docs/adr/0010-harness-defects-fixed-in-canon.md`. The sanctioned escape hatch for urgency is
 `claude plugin disable`, which is reversible and visible; a local fork is neither.
 
+## Install
+
+Managed settings register the `ywrlabs` marketplace on every org machine (ADR 0010). Installing
+stays each member's choice:
+
+```
+/plugin install ywr-harness@ywrlabs
+```
+
 ## Everything here is namespaced
 
 Plugin components resolve as `ywr-harness:<name>`. A bare name does not resolve:
