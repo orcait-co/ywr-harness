@@ -480,6 +480,169 @@ function Get-JsonKeyPaths([object]$Node, [string]$Prefix = '') {
     return $out
 }
 
+# Scaffold gate lines (ADR 0129). Arrays are leaves above, so a repo whose docs group predates ADR
+# 0094 (`gates: []`, or the gate with `files: false`) never learns the file-scoped line — and the
+# STE-lite gate (ADR 0128) runs only when pre-commit hands check_docs.py the staged paths. The
+# template is the list, never a second copy here: each script gate it declares on a TOOLCHAIN
+# script must run, in the repo too, on every path the template routes to it. The emitter runs the
+# gates of EVERY group whose `match` claims a path (harness_gates.py), so a path is covered when
+# SOME repo group claiming it carries the gate — group names are the repo's to choose. A line
+# merely present somewhere is not coverage: in docs-generated alone it never sees a staged spec.
+# The probe paths are the scaffold's own placements, the template's docs.index unless the repo
+# moved its index, and the real files beside the placements (Get-ScaffoldGateNote).
+function Get-ScaffoldGateKey([object]$Gate) {
+    if ($Gate -isnot [System.Management.Automation.PSCustomObject]) { return '' }
+    $runner = $Gate.PSObject.Properties['runner']; $path = $Gate.PSObject.Properties['script']
+    if (-not $runner -or -not $path -or $runner.Value -isnot [string] -or $path.Value -isnot [string]) { return '' }
+    # Absent = false, the emitter's default (harness_config.script_gate); a non-boolean is a
+    # declaration the emitter already warns about, so it matches nothing here.
+    $files = $false
+    $f = $Gate.PSObject.Properties['files']
+    if ($f) { if ($f.Value -isnot [bool]) { return '' }; $files = $f.Value }
+    return "$($runner.Value)|$($path.Value)|$files"
+}
+
+# Group regexes are Python's `re.match` in the emitter: anchored at the start only. `\A(?:…)` is
+# that anchor in .NET. The pattern compiles ALONE first: wrapped unchecked, `x)|(.*` would escape
+# the group and claim every path where Python refuses it. Python's named-group spellings `(?P<n>`
+# and `(?P=n)` become .NET's; any other Python-only construct, or a pattern .NET refuses, claims
+# nothing. On the repo side that errs toward speaking. The template side is ours, and
+# init.selftest.ps1 pins that every template match compiles here, so no consumer goes silent.
+function ConvertTo-DotNetPattern([string]$Pattern) {
+    return [regex]::Replace([regex]::Replace($Pattern, '\(\?P<', '(?<'), '\(\?P=(\w+)\)', '\k<$1>')
+}
+
+# Each declaration's groups compile ONCE into matchers (anchored regex + gate keys).
+function Get-GroupMatchers([object]$Decl) {
+    $out = [System.Collections.Generic.List[object]]::new()
+    if ($Decl -isnot [System.Management.Automation.PSCustomObject]) { return ,$out }
+    $gp = $Decl.PSObject.Properties['groups']
+    if (-not $gp) { return ,$out }
+    foreach ($g in @($gp.Value)) {
+        if ($g -isnot [System.Management.Automation.PSCustomObject]) { continue }
+        $m = $g.PSObject.Properties['match']
+        if (-not $m -or $m.Value -isnot [string]) { continue }
+        $pattern = ConvertTo-DotNetPattern $m.Value
+        try {
+            [void][regex]::new($pattern)
+            $rx = [regex]::new("\A(?:$pattern)")
+        } catch { continue }
+        $gates = @(); $keys = @()
+        $gt = $g.PSObject.Properties['gates']
+        if ($gt) { foreach ($gate in @($gt.Value)) { $k = Get-ScaffoldGateKey $gate; if ($k) { $gates += $gate; $keys += $k } } }
+        $out.Add([pscustomobject]@{ Name = $(if ($g.PSObject.Properties['name']) { $g.name }); Anchored = "\A(?:$pattern)"; Rx = $rx; Gates = $gates; Keys = $keys })
+    }
+    return ,$out
+}
+
+# One alternation per gate key and side, so a probe path costs one IsMatch per side, not one per
+# group: per-group calls cost ~25 ms on the canon's corpus. Each part is anchored and compiled
+# alone above, so the alternation cannot change what a part claims — except a reference to a
+# group: a backreference (`\1`, `\k<n>`) or a conditional (`(?(1)…)`, `(?(n)…)`). A number shifts
+# in an alternation and a name can repeat, so such a set stays one regex per group.
+function Get-UnionMatchers([string[]]$Anchored) {
+    if (-not $Anchored.Count) { return @() }
+    if ($Anchored.Count -eq 1 -or -not ($Anchored | Where-Object { $_ -match '\\[1-9]|\\k<|\(\?\(' })) {
+        return @([regex]::new($Anchored -join '|'))
+    }
+    return @(foreach ($a in $Anchored) { [regex]::new($a) })
+}
+
+function Get-ScaffoldGateNote([object]$Template, [object]$Repo) {
+    $placed = @($TOOLCHAIN.Values)
+    $samples = @($TOOLCHAIN.Values) + @($SEED_CORPUS.Values)
+    # The index is the one probe path a repo may move (its own docs.index). A moved index is not
+    # at the template's path, so that probe would report a gap for a file the repo does not have.
+    $ip = if ($Template.docs) { $Template.docs.PSObject.Properties['index'] }
+    $rp = if ($Repo -is [System.Management.Automation.PSCustomObject] -and $Repo.PSObject.Properties['docs'] -and
+        $Repo.docs -is [System.Management.Automation.PSCustomObject]) { $Repo.docs.PSObject.Properties['index'] }
+    $index = @()
+    if ($ip -and $ip.Value -is [string] -and $ip.Value -and (-not $rp -or $rp.Value -ceq $ip.Value)) { $index = @($ip.Value) }
+    # scaffold gate key -> the gate, the template groups carrying it, and one matcher set per side
+    $need = [ordered]@{}
+    foreach ($g in (Get-GroupMatchers $Template)) {
+        for ($j = 0; $j -lt $g.Gates.Count; $j++) {
+            if ($placed -cnotcontains $g.Gates[$j].script) { continue }
+            $key = $g.Keys[$j]
+            if (-not $need.Contains($key)) { $need[$key] = [pscustomobject]@{ Key = $key; Gate = $g.Gates[$j]; TGroups = @(); T = @(); R = @() } }
+            $need[$key].TGroups += $g
+        }
+    }
+    if (-not $need.Count) { return '' }
+    $rAll = Get-GroupMatchers $Repo
+    foreach ($n in $need.Values) {
+        $n.T = Get-UnionMatchers @($n.TGroups | ForEach-Object { $_.Anchored })
+        $n.R = Get-UnionMatchers @(foreach ($g in $rAll) { if ($g.Keys -ccontains $n.Key) { $g.Anchored } })
+    }
+    # The placed paths are samples; the repo's real specs are what pre-commit will stage. A repo
+    # group can claim the placed template files and miss every real spec, and the samples alone
+    # stay silent then. So the working-tree files under each directory that holds a placed path a
+    # scaffold gate claims join the probes — a .NET directory listing, no git call, no provider
+    # pipeline. The listing is the working tree, not the tracked set: an untracked or ignored draft
+    # there can be named too (ADR 0129 records it). The index's own directory is not listed: the
+    # index path itself is probed. The listing skips hidden, system and link entries and
+    # inaccessible directories. Real files lead the list, so the display cap never hides a real
+    # spec behind a template file.
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $dirs = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($p in $samples + $index) { [void]$seen.Add($p) }
+    foreach ($p in $samples) {
+        $i = $p.LastIndexOf('/')
+        if ($i -le 0 -or $dirs.Contains($p.Substring(0, $i))) { continue }
+        foreach ($n in $need.Values) { foreach ($x in $n.T) { if ($x.IsMatch($p)) { [void]$dirs.Add($p.Substring(0, $i)) } } }
+    }
+    $real = [System.Collections.Generic.List[string]]::new()
+    # ReparsePoint joins the default skips (Hidden, System): measured, the defaults DO recurse into
+    # a junction. A link — to a directory or a file — is never listed.
+    $eo = [IO.EnumerationOptions]::new(); $eo.RecurseSubdirectories = $true
+    $eo.AttributesToSkip = [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System -bor [IO.FileAttributes]::ReparsePoint
+    # A listing can still throw past IgnoreInaccessible (a directory removed mid-walk, a path too
+    # long). One directory's failure keeps what it listed and every sample gap, and says so.
+    $stopped = @()
+    foreach ($d in $dirs) {
+        $full = [IO.Path]::Combine($root, $d)
+        if (-not [IO.Directory]::Exists($full)) { continue }
+        try {
+            foreach ($f in [IO.Directory]::EnumerateFiles($full, '*', $eo)) {
+                $rel = $d + '/' + [IO.Path]::GetRelativePath($full, $f).Replace('\', '/')
+                if ($seen.Add($rel)) { $real.Add($rel) }
+            }
+        } catch { $stopped += "$d ($($_.Exception.Message))" }
+    }
+    $real.Sort([StringComparer]::Ordinal)
+    # gate key -> the probe paths the repo leaves uncovered and the template groups that claim them
+    $gaps = [ordered]@{}
+    foreach ($p in @($real) + $samples + $index) {
+        foreach ($key in $need.Keys) {
+            $n = $need[$key]
+            $claimed = $false; foreach ($x in $n.T) { if ($x.IsMatch($p)) { $claimed = $true; break } }
+            if (-not $claimed) { continue }
+            # The repo side compares exact keys: runner and script are exact selectors and paths.
+            $covered = $false; foreach ($x in $n.R) { if ($x.IsMatch($p)) { $covered = $true; break } }
+            if ($covered) { continue }
+            if (-not $gaps.Contains($key)) {
+                $gaps[$key] = [pscustomobject]@{ Groups = [System.Collections.Generic.List[string]]::new(); Paths = [System.Collections.Generic.List[string]]::new() }
+            }
+            if (-not $gaps[$key].Paths.Contains($p)) { $gaps[$key].Paths.Add($p) }
+            foreach ($tg in $n.TGroups) {
+                if ($tg.Rx.IsMatch($p) -and -not $gaps[$key].Groups.Contains($tg.Name)) { $gaps[$key].Groups.Add($tg.Name) }
+            }
+        }
+    }
+    $lines = @()
+    foreach ($key in $gaps.Keys) {
+        $w = $gaps[$key]; $gate = $need[$key].Gate
+        $json = '{ "runner": ' + (ConvertTo-Json $gate.runner) + ', "script": ' + (ConvertTo-Json $gate.script) +
+            ', "files": ' + $(if ($key.EndsWith('|True')) { 'true' } else { 'false' }) + ' }'
+        # Cap the path display like the key display above; the count stays exact.
+        $shown = $w.Paths; $more = ''
+        if ($w.Paths.Count -gt 6) { $shown = $w.Paths.GetRange(0, 6); $more = ", +$($w.Paths.Count - 6) more" }
+        $lines += "no group claiming $($shown -join ', ')$more declares the scaffold gate $json (template: $($w.Groups -join ', '))"
+    }
+    foreach ($s in $stopped) { $lines += "real-file listing stopped under $s" }
+    return ($lines -join '; ')
+}
+
 function Get-SeedDriftNote([string]$Rel, [string]$Dest) {
     $src = Join-Path $templates $Rel
     $dst = Join-Path $root $Dest
@@ -495,12 +658,19 @@ function Get-SeedDriftNote([string]$Rel, [string]$Dest) {
         }
         $have = @(Get-JsonKeyPaths $r)
         $missing = @(Get-JsonKeyPaths $t | Where-Object { $have -notcontains $_ })
-        if (-not $missing.Count) { return '' }
-        # A hand-written minimal declaration can lack dozens of keys — cap the display so the
-        # note stays one line; the count is always exact.
-        $shown = $missing; $more = ''
-        if ($missing.Count -gt 6) { $shown = $missing[0..5]; $more = ", +$($missing.Count - 6) more" }
-        return "template has $($missing.Count) key(s) this seed lacks: $($shown -join ', ')$more"
+        $parts = @()
+        if ($missing.Count) {
+            # A hand-written minimal declaration can lack dozens of keys — cap the display so the
+            # note stays one line; the count is always exact.
+            $shown = $missing; $more = ''
+            if ($missing.Count -gt 6) { $shown = $missing[0..5]; $more = ", +$($missing.Count - 6) more" }
+            $parts += "template has $($missing.Count) key(s) this seed lacks: $($shown -join ', ')$more"
+        }
+        # Guarded like the reads above: under the script-global EAP=Stop an unforeseen throw here
+        # would turn a completed placement into a non-zero exit (the ADR 0051 exit contract).
+        try { $gateNote = Get-ScaffoldGateNote $t $r } catch { $gateNote = 'scaffold gate probe skipped: ' + $_.Exception.Message }
+        if ($gateNote) { $parts += $gateNote }
+        return ($parts -join '; ')
     }
     # Line-based seeds. Latin1 is the same byte-faithful read as Place() — both sides go through
     # the identical transform, so the comparison can never be skewed by a decode.
@@ -823,7 +993,8 @@ if (-not $DryRun) {
 if ($preserved.Count) {
     Write-Host ''
     Write-Host 'Preserved seeds were NOT updated. Notes above name template-side keys/lines a seed' -ForegroundColor Yellow
-    Write-Host 'lacks (report only — ADR 0051); anything beyond additions still needs a hand compare' -ForegroundColor Yellow
+    Write-Host 'lacks, and scaffold gate lines no claiming group declares (report only — ADR 0051, 0129);' -ForegroundColor Yellow
+    Write-Host 'anything beyond additions still needs a hand compare' -ForegroundColor Yellow
     Write-Host 'against skills/harness-init/templates/. This script will never clobber them.' -ForegroundColor Yellow
 }
 exit 0

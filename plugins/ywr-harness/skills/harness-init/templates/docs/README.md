@@ -88,3 +88,11 @@ section when you change that section for another reason. The section is the lowe
 numbered section that holds the change. If no numbered heading holds the change, the section is
 the nearest heading above it. Rewrite all of that section, its table cells included. Keep text
 that a script reads byte-identical, such as a parsed line or a matched row name.
+
+A gate checks R3 and R5. `docs/check_docs.py` runs it at pre-commit on each staged spec and new
+ADR, as ADR 0128 of the ywr-harness canon records. The gate checks each changed spec section
+whole. A section whose heading names change notes or a ledger is a records section, and the gate
+does not check it. The line `<!-- ste-lite: records -->` marks any
+other section as records. The line `<!-- ste-lite: verbatim -->` exempts the next paragraph, list
+or table, for text that a script reads. The gate blocks a commit only when `.harness.json`
+declares `"docs": {"ste_lite": true}`. Otherwise it prints its findings as advice.

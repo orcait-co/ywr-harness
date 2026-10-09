@@ -1,4 +1,5 @@
-// SessionStart (matcher `startup|resume|fork`) — old-model route guard, WARN-ONLY (ADR 0107).
+// SessionStart (matcher `startup|resume|fork`) — old-model route and effort-pin guard, WARN-ONLY
+// (ADR 0107, ADR 0130).
 //
 // The org guide names worker models by family alias and keeps each alias on the newest model
 // (ADR 0106). Three of the routes by which an alias lands on an older model are settings a member
@@ -17,6 +18,18 @@
 // read stay the guide's: `--resume`/`--continue` keep the saved model, and an old Claude Code ships
 // an old alias table. `--model <full id>` on the command line is invisible here too: the payload's
 // `model` field is optional and the docs do not say whether it holds the alias or the resolved id.
+// A third route no hook can read is the host's own, the sixth route of ADR 0106's list as ADR 0130
+// extends it: from 2.1.286, when the API refuses the model an alias
+// resolves to, Claude Code retries once on the previous model of the same tier. It happens at run
+// time, so no setting shows it.
+//
+// The effort pin (ADR 0130). `CLAUDE_CODE_EFFORT_LEVEL` (any non-empty value) sets the effort of every
+// subagent and workflow agent: the sub-agents doc says it "takes precedence over both" the frontmatter
+// `effort` and an Agent call's `effort`, and fact 108 measured a workflow `agent()` effort losing to it
+// too (2.1.295 only; no doc states that half). Among the settings files the highest-precedence one
+// that sets it is named; the process environment, where Claude Code writes the applied value, wins. `--effort` and `/effort` set the session level only, which a frontmatter pin beats, so they are
+// not read. It is reported in its own clause and never by `--preflight`: the eval wrapper sets it to
+// `low` itself (ADR 0103), so a value in the operator's shell never reaches a child.
 //
 // Sources read: this process's environment — a hook "inherits the parent environment" (hooks doc)
 // and Claude Code "writes each `env` entry into the process environment" (env-vars doc), so a
@@ -63,6 +76,7 @@ const familyKeys = [
 ]
 const sessionKeys = ['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_MODEL']
 const subagentKey = 'CLAUDE_CODE_SUBAGENT_MODEL'
+const effortKey = 'CLAUDE_CODE_EFFORT_LEVEL'
 const providerKeys = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_USE_ANTHROPIC_AWS', 'CLAUDE_CODE_USE_MANTLE']
 // The model-config doc's aliases, optionally with the `[1m]` suffix; anything else is a pinned id.
@@ -108,6 +122,14 @@ function getEnvFinding(map, where) {
   return out
 }
 
+/** The effort-pin finding, or null. Kept out of getEnvFinding so `--preflight` never sees it. */
+function getEffortFinding(map, where) {
+  const v = netTrim(psString(mapGet(map, effortKey)))
+  if (!v) return null
+  const s = inline(v)
+  return { key: effortKey, text: `\`${effortKey}=${s}\` (${where}): 모든 서브에이전트와 워크플로 에이전트가 이 effort 로 돕니다 — 에이전트 frontmatter 의 effort 와 호출별 \`effort\` 보다 우선합니다` }
+}
+
 function processEnvMap() {
   const m = new Map()
   for (const k of [...familyKeys.map(f => f[0]), ...sessionKeys, subagentKey, ...providerKeys]) {
@@ -144,6 +166,11 @@ function main(payload) {
   const procEnv = processEnvMap()
   const findings = getEnvFinding(procEnv, '환경변수')
   const seen = new Set(findings.map(f => f.key))
+  const efforts = []
+  const pe = process.env[effortKey]
+  const procEffort = getEffortFinding(new Map(pe === undefined ? [] : [[fold(effortKey), pe]]), '환경변수')
+  if (procEffort) { efforts.push(procEffort); seen.add(procEffort.key) }
+  let fileEffort = null
 
   let userDir = netTrim(psString(process.env.CLAUDE_CONFIG_DIR))
   if (!userDir) {
@@ -176,15 +203,25 @@ function main(payload) {
       for (const f of getEnvFinding(map, `${where} env`)) {
         if (!seen.has(f.key)) { findings.push(f); seen.add(f.key) }
       }
+      // The files run user, project, local — rising precedence — so the last one that sets the
+      // effort variable holds the value Claude Code applies, and it is the one named.
+      fileEffort = getEffortFinding(map, `${where} env`) || fileEffort
     }
   }
+  if (fileEffort && !seen.has(fileEffort.key)) { efforts.push(fileEffort); seen.add(fileEffort.key) }
 
-  if (!findings.length) return
-  const list = findings.map(f => f.text).join('; ')
-  const sys = `[hook:model-route] 모델 alias 가 최신이 아닌 모델로 갈 수 있는 설정이 있습니다: ${list}. ` +
-    '조직 가이드: 워커 모델은 family alias 로만 부르고 각 alias 는 최신 모델에 둡니다 — 의도한 설정이 아니면 값을 지우세요. ' +
-    '이 훅은 안내만 하며 아무것도 바꾸거나 막지 않았습니다.'
-  emit({ systemMessage: sys })
+  if (!findings.length && !efforts.length) return
+  const parts = ['[hook:model-route]']
+  if (findings.length) {
+    parts.push(`모델 alias 가 최신이 아닌 모델로 갈 수 있는 설정이 있습니다: ${findings.map(f => f.text).join('; ')}.`,
+      '조직 가이드: 워커 모델은 family alias 로만 부르고 각 alias 는 최신 모델에 둡니다 — 의도한 설정이 아니면 값을 지우세요.')
+  }
+  if (efforts.length) {
+    parts.push(`워커의 effort pin 을 덮어쓰는 설정이 있습니다: ${efforts.map(f => f.text).join('; ')}.`,
+      '조직 가이드: 워커 effort 는 역할별로 정합니다 — 의도한 설정이 아니면 값을 지우세요.')
+  }
+  parts.push('이 훅은 안내만 하며 아무것도 바꾸거나 막지 않았습니다.')
+  emit({ systemMessage: parts.join(' ') })
 }
 
 try {

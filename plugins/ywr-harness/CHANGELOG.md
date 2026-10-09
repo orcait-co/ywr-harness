@@ -12,6 +12,30 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.64.0 — 2026-10-09
+
+- 스캐폴드의 `docs/check_docs.py` 에 STE-lite 문장 규칙 검사가 들어갔습니다(ADR 0128). pre-commit 이 스테이징된 spec
+  과 새 ADR 을 넘기면, HEAD 대비 바뀐 spec 절 전체와 새 ADR 전체에서 R5(문장 25단어, 번호 목록 단계 20단어)와
+  R3(괄호 안 주장 금지)를 검사합니다. 변경 이력·원장 절은 검사하지 않습니다.
+- 기본은 **안내만** 합니다: 지적을 출력하고 커밋은 그대로 진행됩니다. 차단하려면 `.harness.json` 에
+  `"docs": {"ste_lite": true}` 를 선언하세요. 새로 스캐폴드하는 저장소의 시드에는 이 선언이 들어 있습니다. 기존 저장소에는
+  다음 `harness-init` 실행 때 검사기가 반영되고, 선언은 각 저장소가 정합니다.
+- 검사기는 `.harness.json` 의 docs 그룹 `gates` 에 아래 줄이 있어야 스테이징된 경로를 받습니다. ADR 0094 이전에
+  스캐폴드한 저장소는 이 줄이 없거나 `"files": false` 라서, 안내조차 보이지 않습니다. 이제 `harness-init` 의
+  `.harness.json` 보존 안내가, spec·ADR 경로를 받는 그룹에 이 줄이 없으면 그 경로와 줄을 그대로 보여 줍니다(ADR 0129):
+  `{ "runner": "python", "script": "docs/check_docs.py", "files": true }`.
+  이 줄을 넣고 `"docs": {"ste_lite": true}` 를 선언하면 canon 과 같은 규칙으로 커밋을 막습니다.
+- 스크립트가 읽는 텍스트는 바로 위 줄에 `<!-- ste-lite: verbatim -->` 를 두면 다음 문단·목록·표가 검사에서 빠집니다.
+  CI 는 깨끗한 트리에서 돌기 때문에 이 검사로 실패하지 않습니다.
+- 세션 시작 모델 경로 경고가 `CLAUDE_CODE_EFFORT_LEVEL` 도 알립니다(ADR 0130). Claude Code 문서에 따르면 이 환경변수는
+  서브에이전트의 effort 를 정하며, 에이전트 frontmatter 의 effort 와 Agent 호출별 `effort` 보다 우선합니다. 워크플로
+  `agent()` 의 `effort` 보다도 우선한다는 것은 문서에 없고, Claude Code 2.1.295 에서 측정한 결과입니다. 그래서
+  워커·verifier·mech·리뷰 워커의 effort pin 이 모두 바뀝니다. 비어 있지 않은 값이면 모두 안내합니다. 환경변수나 settings 파일의 `env` 에 이 값이 있으면
+  세션 시작 때 어디에 설정됐는지 한 줄로 안내합니다. 의도한 값이 아니면 지우세요. 안내만 하고 아무것도 막지 않습니다.
+- `/ywr-harness:update` 가 `claude plugin list`·`update` 의 사람용 텍스트 대신 `--json` 결과를 읽습니다. 설치 scope 와
+  버전 변화(`oldVersion` → `newVersion`)를 필드로 확인하고, `--json` 을 모르는 오래된 Claude Code 에서는 텍스트로
+  돌아갑니다. 마켓플레이스가 선언한 명령의 승인(`-y`, `--accept-command`)은 하지 않고 사람에게 넘깁니다.
+
 ## v0.63.1 — 2026-10-09
 
 - 플러그인 README 에 설치 줄을 넣었습니다: `/plugin install ywr-harness@ywrlabs`. Claude Code 2.1.295 의

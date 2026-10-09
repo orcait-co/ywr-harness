@@ -671,6 +671,193 @@ $ok = (Assert-True 'T7 gitignore drift note names count + first missing line' `
 $ok = (Assert-True 'T7 the seed itself is untouched (report only)' `
     ((Get-Content -LiteralPath (Join-Path $t7 '.gitignore') -Raw) -eq $t7gi) 'the probe wrote into .gitignore') -and $ok
 
+# T8: scaffold gate lines (ADR 0129). Arrays are leaves to the key probe, so a docs group that
+# predates ADR 0094 hid the file-scoped check_docs.py line — the one path by which the STE-lite
+# gate (ADR 0128) ever sees a staged spec. Coverage is per PATH: the emitter runs the gates of
+# every group whose match claims a path, so the line must sit in a group claiming the path, and
+# the line in some other group is no coverage (owner 2026-10-09: docs-generated alone never sees
+# a spec). The note names the uncovered scaffold paths, the exact line and the template groups.
+$t8Gate = [regex]::Escape(' declares the scaffold gate { "runner": "python", "script": "docs/check_docs.py", "files": true } (template: ')
+$t8Corpus = 'docs/adr/README\.md, docs/adr/0000-template\.md, docs/spec/README\.md, docs/spec/0000-template\.md, docs/adr/0001-adopt-docs-as-code\.md'
+$t8All = "no group claiming $t8Corpus, docs/index\.json$t8Gate" + 'docs-corpus, docs-generated\)'
+function New-T8Seed([string]$Name, [scriptblock]$Mutate) {
+    $dir = New-Target $Name
+    $d = Get-Content -LiteralPath (Join-Path $templates 'harness.json') -Raw | ConvertFrom-Json
+    & $Mutate $d
+    [IO.File]::WriteAllText((Join-Path $dir '.harness.json'), ($d | ConvertTo-Json -Depth 16))
+    return $dir
+}
+$t8a = New-T8Seed 'seed-gate-empty' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates = @() } } }
+$rT8a = Invoke-Init @('-Target', $t8a, '-DryRun')
+$ok = (Assert-True 'T8a gates: [] in both docs groups names every uncovered path, the line once, the template groups' `
+    ($rT8a.Out -match "= \.harness\.json \(existing seed preserved — $t8All\)") $rT8a.Out) -and $ok
+$t8b = New-T8Seed 'seed-gate-whole-program' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates[0].files = $false } } }
+$rT8b = Invoke-Init @('-Target', $t8b)
+$ok = (Assert-True 'T8b the pre-ADR 0094 files:false gate is not the line (runner + script + files)' `
+    ($rT8b.Code -eq 0 -and $rT8b.Out -match $t8All) "exit=$($rT8b.Code) out=$($rT8b.Out)") -and $ok
+# The owner's case: the line in docs-generated only. Present in the file, absent where specs land.
+$t8g = New-T8Seed 'seed-gate-generated-only' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.gates = @() } } }
+$rT8g = Invoke-Init @('-Target', $t8g)
+$ok = (Assert-True 'T8g the line in docs-generated alone still names the corpus paths' `
+    ($rT8g.Out -match "\(existing seed preserved — no group claiming $t8Corpus$t8Gate" + 'docs-corpus\)\)') $rT8g.Out) -and $ok
+# Specs split into their own group without the line: only the spec paths are uncovered.
+$t8h = New-T8Seed 'seed-gate-split-specs' { param($d)
+    foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = '^docs/adr/.*\.md$' } }
+    $d.groups += [pscustomobject]@{ name = 'specs'; match = '^docs/spec/.*\.md$'; cwd = ''; strip_prefix = ''; gates = @() } }
+$rT8h = Invoke-Init @('-Target', $t8h)
+$ok = (Assert-True 'T8h a split-off spec group without the line names the spec paths only' `
+    ($rT8h.Out -match ("\(existing seed preserved — no group claiming docs/spec/README\.md, docs/spec/0000-template\.md$t8Gate" + 'docs-corpus\)\)')) $rT8h.Out) -and $ok
+# Group names are the repo's: a renamed group that claims the paths and carries the line covers them.
+$t8c = New-T8Seed 'seed-gate-renamed' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.name = 'decision-records' } } }
+$rT8c = Invoke-Init @('-Target', $t8c)
+$ok = (Assert-True 'T8c a renamed group that claims the paths and carries the line gets no note' `
+    ($rT8c.Code -eq 0 -and $rT8c.Out -notmatch 'declares the scaffold gate' -and $rT8c.Out -notmatch 'this seed lacks') $rT8c.Out) -and $ok
+# Selectors and paths are exact to the emitter, so a case variant is not the line.
+$t8d = New-T8Seed 'seed-gate-case' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates[0].runner = 'Python' } } }
+$rT8d = Invoke-Init @('-Target', $t8d)
+$ok = (Assert-True 'T8d a case-variant runner does not satisfy the line' ($rT8d.Out -match $t8All) $rT8d.Out) -and $ok
+# Both halves on one line: the key half first, then the gate half (the ADR 0128 consumer shape).
+$t8e = New-T8Seed 'seed-gate-and-key' { param($d)
+    $d.docs.PSObject.Properties.Remove('ste_lite'); foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates = @() } } }
+$rT8e = Invoke-Init @('-Target', $t8e)
+$ok = (Assert-True 'T8e a missing docs.ste_lite key and the gate line join with "; "' `
+    ($rT8e.Out -match "template has 1 key\(s\) this seed lacks: docs\.ste_lite; $t8All") $rT8e.Out) -and $ok
+# A top level that is not an object declares no group: reported, never fatal.
+$t8f = New-Target 'seed-gate-array'
+[IO.File]::WriteAllText((Join-Path $t8f '.harness.json'), '[]')
+$rT8f = Invoke-Init @('-Target', $t8f)
+$ok = (Assert-True 'T8f a bare-array seed names the gate line and the run exits 0' `
+    ($rT8f.Code -eq 0 -and $rT8f.Out -match $t8All) "exit=$($rT8f.Code) out=$($rT8f.Out)") -and $ok
+# A match .NET refuses claims nothing, so the note speaks rather than staying silent.
+$t8i = New-T8Seed 'seed-gate-bad-regex' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-generated') { $g.match = '^docs/(index' } } }
+$rT8i = Invoke-Init @('-Target', $t8i)
+$ok = (Assert-True 'T8i an unparseable group match leaves its path uncovered, run exits 0' `
+    ($rT8i.Code -eq 0 -and $rT8i.Out -match ("no group claiming docs/index\.json$t8Gate" + 'docs-generated\)')) "exit=$($rT8i.Code) out=$($rT8i.Out)") -and $ok
+# T8j: a repo that moved its docs.index (its own declaration) is not probed at the template's
+# index path — that file does not exist there (review 2026-10-09, low).
+$t8j = New-T8Seed 'seed-gate-moved-index' { param($d)
+    $d.docs.index = 'documentation/index.json'
+    foreach ($g in $d.groups) { if ($g.name -eq 'docs-generated') { $g.match = '^documentation/index\.json$'; $g.gates = @() } } }
+$rT8j = Invoke-Init @('-Target', $t8j)
+$ok = (Assert-True 'T8j a moved docs.index gets no note for the template index path' `
+    ($rT8j.Code -eq 0 -and $rT8j.Out -notmatch 'declares the scaffold gate') $rT8j.Out) -and $ok
+# T8k: Python's named group spelling is valid to the emitter, so it must claim here too.
+$t8k = New-T8Seed 'seed-gate-python-named' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = '^docs/(?P<k>adr|spec)/.*\.md$' } } }
+$rT8k = Invoke-Init @('-Target', $t8k)
+$ok = (Assert-True 'T8k a (?P<name>...) match claims its paths (no false gap)' ($rT8k.Out -notmatch 'declares the scaffold gate') $rT8k.Out) -and $ok
+# T8l: a pattern Python refuses must not escape the \A(?:...) wrapper and claim every path.
+$t8l = New-T8Seed 'seed-gate-escape' { param($d)
+    foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.gates = @() } }
+    $d.groups += [pscustomobject]@{ name = 'greedy'; match = '^zz)|(.*'; cwd = ''; strip_prefix = ''
+        gates = @([pscustomobject]@{ runner = 'python'; script = 'docs/check_docs.py'; files = $true }) } }
+$rT8l = Invoke-Init @('-Target', $t8l)
+$ok = (Assert-True 'T8l an unbalanced match claims nothing, so the corpus gap still speaks' `
+    ($rT8l.Out -match ("no group claiming $t8Corpus$t8Gate" + 'docs-corpus\)')) $rT8l.Out) -and $ok
+# T8m: the template side is ours — a template match .NET refused would silence the probe for
+# every consumer, so every one must compile here, alone and wrapped.
+$t8mBad = @(foreach ($g in (Get-Content -LiteralPath (Join-Path $templates 'harness.json') -Raw | ConvertFrom-Json).groups) {
+    try { [void][regex]::new($g.match); [void][regex]::new("\A(?:$($g.match))") } catch { $g.name } })
+$ok = (Assert-True 'T8m every template group match compiles in .NET' ($t8mBad.Count -eq 0) "refused: $($t8mBad -join ', ')") -and $ok
+# T8n: a template gate on a script the scaffold does not place is the repo's own, never a
+# scaffold gate. Runs a COPY of the skill with that gate added; the real plugin is never modified.
+$ownSkill = Join-Path $fxBase 'own-gate-skill'
+Copy-Item -LiteralPath $PSScriptRoot -Destination $ownSkill -Recurse -Force
+$ownDecl = Get-Content -LiteralPath (Join-Path $ownSkill 'templates/harness.json') -Raw | ConvertFrom-Json
+foreach ($g in $ownDecl.groups) { if ($g.name -eq 'docs-corpus') { $g.gates += [pscustomobject]@{ runner = 'python'; script = 'scripts/own_check.py'; files = $true } } }
+[IO.File]::WriteAllText((Join-Path $ownSkill 'templates/harness.json'), ($ownDecl | ConvertTo-Json -Depth 16))
+$t8n = New-T8Seed 'seed-gate-own-script' { param($d) }
+$rT8n = Invoke-Init @('-Target', $t8n) -Script (Join-Path $ownSkill 'init.ps1')
+$ok = (Assert-True 'T8n a template gate on a non-TOOLCHAIN script is never a scaffold gate' `
+    ($rT8n.Code -eq 0 -and $rT8n.Out -notmatch 'own_check' -and $rT8n.Out -notmatch 'declares the scaffold gate') "exit=$($rT8n.Code) out=$($rT8n.Out)") -and $ok
+# T8o: an unforeseen throw inside the probe is a reported skip, never a non-zero exit (ADR 0051).
+# Runs a COPY of the skill whose probe throws; the real plugin is never modified.
+$throwSkill = Join-Path $fxBase 'gate-throw-skill'
+Copy-Item -LiteralPath $PSScriptRoot -Destination $throwSkill -Recurse -Force
+$throwInit = Join-Path $throwSkill 'init.ps1'
+$throwSrc = [IO.File]::ReadAllText($throwInit)
+$throwHook = 'function Get-ScaffoldGateNote([object]$Template, [object]$Repo) {'
+$ok = (Assert-True 'T8o the probe function signature is where the injection expects it' $throwSrc.Contains($throwHook) 'signature moved — update the injection') -and $ok
+[IO.File]::WriteAllText($throwInit, $throwSrc.Replace($throwHook, "$throwHook throw 'injected probe failure';"))
+$t8o = New-T8Seed 'seed-gate-throw' { param($d) }
+$rT8o = Invoke-Init @('-Target', $t8o) -Script $throwInit
+$ok = (Assert-True 'T8o a throwing probe is a reported skip, the run exits 0 and still stamps' `
+    ($rT8o.Code -eq 0 -and $rT8o.Out -match 'scaffold gate probe skipped: injected probe failure' -and $rT8o.Out -match 'stamp: ') "exit=$($rT8o.Code) out=$($rT8o.Out)") -and $ok
+# T8p: the placed paths are samples (owner 2026-10-09). A gated group that claims the placed
+# template files but no real spec must still get a note — the real spec under the same directory
+# is probed, and it leads the list so the display cap never hides it.
+$t8p = New-T8Seed 'seed-gate-real-spec' { param($d)
+    foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = '^docs/(adr|spec)/(0000-template|README|0001-adopt-docs-as-code)\.md$' } } }
+New-Item -ItemType Directory -Force -Path (Join-Path $t8p 'docs/spec') | Out-Null
+[IO.File]::WriteAllText((Join-Path $t8p 'docs/spec/0002-real.md'), "# real spec`n")
+$rT8p = Invoke-Init @('-Target', $t8p, '-DryRun')
+$ok = (Assert-True 'T8p a real spec outside the gated group is named first, though every placed path is covered' `
+    ($rT8p.Out -match ("\(existing seed preserved — no group claiming docs/spec/0002-real\.md$t8Gate" + 'docs-corpus\)\)')) $rT8p.Out) -and $ok
+# T8q: one alternation per side renumbers capture groups, so a backreference would read another
+# group's capture. A repo set with a backreference stays one regex per group: the spec group's
+# `\1` must still mean its own `(docs)`, and the real spec it claims gets no note.
+$t8q = New-T8Seed 'seed-gate-backref' { param($d)
+    foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = '^docs/(adr)/.*\.md$' } }
+    $d.groups += [pscustomobject]@{ name = 'specs'; match = '^(docs)/spec/(.*\1|README|0000-template)\.md$'; cwd = ''; strip_prefix = ''
+        gates = @([pscustomobject]@{ runner = 'python'; script = 'docs/check_docs.py'; files = $true }) } }
+New-Item -ItemType Directory -Force -Path (Join-Path $t8q 'docs/spec') | Out-Null
+[IO.File]::WriteAllText((Join-Path $t8q 'docs/spec/0002-docs.md'), "# real spec`n")
+$rT8q = Invoke-Init @('-Target', $t8q, '-DryRun')
+$ok = (Assert-True 'T8q a backreference keeps its own group numbering (no false gap)' ($rT8q.Out -notmatch 'declares the scaffold gate') $rT8q.Out) -and $ok
+# T8r: a conditional `(?(1)…)` reads a group by number too, so it keeps per-group regexes as well
+# (re-review 2026-10-09, low): in one alternation the spec group's (?(1) would test (adr).
+$t8r = New-T8Seed 'seed-gate-conditional' { param($d)
+    foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = '^docs/(adr)/.*\.md$' } }
+    $d.groups += [pscustomobject]@{ name = 'specs'; match = '^(docs)?(?(1)/spec/.*\.md|zz)$'; cwd = ''; strip_prefix = ''
+        gates = @([pscustomobject]@{ runner = 'python'; script = 'docs/check_docs.py'; files = $true }) } }
+New-Item -ItemType Directory -Force -Path (Join-Path $t8r 'docs/spec') | Out-Null
+[IO.File]::WriteAllText((Join-Path $t8r 'docs/spec/0002-real.md'), "# real spec`n")
+$rT8r = Invoke-Init @('-Target', $t8r, '-DryRun')
+$ok = (Assert-True 'T8r a conditional group reference keeps its own numbering (no false gap)' ($rT8r.Out -notmatch 'declares the scaffold gate') $rT8r.Out) -and $ok
+# T8s: the index's own directory is not listed — the index path itself is the probe. Listing docs/
+# would name docs/INDEX.md, which the template's docs-generated claims and this repo narrowed away.
+$t8s = New-T8Seed 'seed-gate-index-dir' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-generated') { $g.match = '^docs/index\.json$' } } }
+New-Item -ItemType Directory -Force -Path (Join-Path $t8s 'docs') | Out-Null
+[IO.File]::WriteAllText((Join-Path $t8s 'docs/INDEX.md'), "# index`n")
+$rT8s = Invoke-Init @('-Target', $t8s, '-DryRun')
+$ok = (Assert-True 'T8s the docs.index directory is not listed' ($rT8s.Out -notmatch 'declares the scaffold gate') $rT8s.Out) -and $ok
+# T8t: the listing recurses — a nested spec the repo's flat match misses is named.
+$t8Flat = '^docs/(adr|spec)/(?!\.)[^/]*\.md$'
+$t8t = New-T8Seed 'seed-gate-nested' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = $t8Flat } } }
+New-Item -ItemType Directory -Force -Path (Join-Path $t8t 'docs/spec/sub') | Out-Null
+[IO.File]::WriteAllText((Join-Path $t8t 'docs/spec/sub/0003-nested.md'), "# nested`n")
+$rT8t = Invoke-Init @('-Target', $t8t, '-DryRun')
+$ok = (Assert-True 'T8t a nested real spec outside the flat match is named' `
+    ($rT8t.Out -match ("\(existing seed preserved — no group claiming docs/spec/sub/0003-nested\.md$t8Gate" + 'docs-corpus\)\)')) $rT8t.Out) -and $ok
+# T8u: hidden entries and directory links are not listed. Each would be a gap under the flat
+# match if listed: a hidden draft, and a spec reached only through a linked directory.
+$t8u = New-T8Seed 'seed-gate-hidden-link' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = $t8Flat } } }
+New-Item -ItemType Directory -Force -Path (Join-Path $t8u 'docs/spec') | Out-Null
+$t8uHidden = Join-Path $t8u 'docs/spec/.draft.md'
+[IO.File]::WriteAllText($t8uHidden, "# hidden draft`n")
+if ($IsWindows) { [IO.File]::SetAttributes($t8uHidden, [IO.File]::GetAttributes($t8uHidden) -bor [IO.FileAttributes]::Hidden) }
+$t8uOutside = Join-Path $fxBase 'gate-link-outside'
+New-Item -ItemType Directory -Force -Path $t8uOutside | Out-Null
+[IO.File]::WriteAllText((Join-Path $t8uOutside 'linked.md'), "# outside`n")
+$t8uLinked = $true
+try { New-Item -ItemType $(if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }) -Path (Join-Path $t8u 'docs/spec/linked') -Target $t8uOutside -ErrorAction Stop | Out-Null }
+catch { $t8uLinked = $false; Write-Host "SKIP [T8u link half] could not create a directory link: $($_.Exception.Message)" -ForegroundColor Yellow }
+$rT8u = Invoke-Init @('-Target', $t8u, '-DryRun')
+$ok = (Assert-True "T8u a hidden draft$(if ($t8uLinked) { ' and a linked directory are' } else { ' is' }) not listed" ($rT8u.Out -notmatch 'declares the scaffold gate') $rT8u.Out) -and $ok
+# T8v: a listing that throws keeps the sample gaps and says where it stopped (re-review
+# 2026-10-09, low). Runs a COPY of the skill whose listing throws; the real plugin is never modified.
+$listSkill = Join-Path $fxBase 'gate-list-throw-skill'
+Copy-Item -LiteralPath $PSScriptRoot -Destination $listSkill -Recurse -Force
+$listInit = Join-Path $listSkill 'init.ps1'
+$listSrc = [IO.File]::ReadAllText($listInit)
+$listHook = "[IO.Directory]::EnumerateFiles(`$full, '*', `$eo)"
+$ok = (Assert-True 'T8v the listing call is where the injection expects it' $listSrc.Contains($listHook) 'listing call moved — update the injection') -and $ok
+[IO.File]::WriteAllText($listInit, $listSrc.Replace($listHook, "`$(throw 'injected listing failure')"))
+$t8v = New-T8Seed 'seed-gate-list-throw' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates = @() } } }
+$rT8v = Invoke-Init @('-Target', $t8v) -Script $listInit
+$ok = (Assert-True 'T8v a throwing listing keeps the sample gaps and names where it stopped' `
+    ($rT8v.Code -eq 0 -and $rT8v.Out -match $t8All -and $rT8v.Out -match 'real-file listing stopped under docs/adr \(injected listing failure\)') "exit=$($rT8v.Code) out=$($rT8v.Out)") -and $ok
+$ok = (Assert-True 'T4 a template-complete seed names no scaffold gate' ($rT4.Out -notmatch 'declares the scaffold gate') $rT4.Out) -and $ok
+
 # --- U: first-run TOOLCHAIN collision refuses (ADR 0055, issue #50) ----------------------------
 # The measured brownfield loss: a repo's own docs/README.md silently replaced and labeled
 # "toolchain refreshed from canon" on the FIRST run. No stamp file = first run; a differing file

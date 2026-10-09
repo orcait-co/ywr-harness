@@ -827,6 +827,216 @@ $rCK6h = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' '
 $ok = (Assert-True 'CK6 wrapper with a flag after a path: exit 2 (every argument is inspected, not argv[1])' `
     ($LASTEXITCODE -eq 2) $rCK6h) -and $ok
 
+# --- SL: the STE-lite gate (ADR 0128) — check_docs.py with path arguments reads each passed spec
+# and NEW ADR against HEAD, selects the changed sections, and checks R5 (sentence length) and R3
+# (claims in parentheses). A git fixture with the vendored harness_config.py, because the gate
+# takes its diff through git_run() and its mode through load(). Each case edits the committed
+# tree, runs the gate from the fixture root with the relative paths pre-commit sends, and resets.
+# Mutation anchors: a gate that checks only the changed lines turns SL3 green-for-the-wrong-reason
+# red (the old long sentence must be named); one that checks a records section turns SL1 and SL4
+# red; a fence reader that takes an inline ```` ```diff ```` span for a fence loses the
+# headings after §1 and turns SL3 red; a gate that blocks without the declaration turns SL7 red.
+$repoSL = Join-Path $fx 'repo-ste'
+$docsSL = Join-Path $repoSL 'docs'
+New-Item -ItemType Directory -Force -Path (Join-Path $docsSL 'adr'), (Join-Path $docsSL 'spec'), (Join-Path $repoSL 'scripts/harness') | Out-Null
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsSL 'build_docs.py')
+Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $docsSL 'check_docs.py')
+Copy-Item -LiteralPath $harnessConfigSrc -Destination (Join-Path $repoSL 'scripts/harness/harness_config.py')
+$long = 'This sentence is deliberately long so that it runs past the limit of twenty five words that the rule sets for every descriptive sentence in a spec.'
+$slSpec = @"
+---
+id: "0001"
+type: spec
+title: "s"
+status: active
+---
+# SPEC 0001. S
+
+## 1. Clean
+
+A short sentence stands here.
+
+- An item with an inline span:
+   ```` ``````diff ```` is not a fence.
+
+## 2. Old
+
+Old short sentence.
+
+$long
+
+## 3. Change notes
+
+- $long
+
+## 4. Verbatim
+
+A short line.
+
+<!-- ste-lite: verbatim -->
+$long
+
+## 5. Table
+
+| Date | Plugin | Notes |
+|---|---|---|
+| d1 | 0.1.0 | an old row |
+
+| d0 | 0.0.9 | older group |
+"@
+function Write-SL([string]$Rel, [string]$Body) {
+    [IO.File]::WriteAllText((Join-Path $repoSL $Rel), ($Body -replace "`r`n", "`n"))
+}
+function Invoke-SLGit {
+    $null = & git -C $repoSL -c user.name=t -c user.email=t@t -c core.autocrlf=false @args 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "git $($args -join ' ') failed in the SL fixture" }
+}
+function Invoke-SLCheck {
+    Push-Location -LiteralPath $repoSL
+    try { $out = & $py.Source 'docs/check_docs.py' @args 2>&1 | Out-String; $code = $LASTEXITCODE }
+    finally { Pop-Location }
+    return @{ Out = $out; Code = $code }
+}
+function Reset-SL {
+    Invoke-SLGit checkout -- .
+    Invoke-SLGit clean -fdq -- docs
+    # -Force: pwsh on Linux treats a dotfile as hidden, and Remove-Item without -Force fails on it.
+    Remove-Item -LiteralPath (Join-Path $repoSL '.harness.json') -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath (Join-Path $repoSL '.harness.json')) { throw 'SL fixture: .harness.json survived the reset' }
+}
+Write-SL 'docs/spec/0001-s.md' ($slSpec.Replace('``````diff', '```diff') + "`n")
+Write-SL 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`ntitle: `"a`"`nstatus: accepted`n---`n# 0001. A`n`nShort.`n"
+$null = & git init -q $repoSL 2>&1
+$null = & $py.Source (Join-Path $docsSL 'build_docs.py') 2>&1
+Remove-Item -LiteralPath (Join-Path $docsSL 'docs.html'), (Join-Path $docsSL 'docs.artifact.html') -ErrorAction SilentlyContinue
+Write-SL '.gitignore' "docs/docs.html`ndocs/docs.artifact.html`n__pycache__/`n"
+Invoke-SLGit add -A
+Invoke-SLGit commit -qm base
+$specSL = Join-Path $repoSL 'docs/spec/0001-s.md'
+function Edit-SL([string]$Find, [string]$Replace) {
+    $t = [IO.File]::ReadAllText($specSL)
+    if (-not $t.Contains($Find)) { throw "SL fixture: '$Find' not found" }
+    [IO.File]::WriteAllText($specSL, $t.Replace($Find, $Replace))
+}
+
+# SL1: a short new sentence in §1 passes, and the change notes are a records section: not checked.
+Edit-SL 'A short sentence stands here.' "A short sentence stands here.`nAnother short one."
+Edit-SL "## 3. Change notes`n`n" "## 3. Change notes`n`n- A short new note.`n"
+$rSL1 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL1 a clean section passes and the records section is not checked (exit 0)' `
+    ($rSL1.Code -eq 0 -and $rSL1.Out -match '\[ste-lite\] OK - 1 section' -and $rSL1.Out -match '3\. Change notes \(records, not checked\)') $rSL1.Out) -and $ok
+Reset-SL
+
+# SL2: a long sentence, a 21-word numbered step and a claim in parentheses in a changed section.
+Edit-SL 'A short sentence stands here.' "A short sentence stands here (which is a claim).`n`n$long`n`n1. Run this numbered step that has exactly twenty one words so it passes the descriptive limit but fails the step limit."
+$rSL2 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL2 R5 sentence, R5 step (> 20) and R3 claim are each reported' `
+    ($rSL2.Out -match 'R5 docs/spec/0001-s\.md:\d+ 27 words > 25' -and $rSL2.Out -match 'R5 docs/spec/0001-s\.md:\d+ 21 words > 20' -and $rSL2.Out -match 'R3 docs/spec/0001-s\.md:\d+ claim in parentheses: "\(which is a claim\)"') $rSL2.Out) -and $ok
+# SL7: no declaration — the same findings are advice: exit 0 and the line that names the key.
+$ok = (Assert-True 'SL7 undeclared: ADVISORY, exit 0, the docs.ste_lite line printed' `
+    ($rSL2.Code -eq 0 -and $rSL2.Out -match '\[ste-lite\] ADVISORY - 3 finding' -and $rSL2.Out -match 'ste_lite.: true') $rSL2.Out) -and $ok
+# SL8: declared — the same tree blocks with exit 1.
+Write-SL '.harness.json' '{"docs": {"ste_lite": true}}'
+$rSL8 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL8 declared docs.ste_lite: true: FAIL, exit 1' `
+    ($rSL8.Code -eq 1 -and $rSL8.Out -match '\[ste-lite\] FAIL - 3 finding') $rSL8.Out) -and $ok
+Reset-SL
+
+# SL3: a short edit in §2 selects the whole section, so its old long sentence fails (line 20).
+Edit-SL 'Old short sentence.' 'Old short sentence, edited.'
+$rSL3 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL3 a changed section is checked whole: the old long sentence on line 20 is named' `
+    ($rSL3.Out -match '2\. Old \(whole\)' -and $rSL3.Out -match 'R5 docs/spec/0001-s\.md:20 27 words' -and $rSL3.Out -notmatch '1\. Clean') $rSL3.Out) -and $ok
+Reset-SL
+
+# SL4: a records section is not checked at all (owner 2026-10-09): a long new row passes too.
+Edit-SL "## 3. Change notes`n`n" "## 3. Change notes`n`n- $long`n"
+$rSL4 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL4 records section: a new long row is not checked (exit 0, no finding)' `
+    ($rSL4.Code -eq 0 -and $rSL4.Out -notmatch ' R5 ' -and $rSL4.Out -match 'records, not checked' -and $rSL4.Out -match 'no checked section') $rSL4.Out) -and $ok
+Reset-SL
+
+# SL5: an edit in §4 checks it whole, and the verbatim block under the marker is exempt.
+Edit-SL 'A short line.' 'A short line, edited.'
+$rSL5 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL5 a verbatim block is exempt from the whole-section check' `
+    ($rSL5.Code -eq 0 -and $rSL5.Out -match '4\. Verbatim \(whole\)' -and $rSL5.Out -match '\[ste-lite\] OK - 1 section') $rSL5.Out) -and $ok
+Reset-SL
+
+# SL6: a new ADR is checked whole; a changed accepted ADR is skipped (append-only).
+Write-SL 'docs/adr/0002-b.md' "---`nid: `"0002`"`ntype: adr`ntitle: `"b`"`nstatus: accepted`n---`n# 0002. B`n`n$long`n"
+Add-Content -LiteralPath (Join-Path $docsSL 'adr/0001-a.md') -Value "`n$long" -NoNewline
+$rSL6 = Invoke-SLCheck 'docs/adr/0001-a.md' 'docs/adr/0002-b.md'
+$ok = (Assert-True 'SL6 a new ADR is checked whole and a changed ADR is skipped' `
+    ($rSL6.Out -match 'R5 docs/adr/0002-b\.md:9 ' -and $rSL6.Out -notmatch '0001-a\.md' -and $rSL6.Out -match 'ADVISORY - 1 finding') $rSL6.Out) -and $ok
+Reset-SL
+
+# SL9 (review 2026-10-09): a table whose row groups are blank-separated, as spec 0014 §7 writes
+# them, in a checked section. A new group's first row is a data row, not a header; the reference
+# forms `(record run #N, manifest X.Y.Z)` pass R3; a real claim in that row is flagged.
+Edit-SL "| d0 | 0.0.9 | older group |" "| d2 | 0.2.0 (record run #3, manifest 0.2.0) | short note |`n`n| d0 | 0.0.9 | older group |"
+$rSL9 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL9 a new table group in the eval-row reference form passes R3' `
+    ($rSL9.Code -eq 0 -and $rSL9.Out -match '5\. Table \(whole\)' -and $rSL9.Out -match '\[ste-lite\] OK - 1 section') $rSL9.Out) -and $ok
+Reset-SL
+Edit-SL "| d0 | 0.0.9 | older group |" "| d3 | 0.3.0 | a note (that hides a claim) |`n`n| d0 | 0.0.9 | older group |"
+$rSL9b = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL9b the first row of a new blank-separated group is checked: its claim is flagged' `
+    ($rSL9b.Out -match 'R3 docs/spec/0001-s\.md:\d+ claim in parentheses: "\(that hides a claim\)"' -and $rSL9b.Out -match 'ADVISORY - 1 finding') $rSL9b.Out) -and $ok
+Reset-SL
+
+# SL10 (review, medium): removing a whole section selects nothing, and a new section appended with
+# its leading blank line selects only itself — never the untouched section above it.
+$t = [IO.File]::ReadAllText($specSL)
+$cut = $t.IndexOf("## 4. Verbatim"); $end = $t.IndexOf("## 5. Table")
+[IO.File]::WriteAllText($specSL, $t.Substring(0, $cut) + $t.Substring($end))
+$rSL10 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL10 a deleted whole section selects no section' `
+    ($rSL10.Code -eq 0 -and $rSL10.Out -match 'no checked section' -and $rSL10.Out -notmatch '3\. Change notes|5\. Table') $rSL10.Out) -and $ok
+Reset-SL
+Add-Content -LiteralPath $specSL -Value "`n## 6. New`n`nA new short section.`n" -NoNewline
+$rSL10b = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL10b an appended section selects only itself, not the table above it' `
+    ($rSL10b.Out -match '6\. New \(whole\)' -and $rSL10b.Out -notmatch '5\. Table' -and $rSL10b.Out -match 'OK - 1 section') $rSL10b.Out) -and $ok
+Reset-SL
+
+# SL11 (review, medium): a .harness.json below the git top level. The HEAD lookup must read the
+# path from that root (`HEAD:./<rel>`), or every spec reads as new and is checked whole.
+$repoN = Join-Path $fx 'repo-ste-nested'
+$svc = Join-Path $repoN 'svc'
+New-Item -ItemType Directory -Force -Path (Join-Path $svc 'docs/spec'), (Join-Path $svc 'docs/adr'), (Join-Path $svc 'scripts/harness') | Out-Null
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $svc 'docs/build_docs.py')
+Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $svc 'docs/check_docs.py')
+Copy-Item -LiteralPath $harnessConfigSrc -Destination (Join-Path $svc 'scripts/harness/harness_config.py')
+Copy-Item -LiteralPath $specSL -Destination (Join-Path $svc 'docs/spec/0001-s.md')
+[IO.File]::WriteAllText((Join-Path $svc '.harness.json'), '{"docs": {"ste_lite": true}}')
+[IO.File]::WriteAllText((Join-Path $repoN '.gitignore'), "__pycache__/`nsvc/docs/docs.html`nsvc/docs/docs.artifact.html`n")
+$null = & git init -q $repoN 2>&1
+$null = & $py.Source (Join-Path $svc 'docs/build_docs.py') 2>&1
+Remove-Item -LiteralPath (Join-Path $svc 'docs/docs.html'), (Join-Path $svc 'docs/docs.artifact.html') -ErrorAction SilentlyContinue
+$null = & git -C $repoN -c core.autocrlf=false add -A 2>&1
+$null = & git -C $repoN -c user.name=t -c user.email=t@t commit -qm base 2>&1
+$specN = Join-Path $svc 'docs/spec/0001-s.md'
+[IO.File]::WriteAllText($specN, [IO.File]::ReadAllText($specN).Replace('A short sentence stands here.', 'A short sentence stands here, edited.'))
+Push-Location -LiteralPath $svc
+try { $rSL11 = & $py.Source 'docs/check_docs.py' 'docs/spec/0001-s.md' 2>&1 | Out-String; $sl11Code = $LASTEXITCODE } finally { Pop-Location }
+$ok = (Assert-True 'SL11 a .harness.json below the git root: only the changed section is checked (exit 0)' `
+    ($sl11Code -eq 0 -and $rSL11 -match '1\. Clean \(whole\)' -and $rSL11 -notmatch '2\. Old' -and $rSL11 -match 'OK - 1 section') $rSL11) -and $ok
+
+# SL12 (review, low): advisory mode never blocks. A missing harness_config.py prints NOT CHECKED
+# and exits 0; a non-boolean docs.ste_lite prints a WARN line and stays advisory.
+Edit-SL 'Old short sentence.' 'Old short sentence, edited.'
+$hcSL = Join-Path $repoSL 'scripts/harness/harness_config.py'
+Move-Item -LiteralPath $hcSL -Destination "$hcSL.off"
+try { $rSL12 = Invoke-SLCheck 'docs/spec/0001-s.md' } finally { Move-Item -LiteralPath "$hcSL.off" -Destination $hcSL }
+$ok = (Assert-True 'SL12 harness_config.py missing: NOT CHECKED, exit 0' `
+    ($rSL12.Code -eq 0 -and $rSL12.Out -match '\[ste-lite\] NOT CHECKED') $rSL12.Out) -and $ok
+Write-SL '.harness.json' '{"docs": {"ste_lite": "true"}}'
+$rSL12b = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL12b a string docs.ste_lite: WARN line, advisory, exit 0' `
+    ($rSL12b.Code -eq 0 -and $rSL12b.Out -match '\[ste-lite\] WARN docs\.ste_lite' -and $rSL12b.Out -match 'ADVISORY') $rSL12b.Out) -and $ok
+Reset-SL
+
 # --- FL: every YAML list shape a spec is written in indexes as the SAME list (dist issue #6) ----
 # The builder read only the one-line `[a, b]` form: a block list landed in index.json as null and a
 # multi-line flow list as the STRING "[" — and verify_map then crashed on the null (TypeError,

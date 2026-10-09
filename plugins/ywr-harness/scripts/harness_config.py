@@ -887,6 +887,9 @@ def load(root: Path) -> tuple[dict, list[str]]:
     cfg["artifacts"] = {"readme": "README.md", "items": [], "malformed": ""}
     # Customer-corpus surface (ADR 0060): None = off. Validated by `customer_decl` below.
     cfg["customer"] = None
+    # STE-lite gate mode (ADR 0128): True only for a literal JSON `true` — the docs check then
+    # fails on a finding; absent, null or false keeps it advisory (findings print, exit 0).
+    cfg["ste_lite"] = False
 
     path = root / ".harness.json"
     if not path.exists():
@@ -908,6 +911,12 @@ def load(root: Path) -> tuple[dict, list[str]]:
     if docs.get("index"):
         cfg["index"] = safe_path(docs["index"], "docs.index", warns) or DEFAULTS["index"]
     cfg["customer"] = customer_decl(docs.get("customer"), root, warns)
+    ste = docs.get("ste_lite")
+    if ste is True:
+        cfg["ste_lite"] = True
+    elif ste is not None and ste is not False:
+        warns.append(f"docs.ste_lite: expected true or false, got {type(ste).__name__} — "
+                     f"the STE-lite gate stays advisory")
 
     ver = _section(raw, "verify", warns)
     runner = str(ver.get("runner") or DEFAULTS["runner"])
