@@ -17,7 +17,7 @@ $nodeExe = (Get-Command node).Source
 
 $guarded = @('ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
     'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL',
-    'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+    'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_USE_ANTHROPIC_AWS',
     'CLAUDE_CODE_USE_MANTLE', 'CLAUDE_CODE_EFFORT_LEVEL')
 $pinned = @('CLAUDE_CONFIG_DIR', 'CLAUDE_PROJECT_DIR', 'USERPROFILE', 'HOME')
 
@@ -98,6 +98,8 @@ foreach ($c in @(
         @{ n = 'P3 a full-id session model refuses'; e = @{ ANTHROPIC_MODEL = 'claude-opus-4-6' }; m = 'ANTHROPIC_MODEL=claude-opus-4-6' },
         @{ n = 'P4 a full-id subagent model refuses'; e = @{ CLAUDE_CODE_SUBAGENT_MODEL = 'claude-sonnet-5' }; m = 'CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-5' },
         @{ n = 'P4b an ALIAS subagent model refuses too (it moves every unassigned worker to that family)'; e = @{ CLAUDE_CODE_SUBAGENT_MODEL = 'haiku' }; m = 'CLAUDE_CODE_SUBAGENT_MODEL=haiku' },
+        @{ n = 'P4c an ALIAS workflow model refuses (it moves every workflow agent, the per-call model included)'; e = @{ CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'sonnet' }; m = 'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=sonnet' },
+        @{ n = 'P4d a full-id workflow model refuses'; e = @{ CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'claude-sonnet-5' }; m = 'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=claude-sonnet-5' },
         @{ n = 'P5 a cloud provider refuses'; e = @{ CLAUDE_CODE_USE_BEDROCK = '1' }; m = 'CLAUDE_CODE_USE_BEDROCK \(this shell\)' },
         @{ n = 'P6 ANTHROPIC_DEFAULT_MODEL with a full id refuses'; e = @{ ANTHROPIC_DEFAULT_MODEL = 'claude-haiku-4-5' }; m = 'ANTHROPIC_DEFAULT_MODEL=claude-haiku-4-5' })) {
     $ok = (Assert-Preflight $c.n (Invoke-Guard -Preflight -Env $c.e) 1 @("preflight: REFUSED — $($c.m)", 'unset the variable') @('preflight: clear')) -and $ok
@@ -109,6 +111,11 @@ $ok = (Assert-Preflight 'P8 preflight ignores settings files (an eval child gets
         (Invoke-Guard -Preflight -User '{"model":"claude-opus-4-6","modelOverrides":{"claude-opus-5-5":"x"}}') 0 @('^preflight: clear') @('REFUSED')) -and $ok
 $ok = (Assert-Preflight 'P9 preflight ignores CLAUDE_CODE_EFFORT_LEVEL (the eval wrapper sets it to low itself, ADR 0103/0130)' `
         (Invoke-Guard -Preflight -Env @{ CLAUDE_CODE_EFFORT_LEVEL = 'xhigh' }) 0 @('^preflight: clear') @('REFUSED', 'EFFORT')) -and $ok
+$ok = (Assert-Preflight 'P10 an empty or blank workflow model is clear' `
+        (Invoke-Guard -Preflight -Env @{ CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = '  ' }) 0 @('^preflight: clear') @('REFUSED', 'WORKFLOW')) -and $ok
+$ok = (Assert-Preflight 'P11 the subagent and the workflow model together refuse with both lines' `
+        (Invoke-Guard -Preflight -Env @{ CLAUDE_CODE_SUBAGENT_MODEL = 'haiku'; CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'opus' }) 1 `
+        @('preflight: REFUSED — CLAUDE_CODE_SUBAGENT_MODEL=haiku', 'preflight: REFUSED — CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=opus') @('preflight: clear')) -and $ok
 
 # --- the SessionStart guard --------------------------------------------------------------------
 $ok = (Assert-Silent 'S1 nothing set -> byte-silent' (Invoke-Guard)) -and $ok
@@ -148,6 +155,26 @@ $other = Join-Path $fx 'other'; New-Item -ItemType Directory -Force -Path (Join-
 $ok = (Assert-Warn 'W9 CLAUDE_PROJECT_DIR wins over the payload cwd (a subdirectory session still reads the project)' `
         (Invoke-Guard -Project '{"model":"claude-sonnet-5"}' -Stdin (@{ hook_event_name = 'SessionStart'; source = 'startup'; cwd = $other } | ConvertTo-Json -Compress)) `
         ($core + @('`model: claude-sonnet-5`')) @('claude-haiku-4-5')) -and $ok
+# --- the workflow model (ADR 0132) ---------------------------------------------------------------
+$wfCore = $core + @('모든 워크플로 에이전트가 이 모델로', '호출이 지정한 모델보다 우선')
+$ok = (Assert-Warn 'WF1 an ALIAS workflow model in the environment warns in the model clause' `
+        (Invoke-Guard -Env @{ CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'sonnet' }) `
+        ($wfCore + @('`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=sonnet` \(환경변수\)')) @('effort pin', 'CLAUDE_CODE_SUBAGENT_MODEL=')) -and $ok
+$ok = (Assert-Warn 'WF2 a full-id workflow model in the environment warns' `
+        (Invoke-Guard -Env @{ CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'claude-sonnet-5' }) `
+        ($wfCore + @('CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=claude-sonnet-5` \(환경변수\)')) @('effort pin')) -and $ok
+$ok = (Assert-Warn 'WF3 a workflow model set only in a settings env block is read, with its file' `
+        (Invoke-Guard -Project '{"env":{"CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL":"haiku"}}') `
+        ($wfCore + @('CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=haiku` \(.*settings\.json env\)')) @('환경변수', 'effort pin')) -and $ok
+$ok = (Assert-Warn 'WF4 the same workflow key in the process env and a settings env block is reported once, from the environment' `
+        (Invoke-Guard -Local '{"env":{"CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL":"opus"}}' -Env @{ CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'haiku' }) `
+        ($wfCore + @('CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=haiku` \(환경변수\)')) @('CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=opus', 'settings\.local\.json')) -and $ok
+$ok = (Assert-Silent 'WF5 an empty or blank workflow model is silent' `
+        (Invoke-Guard -Env @{ CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = '  ' } -User '{"env":{"CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL":""}}')) -and $ok
+$ok = (Assert-Warn 'WF6 the subagent and the workflow model together warn with both findings' `
+        (Invoke-Guard -Env @{ CLAUDE_CODE_SUBAGENT_MODEL = 'haiku'; CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL = 'opus' }) `
+        ($wfCore + @('`CLAUDE_CODE_SUBAGENT_MODEL=haiku` \(환경변수\)', '`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=opus` \(환경변수\)')) @('effort pin')) -and $ok
+
 # --- the effort pin (ADR 0130) -------------------------------------------------------------------
 $effCore = @('^\[hook:model-route\]', 'effort pin 을 덮어쓰는', '역할별', '지우세요', '막지 않았습니다')
 $ok = (Assert-Warn 'E1 CLAUDE_CODE_EFFORT_LEVEL in the environment warns alone, with no model clause' `

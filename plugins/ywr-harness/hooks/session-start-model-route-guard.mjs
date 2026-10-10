@@ -9,8 +9,10 @@
 //     full id pins the session model, and a same-family worker runs on the session's exact model
 //     (sub-agents doc); `CLAUDE_CODE_SUBAGENT_MODEL` (any value — the org guide sets none, and even an
 //     alias moves every subagent and workflow agent that is not assigned a model another way to that
-//     family) re-models those agents; a non-empty `modelOverrides` sends its own string for a picked
-//     model.
+//     family) re-models those agents; `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (any value) runs every
+//     workflow agent on one model and beats the model of each `agent()` call, an explicit one included
+//     (fact 112, ADR 0132; the Claude Code 2.1.296 CHANGELOG only, no doc names it yet); a non-empty
+//     `modelOverrides` sends its own string for a picked model.
 //   - a cloud provider: `CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,ANTHROPIC_AWS,MANTLE}` — the
 //     model-config doc's "Resolution by provider" table resolves `sonnet` (and on Foundry `opus`)
 //     to an older model there.
@@ -76,6 +78,7 @@ const familyKeys = [
 ]
 const sessionKeys = ['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_MODEL']
 const subagentKey = 'CLAUDE_CODE_SUBAGENT_MODEL'
+const workflowKey = 'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL'
 const effortKey = 'CLAUDE_CODE_EFFORT_LEVEL'
 const providerKeys = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_USE_ANTHROPIC_AWS', 'CLAUDE_CODE_USE_MANTLE']
@@ -113,6 +116,12 @@ function getEnvFinding(map, where) {
     out.push({ key: subagentKey, text: `\`${subagentKey}=${s}\` (${where}): 모델이 지정되지 않은 서브에이전트·워크플로 에이전트가 모두 이 모델로 바뀝니다`,
       en: `${subagentKey}=${s} (${where}) re-models every subagent and workflow agent without its own model` })
   }
+  const wv = netTrim(psString(mapGet(map, workflowKey)))
+  if (wv) {
+    const s = inline(wv)
+    out.push({ key: workflowKey, text: `\`${workflowKey}=${s}\` (${where}): 모든 워크플로 에이전트가 이 모델로 돕니다 — 각 \`agent()\` 호출이 지정한 모델보다 우선합니다`,
+      en: `${workflowKey}=${s} (${where}) runs every workflow agent on this model, over each agent() call's own model` })
+  }
   for (const k of providerKeys) {
     if (isOn(mapGet(map, k))) {
       out.push({ key: k, text: `\`${k}\` (${where}): 이 provider 에서는 alias 가 최신이 아닌 모델로 해석될 수 있습니다`,
@@ -132,7 +141,7 @@ function getEffortFinding(map, where) {
 
 function processEnvMap() {
   const m = new Map()
-  for (const k of [...familyKeys.map(f => f[0]), ...sessionKeys, subagentKey, ...providerKeys]) {
+  for (const k of [...familyKeys.map(f => f[0]), ...sessionKeys, subagentKey, workflowKey, ...providerKeys]) {
     const v = process.env[k]
     if (v !== undefined) m.set(fold(k), v)
   }
