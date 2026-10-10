@@ -12,12 +12,26 @@
 // the possibly-ahead on-disk install — disk-ahead-of-session is ADR 0027's statusline story, and
 // announcing notes for code that is not running yet would be false.
 //
-// State: <home>/.claude/ywr-harness/announced-version. <home> is USERPROFILE then HOME — the
+// State: <config dir>/ywr-harness/announced-version, per Claude Code config dir (ADR 0136). The
+// config dir is CLAUDE_CONFIG_DIR when set non-empty (trimmed) and ABSOLUTE, else <home>/.claude
+// (ADR 0046's rule, as harness-statusline.js claudeDir(); on win32 "absolute" needs a drive or UNC
+// prefix, so a drive-less root like \cfg is relative here). A set-but-relative value is unmeasured:
+// the hook is byte-silent and writes nothing — a relative path would follow the spawn cwd, and a
+// fall-back to ~/.claude would read the OTHER account's state. One state file shared by two config
+// dirs on different plugin versions ping-ponged: the older dir re-seeded its own older version
+// (the downgrade row), and the newer dir re-announced it. <home> is USERPROFILE then HOME — the
 // os.homedir() semantics the statusline script uses, and env-derived deliberately so a child
 // process with a redirected home is a hermetic selftest fixture (the statusline suite documents
 // the same reason). This is the plugin's FIRST user-scope write; it is bounded to this one file
 // and the selftest asserts the confinement. Announce-once is impossible without state, and a
 // stateless per-session notice is the nag class ADR 0029 already rejected.
+//
+// Legacy adoption (ADR 0136, one time per config dir, read-only on the old file): states written
+// before this change sit at <home>/.claude/ywr-harness/announced-version. With CLAUDE_CONFIG_DIR in
+// effect, an ABSENT config-dir state, and a legacy file at a DIFFERENT path (compared resolved, case-
+// insensitive on win32) holding a parseable version, that version is the stored value for the rows
+// below, and the config-dir file ends up holding the current version on every one of them. The
+// legacy file is never written or deleted. No legacy value -> the ordinary first-run row.
 //
 // systemMessage is KOREAN — since ADR 0045 this is the plugin-wide rule, not a per-hook
 // divergence: every hook's systemMessage is Korean (the member reader), every additionalContext
@@ -26,7 +40,8 @@
 //
 // Decision table (ADR 0030, absent-state row amended by ADR 0031): own manifest unreadable ->
 // reported (a plugin that cannot read its own manifest is broken — visible, never silent). No
-// resolvable home -> silent (announce-once needs state; a per-session fallback is the rejected
+// resolvable config dir (a relative CLAUDE_CONFIG_DIR, ADR 0136; or CLAUDE_CONFIG_DIR unset and no
+// resolvable home) -> silent (announce-once needs state; a per-session fallback is the rejected
 // nag; the statusline still shows the version). State path truly ABSENT -> first run: seed, and
 // when the seed actually recorded, a LINK-ONLY welcome (no bullets, no version arrow, never
 // "업데이트됨" — the message must be true for a fresh install AND the mechanism's first arrival,
@@ -35,8 +50,9 @@
 // README lacks. State exists-but-unreadable / newer-than-current -> (re)seed silently ("first
 // run" would be a guess; a downgrade is the member's own act). State == current -> silent.
 // State < current -> announce, then write; a failed write announces anyway with a visible
-// may-repeat note. Non-speaking paths are BYTE-silent because plain stdout on exit 0 becomes
-// session context. Exit 0 always — SessionStart cannot block anything and this hook does not try.
+// may-repeat note. An adopted legacy value (ADR 0136) takes the same rows: == current and newer-than-
+// current write the config-dir file silently, older announces "vLEGACY -> vCURRENT". Non-speaking
+// paths are BYTE-silent because plain stdout on exit 0 becomes session context. Exit 0 always — SessionStart cannot block anything and this hook does not try.
 //
 // Node port (ADR 0116) of the pwsh original; the shared helpers are hook-lib.mjs's. The hook never
 // exits the process: it returns, so stdout drains and the exit code stays 0.
@@ -171,6 +187,34 @@ function stateExistsAt(file) {
 }
 
 /**
+ * The triple of a stored version string, or null. It must END at a non-digit, non-dot boundary:
+ * `0.59.00.59.0` (O49's interleaved write) parsed as 0.59.0 before, so a corrupt value could
+ * re-announce or suppress a version. It now reads as exists-but-unreadable and is re-seeded
+ * silently; a suffix (`0.18.0rc1`) still parses.
+ */
+function parseStored(raw) {
+  const sm = /^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?![0-9.])/i.exec(raw)
+  return sm ? toVersion(sm[1], sm[2], sm[3]) : null
+}
+
+/**
+ * ABSOLUTE for CLAUDE_CONFIG_DIR (ADR 0136). On win32 `path.isAbsolute` also accepts a drive-less root
+ * (`\cfg`, `/cfg`), which follows the drive of the spawn cwd — the per-cwd split the decision rules out —
+ * so there only a drive prefix (`C:\` or `C:/`) or a UNC prefix (two leading separators) counts.
+ * Anything else is treated like a relative value: byte-silent. Elsewhere `path.isAbsolute` is exact.
+ */
+function isAbsoluteConfigDir(p) {
+  if (process.platform === 'win32') return /^[A-Za-z]:[\\/]/.test(p) || /^[\\/]{2}/.test(p)
+  return path.isAbsolute(p)
+}
+
+/** Whether two paths name the same file textually once resolved (case-insensitive on win32; no symlink chase). */
+function samePath(a, b) {
+  const x = path.resolve(a), y = path.resolve(b)
+  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y
+}
+
+/**
  * The CHANGELOG bullets of the entry whose heading names the loaded version. Continuation lines are
  * joined so a wrapped bullet reads whole. Line classes are .NET's (`\s` = Char.IsWhiteSpace) and `.`
  * is "anything but LF", as in the original's regexes.
@@ -230,21 +274,40 @@ function main(payload) {
   // --- state ------------------------------------------------------------------------------------
   let homeDir = process.env.USERPROFILE || ''
   if (!homeDir) homeDir = process.env.HOME || ''
-  if (!homeDir) return
-  const stateDir = psJoin(psJoin(homeDir, '.claude'), 'ywr-harness')
+  // The config dir (ADR 0136, ADR 0046's rule): CLAUDE_CONFIG_DIR only when ABSOLUTE; set-but-relative
+  // is unmeasured — silent, never a fall-back to <home>/.claude (that is the other account's state).
+  const cfgRaw = netTrim(process.env.CLAUDE_CONFIG_DIR || '')
+  let configDir
+  if (cfgRaw) {
+    if (!isAbsoluteConfigDir(cfgRaw)) return
+    configDir = cfgRaw
+  } else {
+    if (!homeDir) return
+    configDir = psJoin(homeDir, '.claude')
+  }
+  const stateDir = psJoin(configDir, 'ywr-harness')
   const stateFile = psJoin(stateDir, 'announced-version')
 
   // ABSENT is a first run; anything else keeps its ADR 0030 behavior (0031 amends only that row).
   // A DIRECTORY squatting on the path counts as "exists" — welcoming a squatted path would guess
   // "first run" about a machine that already ran. A probe error also counts as "exists".
   const stateExists = stateExistsAt(stateFile)
-  const storedRaw = netTrim(readText(stateFile) ?? '')
-  let stored = null
-  // The triple must END at a non-digit, non-dot boundary: `0.59.00.59.0` (O49's interleaved write)
-  // parsed as 0.59.0 before, so a corrupt value could re-announce or suppress a version. It now
-  // reads as exists-but-unreadable and is re-seeded silently; a suffix (`0.18.0rc1`) still parses.
-  const sm = /^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?![0-9.])/i.exec(storedRaw)
-  if (sm) stored = toVersion(sm[1], sm[2], sm[3])
+  let storedRaw = netTrim(readText(stateFile) ?? '')
+  let stored = parseStored(storedRaw)
+
+  // Legacy adoption (ADR 0136): a config-dir state that is ABSENT, under an explicit CLAUDE_CONFIG_DIR,
+  // takes its stored value from the pre-0136 shared file when that sits at a different path and holds a
+  // parseable version. Read-only on the legacy file. The shared file is the pre-change record of what
+  // this machine last announced, so adopting it keeps the first post-change session from re-welcoming.
+  let adopted = false
+  if (cfgRaw && !stored && !stateExists && homeDir) {
+    const legacyFile = psJoin(psJoin(psJoin(homeDir, '.claude'), 'ywr-harness'), 'announced-version')
+    if (!samePath(legacyFile, stateFile)) {
+      const legacyRaw = netTrim(readText(legacyFile) ?? '')
+      const legacy = parseStored(legacyRaw)
+      if (legacy) { stored = legacy; storedRaw = legacyRaw; adopted = true }
+    }
+  }
 
   if (!stored && !stateExists) {
     // First run on this machine — fresh install, or the first version carrying this mechanism;
@@ -265,7 +328,12 @@ function main(payload) {
     writeState(stateDir, stateFile, currentRaw)
     return
   }
-  if (cmpVersion(stored, current) === 0) return
+  if (cmpVersion(stored, current) === 0) {
+    // An adopted legacy value equal to current: the config-dir file is still absent, so record it
+    // silently — without it every later session would re-adopt the legacy value (ADR 0136).
+    if (adopted) writeState(stateDir, stateFile, currentRaw)
+    return
+  }
 
   // --- stored < current: the announcement -------------------------------------------------------
   // Bullets for the CURRENT version from the member canon. The cap is VISIBLE (외 N건) — a silent
@@ -289,7 +357,7 @@ function main(payload) {
   body += `릴리스 노트 탭(가이드 개정 시 갱신 — 이 버전 항목은 CHANGELOG.md 에 먼저 실립니다): ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
 
   if (!writeState(stateDir, stateFile, currentRaw)) {
-    body += `\n(안내 기록 실패: ${stateFile} 에 쓸 수 없어 이 안내가 반복될 수 있습니다 — ~/.claude 권한을 확인하세요.)`
+    body += `\n(안내 기록 실패: ${stateFile} 에 쓸 수 없어 이 안내가 반복될 수 있습니다 — ${configDir} 권한을 확인하세요.)`
   }
 
   const ctx = `The ywr-harness plugin loaded in this session is v${currentRaw}; the last version announced on this machine was v${storedRaw} (marketplace auto-update, ADR 0026 — updates land at session start, never mid-session). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ADR 0078). If the user asks what changed, read the CHANGELOG entry for v${currentRaw} rather than answering from memory. This announcement is once-per-version (ADR 0030); do not repeat it unprompted.`

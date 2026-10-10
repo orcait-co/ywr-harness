@@ -6,7 +6,8 @@
 # suite runs a COPY of the hook (plus hook-lib.mjs, which it imports) inside fixture plugin trees
 # (controlled versions and notes) with
 # USERPROFILE/HOME redirected to a fixture home (the harness-statusline suite's hermetic-home
-# technique; the hook reads the env vars directly for exactly this reason). Every match-based
+# technique; the hook reads the env vars directly for exactly this reason) and CLAUDE_CONFIG_DIR
+# cleared (ADR 0136: the host's own value would otherwise redirect the state). Every match-based
 # case carries MustNotMatch as well as MustMatch (the empty-MustNotMatch class), enforced by
 # the shared assertion core.
 #
@@ -66,8 +67,13 @@ function New-Payload([hashtable]$Fields = @{}) {
 $ok = $true
 $savedProfile = $env:USERPROFILE
 $savedHome = $env:HOME
+# Hermetic against the HOST's CLAUDE_CONFIG_DIR (ADR 0136): the hook now resolves its state dir from
+# it, and the owner's box runs with it SET, so an inherited value would send every case below to the
+# owner's real state. Cleared for every pre-0136 case; the config-dir cases set it per call.
+$savedCfg = $env:CLAUDE_CONFIG_DIR
+$env:CLAUDE_CONFIG_DIR = $null
 $fx = New-FixtureRoot 'ssva-selftest'
-trap { $env:USERPROFILE = $savedProfile; $env:HOME = $savedHome; Remove-FixtureRoot $fx; break }
+trap { $env:USERPROFILE = $savedProfile; $env:HOME = $savedHome; $env:CLAUDE_CONFIG_DIR = $savedCfg; Remove-FixtureRoot $fx; break }
 
 # --- fixtures --------------------------------------------------------------------------------
 # Synthetic versions (2.4.0 -> 2.5.0), NOT the real plugin's: the suite must not need editing
@@ -472,10 +478,248 @@ try { m.landState(tmp, target, value); process.stdout.write('landed tmp=' + fs.e
     $ok = (Assert-True 'confinement: exactly the state file under <home>/.claude' `
         ($written.Count -eq 1 -and $written[0] -eq (Get-Item -LiteralPath $stateFile).FullName) `
             "<home>/.claude contains: $($written -join ', ')") -and $ok
+
+    # === ADR 0136: the state is per Claude Code config dir =========================================
+    # Every dir below lives under the fixture root, never under <home>/.claude, so the confinement
+    # sweep after the block can still prove the hook wrote nothing there it should not have.
+    function Invoke-HookCfg([string]$Cfg, [string]$HookPath) {
+        $env:CLAUDE_CONFIG_DIR = $Cfg
+        try { return (Invoke-Hook (New-Payload) $HookPath) } finally { $env:CLAUDE_CONFIG_DIR = $null }
+    }
+    function Get-StateAt([string]$Dir) {
+        $f = Join-Path $Dir 'ywr-harness/announced-version'
+        if (Test-Path -LiteralPath $f) { (Get-Content -LiteralPath $f -Raw).Trim() } else { $null }
+    }
+    function Set-StateAt([string]$Dir, [string]$v) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'ywr-harness') | Out-Null
+        Set-Content -LiteralPath (Join-Path $Dir 'ywr-harness/announced-version') -Value $v -NoNewline -Encoding utf8
+    }
+    function Clear-LegacyState { Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue }
+    $hookOld = New-FixturePlugin 'plug-old' '{"name":"ywr-harness","version":"2.4.0"}' $notes
+
+    # 14a. CLAUDE_CONFIG_DIR absolute -> the state lives under it, NOT under <home>/.claude: the
+    #      first run seeds the config dir, the next older-state run announces there, and the
+    #      home-based file stays absent throughout.
+    Clear-LegacyState
+    $cfgAbs = Join-Path $fx 'cfg-abs'
+    $out = Invoke-HookCfg $cfgAbs $hook
+    $ok = (Assert-Announce 'config dir: first run welcomes' $out @('v2\.5\.0 적용 중', '첫 버전 안내') @('업데이트됨', '→')) -and $ok
+    $ok = (Assert-True 'config dir: first run seeds <config dir>/ywr-harness, not <home>/.claude' `
+        ((Get-StateAt $cfgAbs) -eq '2.5.0' -and -not (Test-Path -LiteralPath $stateFile)) `
+            "config state [$(Get-StateAt $cfgAbs)], home state exists: $(Test-Path -LiteralPath $stateFile)") -and $ok
+    Set-StateAt $cfgAbs '2.4.0'
+    $out = Invoke-HookCfg $cfgAbs $hook
+    $ok = (Assert-Announce 'config dir: older state announces' $out @('v2\.4\.0 → v2\.5\.0', '업데이트됨') @('기록 실패', '첫 버전 안내')) -and $ok
+    $ok = (Assert-True 'config dir: announce advances the config-dir state only' `
+        ((Get-StateAt $cfgAbs) -eq '2.5.0' -and -not (Test-Path -LiteralPath $stateFile)) `
+            "config state [$(Get-StateAt $cfgAbs)], home state exists: $(Test-Path -LiteralPath $stateFile)") -and $ok
+    $out = Invoke-HookCfg $cfgAbs $hook
+    $ok = (Assert-EmptyStdout 'config dir: same version is silent' $out) -and $ok
+
+    # 14b. CLAUDE_CONFIG_DIR set but RELATIVE -> unmeasured: byte-silent, nothing written anywhere.
+    #      A fall-back to <home>/.claude would read the other account's state (here a home state
+    #      older than current, which would announce and rewrite), and honoring the value would write
+    #      under the spawn cwd — so the home state must be untouched and the cwd must stay empty.
+    $cwdRel = Join-Path $fx 'cwd-rel'
+    New-Item -ItemType Directory -Force -Path $cwdRel | Out-Null
+    Push-Location -LiteralPath $cwdRel
+    try {
+        foreach ($rel in @('relcfg', './relcfg', '../relcfg-up', '.claude')) {
+            Set-State '2.4.0'
+            $out = Invoke-HookCfg $rel $hook
+            $ok = (Assert-EmptyStdout "relative config dir '$rel': byte-silent" $out) -and $ok
+            $ok = (Assert-True "relative config dir '$rel': home state untouched" ((Get-State) -eq '2.4.0') "home state reads [$(Get-State)] (want 2.4.0)") -and $ok
+        }
+        Clear-LegacyState
+        $out = Invoke-HookCfg 'relcfg' $hook
+        $ok = (Assert-EmptyStdout 'relative config dir, no state anywhere: still byte-silent (no welcome)' $out) -and $ok
+        $ok = (Assert-True 'relative config dir: nothing seeded under <home>/.claude' (-not (Test-Path -LiteralPath $stateFile)) 'the hook fell back to the home state') -and $ok
+    }
+    finally { Pop-Location }
+    $strays = @(Get-ChildItem -LiteralPath $fx -Recurse -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like (Join-Path $cwdRel '*') -or $_.FullName -like (Join-Path $fx 'relcfg*') -or $_.FullName -like (Join-Path $fx '.claude*') } | ForEach-Object { $_.FullName })
+    $ok = (Assert-True 'relative config dir: nothing written under the spawn cwd or its siblings' ($strays.Count -eq 0) "stray files: $($strays -join ', ')") -and $ok
+
+    # 14b2. a whitespace-only value trims to empty, i.e. UNSET (the statusline claudeDir() rule): the
+    #       home-based state is used, exactly as before.
+    Set-State '2.4.0'
+    $out = Invoke-HookCfg '   ' $hook
+    $ok = (Assert-Announce 'whitespace-only config dir counts as unset' $out @('v2\.4\.0 → v2\.5\.0') @('기록 실패')) -and $ok
+    $ok = (Assert-True 'whitespace-only config dir: the home state advanced' ((Get-State) -eq '2.5.0') "home state reads [$(Get-State)] (want 2.5.0)") -and $ok
+
+    # 14c. LEGACY ADOPTION: the pre-0136 shared file at <home>/.claude/ywr-harness/announced-version
+    #      stands in for an ABSENT config-dir state, read-only. Every row ends with the config-dir
+    #      file holding the CURRENT version, and the legacy file is never written or deleted.
+    $legacyRows = @(
+        @{ n = 'legacy == current';  legacy = '2.5.0';          kind = 'silent' },
+        @{ n = 'legacy < current';   legacy = '2.4.0';          kind = 'announce' },
+        @{ n = 'legacy > current';   legacy = '9.9.9';          kind = 'silent' },
+        @{ n = 'legacy absent';      legacy = $null;            kind = 'welcome' },
+        @{ n = 'legacy unparseable'; legacy = 'not-a-version';  kind = 'welcome' }
+    )
+    $rowNo = 0
+    foreach ($r in $legacyRows) {
+        $rowNo++
+        $cfg = Join-Path $fx "cfg-legacy-$rowNo"
+        if ($null -eq $r.legacy) { Clear-LegacyState } else { Set-State $r.legacy }
+        $legacyBefore = Get-State
+        $out = Invoke-HookCfg $cfg $hook
+        switch ($r.kind) {
+            'silent' { $ok = (Assert-EmptyStdout "adoption, $($r.n): silent" $out) -and $ok }
+            'announce' { $ok = (Assert-Announce "adoption, $($r.n): announces from the legacy version" $out @("v$($r.legacy -replace '\.', '\.') → v2\.5\.0", '업데이트됨') @('기록 실패', '첫 버전 안내', '적용 중')) -and $ok }
+            'welcome' { $ok = (Assert-Announce "adoption, $($r.n): first-run welcome in the config dir" $out @('v2\.5\.0 적용 중', '첫 버전 안내') @('업데이트됨', '→')) -and $ok }
+        }
+        $ok = (Assert-True "adoption, $($r.n): config-dir file holds current" ((Get-StateAt $cfg) -eq '2.5.0') "config state reads [$(Get-StateAt $cfg)] (want 2.5.0)") -and $ok
+        $ok = (Assert-True "adoption, $($r.n): legacy file untouched" ((Get-State) -eq $legacyBefore) "legacy was [$legacyBefore], now [$(Get-State)]") -and $ok
+        $out = Invoke-HookCfg $cfg $hook
+        $ok = (Assert-EmptyStdout "adoption, $($r.n): the next session is silent (no re-adoption)" $out) -and $ok
+    }
+
+    # 14d. THE ALTERNATION (the defect): dir A runs the newer plugin, dir B the older, one machine.
+    #      Pre-0136 they shared a state file: B's downgrade row re-seeded the older version and A then
+    #      re-announced it, every alternation. Now only A's first session may speak.
+    #      (i) a legacy file older than both.
+    $dirA = Join-Path $fx 'cfg-alt-a'; $dirB = Join-Path $fx 'cfg-alt-b'
+    Set-State '2.4.0'
+    $seq = @(@('A', $dirA, $hook), @('B', $dirB, $hookOld), @('A', $dirA, $hook), @('B', $dirB, $hookOld), @('A', $dirA, $hook))
+    $n = 0
+    foreach ($s in $seq) {
+        $n++
+        $out = Invoke-HookCfg $s[1] $s[2]
+        if ($n -eq 1) { $ok = (Assert-Announce 'alternation (legacy 2.4.0): first A session announces once' $out @('v2\.4\.0 → v2\.5\.0') @('기록 실패')) -and $ok }
+        else { $ok = (Assert-EmptyStdout "alternation (legacy 2.4.0): session $n ($($s[0])) is silent" $out) -and $ok }
+    }
+    $ok = (Assert-True 'alternation (legacy 2.4.0): each dir holds its own plugin version' ((Get-StateAt $dirA) -eq '2.5.0' -and (Get-StateAt $dirB) -eq '2.4.0') `
+            "A [$(Get-StateAt $dirA)] (want 2.5.0), B [$(Get-StateAt $dirB)] (want 2.4.0)") -and $ok
+    #      (ii) no legacy file: each dir welcomes ONCE, then both stay silent.
+    $dirA2 = Join-Path $fx 'cfg-alt2-a'; $dirB2 = Join-Path $fx 'cfg-alt2-b'
+    Clear-LegacyState
+    $seq2 = @(@('A', $dirA2, $hook), @('B', $dirB2, $hookOld), @('A', $dirA2, $hook), @('B', $dirB2, $hookOld), @('A', $dirA2, $hook))
+    $n = 0
+    foreach ($s in $seq2) {
+        $n++
+        $out = Invoke-HookCfg $s[1] $s[2]
+        if ($n -le 2) { $ok = (Assert-Announce "alternation (no legacy): session $n ($($s[0])) welcomes its own dir once" $out @('적용 중', '첫 버전 안내') @('업데이트됨', '→')) -and $ok }
+        else { $ok = (Assert-EmptyStdout "alternation (no legacy): session $n ($($s[0])) is silent" $out) -and $ok }
+    }
+    #      (iii) the downgrade-by-the-other-account row: the newer dir's state must survive the older
+    #      dir's sessions (it used to be overwritten by them).
+    $ok = (Assert-True 'alternation (no legacy): the newer dir keeps 2.5.0 after the older dir ran' ((Get-StateAt $dirA2) -eq '2.5.0' -and (Get-StateAt $dirB2) -eq '2.4.0') `
+            "A [$(Get-StateAt $dirA2)], B [$(Get-StateAt $dirB2)]") -and $ok
+
+    # 14e. CLAUDE_CONFIG_DIR pointing at <home>/.claude ITSELF behaves exactly as unset: the state is
+    #      the one file (no legacy double read, no second file), in the plain, trailing-separator and
+    #      absent-state shapes.
+    $sepc = [IO.Path]::DirectorySeparatorChar
+    $selfDir = Join-Path $fxHome '.claude'
+    foreach ($cfgSelf in @($selfDir, ($selfDir + $sepc))) {
+        Set-State '2.4.0'
+        $out = Invoke-HookCfg $cfgSelf $hook
+        $ok = (Assert-Announce "config dir == <home>/.claude [$cfgSelf]: older state announces" $out @('v2\.4\.0 → v2\.5\.0') @('기록 실패', '첫 버전 안내')) -and $ok
+        $ok = (Assert-True "config dir == <home>/.claude [$cfgSelf]: the single state file advanced" ((Get-State) -eq '2.5.0') "state reads [$(Get-State)] (want 2.5.0)") -and $ok
+        $out = Invoke-HookCfg $cfgSelf $hook
+        $ok = (Assert-EmptyStdout "config dir == <home>/.claude [$cfgSelf]: same version silent" $out) -and $ok
+        Set-State '9.9.9'
+        $out = Invoke-HookCfg $cfgSelf $hook
+        $ok = (Assert-EmptyStdout "config dir == <home>/.claude [$cfgSelf]: downgrade silent" $out) -and $ok
+        $ok = (Assert-True "config dir == <home>/.claude [$cfgSelf]: downgrade re-seeded" ((Get-State) -eq '2.5.0') "state reads [$(Get-State)] (want 2.5.0)") -and $ok
+    }
+    Clear-LegacyState
+    $out = Invoke-HookCfg $selfDir $hook
+    $ok = (Assert-Announce 'config dir == <home>/.claude, state absent: the ordinary first-run welcome' $out @('v2\.5\.0 적용 중') @('업데이트됨', '→')) -and $ok
+    $ok = (Assert-True 'config dir == <home>/.claude, state absent: seeded in place' ((Get-State) -eq '2.5.0') "state reads [$(Get-State)] (want 2.5.0)") -and $ok
+
+    # 14g. a DRIVE-LESS ROOT on Windows (`\x`, `/x`) passes path.isAbsolute but follows the drive of the
+    #      spawn cwd — the per-cwd split ADR 0136 rules out — so it is byte-silent like a relative value
+    #      and writes nothing (not under the drive root, not under <home>/.claude). `C:x` (drive-relative)
+    #      is silent too. Windows only: on Linux `/x` is a real absolute path, and the row must not
+    #      write to `/` — so off Windows it is skipped, reported.
+    if (-not $IsWindows) {
+        Write-Host 'SKIP [14g]: a drive-less root is only non-absolute on Windows (3 rows)' -ForegroundColor Yellow
+    }
+    else {
+        $driveRoot = [IO.Path]::GetPathRoot($fx)
+        $cwdRoot = Join-Path $fx 'cwd-root'
+        New-Item -ItemType Directory -Force -Path $cwdRoot | Out-Null
+        Push-Location -LiteralPath $cwdRoot
+        try {
+            foreach ($tag in @('bs', 'fs', 'drv')) {
+                $uniq = 'ywr-selftest-cfg-x-' + [guid]::NewGuid().ToString('N')
+                $rootedCfg = switch ($tag) { 'bs' { '\' + $uniq } 'fs' { '/' + $uniq } 'drv' { ($driveRoot.Substring(0, 2)) + $uniq } }
+                $strayRoot = Join-Path $driveRoot $uniq
+                Set-State '2.4.0'
+                try {
+                    $out = Invoke-HookCfg $rootedCfg $hook
+                    $ok = (Assert-EmptyStdout "drive-less/drive-relative config dir '$rootedCfg': byte-silent" $out) -and $ok
+                    $ok = (Assert-True "drive-less/drive-relative config dir '$rootedCfg': nothing written at the drive root or cwd" `
+                        (-not (Test-Path -LiteralPath $strayRoot) -and -not (Test-Path -LiteralPath (Join-Path $cwdRoot $uniq))) `
+                            "stray path exists: $strayRoot / $(Join-Path $cwdRoot $uniq)") -and $ok
+                    $ok = (Assert-True "drive-less/drive-relative config dir '$rootedCfg': home state untouched" ((Get-State) -eq '2.4.0') "home state reads [$(Get-State)] (want 2.4.0)") -and $ok
+                }
+                finally {
+                    # only what a faulty hook could have created under the unique name
+                    if (Test-Path -LiteralPath $strayRoot) { Remove-Item -LiteralPath $strayRoot -Recurse -Force -ErrorAction SilentlyContinue }
+                }
+            }
+        }
+        finally { Pop-Location }
+    }
+
+    # 14h. ADOPTION GUARD, negative branch: a config-dir state that EXISTS but is unreadable must NOT
+    #      adopt the legacy file (the `!stateExists` clause) — adopting would announce from a stale
+    #      legacy version about a machine that already has config-dir state. A parseable legacy 2.4.0
+    #      sits in <home>/.claude throughout (adoption would announce v2.4.0 -> v2.5.0).
+    #      (i) a corrupt interleaved value -> the existing row: silent re-seed with the current version.
+    Set-State '2.4.0'
+    $cfgNegCorrupt = Join-Path $fx 'cfg-neg-corrupt'
+    Set-StateAt $cfgNegCorrupt '0.59.00.59.0'
+    $out = Invoke-HookCfg $cfgNegCorrupt $hook
+    $ok = (Assert-EmptyStdout 'adoption guard: unreadable (corrupt) config-dir state does not adopt the legacy file' $out) -and $ok
+    $ok = (Assert-True 'adoption guard: corrupt config-dir state re-seeded to current' ((Get-StateAt $cfgNegCorrupt) -eq '2.5.0') "config state reads [$(Get-StateAt $cfgNegCorrupt)] (want 2.5.0)") -and $ok
+    $ok = (Assert-True 'adoption guard: corrupt case leaves the legacy file untouched' ((Get-State) -eq '2.4.0') "legacy reads [$(Get-State)] (want 2.4.0)") -and $ok
+    #      (ii) a DIRECTORY squatting on the state path -> silent (the failed re-seed protects no news),
+    #      nothing announced, the directory survives.
+    $cfgNegDir = Join-Path $fx 'cfg-neg-dir'
+    $negDirState = Join-Path $cfgNegDir 'ywr-harness/announced-version'
+    New-Item -ItemType Directory -Force -Path $negDirState | Out-Null
+    $out = Invoke-HookCfg $cfgNegDir $hook
+    $ok = (Assert-EmptyStdout 'adoption guard: a directory on the config-dir state path does not adopt the legacy file' $out) -and $ok
+    $ok = (Assert-True 'adoption guard: the squatting directory is untouched' (Test-Path -LiteralPath $negDirState -PathType Container) 'the state path is no longer a directory') -and $ok
+    $ok = (Assert-True 'adoption guard: directory case leaves the legacy file untouched' ((Get-State) -eq '2.4.0') "legacy reads [$(Get-State)] (want 2.4.0)") -and $ok
+
+    # 14i. CLAUDE_CONFIG_DIR absolute with NO home (USERPROFILE and HOME both empty): the config dir
+    #      needs no home, so the hook still works for it — welcome, then announce on an older state —
+    #      and adoption is skipped (the legacy path needs a home) without error. A parseable legacy
+    #      2.4.0 sits in the fixture home, which the hook cannot see: adoption would announce instead
+    #      of welcoming.
+    Set-State '2.4.0'
+    $cfgNoHome = Join-Path $fx 'cfg-nohome'
+    try {
+        $env:USERPROFILE = ''; $env:HOME = ''
+        $out = Invoke-HookCfg $cfgNoHome $hook
+        $ok = (Assert-Announce 'config dir, no home: first-run welcome, adoption skipped' $out @('v2\.5\.0 적용 중', '첫 버전 안내') @('업데이트됨', '→', '기록 실패')) -and $ok
+        $ok = (Assert-True 'config dir, no home: seeded in the config dir' ((Get-StateAt $cfgNoHome) -eq '2.5.0') "config state reads [$(Get-StateAt $cfgNoHome)] (want 2.5.0)") -and $ok
+        Set-StateAt $cfgNoHome '2.4.0'
+        $out = Invoke-HookCfg $cfgNoHome $hook
+        $ok = (Assert-Announce 'config dir, no home: older state announces' $out @('v2\.4\.0 → v2\.5\.0', '업데이트됨') @('기록 실패', '첫 버전 안내')) -and $ok
+        $ok = (Assert-True 'config dir, no home: announce advanced the config-dir state' ((Get-StateAt $cfgNoHome) -eq '2.5.0') "config state reads [$(Get-StateAt $cfgNoHome)] (want 2.5.0)") -and $ok
+    }
+    finally { $env:USERPROFILE = $fxHome; $env:HOME = $fxHome }
+    $ok = (Assert-True 'config dir, no home: legacy file untouched' ((Get-State) -eq '2.4.0') "legacy reads [$(Get-State)] (want 2.4.0)") -and $ok
+    Set-State '2.5.0'   # the confinement sweep below wants the state file in place
+
+    # 14f. CONFINEMENT after the config-dir cases: <home>/.claude still holds only the state file, and
+    #      every file the hook wrote under a fixture config dir is an announced-version (no *.tmp).
+    $written2 = @(Get-ChildItem -LiteralPath $claudeDir -Recurse -File | ForEach-Object { $_.FullName })
+    $ok = (Assert-True 'confinement after config-dir cases: exactly the state file under <home>/.claude' `
+        ($written2.Count -eq 1 -and $written2[0] -eq (Get-Item -LiteralPath $stateFile).FullName) "<home>/.claude contains: $($written2 -join ', ')") -and $ok
+    $cfgFiles = @(Get-ChildItem -LiteralPath $fx -Directory -Filter 'cfg-*' | ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force } | Where-Object { $_.Name -ne 'announced-version' } | ForEach-Object { $_.FullName })
+    $ok = (Assert-True 'confinement: config dirs hold only announced-version files' ($cfgFiles.Count -eq 0) "stray: $($cfgFiles -join ', ')") -and $ok
 }
 finally {
     $env:USERPROFILE = $savedProfile
     $env:HOME = $savedHome
+    $env:CLAUDE_CONFIG_DIR = $savedCfg
 }
 
 Remove-FixtureRoot $fx

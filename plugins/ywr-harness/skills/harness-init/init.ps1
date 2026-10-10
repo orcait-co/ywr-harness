@@ -25,7 +25,9 @@
 # deliberately; the stamp is withheld while such refusals stand.
 #
 # Exit 0 = placement completed (with or without preserved seeds and refusals). Exit 1 = target
-# unusable, a template is missing from the plugin, or a write failed.
+# unusable, a template is missing from the plugin, a write failed, or a guard refused before any
+# write (downgrade, ADR 0042; upstream ahead, ADR 0135). A failed pre-check fetch (ADR 0137) is one
+# yellow line, never an exit.
 
 [CmdletBinding()]
 param(
@@ -35,7 +37,17 @@ param(
     [switch]$DryRun,
     # Proceed even when this repo's .harness-version stamp is NEWER than this plugin copy — the
     # deliberate-rollback path (ADR 0042). Without it, a blind downgrade is refused.
-    [switch]$Force
+    [switch]$Force,
+    # Proceed even when a remote-tracking ref carries commits that change the scaffold and this
+    # checkout lacks them — the deliberate-divergence path (ADR 0135). Without it, a run over scaffold
+    # work another clone already pushed is refused. Separate from -Force on purpose: -Force also
+    # bypasses the ADR 0055 first-run collision refusals, and coupling the two would let a stale-clone
+    # override clobber files.
+    [switch]$AllowUpstreamAhead,
+    # Bound on the pre-check fetch of the candidate remotes (ADR 0137). The default is the decision;
+    # overridable for tests, which pin the timeout path without a 10 s wait.
+    [ValidateRange(1, 600)]
+    [int]$FetchTimeoutSeconds = 10
 )
 
 $ErrorActionPreference = 'Stop'
@@ -233,6 +245,164 @@ $SEED = [ordered]@{
 # So: seed the corpus when it is empty, and stay out of the way when it is not.
 $SEED_CORPUS = [ordered]@{
     'docs/adr/0001-adopt-docs-as-code.md' = 'docs/adr/0001-adopt-docs-as-code.md'
+}
+
+# --- upstream-ahead guard (ADR 0135) -------------------------------------------------------------
+# Multi-writer, the other direction: a teammate ran this scaffold (first run or refresh) and pushed;
+# this clone has not pulled. A run here would place files that collide with theirs at the next pull,
+# or put older templates over their refresh — and the downgrade guard above cannot see it, because
+# this clone's own stamp is the OLD one. So: look at the remote-tracking refs for commits this
+# checkout lacks that touch the stamp. This function makes no network call — the refs are as of the
+# LAST FETCH, which the pre-check fetch below makes this run's own when it succeeds (ADR 0137). Candidate refs, in order: the current branch's upstream, then the remote default
+# branch (origin/HEAD, already the offline default-branch signal below, ADR 0062). Path: the stamp
+# ALONE. This script writes the stamp on every run that changes the version and on a first run; a
+# same-version re-run places byte-identical templates, so it cannot collide at a pull. A hand edit of a
+# toolchain or guarded file is not a scaffold run (the ADR 0042 equal-version branch owns hand edits),
+# and counting it would refuse init on any long-lived branch behind a hand-edited main. The commit
+# walk is patch-equivalence filtered (--cherry-pick --right-only over HEAD...ref): a local rebase or
+# amend of a stamp commit is not upstream-ahead merely because the pre-rewrite commit is still on the
+# ref until the force-push. git absent, not a repo, no refs, or any git failure is no hit: today's
+# behaviour, never an error line. The refusal sits before the first write, and it applies under
+# -DryRun too — the dry run must show the real run's refusals. Own switch (-AllowUpstreamAhead), never -Force: -Force also bypasses the ADR 0055
+# first-run collision refusals. The refresh nudge runs the same detection (same definition, ADR 0135).
+function Find-UpstreamScaffoldAhead {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $null }
+    $refs = @()
+    $up = @(& git -C $root rev-parse --symbolic-full-name '@{upstream}' 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $up.Count -and ([string]$up[0]).Trim().StartsWith('refs/')) { $refs += ([string]$up[0]).Trim() }
+    $oh = @(& git -C $root symbolic-ref --quiet refs/remotes/origin/HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $oh.Count -and ([string]$oh[0]).Trim().StartsWith('refs/')) {
+        $o = ([string]$oh[0]).Trim()
+        if ($refs -notcontains $o) { $refs += $o }
+    }
+    foreach ($ref in $refs) {
+        $hit = @(& git --literal-pathspecs -C $root log -1 --cherry-pick --right-only '--format=%h%x09%cs' "HEAD...$ref" -- $STAMP_FILE 2>$null)
+        if ($LASTEXITCODE -ne 0 -or -not $hit.Count -or -not ([string]$hit[0]).Trim()) { continue }
+        $f = ([string]$hit[0]).Trim() -split "`t"
+        # A ref name is repo-authored text that lands on a console line: flatten controls, format
+        # characters and line/paragraph separators (git itself already forbids C0 controls).
+        $name = ($ref -replace '^refs/remotes/', '') -replace '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]', ' '
+        return [pscustomobject]@{ Ref = $name; Sha = $f[0]; Date = $(if ($f.Count -gt 1) { $f[1] } else { '' }) }
+    }
+    return $null
+}
+# --- pre-check fetch (ADR 0137) --------------------------------------------------------------------
+# The refs above are as of the last fetch, and the skill's "git fetch first" prose was skippable, so a
+# teammate's unfetched push slipped past the refusal. This script fetches the candidate remotes itself:
+# the current branch's upstream remote, then origin — configured remote NAMES only (a URL-valued
+# branch.<b>.remote cannot ride --multiple), a local upstream ('.') adds none. One git process, pinned
+# against the member's config: --no-tags --no-prune --no-recurse-submodules, and no auto gc/maintenance
+# (a killed gc is the widest lock window). Non-interactive: GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never,
+# stdin closed, and ssh in BatchMode — set ONLY when neither GIT_SSH_COMMAND, GIT_SSH nor core.sshCommand
+# names the member's own ssh, which is never overridden. Bounded by -FetchTimeoutSeconds, after which
+# the whole process tree is stopped; a stop can strand git's *.lock files, so the line NAMES any lock
+# under the git dir written since the fetch began — never deletes one: an IDE's background fetch may own
+# it. Under -DryRun too: the fetch moves remote-tracking refs and objects only, never the working tree,
+# and the dry run must show the real run's refusals (ADR 0135). Skipped under -AllowUpstreamAhead: there
+# the check only prints the ALLOWED line, and no outcome waits on a fetch. A failure or timeout NEVER
+# blocks — one yellow line, then the check reads the last fetch. The line never quotes git's output: it
+# can carry a credentialed URL. Success is silent; the refusal block then says the refs are fresh. No
+# candidate remote: no fetch, no line. The SessionStart nudge stays network-free (ADR 0033).
+function Get-FetchCandidateRemotes {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return @() }
+    $names = @(& git -C $root remote 2>$null | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    if ($LASTEXITCODE -ne 0 -or -not $names.Count) { return @() }
+    $want = @()
+    $br = @(& git -C $root symbolic-ref --quiet --short HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $br.Count -and ([string]$br[0]).Trim()) {
+        $r = @(& git -C $root config --get "branch.$(([string]$br[0]).Trim()).remote" 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $r.Count) { $want += ([string]$r[0]).Trim() }
+    }
+    $want += 'origin'
+    $out = @()
+    foreach ($w in $want) { if ($names -ccontains $w -and $out -cnotcontains $w) { $out += $w } }
+    return $out
+}
+function Get-StrandedFetchLocks([datetime]$SinceUtc) {
+    # Lock files a stopped fetch can leave: top-level (packed-refs.lock, shallow.lock, ...) and any under
+    # refs/remotes/. Written since the fetch began (2 s slack for coarse mtimes). Display paths only.
+    $cd = @(& git -C $root rev-parse --git-common-dir 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $cd.Count -or -not ([string]$cd[0]).Trim()) { return @() }
+    $gd = ([string]$cd[0]).Trim()
+    if (-not [IO.Path]::IsPathRooted($gd)) { $gd = Join-Path $root $gd }
+    $cut = $SinceUtc.AddSeconds(-2)
+    $locks = @(Get-ChildItem -LiteralPath $gd -Filter '*.lock' -File -Force -ErrorAction SilentlyContinue)
+    $rr = Join-Path $gd 'refs/remotes'
+    if (Test-Path -LiteralPath $rr -PathType Container) {
+        $locks += @(Get-ChildItem -LiteralPath $rr -Filter '*.lock' -File -Recurse -Force -ErrorAction SilentlyContinue)
+    }
+    $rootFull = [IO.Path]::GetFullPath($root).TrimEnd('\', '/')
+    return @($locks | Where-Object { $_.LastWriteTimeUtc -ge $cut } | ForEach-Object {
+            $full = $_.FullName
+            $show = if ($full.StartsWith($rootFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { $full.Substring($rootFull.Length + 1) } else { $full }
+            ($show -replace '\\', '/') -replace '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]', ' '
+        } | Sort-Object)
+}
+function Invoke-CandidateFetch([string[]]$Remotes) {
+    # $null = fetched; otherwise the failure clause for the one yellow line.
+    $psi = [System.Diagnostics.ProcessStartInfo]::new('git')
+    foreach ($a in @('-C', $root, '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', 'fetch', '--quiet', '--no-tags', '--no-prune',
+            '--no-recurse-submodules', '--multiple', '--') + $Remotes) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.Environment['GIT_TERMINAL_PROMPT'] = '0'
+    $psi.Environment['GCM_INTERACTIVE'] = 'never'
+    $ownSsh = [bool]($env:GIT_SSH_COMMAND -or $env:GIT_SSH)
+    if (-not $ownSsh) {
+        $sc = @(& git -C $root config --get core.sshCommand 2>$null)
+        $ownSsh = ($LASTEXITCODE -eq 0 -and $sc.Count -and [bool]([string]$sc[0]).Trim())
+    }
+    if (-not $ownSsh) { $psi.Environment['GIT_SSH_COMMAND'] = 'ssh -o BatchMode=yes' }
+    $began = [datetime]::UtcNow
+    try { $p = [System.Diagnostics.Process]::Start($psi) } catch { return 'could not start git' }
+    try {
+        $p.StandardInput.Close()
+        # Drain both pipes so a chatty fetch cannot block on a full buffer; the text is never shown.
+        $null = $p.StandardOutput.ReadToEndAsync()
+        $null = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($FetchTimeoutSeconds * 1000)) {
+            try { $p.Kill($true) } catch { }
+            $null = $p.WaitForExit(2000)
+            $clause = "did not finish in $FetchTimeoutSeconds s and was stopped"
+            # The scan is advice on a path that must never block: any throw (ErrorActionPreference is Stop) reads as no lock.
+            $locks = @(try { Get-StrandedFetchLocks $began } catch { })
+            if ($locks.Count) {
+                $named = ($locks | Select-Object -First 3) -join ', '
+                if ($locks.Count -gt 3) { $named += " and $($locks.Count - 3) more" }
+                $clause += " — it may have left lock file(s) $named; if no other git command is running, delete them before the next fetch"
+            }
+            return $clause
+        }
+        if ($p.ExitCode -ne 0) { return "exited $($p.ExitCode)" }
+        return $null
+    } finally { $p.Dispose() }
+}
+$fetchedFresh = $false
+if (-not $AllowUpstreamAhead) {
+    $fetchRemotes = @(Get-FetchCandidateRemotes)
+    if ($fetchRemotes.Count) {
+        $fetchShow = ($fetchRemotes -join ' ') -replace '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]', ' '
+        $fetchFail = Invoke-CandidateFetch $fetchRemotes
+        if ($fetchFail) {
+            Write-Host "FETCH FAILED — git fetch $fetchShow $fetchFail; the upstream-ahead check reads the remote-tracking refs as of the last fetch (ADR 0137)." -ForegroundColor Yellow
+        } else { $fetchedFresh = $true }
+    }
+}
+$upstreamAhead = Find-UpstreamScaffoldAhead
+if ($upstreamAhead) {
+    $uaClause = "$($upstreamAhead.Ref) has commit(s) not in this checkout that change the scaffold (newest $($upstreamAhead.Sha), $($upstreamAhead.Date))"
+    if ($AllowUpstreamAhead) {
+        Write-Host "UPSTREAM AHEAD ALLOWED — $uaClause; proceeding because -AllowUpstreamAhead was given (ADR 0135)." -ForegroundColor Yellow
+    } else {
+        Write-Host "REFUSED — ${uaClause}: another clone scaffolded or refreshed this repo and pushed. Nothing was written." -ForegroundColor Red
+        $freshness = if ($fetchedFresh) { 'This run fetched the remote-tracking refs just before the check (ADR 0137).' } else { "Remote-tracking refs are as of the last fetch — 'git fetch' first to see the newest state." }
+        Write-Host "  Remedy: pull first (git pull, or merge/rebase $($upstreamAhead.Ref)), then re-run. $freshness" -ForegroundColor Red
+        Write-Host "  A deliberate run on a diverging branch re-runs with -AllowUpstreamAhead." -ForegroundColor Red
+        exit 1
+    }
 }
 
 $created = @(); $refreshed = @(); $preserved = @(); $failed = @(); $skippedSeed = @(); $refused = @()

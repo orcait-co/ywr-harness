@@ -65,6 +65,22 @@
 // 0039 stale-basis banner takes precedence over all of this; probe failures fall through, never
 // silence.
 //
+// Upstream-ahead probe (ADR 0135): the direction probe reads THIS checkout's stamp, and after a
+// teammate scaffolded or refreshed the repo and pushed, that stamp is the OLD one — it reads
+// "genuinely behind" and sends the person into a run that collides with the pushed scaffold. So,
+// only after drift is found, after the 0039 branch and after the stamp probe, the hook asks the
+// remote-tracking refs whether they carry a commit this checkout lacks that touches `.harness-version`
+// — the stamp ALONE: init.ps1 writes it on every run that changes the version and on a first run, a
+// same-version re-run places byte-identical templates, and a hand edit is not a scaffold run (the
+// 0042 equal-version branch owns hand edits). The walk is patch-equivalence filtered, so a local
+// rebase or amend of a stamp commit is no hit. Candidates in order: the current branch's upstream,
+// then origin/HEAD (init.ps1's offline default-branch signal, ADR 0062). A hit replaces the 0042
+// behind, equal and direction-blind branches: do NOT run harness-init, pull first. The repo-AHEAD
+// branch (stamp newer than the running plugin) keeps precedence and skips the probe: it already
+// forbids init, and the next session start re-checks after the plugin update. NO network — the refs
+// are as of the last fetch, and both messages say so. Any git failure or absence is no hit, never an
+// error line. init.ps1 runs the same detection as a refusal (-AllowUpstreamAhead).
+//
 // Payload and output contract: same as the sibling nudge (verified against the official hooks
 // reference 2026-08-05) — cwd per firing; systemMessage AND hookSpecificOutput.additionalContext
 // both consumed; plain stdout on exit 0 becomes context, so every non-speaking path prints
@@ -437,6 +453,32 @@ function cmpVersion(a, b) {
   return 0
 }
 
+// Upstream-ahead detection (ADR 0135) — the same definition as init.ps1's guard, NO network. Candidate
+// refs in order, deduped: the current branch's upstream (accepted only on exit 0 with a refs/ name),
+// then the remote default branch (origin/HEAD, init.ps1's offline default-branch signal, ADR 0062).
+// Hit = `git --literal-pathspecs log -1 --cherry-pick --right-only HEAD...<ref> -- .harness-version`
+// exits 0 with a non-empty line; the first hit wins. The stamp is the ONLY path (init.ps1 writes it on
+// every version-changing or first run; a hand edit is not a scaffold run), and --cherry-pick drops a
+// commit whose patch HEAD already carries (a local rebase or amend not yet force-pushed). Any git
+// failure or absence is no hit. Returns { ref, sha, date } or null; `ref` is the short name
+// (refs/remotes/ stripped) and is repo-authored text — the caller echoes it through inline().
+function findUpstreamScaffoldAhead(root) {
+  const refs = []
+  const up = git(['-C', root, 'rev-parse', '--symbolic-full-name', '@{upstream}'])
+  if (up.status === 0 && firstLine(up.text).startsWith('refs/')) refs.push(firstLine(up.text))
+  const oh = git(['-C', root, 'symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'])
+  if (oh.status === 0 && firstLine(oh.text).startsWith('refs/') && !refs.includes(firstLine(oh.text))) refs.push(firstLine(oh.text))
+  for (const ref of refs) {
+    const r = git(['--literal-pathspecs', '-C', root, 'log', '-1', '--cherry-pick', '--right-only', '--format=%h%x09%cs', `HEAD...${ref}`, '--', '.harness-version'])
+    if (r.status !== 0) continue
+    const line = firstLine(r.text)
+    if (!line) continue
+    const [sha, date = ''] = line.split('\t')
+    return { ref: ref.replace(/^refs\/remotes\//, ''), sha, date }
+  }
+  return null
+}
+
 function parent(p) {
   const d = path.dirname(p)
   return d === p ? '' : d
@@ -634,6 +676,8 @@ function main(payload) {
     return
   }
 
+  const fileClause = `${drifted.length}개의 벤더링된 툴체인 파일이 설치된 ywr-harness (${ver}) 템플릿과 다릅니다 — ${fileList}`
+
   // --- direction probe (ADR 0042) — normal branch only -----------------------------------------
   // The stale-basis banner above already forbids init and takes precedence. Here, drift is real and
   // the session is current on this machine; what byte comparison cannot say is WHICH SIDE is newer
@@ -678,9 +722,27 @@ function main(payload) {
   const rm = /^v(\d+(\.\d+)+)$/.exec(ver)
   if (rm) runVer = toVersion(rm[1].split('.'))
 
-  const fileClause = `${drifted.length}개의 벤더링된 툴체인 파일이 설치된 ywr-harness (${ver}) 템플릿과 다릅니다 — ${fileList}`
   const both = stampVer && runVer
   const cmp = both ? cmpVersion(stampVer, runVer) : 0
+
+  // --- upstream-ahead probe (ADR 0135) — after the stale-basis branch and the stamp probe ---------
+  // Drift is real and the session is current; the remedy may still be a PULL, not a re-run. A hit
+  // replaces the 0042 behind, equal and direction-blind branches (the local stamp is the OLD one in
+  // this state, so "genuinely behind" would send the person into a run that collides with the pushed
+  // scaffold). Repo-AHEAD (stamp newer than the running plugin) keeps precedence and skips the probe:
+  // its advice already forbids init and the next session start re-checks after the plugin update.
+  // Reached only after drift, so the no-drift hot path costs zero git calls. Any git failure is no hit.
+  const hit = both && cmp > 0 ? null : findUpstreamScaffoldAhead(root)
+  if (hit) {
+    const refShow = inline(hit.ref, 200)
+    const shaShow = inline(hit.sha, 40)
+    const dateShow = inline(hit.date, 40)
+    const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause} — 그리고 ${refShow}에 이 체크아웃에 없고 스캐폴드 스탬프(.harness-version)를 변경하는 커밋이 있습니다 (최신 ${shaShow}, ${dateShow}) — 다른 클론이 이 저장소를 스캐폴딩하거나 리프레시한 뒤 push한 것입니다. 지금 /ywr-harness:harness-init을 실행하지 마세요; 먼저 pull(${refShow}를 merge 또는 rebase)하세요. 다음 세션 시작 시 다시 확인합니다. ref는 마지막 fetch 시점 기준입니다 (ADR 0135). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
+    const ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), but ${refShow} has commit(s) not in this checkout that change the scaffold stamp, .harness-version (newest ${shaShow}, ${dateShow}): another clone scaffolded or refreshed this repo and pushed (ADR 0135). The drift is therefore most likely this checkout lagging, not the repo lagging the plugin. Do NOT run or suggest /ywr-harness:harness-init from this session — it would place files that collide with the pushed scaffold at the next pull, or put older templates over a newer refresh. Offer pulling instead (merge or rebase ${refShow}); the next session start re-checks. The refs are remote-tracking refs as of the last fetch; no network was used. This surface is suggest-only (ADR 0033).`
+    emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
+    return
+  }
+
   let sys
   let ctx
   if (both && cmp > 0) {

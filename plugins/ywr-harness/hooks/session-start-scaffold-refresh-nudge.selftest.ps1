@@ -147,7 +147,7 @@ $ok = (Assert-Nudge 'drifted scaffold at the same version reads as a hand-edit' 
         'harness_gates\.py', 'harness-gates\.yml \(missing\)', 'EQUALS', 'hand-edit',
         'REVERT', '제안만 합니다') `
         @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more', '기준이 STALE', 'direction-blind',
-        '리프레시: 이 저장소에서', 'NEWER합니다', 'OLDER합니다')) -and $ok
+        '리프레시: 이 저장소에서', 'NEWER합니다', 'OLDER합니다', 'ADR 0135', '다른 클론')) -and $ok
 
 # 1b. REPO-AHEAD (ADR 0042): stamp newer than the running plugin — the multi-writer everyday
 #     state (another writer refreshed this repo with a newer release). The advice must FLIP:
@@ -338,6 +338,137 @@ if ($gitOk) {
 }
 else {
     Write-Host 'SKIP — git not on PATH; subdirectory-resolution case not run (reported, not silent)' -ForegroundColor Yellow
+}
+
+# 10b. UPSTREAM-AHEAD (ADR 0135): a teammate refreshed the scaffold and pushed; this clone has not pulled.
+#      The probe's path is the stamp ALONE (10b-5: a toolchain-only upstream commit is a hand edit, no hit),
+#      its walk is patch-equivalence filtered (10b-6: an amended stamp commit is no hit), and repo-AHEAD keeps
+#      precedence over a hit (10b-8).
+#      Its own stamp is the OLD one, so without the probe the ADR 0042 branch says "genuinely behind, re-run
+#      init" — the wrong remedy, the right one is to pull. ONE bare remote and TWO clones carry every leg:
+#      clone A (stamp 0.0.1, one drifted toolchain file) is the session under test, clone B pushes the
+#      refresh (the canon's file and the real stamp). The remaining legs only move A's refs and branch.
+#      The no-remote leg is every drifted fixture above (no remote, unborn HEAD): their 0033/0042 assertions
+#      stay unchanged and case 1 below adds the new text to its MustNotMatch.
+if ($gitOk) {
+    function Invoke-UaGit([string]$Dir, [string[]]$GitArgs) {
+        & git -C $Dir -c user.name=selftest -c user.email=selftest@example.invalid -c commit.gpgsign=false @GitArgs 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "fixture git failed (exit $LASTEXITCODE): git $($GitArgs -join ' ') in $Dir" }
+    }
+    $uaRemote = Join-Path $fx 'up-remote.git'
+    & git -c init.defaultBranch=main init -q --bare $uaRemote 2>$null | Out-Null
+    $uaA = Join-Path $fx 'up-a'
+    $uaB = Join-Path $fx 'up-b'
+    Copy-Item -LiteralPath $base -Destination $uaA -Recurse -Force
+    Add-Content -LiteralPath (Join-Path $uaA 'scripts/harness/harness_gates.py') -Value '# selftest drift'
+    Set-Content -LiteralPath (Join-Path $uaA '.harness-version') -Value '0.0.1'
+    Invoke-UaGit $uaA @('config', '--local', '--unset', 'core.hooksPath')   # init.ps1 wired the scaffold's hooks; the fixture commits bypass them
+    Invoke-UaGit $uaA @('add', '-A')
+    Invoke-UaGit $uaA @('commit', '-q', '-m', 'A: scaffold at an old stamp')
+    Invoke-UaGit $uaA @('remote', 'add', 'origin', $uaRemote)
+    Invoke-UaGit $uaA @('push', '-q', '-u', 'origin', 'main')
+    Invoke-UaGit $fx @('clone', '-q', $uaRemote, $uaB)
+    Copy-Item -LiteralPath (Join-Path $base 'scripts/harness/harness_gates.py') -Destination (Join-Path $uaB 'scripts/harness/harness_gates.py') -Force
+    Set-Content -LiteralPath (Join-Path $uaB '.harness-version') -Value $mfVer
+    Invoke-UaGit $uaB @('add', '-A')
+    Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: scaffold refresh')
+    Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
+
+    # 10b-1. NOT fetched: A's refs know nothing of B's push, so today's advice stands — the documented
+    #        freshness limit (refs are as of the last fetch), and the proof the probe makes no network call.
+    $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
+    $ok = (Assert-Nudge '10b-1 unfetched refs: no hit, the stamp-direction advice stands (freshness limit)' $out `
+            @('1개의 벤더링된 툴체인 파일', 'OLDER합니다', '리프레시: 이 저장소에서 /ywr-harness:harness-init') `
+            @('ADR 0135', 'fetch', '다른 클론', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+    # 10b-2. fetched: the upstream (origin/main) carries B's commit -> upstream-ahead replaces ALL the direction
+    #        branches. The ref, the newest sha and a date are named; init is forbidden in both halves; the OLDER /
+    #        "re-run" advice is gone. The model half says not to run or suggest init and to offer pulling.
+    Invoke-UaGit $uaA @('fetch', '-q', 'origin')
+    $uaSha = (& git -C $uaA log -1 --format=%h origin/main 2>$null | Out-String).Trim()
+    $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
+    $ok = (Assert-Nudge '10b-2 fetched upstream ahead: pull first, never re-run init (ADR 0135)' $out `
+            @('1개의 벤더링된 툴체인 파일', 'harness_gates\.py', 'origin/main', [regex]::Escape($uaSha), '\d{4}-\d{2}-\d{2}', '다른 클론이',
+            '/ywr-harness:harness-init을 실행하지 마세요', 'pull', '마지막 fetch', 'ADR 0135',
+            'Do NOT run or suggest /ywr-harness:harness-init', 'Offer pulling', '제안만 합니다') `
+            @('OLDER합니다', '측정된 것입니다', '리프레시: 이 저장소에서', 'genuinely behind', 'NEWER합니다', 'EQUALS',
+            'direction-blind', '기준이 STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+    $ok = (Assert-True '10b-2 the sha named is the fetched tip' ($uaSha -match '^[0-9a-f]{4,}$') "sha='$uaSha'") -and $ok
+
+    # 10b-3. a feature branch with NO upstream and no origin/HEAD: no candidate ref -> no hit (today's advice) ...
+    Invoke-UaGit $uaA @('checkout', '-q', '-b', 'feature')
+    # git 2.48+ creates origin/HEAD on the first fetch (remote.<name>.followRemoteHEAD), so drop it here.
+    & git -C $uaA symbolic-ref --quiet --delete refs/remotes/origin/HEAD 2>$null | Out-Null
+    & git -C $uaA rev-parse --symbolic-full-name '@{upstream}' 2>$null | Out-Null
+    $noUp = ($LASTEXITCODE -ne 0)
+    & git -C $uaA symbolic-ref --quiet refs/remotes/origin/HEAD 2>$null | Out-Null
+    $ok = (Assert-True '10b-3 fixture: the feature branch has no upstream and no origin/HEAD' ($noUp -and $LASTEXITCODE -ne 0) 'the leg below would test a candidate ref, not the empty list') -and $ok
+    $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
+    $ok = (Assert-Nudge '10b-3 no upstream and no origin/HEAD: no candidate ref, no hit' $out `
+            @('OLDER합니다', '리프레시: 이 저장소에서 /ywr-harness:harness-init') @('ADR 0135', '다른 클론', 'SCHEMA DRIFT')) -and $ok
+    # ... and with origin/HEAD set, the remote default branch is the second candidate: the same hit.
+    Invoke-UaGit $uaA @('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+    $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
+    $ok = (Assert-Nudge '10b-4 no upstream, origin/HEAD ahead: the remote default branch hits' $out `
+            @('origin/main', [regex]::Escape($uaSha), 'ADR 0135', '/ywr-harness:harness-init을 실행하지 마세요', 'Offer pulling') `
+            @('OLDER합니다', '리프레시: 이 저장소에서', 'SCHEMA DRIFT')) -and $ok
+
+    # The legs below put A on B's pushed tip (stamp = the running version, canon files) and re-add the drift as an
+    # UNCOMMITTED edit, so the stamp equals the running version (the ADR 0042 EQUALS / hand-edit branch is the no-hit
+    # baseline) and only the REMOTE moves between legs. origin/HEAD stays set, so origin/main is the candidate ref.
+    Invoke-UaGit $uaA @('reset', '-q', '--hard', 'origin/main')
+    Add-Content -LiteralPath (Join-Path $uaA 'scripts/harness/harness_gates.py') -Value '# selftest drift'
+    $uaStampPath = Join-Path $uaA '.harness-version'
+    $uaStampText = Get-Content -LiteralPath $uaStampPath -Raw
+
+    # 10b-5. a toolchain-only upstream commit (a hand edit on main — no stamp change) is NOT a scaffold run: no hit,
+    #        the equal-version hand-edit advice stands.
+    Add-Content -LiteralPath (Join-Path $uaB 'scripts/harness/harness_gates.py') -Value '# upstream hand edit'
+    Invoke-UaGit $uaB @('add', '-A')
+    Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: hand edit of a toolchain file')
+    Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
+    Invoke-UaGit $uaA @('fetch', '-q', 'origin')
+    $uaToolOnly = (& git -C $uaA log -1 --format=%h HEAD..origin/main 2>$null | Out-String).Trim()
+    $ok = (Assert-True '10b-5 fixture: origin/main is ahead by a commit that leaves the stamp alone' `
+            ($uaToolOnly -match '^[0-9a-f]{4,}$' -and -not (& git -C $uaA log -1 --format=%h HEAD..origin/main -- .harness-version 2>$null)) "tool-only='$uaToolOnly'") -and $ok
+    $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
+    $ok = (Assert-Nudge '10b-5 toolchain-only upstream commit: no hit, the hand-edit advice stands (stamp is the only path)' $out `
+            @('1개의 벤더링된 툴체인 파일', 'harness_gates\.py', 'EQUALS', 'hand-edit') `
+            @('ADR 0135', '다른 클론', '/ywr-harness:harness-init을 실행하지 마세요', 'SCHEMA DRIFT')) -and $ok
+
+    # 10b-6. patch-equivalence: A amends the commit that carries the stamp (a rebase does the same). The pre-rewrite commit is
+    #        still on origin/main, but HEAD carries its patch: NOT upstream-ahead. The plain walk is the control.
+    Invoke-UaGit $uaA @('commit', '-q', '--amend', '-m', 'A: the stamp commit, amended')
+    $ok = (Assert-True '10b-6 fixture: a plain walk still sees the pre-rewrite stamp commit (only --cherry-pick explains the silence)' `
+            ([bool](& git -C $uaA log -1 --format=%h HEAD..origin/main -- .harness-version 2>$null)) 'the amend did not diverge from origin/main') -and $ok
+    $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
+    $ok = (Assert-Nudge '10b-6 an amended stamp commit is patch-equivalent: no hit' $out `
+            @('harness_gates\.py', 'EQUALS', 'hand-edit') @('ADR 0135', '다른 클론', 'SCHEMA DRIFT')) -and $ok
+
+    # 10b-7. positive control: B pushes a NEW stamp commit the clone lacks -> the hit replaces the equal-version branch.
+    Set-Content -LiteralPath (Join-Path $uaB '.harness-version') -Value '0.0.9'
+    Invoke-UaGit $uaB @('add', '-A')
+    Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: a new stamp commit')
+    Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
+    Invoke-UaGit $uaA @('fetch', '-q', 'origin')
+    $uaNew = (& git -C $uaA log -1 --format=%h origin/main 2>$null | Out-String).Trim()
+    $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
+    $ok = (Assert-Nudge '10b-7 a new upstream stamp commit hits and replaces the equal-version branch' $out `
+            @('origin/main', [regex]::Escape($uaNew), 'ADR 0135', '/ywr-harness:harness-init을 실행하지 마세요', 'Offer pulling') `
+            @('EQUALS', 'hand-edit', 'SCHEMA DRIFT')) -and $ok
+
+    # 10b-8. F2: with that hit standing, a repo-AHEAD stamp (newer than the running plugin) keeps the ADR 0042 AHEAD advice —
+    #        "update the plugin, do NOT init" — and the hit does not replace it. Only the working-tree stamp changes.
+    Set-Content -LiteralPath $uaStampPath -Value '99.0.0'
+    $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
+    $ok = (Assert-Nudge '10b-8 repo-AHEAD keeps precedence over an upstream hit (ADR 0042 advice, no pull-first)' $out `
+            @('1개의 벤더링된 툴체인 파일', 'v99\.0\.0', 'NEWER합니다', 'AHEAD', 'REVERT', '/ywr-harness:update',
+            'Do NOT run or suggest /ywr-harness:harness-init', 'NEWER than this session', 'ADR 0042', '제안만 합니다') `
+            @('ADR 0135', '다른 클론', 'Offer pulling', '마지막 fetch', 'OLDER합니다', 'EQUALS', 'direction-blind', 'SCHEMA DRIFT')) -and $ok
+    [System.IO.File]::WriteAllText($uaStampPath, $uaStampText)
+}
+else {
+    Write-Host 'SKIP [10b] git not on PATH; upstream-ahead cases not run (reported, not silent)' -ForegroundColor Yellow
 }
 
 # 11. BOM-prefixed stdin -> still parses (the config-change-audit 07-23 incident class)

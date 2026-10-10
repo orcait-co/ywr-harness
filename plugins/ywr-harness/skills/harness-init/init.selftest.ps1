@@ -602,6 +602,182 @@ $rS3 = Invoke-Init @('-Target', $s3)
 $ok = (Assert-True 'S3 garbage stamp proceeds' ($rS3.Code -eq 0) "exit=$($rS3.Code) out=$($rS3.Out)") -and $ok
 $ok = (Assert-True 'S3 garbage stamp is rewritten to the plugin version' (((Get-Content -LiteralPath (Join-Path $s3 '.harness-version') -Raw).Trim()) -eq $manifestVer) 'stamp not repaired') -and $ok
 
+# --- UA: upstream-ahead guard (ADR 0135) ---------------------------------------------------------
+# A teammate scaffolded the repo and pushed; this clone has not pulled. Scenario 2 (never scaffolded) is
+# the one with no stamp to look at: the clone is a plain repo whose origin carries the scaffold. ONE bare
+# remote, the stale clone (ua-c, one README commit) and the pusher (ua-b, a real init.ps1 run, committed
+# and pushed) carry every leg; the stale clone only fetches. Scenario 1 (an older stamp) reaches the
+# same guard through the same git query — UA6 below pins it through init.ps1, the hook suite's 10b legs
+# through the hook. The guard's path is the stamp ALONE (UA5): a toolchain-only upstream commit is a hand
+# edit, not a scaffold run. UA7 pins the patch-equivalence filter (a rebased or amended stamp commit).
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host 'SKIP [UA upstream-ahead] git absent (reported, not silent) — CI has git' -ForegroundColor Yellow
+} else {
+    function Invoke-UaGit([string]$Dir, [string[]]$GitArgs) {
+        & git -C $Dir -c user.name=selftest -c user.email=selftest@example.invalid -c commit.gpgsign=false @GitArgs 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "fixture git failed (exit $LASTEXITCODE): git $($GitArgs -join ' ') in $Dir" }
+    }
+    function Get-TreeSnapshot([string]$Dir) {
+        $prefix = (Resolve-Path -LiteralPath $Dir).Path.TrimEnd('\', '/').Length + 1
+        return (@(Get-ChildItem -LiteralPath $Dir -Recurse -File -Force | Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' } |
+                    ForEach-Object { $_.FullName.Substring($prefix) + ':' + (Get-FileHash -LiteralPath $_.FullName).Hash } | Sort-Object) -join "`n")
+    }
+    $uaRemote = Join-Path $fxBase 'ua-remote.git'
+    & git -c init.defaultBranch=main init -q --bare $uaRemote 2>$null | Out-Null
+    $uaC = New-Target 'ua-c'
+    & git -c init.defaultBranch=main init -q $uaC 2>$null | Out-Null
+    Set-Content -LiteralPath (Join-Path $uaC 'README.md') -Value 'a repo that was never scaffolded'
+    Invoke-UaGit $uaC @('add', '-A')
+    Invoke-UaGit $uaC @('commit', '-q', '-m', 'C: first commit')
+    Invoke-UaGit $uaC @('remote', 'add', 'origin', $uaRemote)
+    Invoke-UaGit $uaC @('push', '-q', '-u', 'origin', 'main')
+    $uaB = Join-Path $fxBase 'ua-b'
+    Invoke-UaGit $fxBase @('clone', '-q', $uaRemote, $uaB)
+    $rUAB = Invoke-Init @('-Target', $uaB)
+    $ok = (Assert-True 'UA fixture: the pusher scaffolded its clone' ($rUAB.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $uaB '.harness-version') -PathType Leaf)) "exit=$($rUAB.Code) out=$($rUAB.Out)") -and $ok
+    Invoke-UaGit $uaB @('config', '--local', '--unset', 'core.hooksPath')   # init.ps1 wired the scaffold's hooks; the fixture commit bypasses them
+    Invoke-UaGit $uaB @('add', '-A')
+    Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: scaffold')
+    Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
+
+    # UA1 (ADR 0137): the clone has NOT fetched — its refs know nothing of the push. With the remote
+    # unreachable (the URL points at a missing path for this leg only), the pre-check fetch fails: ONE yellow
+    # line, never a block, and the check reads the old refs — no hit, the dry run proceeds (the freshness limit).
+    $uaUnfetched = (& git -C $uaC rev-parse origin/main 2>$null | Out-String).Trim()
+    Invoke-UaGit $uaC @('remote', 'set-url', 'origin', (Join-Path $fxBase 'ua-missing.git'))
+    $rUA1 = Invoke-Init @('-Target', $uaC, '-DryRun')
+    # UA1a: -AllowUpstreamAhead skips the fetch — no outcome waits on it — so the same unreachable remote prints nothing.
+    $rUA1a = Invoke-Init @('-Target', $uaC, '-DryRun', '-AllowUpstreamAhead')
+    Invoke-UaGit $uaC @('remote', 'set-url', 'origin', $uaRemote)
+    $ok = (Assert-True 'UA1a -AllowUpstreamAhead: no fetch, so no FETCH FAILED line on an unreachable remote' `
+            ($rUA1a.Code -eq 0 -and $rUA1a.Out -notmatch 'FETCH FAILED') "exit=$($rUA1a.Code) out=$($rUA1a.Out)") -and $ok
+    $ok = (Assert-True 'UA1 failed fetch: one FETCH FAILED line, no hit, the dry run proceeds (freshness limit)' `
+            ($rUA1.Code -eq 0 -and ([regex]::Matches($rUA1.Out, 'FETCH FAILED — git fetch origin exited \d+; the upstream-ahead check reads the remote-tracking refs as of the last fetch \(ADR 0137\)\.')).Count -eq 1 -and
+            $rUA1.Out -notmatch 'not in this checkout' -and $rUA1.Out -notmatch 'UPSTREAM AHEAD' -and $rUA1.Out -notmatch 'ua-missing') "exit=$($rUA1.Code) out=$($rUA1.Out)") -and $ok
+    # UA1b: the same unfetched clone, remote reachable again: the run fetches by itself, so the refusal sees the
+    # push that no one fetched — the residual ADR 0135 left to the skill's prose (O76). Dry run: nothing written.
+    $rUA1b = Invoke-Init @('-Target', $uaC, '-DryRun')
+    $uaFetched = (& git -C $uaC rev-parse origin/main 2>$null | Out-String).Trim()
+    $ok = (Assert-True 'UA1b unfetched push: the self-fetch moves origin/main and the dry run REFUSES, saying the refs are fresh' `
+            ($rUA1b.Code -eq 1 -and $uaFetched -ne $uaUnfetched -and $rUA1b.Out -cmatch 'REFUSED — origin/main has commit\(s\) not in this checkout that change the scaffold' -and
+            $rUA1b.Out -match 'This run fetched the remote-tracking refs just before the check \(ADR 0137\)\.' -and $rUA1b.Out -notmatch 'FETCH FAILED' -and
+            $rUA1b.Out -notmatch "as of the last fetch — 'git fetch' first" -and -not (Test-Path -LiteralPath (Join-Path $uaC '.harness-version'))) "exit=$($rUA1b.Code) out=$($rUA1b.Out)") -and $ok
+
+    Invoke-UaGit $uaC @('fetch', '-q', 'origin')
+    $uaSha = (& git -C $uaC log -1 --format=%h origin/main 2>$null | Out-String).Trim()
+    $uaBefore = Get-TreeSnapshot $uaC
+    $ok = (Assert-True 'UA fixture: the stale clone has the pusher commit fetched but not merged' `
+            ($uaSha -match '^[0-9a-f]{4,}$' -and -not (Test-Path -LiteralPath (Join-Path $uaC '.harness-version'))) "sha='$uaSha'") -and $ok
+    # UA2: dry run AND real run refuse with exit 1 and write nothing — the dry run must show the real run's refusal.
+    foreach ($mode in @(@{ N = 'dry run'; A = @('-Target', $uaC, '-DryRun') }, @{ N = 'real run'; A = @('-Target', $uaC) }, @{ N = '-Force run'; A = @('-Target', $uaC, '-Force') })) {
+        $rUA2 = Invoke-Init $mode.A
+        $ok = (Assert-True "UA2 $($mode.N): REFUSED with exit 1, naming the ref, the sha and the date" `
+                ($rUA2.Code -eq 1 -and $rUA2.Out -cmatch 'REFUSED — origin/main has commit\(s\) not in this checkout that change the scaffold' -and
+                $rUA2.Out -match [regex]::Escape("newest $uaSha, ") -and $rUA2.Out -match '\d{4}-\d{2}-\d{2}\): another clone scaffolded or refreshed this repo and pushed\. Nothing was written\.') `
+                "exit=$($rUA2.Code) out=$($rUA2.Out)") -and $ok
+        $ok = (Assert-True "UA2 $($mode.N): the remedy, the freshness limit and the override are named" `
+                ($rUA2.Out -match 'Remedy: pull first \(git pull, or merge/rebase origin/main\), then re-run' -and $rUA2.Out -match 'This run fetched the remote-tracking refs just before the check' -and
+                $rUA2.Out -match 'with -AllowUpstreamAhead') $rUA2.Out) -and $ok
+        $ok = (Assert-True "UA2 $($mode.N): nothing was written (no stamp, no placement, no wiring, tree unchanged)" `
+                ((Get-TreeSnapshot $uaC) -eq $uaBefore -and -not (Test-Path -LiteralPath (Join-Path $uaC '.harness-version')) -and -not (Get-HooksPath $uaC)) 'the refused run changed the tree') -and $ok
+    }
+    # UA2's third mode is the design point: -Force is NOT the override (it also bypasses ADR 0055's first-run collision refusals).
+    # UA2b: -DryRun together with -AllowUpstreamAhead: the ALLOWED line once, exit 0, and still nothing written.
+    $rUA2b = Invoke-Init @('-Target', $uaC, '-DryRun', '-AllowUpstreamAhead')
+    $ok = (Assert-True 'UA2b -DryRun -AllowUpstreamAhead: ALLOWED once, exit 0, no refusal' `
+            ($rUA2b.Code -eq 0 -and ([regex]::Matches($rUA2b.Out, 'UPSTREAM AHEAD ALLOWED — origin/main has commit')).Count -eq 1 -and $rUA2b.Out -cnotmatch 'REFUSED — origin/main') `
+            "exit=$($rUA2b.Code) out=$($rUA2b.Out)") -and $ok
+    $ok = (Assert-True 'UA2b -DryRun -AllowUpstreamAhead: nothing was written' `
+            ((Get-TreeSnapshot $uaC) -eq $uaBefore -and -not (Test-Path -LiteralPath (Join-Path $uaC '.harness-version')) -and -not (Get-HooksPath $uaC)) 'the dry run changed the tree') -and $ok
+    # UA3: -AllowUpstreamAhead is the deliberate-divergence path — one Yellow line, then the normal run.
+    $rUA3 = Invoke-Init @('-Target', $uaC, '-AllowUpstreamAhead')
+    $ok = (Assert-True 'UA3 -AllowUpstreamAhead proceeds with exit 0 and says so once' `
+            ($rUA3.Code -eq 0 -and ([regex]::Matches($rUA3.Out, 'UPSTREAM AHEAD ALLOWED — origin/main has commit')).Count -eq 1 -and $rUA3.Out -match 'proceeding because -AllowUpstreamAhead was given \(ADR 0135\)' -and $rUA3.Out -cnotmatch 'REFUSED — origin/main') `
+            "exit=$($rUA3.Code) out=$($rUA3.Out)") -and $ok
+    $ok = (Assert-True 'UA3 the scaffold was placed and stamped' `
+            ((Test-Path -LiteralPath (Join-Path $uaC '.harness-version') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $uaC 'scripts/harness/harness_gates.py') -PathType Leaf)) $rUA3.Out) -and $ok
+    # UA5-UA7 reuse the stale clone: put it on the pushed tip (the placement UA3 left is untracked noise),
+    # then the pusher moves the remote and the clone only fetches. The fixture commits bypass the wired hooks.
+    & git -C $uaC config --local --unset core.hooksPath 2>$null | Out-Null
+    & git -C $uaC clean -fdxq 2>$null | Out-Null
+    Invoke-UaGit $uaC @('reset', '-q', '--hard', 'origin/main')
+    $uaStamp = (Get-Content -LiteralPath (Join-Path $uaB '.harness-version') -Raw).Trim()
+    # UA5: an upstream commit that touches ONLY a toolchain file (a hand edit on main, no stamp) is NOT a scaffold
+    # run: no refusal, no ALLOWED line. The stamp is the guard's only path.
+    Add-Content -LiteralPath (Join-Path $uaB 'scripts/harness/harness_gates.py') -Value '# upstream hand edit'
+    Invoke-UaGit $uaB @('add', '-A')
+    Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: hand edit of a toolchain file')
+    Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
+    Invoke-UaGit $uaC @('fetch', '-q', 'origin')
+    $ok = (Assert-True 'UA5 fixture: origin/main is ahead of the stale clone by the toolchain-only commit' `
+            ([int](& git -C $uaC rev-list --count HEAD..origin/main 2>$null) -eq 1 -and -not (& git -C $uaC log -1 --format=%h HEAD..origin/main -- .harness-version 2>$null)) 'the fixture is not toolchain-only') -and $ok
+    $rUA5 = Invoke-Init @('-Target', $uaC, '-DryRun')
+    $ok = (Assert-True 'UA5 a toolchain-only upstream commit: no refusal, exit 0 (the stamp is the only path)' `
+            ($rUA5.Code -eq 0 -and $rUA5.Out -cnotmatch 'REFUSED —' -and $rUA5.Out -notmatch 'not in this checkout' -and $rUA5.Out -notmatch 'UPSTREAM AHEAD') "exit=$($rUA5.Code) out=$($rUA5.Out)") -and $ok
+    # UA6: scenario 1 through init.ps1 itself — the clone has an OLDER stamp committed and upstream bumped it: REFUSED.
+    Set-Content -LiteralPath (Join-Path $uaB '.harness-version') -Value '0.0.1'
+    Invoke-UaGit $uaB @('add', '-A')
+    Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: old stamp')
+    Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
+    Invoke-UaGit $uaC @('fetch', '-q', 'origin')
+    Invoke-UaGit $uaC @('reset', '-q', '--hard', 'origin/main')
+    Set-Content -LiteralPath (Join-Path $uaB '.harness-version') -Value $uaStamp
+    Invoke-UaGit $uaB @('add', '-A')
+    Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: stamp bump')
+    Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
+    Invoke-UaGit $uaC @('fetch', '-q', 'origin')
+    $uaSha6 = (& git -C $uaC log -1 --format=%h origin/main 2>$null | Out-String).Trim()
+    $ok = (Assert-True 'UA6 fixture: the clone carries the OLD stamp committed' `
+            (((Get-Content -LiteralPath (Join-Path $uaC '.harness-version') -Raw).Trim()) -eq '0.0.1') 'the stale clone is not at the old stamp') -and $ok
+    $rUA6 = Invoke-Init @('-Target', $uaC, '-DryRun')
+    $ok = (Assert-True 'UA6 older stamp committed, upstream bumped it: REFUSED with exit 1, naming the ref and the newest sha' `
+            ($rUA6.Code -eq 1 -and $rUA6.Out -cmatch 'REFUSED — origin/main has commit\(s\) not in this checkout that change the scaffold' -and $rUA6.Out -match [regex]::Escape("newest $uaSha6, ")) `
+            "exit=$($rUA6.Code) out=$($rUA6.Out)") -and $ok
+    # UA7: patch-equivalence — the clone amends (or rebases) the commit that carries the stamp bump; the pre-rewrite
+    # commit is still on origin/main until a force-push, but its patch is already in HEAD: NOT upstream-ahead.
+    Invoke-UaGit $uaC @('reset', '-q', '--hard', 'origin/main')
+    Invoke-UaGit $uaC @('commit', '-q', '--amend', '-m', 'C: the stamp bump, amended')
+    $ok = (Assert-True 'UA7 fixture: a plain walk still sees the pre-rewrite commit (so only --cherry-pick explains the silence)' `
+            ([bool](& git -C $uaC log -1 --format=%h HEAD..origin/main -- .harness-version 2>$null)) 'the amend did not diverge from origin/main') -and $ok
+    $rUA7 = Invoke-Init @('-Target', $uaC, '-DryRun')
+    $ok = (Assert-True 'UA7 an amended stamp commit is patch-equivalent: no refusal' `
+            ($rUA7.Code -eq 0 -and $rUA7.Out -cnotmatch 'REFUSED —' -and $rUA7.Out -notmatch 'not in this checkout' -and $rUA7.Out -notmatch 'UPSTREAM AHEAD') "exit=$($rUA7.Code) out=$($rUA7.Out)") -and $ok
+    # UA8 (ADR 0137): a fetch that hangs is stopped at the timeout and never blocks. The hang is an ssh
+    # transport whose command sleeps (git runs core.sshCommand through its shell, which drops the rest after
+    # '#'); -FetchTimeoutSeconds 1 keeps the leg short. One yellow line, then the run goes on (UA7's state:
+    # no hit). The wall-clock bound proves the process tree was stopped, not waited out. A set core.sshCommand
+    # is the member's own ssh, so the BatchMode default stays off and the sleep runs as written.
+    Invoke-UaGit $uaC @('remote', 'set-url', 'origin', 'ssh://selftest.invalid/ua.git')
+    Invoke-UaGit $uaC @('config', '--local', 'core.sshCommand', 'sleep 30 #')
+    $uaT0 = [Diagnostics.Stopwatch]::StartNew()
+    $rUA8 = Invoke-Init @('-Target', $uaC, '-DryRun', '-FetchTimeoutSeconds', '1')
+    $uaT0.Stop()
+    $ok = (Assert-True 'UA8 hung fetch: stopped at the timeout with one FETCH FAILED line, the run goes on (exit 0)' `
+            ($rUA8.Code -eq 0 -and ([regex]::Matches($rUA8.Out, 'FETCH FAILED — git fetch origin did not finish in 1 s and was stopped; the upstream-ahead check reads the remote-tracking refs as of the last fetch \(ADR 0137\)\.')).Count -eq 1 -and
+            $uaT0.Elapsed.TotalSeconds -lt 20) "exit=$($rUA8.Code) elapsed=$($uaT0.Elapsed.TotalSeconds)s out=$($rUA8.Out)") -and $ok
+    # UA8b: a stop can strand git's lock files. The hung transport writes one first (as a fetch killed mid ref
+    # update would); an OLD lock is the control. The line names the fresh lock ONLY and deletes neither — an
+    # IDE's background fetch may own a lock.
+    $uaLockNew = Join-Path $uaC '.git/packed-refs.lock'
+    $uaLockOld = Join-Path $uaC '.git/refs/remotes/origin/old.lock'
+    Set-Content -LiteralPath $uaLockOld -Value ''
+    (Get-Item -LiteralPath $uaLockOld).LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-1)
+    Invoke-UaGit $uaC @('config', '--local', 'core.sshCommand', "touch '$($uaLockNew -replace '\\', '/')'; sleep 30 #")
+    $rUA8b = Invoke-Init @('-Target', $uaC, '-DryRun', '-FetchTimeoutSeconds', '1')
+    $uaLocksKept = (Test-Path -LiteralPath $uaLockNew) -and (Test-Path -LiteralPath $uaLockOld)
+    Remove-Item -LiteralPath $uaLockNew, $uaLockOld -Force -ErrorAction SilentlyContinue
+    Invoke-UaGit $uaC @('config', '--local', '--unset', 'core.sshCommand')
+    Invoke-UaGit $uaC @('remote', 'set-url', 'origin', $uaRemote)
+    $ok = (Assert-True 'UA8b stopped fetch: the line names the fresh lock (never the old one), deletes neither, exit 0' `
+            ($rUA8b.Code -eq 0 -and $uaLocksKept -and
+            $rUA8b.Out -match 'was stopped — it may have left lock file\(s\) \.git/packed-refs\.lock; if no other git command is running, delete them before the next fetch; the upstream-ahead check reads' -and
+            $rUA8b.Out -notmatch 'old\.lock') "exit=$($rUA8b.Code) kept=$uaLocksKept out=$($rUA8b.Out)") -and $ok
+    # UA4: no remote — case K's target is a git repo with no remote and no commits: unchanged, silent, no guard
+    # line at all, and no fetch line either (no candidate remote, ADR 0137).
+    $ok = (Assert-True 'UA4 a git repo with no remote: the guard stays silent and the run exits 0' `
+            ($rK.Code -eq 0 -and $rK.Out -notmatch 'not in this checkout' -and $rK.Out -notmatch 'UPSTREAM AHEAD' -and $rK.Out -notmatch 'FETCH FAILED') "exit=$($rK.Code) out=$($rK.Out)") -and $ok
+}
+
 # --- T: preserved-seed drift note (ADR 0051) — report only, never a merge ----------------------
 # The measured blind spot this section pins (issue #44): a repo scaffolded at vN re-runs at vN+k
 # and its preserved .harness.json / .gitattributes silently lack template-side additions

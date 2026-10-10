@@ -20,6 +20,16 @@ Add `-DryRun` to see the plan without writing. `-Target` defaults to the current
 Requires pwsh 7 (plugin README §Prerequisites) — under Windows PowerShell 5.1 the script
 refuses explicitly rather than running.
 
+**Pull before you scaffold (ADR 0135).** Do not run `git fetch` yourself: `init.ps1` fetches the
+branch's upstream remote and `origin` itself, `-DryRun` included (ADR 0137). A failed or timed-out
+fetch prints one `FETCH FAILED` line and the run goes on against the last fetch. When a remote-tracking ref (the
+branch's upstream, then `origin/HEAD`) carries a `.harness-version` change this checkout lacks, `init.ps1`
+prints `REFUSED — <ref> has commit(s) not in this checkout that change the scaffold` and writes
+nothing, `-DryRun` included: another clone already scaffolded or refreshed this repo and pushed.
+Tell the member to pull (merge or rebase that ref) and re-run. Pass `-AllowUpstreamAhead` only when
+the member confirms the branch deliberately diverges — never on your own. `-Force` does NOT bypass
+this refusal; do not offer it here (it also arms first-run collision replacement).
+
 **On a repo that already has a `.harness-version` stamp, ALWAYS run `-DryRun` first** — not a
 habit but a load-bearing order: if the dry run reports a same-version conflict, the upstream
 report must be drafted BEFORE the real run (§Same-version conflicts below), because the real run
