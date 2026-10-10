@@ -46,10 +46,11 @@ calls the scripts directly and never goes through the host's component registry.
 | `session-start-version-announce.mjs` | `SessionStart` | Announce-once-per-version (ADR 0030). At the first session that loads a new plugin version it says so once — old → new, up to three bullets from `CHANGELOG.md` (the member release-notes canon, Korean), and the onboarding artifact's release-notes tab — then records the version in `~/.claude/ywr-harness/announced-version`, the plugin's only user-scope write. A machine's very first run gets a one-time link-only welcome instead (ADR 0031) — "업데이트됨" is claimed only when a previous version was recorded. Steady state and downgrades are silent; `manifest-gate.ps1` refuses a release whose top CHANGELOG entry does not match `plugin.json`. |
 | `subagent-telemetry.mjs` | `SubagentStop` | Appends a per-agent JSONL ledger to `<project>/.claude/telemetry/` — documented SubagentStop fields only (no model: the event carries none). Fail-open. |
 
-### Hooks module (Claude Mods)
+### Hooks modules (Claude Mods)
 
-`hooks/delegation-ledger.mjs` is a function-hooks module, named in `hooks.json` under `modules`
-(ADR 0117, ADR 0118). The host runs it in its own environment — not on `node` — from Claude Code 2.1.287.
+`hooks.json` names one entry under `modules`, `hooks/mods.mjs`, which registers two module files.
+
+`hooks/delegation-ledger.mjs` is a function-hooks module (ADR 0117, ADR 0118). The host runs it in its own environment — not on `node` — from Claude Code 2.1.287.
 It hooks `agent.spawn`, `turn.step` and `turn.complete` and is **observe-only**: it passes every
 event on unchanged, never rewrites a model or effort, never denies and never draws. Each finished
 model loop (a main-loop turn, an Agent-tool subagent, a Workflow `agent()` worker) becomes one row
@@ -61,6 +62,13 @@ files never pass ~7 MiB per repo. A workflow worker shows as `loop: "unspawned"`
 No prompt, task description or answer is written. It writes only in a repo whose root holds
 `.harness.json`. Hosts below 2.1.287, `disableAllHooks`, `--safe-mode` and `--bare` drop it, and
 the nine hooks above keep running.
+
+`hooks/slice-status.mjs` pins one status line under the prompt through `$.ui.status` (ADR 0138),
+beside the engine's notices and apart from the member's statusline. Its first half maps the context
+fill to the org guide's slice-start zones; its second half, after a `harness_gates.py --tree` run,
+counts the files an Edit / Write / NotebookEdit changed under the root and the shell calls the
+engine did not mark read-only. It is observe-only like the ledger, writes no file, carries no command
+or file text, and shows only in a repo whose root holds `.harness.json`.
 
 ## Adversarial review (workflow)
 

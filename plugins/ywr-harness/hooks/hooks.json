@@ -1,5 +1,5 @@
 {
-  "modules": ["./delegation-ledger.mjs"],
+  "modules": ["./mods.mjs"],
   "hooks": {
     "ConfigChange": [
       {
