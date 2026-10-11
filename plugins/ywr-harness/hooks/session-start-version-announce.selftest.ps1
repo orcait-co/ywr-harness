@@ -759,6 +759,68 @@ try {
 $ok = (Assert-True 'R1 hooks.json registers this script once: SessionStart, no matcher, exec-form node <script>' `
         (-not $regFails.Count) ($regFails -join ' · ')) -and $ok
 
+# G1 — the eval grader that reads this hook's announcement (spec 0014 §4.2, fact 119). The runner
+# evaluates `pattern` as a JavaScript regex, so node evaluates it here too: .NET reads a variable
+# lookbehind differently. A with-arm answer names the version in either order, "Claude Code" earlier in
+# the sentence included; a no-plugin answer that names only a Claude Code version must never pass, or
+# the case's delta silently shrinks. Distance alone cannot tell them apart (slice 104 review): the
+# version-first branch blocks the direct "Claude Code [version] [v]N" form and a clause break or
+# negation between the version and the name.
+$graderFails = @()
+try {
+    $gRaw = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../evals/hook-version-announce-reaches-context/graders/names-plugin-version.md') -Raw
+    $gPat = if ($gRaw -match "(?m)^pattern:[ \t]*'(.*)'[ \t]*\r?$") { $Matches[1].Replace("''", "'") } else { '' }
+    $gFlags = if ($gRaw -match '(?m)^flags:[ \t]*(\S+)') { $Matches[1] } else { '' }
+    if (-not $gPat) { $graderFails += 'no single-quoted pattern line in the grader' }
+    else {
+        $table = @(
+            @('Version 0.67.1 of the ywr-harness plugin is active, and this is its first recorded run on this machine.', $true),
+            @('The ywr-harness plugin v0.67.1 is active, and this is its first recorded run.', $true),
+            @('ywr-harness 0.67.1 is active; this is its first recorded run.', $true),
+            @('v0.67.1 of ywr-harness is active, first recorded run.', $true),
+            @('In this Claude Code session, version 0.67.2 of the ywr-harness plugin is active, and this is its first recorded run.', $true),
+            @('Running under Claude Code, version 0.67.2 of the ywr-harness plugin is active — its first recorded run.', $true),
+            @('Claude Code reports version 0.67.2 of the ywr-harness plugin as active; first recorded run.', $true),
+            @('Version 0.67.2 (the ywr-harness plugin) is active, first recorded run.', $true),
+            @('0.67.2 is the active ywr-harness version, and this is its first recorded run.', $true),
+            @('I have no context about which version of the ywr-harness plugin is active or whether this is its first recorded run.', $false),
+            @('Claude Code 2.1.296 is running, but I have no ywr-harness context.', $false),
+            @('Claude Code version 2.1.296; no information on ywr-harness.', $false),
+            @('Claude Code v2.1.296 — nothing about ywr-harness or its first run.', $false),
+            @('The ywr-harness version is unknown; Claude Code is 2.1.296.', $false),
+            @("Claude Code's version is 2.1.296, but I see no ywr-harness plugin.", $false),
+            @("Claude Code's running version is 2.1.296, but I have no information on the ywr-harness plugin.", $false),
+            @('I am running in Claude Code, version 2.1.296; no ywr-harness info.', $false),
+            @('Claude Code 2.1.296 has no ywr-harness context.', $false),
+            @('Claude Code version 2.1.296 has no ywr-harness context.', $false),
+            @('Claude Code v2.1.296 has no ywr-harness context.', $false),
+            @("Claude Code's version is 2.1.296 and has no ywr-harness context.", $false),
+            @("Claude Code's version is 2.1.296 and I don’t see ywr-harness.", $false),
+            @('I see no ywr-harness context, only Claude Code 2.1.296.', $false),
+            @('Claude Code 2.1.296 runs without ywr-harness loaded.', $false),
+            @('Claude Code version v2.1.296 runs without ywr-harness.', $false),
+            @("Claude Code's version is 2.1.296, while ywr-harness is unknown.", $false)
+        )
+        # ASCII both ways (fact 92): the request escapes every non-ASCII character, and node answers
+        # with row numbers only, so neither the pipe's encoding nor the console code page can move a row.
+        $req = @{ pattern = $gPat; flags = $gFlags; cases = @($table | ForEach-Object { , @($_[0], $_[1]) }) } |
+            ConvertTo-Json -Depth 4 -Compress -EscapeHandling EscapeNonAscii
+        $js = 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const q=JSON.parse(s);const r=new RegExp(q.pattern,q.flags);' +
+              'q.cases.forEach(([t,w],i)=>{if(r.test(t)!==w)console.log(i)})})'
+        $res = @($req | & $nodeExe -e $js 2>&1)
+        if ($LASTEXITCODE -ne 0) { $graderFails += "node exit $LASTEXITCODE`: $($res -join ' ')" }
+        foreach ($line in @($res | Where-Object { "$_".Trim() })) {
+            $i = -1
+            if ([int]::TryParse("$line".Trim(), [ref]$i) -and $i -ge 0 -and $i -lt $table.Count) {
+                $graderFails += $(if ($table[$i][1]) { 'misses ' } else { 'matches ' }) + "row $($i + 1): $($table[$i][0])"
+            }
+            else { $graderFails += "node printed '$line'" }
+        }
+    }
+} catch { $graderFails += "grader unreadable: $($_.Exception.Message)" }
+$ok = (Assert-True 'G1 names-plugin-version grader: either order passes, a Claude Code version alone never does (26 rows)' `
+        (-not $graderFails.Count) ($graderFails -join ' · ')) -and $ok
+
 # META — proves this file's WIRING to the shared empty-MustNotMatch guard: a wrapper that
 # dropped the -MustNotMatch passthrough would leave the core intact and every case above unguarded.
 $script:HookExit = 0

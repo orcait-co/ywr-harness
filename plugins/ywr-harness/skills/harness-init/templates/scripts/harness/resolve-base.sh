@@ -3,7 +3,7 @@
 # range computation whose failure modes read as "nothing changed" (the 2026-08-10 audit's H1
 # trigger surface). Ported from ywr-platform scripts/ci/resolve-base.sh, logic unchanged;
 # vendored into consuming repos as scripts/harness/resolve-base.sh, with byte
-# identity to this copy enforced by manifest-gate.ps1 (ADR 0014).
+# identity to this copy enforced by manifest-gate.mjs (ADR 0014).
 # The CI step invokes it directly with everything env-mapped — never template-expand workflow
 # expressions into run: text (shell-injection surface):
 #   EVENT_NAME     github.event_name

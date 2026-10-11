@@ -2114,7 +2114,7 @@ def _run_check():
     부재는 지금처럼 ABSENT 로 건너뛴다(Finding 6).
 
     바이트 비교는, expected 에 CR 이 전혀 없을 때(빌더는 항상 LF 로 쓴다) 디스크 쪽의 CR을
-    쌍 여부와 무관하게 전부 제거하고 비교한다 — init.ps1/manifest-gate.ps1 이 인용하는
+    쌍 여부와 무관하게 전부 제거하고 비교한다 — init.ps1/manifest-gate.mjs 가 인용하는
     ADR 0033 규칙(모든 0x0D 를 그대로 버림)과 맞춘다(Finding 7; 이전에는 \\r\\n 쌍만 접었다).
 
     출력은 ASCII 전용(기본 빌드 출력은 한국어 그대로 유지) — 소비자 CI 로그의 인코딩 걱정을

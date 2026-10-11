@@ -174,7 +174,7 @@ $TOOLCHAIN = [ordered]@{
     # Vendored so CI needs no access to the canon repo. `${CLAUDE_PLUGIN_ROOT}` is substituted when
     # Claude Code spawns a hook and does not exist in a CI step, and the canon is private with
     # cross-repo Actions access closed — a reusable workflow would require widening that. Byte
-    # identity with the plugin's own copies is enforced by manifest-gate.ps1 (ADR 0014).
+    # identity with the plugin's own copies is enforced by manifest-gate.mjs (ADR 0014).
     'scripts/harness/harness_config.py'      = 'scripts/harness/harness_config.py'
     'scripts/harness/harness_gates.py'       = 'scripts/harness/harness_gates.py'
     'scripts/harness/harness_retro.py'       = 'scripts/harness/harness_retro.py'
@@ -195,7 +195,7 @@ $TOOLCHAIN = [ordered]@{
 # this path from the canon, so an existing foreign file there is exactly the ADR 0055 collision,
 # not a normal refresh (ADR 0074 extends ADR 0055 to a path's first appearance).
 #
-# NOT named `$TOOLCHAIN*` — manifest-gate.ps1's Get-PlacementMap regex-parses only `$TOOLCHAIN` and
+# NOT named `$TOOLCHAIN*` — manifest-gate.mjs's placement-map parser regex-parses only `$TOOLCHAIN` and
 # `$GUARDED` out of this file's text; a prefixed name risks a future accidental match there.
 #
 #   destination path (as it appears as a $TOOLCHAIN value) -> plugin version that FIRST shipped it.

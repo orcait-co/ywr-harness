@@ -57,7 +57,7 @@ $base = Invoke-Runner $runner @('-List')
 $baseList = Get-Listed $base
 $ok = (Assert-Case 'A -List: discovery listed, nothing ran' $base 0 `
     @('suites: discovered=\d+', '  - selftest\.selftest\.ps1', '  - manifest-gate\.selftest\.ps1', 'LIST ONLY') `
-    @('--- manifest-gate\.ps1', 'all gates green', 'shard=')) -and $ok
+    @('--- manifest-gate\.mjs', 'all gates green', 'shard=')) -and $ok
 $ok = (Assert-True 'A2 listed count equals the discovered count' ($base.Out -match "discovered=$($baseList.Count)\b" -and $baseList.Count -ge 2) `
     "listed=$($baseList.Count) out:`n$(Format-Nested $base.Out)") -and $ok
 # Ordinal order by plugin-relative path with `/` separators — what makes the deal identical on
@@ -113,7 +113,7 @@ $ok = (Assert-Case "E shard $n/$n selects nothing → exit 1" (Invoke-Runner $ru
 
 # --- F. empty discovery: a copy of the runner in a tree with no suites is exit 1 -------------
 # -List is the fast path here too: the refusal comes BEFORE the gates, so the fixture needs no
-# manifest-gate.ps1 — and if the order ever regressed (gates first), this case would print the
+# manifest-gate.mjs — and if the order ever regressed (gates first), this case would print the
 # missing-gate FAIL instead of the discovery one and fail on MustNotMatch.
 # The tree is NOT bare: it carries one suite under templates/, which is scaffold payload and must
 # be excluded (declared in the refusal's count) — so this case also proves the exclusion, and that
@@ -123,9 +123,31 @@ New-Item -ItemType Directory -Force (Join-Path $fxEmpty 'templates/scripts') | O
 Copy-Item -LiteralPath $runner -Destination (Join-Path $fxEmpty 'selftest.ps1')
 [IO.File]::WriteAllText((Join-Path $fxEmpty 'templates/scripts/payload.selftest.ps1'), "exit 0`n")
 $ok = (Assert-Case 'F zero discovered → exit 1 even under -List; a templates/ suite is excluded, counted, and rescues nothing' (Invoke-Runner (Join-Path $fxEmpty 'selftest.ps1') @('-List')) 1 `
-    @('FAIL — no \*\.selftest\.ps1 discovered', 'empty set is not a pass', 'template payload excluded: 1') @('LIST ONLY', 'manifest-gate\.ps1 missing', 'suites: discovered', 'payload\.selftest\.ps1')) -and $ok
+    @('FAIL — no \*\.selftest\.ps1 discovered', 'empty set is not a pass', 'template payload excluded: 1') @('LIST ONLY', 'manifest-gate\.mjs missing', 'suites: discovered', 'payload\.selftest\.ps1')) -and $ok
 # The live tree's count is 0 and says so — the exclusion is declared on every run, not only when it bites.
 $ok = (Assert-Case 'F2 the live listing declares template-excluded=0' $base 0 @('template-excluded=0\b') @('template-excluded=[1-9]')) -and $ok
+
+# --- F3. a missing node FAILS the manifest gate (ADR 0141) — never a SKIP, unlike the workflow corpus gate ---
+# A real run of a runner copy over one passing stub suite, with PATH narrowed to the runner's own pwsh
+# directory: no node resolves there. The suite still runs and passes, so the exit 1 and the failed list
+# can come only from the gate branch under test.
+$fxNoNode = Join-Path $fxBase 'no-node'
+New-Item -ItemType Directory -Force $fxNoNode | Out-Null
+Copy-Item -LiteralPath $runner -Destination (Join-Path $fxNoNode 'selftest.ps1')
+[IO.File]::WriteAllText((Join-Path $fxNoNode 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
+[IO.File]::WriteAllText((Join-Path $fxNoNode 'p-pass.selftest.ps1'), "Write-Host 'PASS [stub]'`nexit 0`n")
+$pathKeep = $env:PATH
+try {
+    $env:PATH = $PSHOME
+    if (Get-Command node -CommandType Application -ErrorAction SilentlyContinue) { $rNoNode = $null }
+    else { $rNoNode = Invoke-Runner (Join-Path $fxNoNode 'selftest.ps1') @('-Jobs', '1') }
+} finally { $env:PATH = $pathKeep }
+if ($null -eq $rNoNode) { Write-Host "SKIP [F3 no node] node resolves inside `$PSHOME ($PSHOME) — cannot hide it (reported, not silent)" -ForegroundColor Yellow }
+else {
+    $ok = (Assert-Case 'F3 node absent: the manifest gate FAILS, the run is exit 1, the suite still ran' $rNoNode 1 `
+        @('FAIL — node not on PATH, so manifest-gate\.mjs cannot run', 'manifest-gate\.mjs \(no node\)', 'passed=1 failed=0') `
+        @('PASS  stub manifest gate', 'all gates green', 'SKIP — node not on PATH; workflow corpus')) -and $ok
+}
 
 # --- G. concurrent run + condensed output (ADR 0088) — a runner copy over three stub suites ----
 # The tree: a stub manifest gate (the runner refuses a tree without one; no workflows/ dir, so the
@@ -168,7 +190,7 @@ $fxRun = Join-Path $fxBase 'run'
 New-Item -ItemType Directory -Force $fxRun | Out-Null
 $fxRunner = Join-Path $fxRun 'selftest.ps1'
 Copy-Item -LiteralPath $runner -Destination $fxRunner
-[IO.File]::WriteAllText((Join-Path $fxRun 'manifest-gate.ps1'), "Write-Host 'PASS  stub manifest gate'`nexit 0`n")
+[IO.File]::WriteAllText((Join-Path $fxRun 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
 # Each stub pins UTF-8 as the real suites do (lib/selftest-lib.ps1) and builds its Korean from
 # code points, so what is under test is the runner's capture, not the stub's source decoding.
 [IO.File]::WriteAllText((Join-Path $fxRun 'a-slow.selftest.ps1'), @'
@@ -294,7 +316,7 @@ $fxHang = Join-Path $fxBase 'hang'
 New-Item -ItemType Directory -Force $fxHang | Out-Null
 $hangRunner = Join-Path $fxHang 'selftest.ps1'
 Copy-Item -LiteralPath $runner -Destination $hangRunner
-[IO.File]::WriteAllText((Join-Path $fxHang 'manifest-gate.ps1'), "Write-Host 'PASS  stub manifest gate'`nexit 0`n")
+[IO.File]::WriteAllText((Join-Path $fxHang 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
 [IO.File]::WriteAllText((Join-Path $fxHang 'h-hang.selftest.ps1'), @'
 if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'hold')) { Start-Sleep -Seconds 300 }
 $kid = Start-Process -FilePath ([Environment]::ProcessPath) -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 300' -NoNewWindow -PassThru
@@ -352,7 +374,7 @@ foreach ($bad in '0', '-3', '86401') {
         @('FAIL — -SuiteTimeout must be a whole number of seconds from 1 to 86400', [regex]::Escape("(got $bad)")) @('LIST ONLY', 'suites: discovered')) -and $ok
 }
 $ok = (Assert-Case 'G6b -List -Jobs 2 -Shard 1/2 lists and runs nothing' (Invoke-Runner $runner @('-List', '-Jobs', '2', '-Shard', '1/2')) 0 `
-    @('LIST ONLY', 'shard=1/2 selected=\d+') @('--- manifest-gate\.ps1', '--- suites:', 'all gates green')) -and $ok
+    @('LIST ONLY', 'shard=1/2 selected=\d+') @('--- manifest-gate\.mjs', '--- suites:', 'all gates green')) -and $ok
 
 # G7 — a failing case's echoed transcript never reaches column 0 (review 2026-09-23): a fake runner
 # transcript carrying a summary and a green line is failed through Assert-Case, and what it PRINTED

@@ -27,7 +27,7 @@ Plugin components resolve as `ywr-harness:<name>`. A bare name does not resolve:
 Workflow({name: 'ywr-harness:adversarial-review', args: {...}})
 ```
 
-This is enforced — `manifest-gate.ps1` fails on a shipped instruction that names a component
+This is enforced — `manifest-gate.mjs` fails on a shipped instruction that names a component
 bare, in either the `Workflow({name: ...})` or the backticked-slash form. The gate exists because
 a live session found exactly that defect in shipped text while every selftest passed: the suite
 calls the scripts directly and never goes through the host's component registry.
@@ -43,7 +43,7 @@ calls the scripts directly and never goes through the host's component registry.
 | `session-start-model-route-guard.mjs` | `SessionStart` (matcher `startup\|resume\|fork`) | Warn-only (ADR 0107, ADR 0130, ADR 0132). Speaks exactly when a setting can move a model alias to an older model, or a `CLAUDE_CODE_EFFORT_LEVEL` overrides every worker effort pin: an `ANTHROPIC_DEFAULT_*_MODEL`, a `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (any value; the second moves every workflow agent, the model of each `agent()` call included), a full id in `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_MODEL` / a settings `model`, a non-empty `modelOverrides`, or a `CLAUDE_CODE_USE_*` cloud provider; or a non-empty `CLAUDE_CODE_EFFORT_LEVEL`, which beats an agent's frontmatter `effort`, a per-call Agent `effort` (both per the docs) and a Workflow `agent()` `effort` (measured on 2.1.295) — read from the environment and the user, project and local settings files. One Korean line naming each setting and where it is set; never model context, never a change. Silent otherwise. `node session-start-model-route-guard.mjs --preflight` is the environment-only half the eval runner uses to refuse a paid run (one line per finding, exit 1; `preflight: clear`, exit 0); it never reads the effort variable, which the runner's wrapper sets itself. |
 | `session-start-node-check.ps1` | `SessionStart` (matcher `startup\|resume\|fork`) | Suggest-only. Speaks exactly when no `node` is found on `PATH` — the state in which the eight Node hooks cannot start and the host shows a hook error at session start, on a config change or added directory, on every Agent call and on every subagent stop, which reads like a defect in your repo. It names that cause, the fix (install Node.js LTS and restart Claude Code; `winget` / `brew` / the distro package), and the installed-but-invisible case (nvm, or Claude Code launched from a GUI/Dock that did not inherit the shell's `PATH`). Probes `PATH` entries by file, as the host launches an exec-form `node`: on Windows only `node.exe` counts (a `node.cmd`/`.bat`/`.ps1` shim cannot be launched and is named in the notice); elsewhere an executable `node` file (a non-executable one is named). Found: byte-silent. Stays PowerShell — it detects node's absence — and calls no cmdlet. Never blocks. |
 | `session-start-scaffold-refresh-nudge.mjs` | `SessionStart` | Suggest-only (ADR 0033). Speaks exactly when the work tree carries a ywr-harness scaffold whose TOOLCHAIN placements differ from the installed plugin's templates — the stale-vendor state ADR 0014 recorded as undetected. Byte comparison, EOL-insensitive (the seed `.gitattributes` makes CRLF/LF checkout variance legitimate); the placement map is read from `init.ps1`'s own literals by a small lexer (anything it cannot read as a bare string constant or a literal table is EXTRACTION DRIFT), so no second copy exists to drift. Comparison is exact apart from line endings — letter case, a BOM, U+00AD and NUL all count. Names the count, the files (capped list, cap stated), and the remedy; writes nothing. Seeds are never compared; a marker-less `post-commit` is skipped exactly as the scaffold refuses it. The advice is DIRECTION-AWARE (ADR 0042) via the repo's `.harness-version` stamp (written by `harness-init` on every successful run): repo ahead of this install → update the plugin, `harness-init` forbidden; repo behind → refresh, direction stated as measured; same version → hand-edit named; no readable stamp → the direction-blind caveat on the human banner AND the model context (a canon working tree mid-slice, or a multi-writer repo refreshed by a newer plugin, is *newer* than the installed copy and a re-run would revert it). When the running copy is itself a superseded cache install (a session that outlived a plugin update — ADR 0039), the advice flips: same file list, but the basis is named STALE, `/reload-plugins` (or a restart) is instructed, and `harness-init` is forbidden from that session — the loaded skill would place the old templates. The registry probe is best-effort; any failure returns the normal nudge. |
-| `session-start-version-announce.mjs` | `SessionStart` | Announce-once-per-version (ADR 0030). At the first session that loads a new plugin version it says so once — old → new, up to three bullets from `CHANGELOG.md` (the member release-notes canon, Korean), and the onboarding artifact's release-notes tab — then records the version in `~/.claude/ywr-harness/announced-version`, the plugin's only user-scope write. A machine's very first run gets a one-time link-only welcome instead (ADR 0031) — "업데이트됨" is claimed only when a previous version was recorded. Steady state and downgrades are silent; `manifest-gate.ps1` refuses a release whose top CHANGELOG entry does not match `plugin.json`. |
+| `session-start-version-announce.mjs` | `SessionStart` | Announce-once-per-version (ADR 0030). At the first session that loads a new plugin version it says so once — old → new, up to three bullets from `CHANGELOG.md` (the member release-notes canon, Korean), and the onboarding artifact's release-notes tab — then records the version in `~/.claude/ywr-harness/announced-version`, the plugin's only user-scope write. A machine's very first run gets a one-time link-only welcome instead (ADR 0031) — "업데이트됨" is claimed only when a previous version was recorded. Steady state and downgrades are silent; `manifest-gate.mjs` refuses a release whose top CHANGELOG entry does not match `plugin.json`. |
 | `subagent-telemetry.mjs` | `SubagentStop` | Appends a per-agent JSONL ledger to `<project>/.claude/telemetry/` — documented SubagentStop fields only (no model: the event carries none). Fail-open. |
 
 ### Hooks modules (Claude Mods)
@@ -263,7 +263,8 @@ the results come back in discovery order: a failed suite in full, a passing suit
 plus any `SKIP` lines. `-Full` prints every suite's whole output. To iterate on one component,
 run its own `*.selftest.ps1` directly.
 
-`manifest-gate.ps1` is deterministic and CLI-free. It fails on the defects with distribution
+`manifest-gate.mjs` is deterministic and CLI-free; it is Node with built-ins only (ADR 0141), and the
+runner fails it when `node` is not on PATH. It fails on the defects with distribution
 blast radius: `version` missing (omitted `version` falls back to the git commit SHA, so every
 commit ships as a new version to every consumer), a hook path that does not resolve, a
 regression from exec form to shell form where a path placeholder is used, and a release-notes
@@ -283,7 +284,7 @@ fresh, isolated `claude -p` child with ONLY this plugin loaded and grades what c
 SessionStart hook's `additionalContext` reaching the model, `ywr-harness:verify` triggering on
 natural phrasing, the five `disable-model-invocation` skills staying uninvoked, and
 `ywr-harness:reviewer` resolving by its namespaced name with a `SubagentStop` ledger line behind
-it. Every case pins `model:` to one worker model alias (`opus`, ADR 0103/0107), and `manifest-gate.ps1`
+it. Every case pins `model:` to one worker model alias (`opus`, ADR 0103/0107), and `manifest-gate.mjs`
 refuses a case that does not (or that carries an unknown frontmatter key or grader type — refusals the
 runner would otherwise deliver only after the paid run). The runner forwards most `ANTHROPIC_*` and
 `CLAUDE_CODE_*` variables, so an `ANTHROPIC_DEFAULT_*_MODEL`, a `CLAUDE_CODE_SUBAGENT_MODEL`, a `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`, a full-id
@@ -331,7 +332,7 @@ consuming repo's gates run on Linux, and the same `.ps1` serves both.
 A consuming repo's CI cannot reach these scripts through the plugin — `${CLAUDE_PLUGIN_ROOT}`
 is substituted when Claude Code spawns a hook, not in an arbitrary CI step. So the scaffold
 **vendors** them instead (ADR 0014): `/ywr-harness:harness-init` copies `scripts/harness/*.py`
-and `.github/workflows/harness-gates.yml` into the consumer, and `manifest-gate.ps1` enforces
+and `.github/workflows/harness-gates.yml` into the consumer, and `manifest-gate.mjs` enforces
 byte identity between the two copies so a fix here cannot silently fail to reach them. A
 reusable workflow (`on: workflow_call`) was rejected — it needs cross-repo Actions access
 widened from `none` to `organization`, which opens every workflow in this repo to the whole org.

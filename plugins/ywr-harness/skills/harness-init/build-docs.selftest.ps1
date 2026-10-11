@@ -747,7 +747,7 @@ $ok = (Assert-True 'CK4 a CRLF checkout of a generated surface is tolerated (not
 [IO.File]::WriteAllText($indexMdCK, $indexMdText)
 
 # CK4b: a LONE 0x0D (appended at end of file, so it is not followed by 0x0A) must also fold —
-# init.ps1/manifest-gate.ps1's ADR 0033 rule drops EVERY 0x0D verbatim, paired or not, and the
+# init.ps1/manifest-gate.mjs's ADR 0033 rule drops EVERY 0x0D verbatim, paired or not, and the
 # check must match that rule rather than a narrower CRLF-pair-only fold (Finding 7). Mutation
 # anchor: a pair-only fold (`.replace(b"\r\n", b"\n")`) leaves this trailing byte in place and
 # flips the case to DRIFT.

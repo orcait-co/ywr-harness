@@ -16,7 +16,7 @@ by `/ywr-harness:harness-init` (ADR 0054).
    dependency manifest: a harness that needs an install step will not run in CI it did not
    configure. A non-stdlib import or a new install step is a finding.
 2. **Namespaced names** — every plugin component is referenced as `ywr-harness:<name>`; a bare
-   name does not resolve, and `manifest-gate.ps1` fails the build on one in shipped text.
+   name does not resolve, and `manifest-gate.mjs` fails the build on one in shipped text.
 3. **Declarations, never command strings** — repo-specific values live in `.harness.json`; every
    command-shaped field is a selector from a closed set (ADR 0012), and a repo's own gate is a
    closed-set runner plus an allowlist-validated path (ADR 0024). A repo-supplied value that
@@ -38,7 +38,7 @@ by `/ywr-harness:harness-init` (ADR 0054).
    `--no-verify`. NEVER quote a scanner's trigger string in comments, handoffs or commit messages —
    the quotation becomes the next finding on an immutable pushed blob; describe it in prose.
 7. **Vendored copies stay identical and pinned** — the plugin's copies and the scaffold templates
-   are byte-identical (`manifest-gate.ps1`, ADR 0014), and every `uses:` in the shipped template
+   are byte-identical (`manifest-gate.mjs`, ADR 0014), and every `uses:` in the shipped template
    and the canon's workflows is a 40-hex SHA plus `# vX.Y.Z` (ADR 0087).
 8. **The shipped tree never moves under a released version** — the first commit touching
    `plugins/ywr-harness/` after a tag bumps `plugin.json` + `.claude-plugin/marketplace.json` and
@@ -100,7 +100,7 @@ by `/ywr-harness:harness-init` (ADR 0054).
 
 For every confirmed finding, judge: is this one instance of a defect CLASS? If yes, name the
 deterministic owner that would retire the class forever — a selftest assertion, a
-`manifest-gate.ps1` or emitter check, a CI step — and record it as an ADR-candidate entry in
+`manifest-gate.mjs` or emitter check, a CI step — and record it as an ADR-candidate entry in
 `docs/handoff-archive/BACKLOG.md`, in the section matching the surface, appended at the END of
 that section (the ledger's own header states the append rule; path owned by ADR 0040). The
 handoff's §Next actions carries only items whose trigger has fired. Fixing only the instance is an

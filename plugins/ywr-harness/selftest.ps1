@@ -153,15 +153,19 @@ if ($List) {
 }
 
 # --- manifest + wiring gate ----------------------------------------------------------------
-$gate = Join-Path $PSScriptRoot 'manifest-gate.ps1'
-if (Test-Path -LiteralPath $gate) {
-    Write-Host '--- manifest-gate.ps1' -ForegroundColor Cyan
-    # The runner's own pwsh, as for every suite child below — never a different one off PATH.
-    & ([Environment]::ProcessPath) -NoProfile -ExecutionPolicy Bypass -File $gate
-    if ($LASTEXITCODE -ne 0) { $failed += 'manifest-gate.ps1' }
+# Node since ADR 0141. A missing `node` FAILS here, as a missing gate file does: the wiring gate is
+# not optional, so it never becomes the workflow corpus gate's reported SKIP below.
+$gate = Join-Path $PSScriptRoot 'manifest-gate.mjs'
+if (-not (Test-Path -LiteralPath $gate)) {
+    Write-Host 'FAIL — manifest-gate.mjs missing (the wiring gate is not optional)' -ForegroundColor Red
+    $failed += 'manifest-gate.mjs (missing)'
+} elseif (-not (Get-Command node -CommandType Application -ErrorAction SilentlyContinue)) {
+    Write-Host 'FAIL — node not on PATH, so manifest-gate.mjs cannot run (the wiring gate is not optional; ADR 0141)' -ForegroundColor Red
+    $failed += 'manifest-gate.mjs (no node)'
 } else {
-    Write-Host 'FAIL — manifest-gate.ps1 missing (the wiring gate is not optional)' -ForegroundColor Red
-    $failed += 'manifest-gate.ps1 (missing)'
+    Write-Host '--- manifest-gate.mjs' -ForegroundColor Cyan
+    & node $gate
+    if ($LASTEXITCODE -ne 0) { $failed += 'manifest-gate.mjs' }
 }
 
 # --- workflow corpus gate (JS side) --------------------------------------------------------
@@ -171,7 +175,7 @@ if (Test-Path -LiteralPath $gate) {
 $wfGate = Join-Path $PSScriptRoot 'scripts/workflow-gates.mjs'
 $wfDir = Join-Path $PSScriptRoot 'workflows'
 if ((Test-Path -LiteralPath $wfGate) -and (Test-Path -LiteralPath $wfDir)) {
-    if (Get-Command node -ErrorAction SilentlyContinue) {
+    if (Get-Command node -CommandType Application -ErrorAction SilentlyContinue) {
         Write-Host '--- workflow-gates.mjs (corpus: workflows/)' -ForegroundColor Cyan
         & node $wfGate --root $PSScriptRoot --dir 'workflows'
         if ($LASTEXITCODE -ne 0) { $failed += 'workflow-gates.mjs' }

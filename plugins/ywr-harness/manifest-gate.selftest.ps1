@@ -1,4 +1,4 @@
-# Negative test for manifest-gate.ps1 — every mutation MUST make the gate exit 1.
+# Negative test for manifest-gate.mjs — every mutation MUST make the gate exit 1.
 #
 # Why this exists: a gate that has only ever been observed passing is not known to work. The
 # gate's own comments name the failure class it guards against (green selftests over a payload
@@ -11,14 +11,17 @@
 $ErrorActionPreference = 'Stop'
 # The lib pins [Console]::OutputEncoding (UTF-8, no BOM) and sets StrictMode off; this
 # file set the BOM-bearing UTF8 itself before it dot-sourced the lib — one owner now.
-. (Join-Path $PSScriptRoot 'lib/selftest-lib.ps1')   # Invoke-ScriptInRunspace (ADR 0071 option E)
+. (Join-Path $PSScriptRoot 'lib/selftest-lib.ps1')
+# The gate is Node since ADR 0141: a missing `node` is a reported SKIP locally and a FAIL on CI (ADR 0116 Decision 3).
+Assert-NodeOrExit 'manifest-gate.selftest'
+$nodeExe = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
 $src = $PSScriptRoot
 $base = Join-Path ([IO.Path]::GetTempPath()) ("ywrh-gate-neg-" + [guid]::NewGuid().ToString('N'))
 $results = @()
 # The git worker binary ahead of the cmd\git.exe launcher (lib Use-GitWorkerBinary, ADR 0111): the
-# canon-shape cases run the gate's release-lockstep git calls in-process, and the runspaces inherit
-# this PATH. Left in place — under `pwsh -File` the process ends with it.
+# fixtures' own git calls run here, and each gate child inherits this PATH, so the gate's lockstep and
+# ADR-reference calls resolve the worker too. Left in place — under `pwsh -File` the process ends with it.
 $null = Use-GitWorkerBinary
 
 # Teardown is exception-safe and refuses anything outside the temp root.
@@ -29,16 +32,35 @@ trap {
     break
 }
 
-# In-process invocation (ADR 0071 option E, second suite, 2026-09-02): each gate copy runs in a NEW
-# RUNSPACE of this pwsh through the lib's Invoke-ScriptInRunspace — one gate run 1.63 s as a child,
-# ~0.85 s here (the difference is pwsh cold start, paid 29 times in this suite before the contract cases). This suite is a
-# NEGATIVE suite — its PASS is "the gate exited 1" — so the runner's abort shape matters more here
-# than anywhere: a gate that could not run, or threw, comes back -1/Aborted, which no `exit`
-# produces and no case accepts. The gate also keeps a child's preferences (this file's 'Stop' does
-# not leak in) so a non-terminating error mid-scan still lets it finish and fail for the RIGHT
-# reason. The contracts are pinned as cases at the end.
+# One `node` child per gate run (ADR 0141 Decision 3): ~0.06 s to start where the pwsh gate's runspace
+# cost ~0.41 s per case. This suite is a NEGATIVE suite — its PASS is "the gate exited 1" — so the abort
+# shape matters more here than anywhere: Node itself exits 1 on an uncaught exception, a failed import
+# and a syntax error, the very code a caught mutation gives. A gate run therefore counts only when it
+# ends in the gate's own summary line for its code (`manifest-gate: FAILED (N)` for 1, `manifest-gate:
+# all checks passed` for 0); any other ending, any other code (the gate's own catch exits 2) and a
+# missing gate file come back -1/Aborted, which no case accepts. Both pipes are read as UTF-8, whatever
+# the console's code page. The contracts are pinned as cases at the end.
 function Invoke-Gate([string]$GatePath) {
-    return Invoke-ScriptInRunspace -Path $GatePath
+    if (-not (Test-Path -LiteralPath $GatePath -PathType Leaf)) { return @{ Out = "script not found: $GatePath"; Code = -1; Aborted = $true } }
+    $psi = [Diagnostics.ProcessStartInfo]::new($nodeExe)
+    $psi.ArgumentList.Add($GatePath)
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $psi.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+    $p = [Diagnostics.Process]::Start($psi)
+    $so = $p.StandardOutput.ReadToEndAsync()
+    $se = $p.StandardError.ReadToEndAsync()
+    $p.WaitForExit()
+    $code = $p.ExitCode
+    $p.Dispose()
+    $out = $so.Result + $se.Result
+    $last = @($so.Result -split "`r?`n" | Where-Object { $_ })[-1]
+    $summed = (($code -eq 1) -and ($last -match '^manifest-gate: FAILED \(\d+\)$')) -or (($code -eq 0) -and ($last -eq 'manifest-gate: all checks passed'))
+    if (-not $summed) { return @{ Out = "exit $code without the gate's summary line`n$out"; Code = -1; Aborted = $true } }
+    return @{ Out = $out; Code = $code; Aborted = $false }
 }
 
 # --- copy once, reset per case (handoff O31) -----------------------------------------------------
@@ -117,14 +139,38 @@ function Reset-Fixture($fx) {
     $fx.sig = Get-TreeSig $fx.work
     return $fx.work
 }
-$pluginFx = New-Fixture 'plugin' { param($p) Copy-Item -LiteralPath $src -Destination $p -Recurse -Force }
+# The plugin tree a fixture copies is the WORK TREE MINUS ITS GITIGNORED FILES: `git ls-files --cached
+# --others --exclude-standard`, so an unadded new file is in and the owner's eval results, the mod
+# build's types, __pycache__ and tsconfig.json are out — half the tree's bytes, never shipped, and
+# copied and SHA-256-hashed into every fixture family before (O80, measured 2026-10-11: suite 110 →
+# 74 s, all mutations still caught). CI's checkout has none of them, so the fixture now matches the
+# tree CI gates. Outside a git work tree (the Linux parity image mounts the plugin alone) or on any
+# git failure it falls back to the whole-directory copy. A tracked file deleted in the work tree is
+# skipped. $To must not exist yet, as with the Copy-Item it replaces.
+function Copy-PluginTree([string]$From, [string]$To) {
+    $list = @()
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $raw = (& git -C $From -c core.quotepath=false ls-files -z --cached --others --exclude-standard 2>$null) -join "`n"
+        if ($LASTEXITCODE -eq 0) { $list = @($raw -split "`0" | Where-Object { $_ }) }
+    }
+    if (-not $list.Count) { Copy-Item -LiteralPath $From -Destination $To -Recurse -Force; return }
+    foreach ($rel in $list) {
+        $srcFile = Join-Path $From $rel
+        if (-not [IO.File]::Exists($srcFile)) { continue }
+        $dst = Join-Path $To $rel
+        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($dst))
+        [IO.File]::Copy($srcFile, $dst, $true)
+        if (-not $IsWindows) { [IO.File]::SetUnixFileMode($dst, [IO.File]::GetUnixFileMode($srcFile)) }
+    }
+}
+$pluginFx = New-Fixture 'plugin' { param($p) Copy-PluginTree $src $p }
 
 # -Expect: the case's own Bad line must be in the output, so an exit 1 from some OTHER check the
 # mutation happens to trip cannot stand in for the check under test (review 2026-10-02, C9).
 function Try-Case([string]$tag, [scriptblock]$mutate, [string]$Expect = '') {
     $dir = Reset-Fixture $pluginFx
     & $mutate $dir
-    $g = Invoke-Gate (Join-Path $dir 'manifest-gate.ps1')
+    $g = Invoke-Gate (Join-Path $dir 'manifest-gate.mjs')
     $rc = $g.Code
     if ($rc -eq 1 -and $Expect -and $g.Out -notmatch $Expect) {
         Write-Host "FAIL [$tag] gate exited 1 but not on the check under test (no line matching '$Expect')" -ForegroundColor Red
@@ -280,7 +326,7 @@ $e1 = if ($e0 -ge 0) { [Array]::IndexOf($b, [byte]10, $e0 + 1) } else { -1 }
 if ($e1 -lt 0 -or [Linq.Enumerable]::SequenceEqual([byte[]]$b[0..$e0], [byte[]]$b[($e0 + 1)..$e1])) { throw 'vendored-copy-reordered: harness_config.py has no two distinct leading lines to swap' }
 $tail = if ($e1 + 1 -lt $b.Length) { $b[($e1 + 1)..($b.Length - 1)] } else { @() }
 [IO.File]::WriteAllBytes($p, [byte[]]($b[($e0 + 1)..$e1] + $b[0..$e0] + $tail))
-$g = Invoke-Gate (Join-Path $dir 'manifest-gate.ps1')
+$g = Invoke-Gate (Join-Path $dir 'manifest-gate.mjs')
 $caught = ($g.Code -eq 1) -and ($g.Out -match 'vendored copy DIVERGED: harness_config\.py')
 if ($caught) { Write-Host 'PASS [vendored-copy-reordered] gate exited 1 and named harness_config.py DIVERGED' -ForegroundColor Green }
 else { Write-Host "FAIL [vendored-copy-reordered] exit=$($g.Code) aborted=$($g.Aborted) diverged-named=$([bool]($g.Out -match 'vendored copy DIVERGED: harness_config\.py'))" -ForegroundColor Red }
@@ -349,7 +395,7 @@ Try-Case 'hangul-glued-variable' {
 # skipped comparison must say NOT CHECKED.
 $dir = Reset-Fixture $pluginFx
 '{ this is not json' | Set-Content -LiteralPath (Join-Path $dir '.claude-plugin/plugin.json') -NoNewline
-$g = Invoke-Gate (Join-Path $dir 'manifest-gate.ps1')
+$g = Invoke-Gate (Join-Path $dir 'manifest-gate.mjs')
 $out = $g.Out
 $rc = $g.Code
 $honest = ($rc -eq 1) -and ($out -notmatch '\(matches plugin\.json\)') -and ($out -match 'NOT CHECKED')
@@ -369,7 +415,7 @@ $canonFx = New-Fixture 'canon' {
     param($repo)
     New-Item -ItemType Directory -Force -Path (Join-Path $repo 'plugins') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $repo '.claude-plugin') | Out-Null
-    Copy-Item -LiteralPath $src -Destination (Join-Path $repo 'plugins/ywr-harness') -Recurse -Force
+    Copy-PluginTree $src (Join-Path $repo 'plugins/ywr-harness')
     Set-Content -LiteralPath (Join-Path $repo '.harness.json') -Value '{}' -NoNewline
     Set-Content -LiteralPath (Join-Path $repo '.claude-plugin/marketplace.json') -Value '{}' -NoNewline
 }
@@ -377,7 +423,7 @@ function New-CanonShape([string]$tag) {
     return Reset-Fixture $canonFx
 }
 function Run-GateAt([string]$repo) {
-    $g = Invoke-Gate (Join-Path $repo 'plugins/ywr-harness/manifest-gate.ps1')
+    $g = Invoke-Gate (Join-Path $repo 'plugins/ywr-harness/manifest-gate.mjs')
     return @{ out = $g.Out; rc = $g.Code }
 }
 function Record([string]$tag, [bool]$asRequired, [string]$detail) {
@@ -461,9 +507,9 @@ Record 'placement-map-guarded-emptied' ($g.rc -eq 1 -and $g.out -match 'an empty
 # fail on version skew, not drift, so the shape must skip and say so (review 2026-08-07, low).
 $r = Join-Path $base 'placement-skip-vendored-consumer/repo'
 New-Item -ItemType Directory -Force -Path (Join-Path $r 'plugins') | Out-Null
-Copy-Item -LiteralPath $src -Destination (Join-Path $r 'plugins/ywr-harness') -Recurse -Force
+Copy-PluginTree $src (Join-Path $r 'plugins/ywr-harness')
 Set-Content -LiteralPath (Join-Path $r '.harness.json') -Value '{}' -NoNewline
-$g = Invoke-Gate (Join-Path $r 'plugins/ywr-harness/manifest-gate.ps1')
+$g = Invoke-Gate (Join-Path $r 'plugins/ywr-harness/manifest-gate.mjs')
 $out = $g.Out
 Record 'placement-skip-vendored-consumer' ($g.Code -eq 0 -and $out -match 'dogfood placements: skipped' -and $out -match 'release lockstep: skipped — not the canon dogfood shape') "exit=$($g.Code) skip-said=$([bool]($out -match 'dogfood placements: skipped')) lockstep-skip-said=$([bool]($out -match 'release lockstep: skipped'))"
 
@@ -471,10 +517,43 @@ Record 'placement-skip-vendored-consumer' ($g.Code -eq 0 -and $out -match 'dogfo
 # scaffolded repo: the sweep must say it skipped, not pass silently and not fail.
 $r = Join-Path $base 'placement-skip-cache-shape/plugins'
 New-Item -ItemType Directory -Force -Path $r | Out-Null
-Copy-Item -LiteralPath $src -Destination (Join-Path $r 'ywr-harness') -Recurse -Force
-$g = Invoke-Gate (Join-Path $r 'ywr-harness/manifest-gate.ps1')
+Copy-PluginTree $src (Join-Path $r 'ywr-harness')
+$g = Invoke-Gate (Join-Path $r 'ywr-harness/manifest-gate.mjs')
 $out = $g.Out
 Record 'placement-skip-cache-shape' ($g.Code -eq 0 -and $out -match 'dogfood placements: skipped' -and $out -match 'release lockstep: skipped — not the canon dogfood shape') "exit=$($g.Code) skip-said=$([bool]($out -match 'dogfood placements: skipped')) lockstep-skip-said=$([bool]($out -match 'release lockstep: skipped'))"
+
+# Copy-PluginTree's two branches (O80 review): every fixture above takes the git-listed branch from
+# this checkout, so the whole-directory fallback — the Linux parity image's path — needs its own case.
+# A GIT_DIR that does not exist makes `ls-files` fail wherever the temp root sits. The fallback must
+# carry every file (an ignored-looking one included) and an empty directory, un-nested under $To.
+$fbSrc = Join-Path $base 'copy-fallback-src'
+foreach ($f in 'a.txt', 'sub/b.txt', 'evals/results/r.json') {
+    $fp = Join-Path $fbSrc $f
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fp) | Out-Null
+    [IO.File]::WriteAllText($fp, $f)
+}
+New-Item -ItemType Directory -Force -Path (Join-Path $fbSrc 'empty') | Out-Null
+$fbDst = Join-Path $base 'copy-fallback-dst'
+$prevGitDir = $env:GIT_DIR
+try { $env:GIT_DIR = Join-Path $base 'no-such-git-dir'; Copy-PluginTree $fbSrc $fbDst }
+finally { $env:GIT_DIR = $prevGitDir }
+$fbMissing = @(@('a.txt', 'sub/b.txt', 'evals/results/r.json') | Where-Object { -not [IO.File]::Exists((Join-Path $fbDst $_)) }) +
+             @(@('empty') | Where-Object { -not [IO.Directory]::Exists((Join-Path $fbDst $_)) })
+$fbNested = [IO.Directory]::Exists((Join-Path $fbDst 'copy-fallback-src'))
+Record 'fixture-copy-fallback-whole-dir' (-not $fbMissing.Count -and -not $fbNested) "missing=$($fbMissing -join ',') nested=$fbNested"
+# The git-listed branch: a path this checkout ignores must be absent from the plugin fixture. A clean
+# checkout (CI) ignores nothing, which leaves nothing to assert, and the line says so.
+$ignored = @()
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $raw = (& git -C $src -c core.quotepath=false ls-files -z --others --ignored --exclude-standard 2>$null) -join "`n"
+    if ($LASTEXITCODE -eq 0) { $ignored = @($raw -split "`0" | Where-Object { $_ }) }
+}
+if ($ignored.Count) {
+    $leaked = @($ignored | Where-Object { [IO.File]::Exists((Join-Path $pluginFx.pristine $_)) })
+    Record 'fixture-copy-git-skips-ignored' (-not $leaked.Count) "ignored=$($ignored.Count) leaked=$($leaked.Count)$(if ($leaked.Count) { ' first=' + $leaked[0] })"
+} else {
+    Record 'fixture-copy-git-skips-ignored' $true 'no gitignored file in this checkout — nothing to assert (reported, not silent)'
+}
 
 # --- release lockstep (ADR 0073) ----------------------------------------------------------------
 # Canon-shape fixtures that ARE git repos — the check needs a tag to compare against. ONE such repo is
@@ -604,20 +683,19 @@ if (-not $gitHere) {
     Record 'lockstep-version-suffix-not-checked' ($g.rc -eq 1 -and $g.out -match "release lockstep: plugin.json version '9\.9\.9 rc' is not a plain major\.minor\.patch.*NOT CHECKED" -and $g.out -notmatch 'no local tag') "exit=$($g.rc) not-checked-said=$([bool]($g.out -match 'not a plain major'))"
 
     # The NON-ASCII tracked name of the base (ADR 0102 re-ask, review F6): the -z list and the per-file re-ask
-    # must see the name as itself. The console encoding is forced to Latin-1 around the gate run
-    # (the in-process gate inherits this suite's UTF-8 pin, which would hide a missing pin): a
-    # misdecoded name matches no path, --quiet exits 0, and the moved file would read identical.
+    # must see the name as itself — a misdecoded name matches no path, --quiet exits 0, and the moved
+    # file would read identical. The gate decodes git's bytes once as UTF-8 (hook-lib gitRun), so no
+    # console code page reaches it; this case pins the decode and the literal pathspec.
     $r = New-LockstepRepo 'lockstep-non-ascii-moved'
     [IO.File]::WriteAllBytes((Join-Path $r "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody + "moved after the tag`n"))
-    $encKeep = [Console]::OutputEncoding
-    try { [Console]::OutputEncoding = [Text.Encoding]::Latin1; $g = Run-GateAt $r } finally { [Console]::OutputEncoding = $encKeep }
+    $g = Run-GateAt $r
     Record 'lockstep-non-ascii-moved' ($g.rc -eq 1 -and $g.out -match "release lockstep BROKEN: 1 file\(s\).*plugins/ywr-harness/$([regex]::Escape($koName))") "exit=$($g.rc) broken-named=$([bool]($g.out -match 'lockstep BROKEN')) identical-said=$([bool]($g.out -match 'identical to tag'))"
 
     # The same name with a CR-only change is identical (git 2.34 lists it in --name-only; the
     # re-ask must drop it — the non-ASCII pathspec has to reach git intact for that).
     $r = New-LockstepRepo 'lockstep-non-ascii-cr-only'
     [IO.File]::WriteAllBytes((Join-Path $r "plugins/ywr-harness/$koName"), [Text.Encoding]::ASCII.GetBytes($koBody.Replace("`n", "`r`n")))
-    try { [Console]::OutputEncoding = [Text.Encoding]::Latin1; $g = Run-GateAt $r } finally { [Console]::OutputEncoding = $encKeep }
+    $g = Run-GateAt $r
     Record 'lockstep-non-ascii-cr-only' ($g.rc -eq 0 -and $g.out -match 'release lockstep: plugins/ywr-harness identical to tag ywr-harness--v9\.9\.9') "exit=$($g.rc) identical-said=$([bool]($g.out -match 'identical to tag')) broken-said=$([bool]($g.out -match 'lockstep BROKEN'))"
 }
 
@@ -670,7 +748,8 @@ if (-not $gitHere -or -not $realAdrDir -or -not (Test-Path -LiteralPath $realAdr
     $adrFx = New-Fixture 'adr-ref' {
         param($repo)
         Copy-Item -LiteralPath $canonFx.pristine -Destination $repo -Recurse -Force
-        # The copy carries the owner's gitignored eval results; tracked in the fixture, a model answer
+        # Copy-PluginTree's whole-directory fallback carries the owner's gitignored eval results (the
+        # git-listed copy has none); tracked in the fixture, a model answer
         # quoting a foreign number would fail the control on one machine only.
         Remove-Item -LiteralPath (Join-Path $repo 'plugins/ywr-harness/evals/results') -Recurse -Force -ErrorAction SilentlyContinue
         $ad = Join-Path $repo 'docs/adr'
@@ -843,65 +922,48 @@ if (-not (Test-Path -LiteralPath (Join-Path $evalCase 'prompt.md') -PathType Lea
 # It runs on the RESET working tree, so it also proves a reset tree is one the gate passes (the
 # reset assertion proves the bytes; this proves the verdict).
 $ok = Reset-Fixture $pluginFx
-$gc = Invoke-Gate (Join-Path $ok 'manifest-gate.ps1')
+$gc = Invoke-Gate (Join-Path $ok 'manifest-gate.mjs')
 $ctlOut = $gc.Out
 $ctl = $gc.Code
 if ($ctl -eq 0 -and $ctlOut -match 'dogfood placements: skipped' -and $ctlOut -match 'release lockstep: skipped — not the canon dogfood shape' -and $ctlOut -match 'PASS  eval suite: [1-9]\d* case\(s\).*disabled-skills guard scoped to [1-9]\d* skill\(s\)') { Write-Host 'PASS [unmutated-control] gate exited 0, placement sweep and release lockstep both reported their skip, eval suite checked with a case count and the guard scope' -ForegroundColor Green }
 else { Write-Host "FAIL [unmutated-control] exit=$ctl skip-said=$([bool]($ctlOut -match 'dogfood placements: skipped')) lockstep-skip-said=$([bool]($ctlOut -match 'release lockstep: skipped')) eval-suite-counted=$([bool]($ctlOut -match 'PASS  eval suite: [1-9]\d* case\(s\)')) guard-scope-said=$([bool]($ctlOut -match 'disabled-skills guard scoped to [1-9]'))" -ForegroundColor Red; $ctl = 1 }
 
-# --- the contracts the in-process runner rests on (review 2026-09-02: a negative suite must never
-# --- score an abort as a catch) --------------------------------------------------------------------
-# The runner captures SIX streams where a child's console capture saw two: a Write-Warning / Verbose
-# / Debug / Information added to the gate would surface in $out for the first time and could flip a
-# `-notmatch` (the changelog-check case) or let a loose `-match` pass. The gate reports through
-# Write-Host only; pin it so the failure names the reason the day it changes.
-$widened = @(Select-String -LiteralPath (Join-Path $src 'manifest-gate.ps1') -Pattern '\bWrite-(Warning|Verbose|Debug|Information)\b' | Where-Object { $_.Line -notmatch '^\s*#' })
-Record 'inproc-gate-reports-via-write-host-only' ($widened.Count -eq 0) "the stream-capture contract; offending lines: $(($widened | ForEach-Object { $_.LineNumber }) -join ', ')"
-# A runspace shares the process: a process-exit API in the gate would end the whole suite where a
-# child confined it. The gate exits through `exit` only — pin it.
-$procExit = @(Select-String -LiteralPath (Join-Path $src 'manifest-gate.ps1') -Pattern 'Environment\]::Exit|SetShouldExit' | Where-Object { $_.Line -notmatch '^\s*#' })
-Record 'inproc-gate-never-calls-a-process-exit-api' ($procExit.Count -eq 0) "runspace, not child; offending lines: $(($procExit | ForEach-Object { $_.LineNumber }) -join ', ')"
-# An abort is -1/Aborted, never the 1 every mutation case accepts. Two abort shapes: a script that
-# throws (the gate never does on its own — every failure is a Bad + `exit 1`), and a gate file that
-# is not there (a Copy-Item race would have read as "PASS gate exited 1" under a catch that mapped
-# every error to 1 — the review's medium finding).
-$thrower = Join-Path $base 'thrower.ps1'
-Set-Content -LiteralPath $thrower -Value "throw 'boom from the fixture'" -NoNewline
+# --- the contracts Invoke-Gate rests on (review 2026-09-02: a negative suite must never score an
+# --- abort as a catch; ADR 0141 Decision 3 carried it to the Node gate) -----------------------------
+# The gate sets process.exitCode and returns, so stdout drains and its summary line is the last line;
+# a process.exit() could cut the output short of it. Pin that it never calls one.
+$procExit = @(Select-String -LiteralPath (Join-Path $src 'manifest-gate.mjs') -Pattern 'process\.exit\s*\(' | Where-Object { $_.Line -notmatch '^\s*//' })
+Record 'node-gate-never-calls-process-exit' ($procExit.Count -eq 0) "the summary line must be the last; offending lines: $(($procExit | ForEach-Object { $_.LineNumber }) -join ', ')"
+# Node exits 1 on its own for a thrown error and for a syntax error — the code every mutation case
+# accepts. Neither prints the summary line, so both must come back -1/Aborted.
+$thrower = Join-Path $base 'thrower.mjs'
+Set-Content -LiteralPath $thrower -Value "throw new Error('boom from the fixture')" -NoNewline
 $gt = Invoke-Gate $thrower
-Record 'inproc-terminating-error-is-an-abort-not-exit-1' ($gt.Code -eq -1 -and $gt.Aborted -and $gt.Out -match 'boom from the fixture') "code=$($gt.Code) aborted=$($gt.Aborted) message-kept=$([bool]($gt.Out -match 'boom from the fixture'))"
-$gm = Invoke-Gate (Join-Path $base 'no-such-dir/manifest-gate.ps1')
-Record 'inproc-missing-gate-is-an-abort-not-exit-1' ($gm.Code -eq -1 -and $gm.Aborted -and $gm.Out -match 'script not found') "code=$($gm.Code) aborted=$($gm.Aborted)"
-# This file runs under 'Stop'. The gate must not inherit it: a non-terminating error mid-scan (a
-# locked file) has to print and let the gate finish, as it did in a child — otherwise an unrelated
-# hiccup aborts the gate and, under an adapter that maps aborts to 1, passes as a catch. A fixture
-# that hits one such error and then reaches its own `exit 0` proves the preference did not leak.
-$nonterm = Join-Path $base 'nonterm.ps1'
-Set-Content -LiteralPath $nonterm -Value "Get-Item -LiteralPath (Join-Path '$base' 'no-such-file')`nWrite-Host 'REACHED after a non-terminating error'`nexit 0" -NoNewline
-$gn = Invoke-Gate $nonterm
-Record 'inproc-callee-keeps-default-preferences' ($gn.Code -eq 0 -and -not $gn.Aborted -and $gn.Out -match 'REACHED after a non-terminating error') "code=$($gn.Code) aborted=$($gn.Aborted) reached=$([bool]($gn.Out -match 'REACHED'))"
-# A script that completes without `exit` is a child's 0 — and cannot inherit the PRECEDING case's
-# code, because every call gets a fresh runspace (the cases above all just produced 1 or -1).
-$noexit = Join-Path $base 'noexit.ps1'
-Set-Content -LiteralPath $noexit -Value "Write-Host 'no exit statement'" -NoNewline
-$gx = Invoke-Gate $noexit
-Record 'inproc-no-exit-is-0-never-the-previous-code' ($gx.Code -eq 0 -and -not $gx.Aborted) "code=$($gx.Code) aborted=$($gx.Aborted)"
-# A child returned 0 for a script that ran a FAILING native command and then ended without `exit`;
-# the runspace's $LASTEXITCODE would have said 128 (re-review 2026-09-02, high). `$?` right after the
-# invocation is the observable that keeps the child's shape — pin it with that exact script. (Where
-# git is absent the first line is a CommandNotFound that also continues; the verdict is the same 0.)
-$lastNative = Join-Path $base 'lastnative.ps1'
-Set-Content -LiteralPath $lastNative -Value "git rev-parse --verify no-such-ref-xyz 2>`$null`nWrite-Host 'after a failing native command, no exit'" -NoNewline
-$gl = Invoke-Gate $lastNative
-Record 'inproc-failing-last-native-without-exit-is-0-like-a-child' ($gl.Code -eq 0 -and -not $gl.Aborted -and $gl.Out -match 'after a failing native command') "code=$($gl.Code) aborted=$($gl.Aborted)"
-# ...and `exit N` after a failing native command is N, as in a child.
-$exitN = Join-Path $base 'exitn.ps1'
-Set-Content -LiteralPath $exitN -Value "git rev-parse --verify no-such-ref-xyz 2>`$null`nexit 3" -NoNewline
-$ge = Invoke-Gate $exitN
-Record 'inproc-exit-n-is-n' ($ge.Code -eq 3 -and -not $ge.Aborted) "code=$($ge.Code) aborted=$($ge.Aborted)"
-# The gate ends in an explicit `exit` on every path — pin its last statement so a trailing edit that
-# drops it fails here by name rather than as a silent verdict change.
-$lastStmt = @(Get-Content -LiteralPath (Join-Path $src 'manifest-gate.ps1') | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^#' })[-1]
-Record 'inproc-gate-ends-in-an-explicit-exit' ($lastStmt -match '^\s*exit\s+\d+\s*$') "last statement: $lastStmt"
+Record 'node-uncaught-throw-is-an-abort-not-exit-1' ($gt.Code -eq -1 -and $gt.Aborted -and $gt.Out -match 'exit 1 without' -and $gt.Out -match 'boom from the fixture') "code=$($gt.Code) aborted=$($gt.Aborted) message-kept=$([bool]($gt.Out -match 'boom from the fixture'))"
+$syntax = Join-Path $base 'syntax.mjs'
+Set-Content -LiteralPath $syntax -Value "this is not ( javascript" -NoNewline
+$gs = Invoke-Gate $syntax
+Record 'node-syntax-error-is-an-abort-not-exit-1' ($gs.Code -eq -1 -and $gs.Aborted -and $gs.Out -match 'SyntaxError') "code=$($gs.Code) aborted=$($gs.Aborted)"
+# A FAIL line and exit 1 without the summary is not a catch either, and exit 0 without the green
+# summary is not a pass: only the gate's own ending counts.
+$failOnly = Join-Path $base 'fail-only.mjs'
+Set-Content -LiteralPath $failOnly -Value "console.log('FAIL  looks like a gate line'); process.exitCode = 1" -NoNewline
+$gf = Invoke-Gate $failOnly
+Record 'node-exit-1-without-the-summary-is-an-abort' ($gf.Code -eq -1 -and $gf.Aborted) "code=$($gf.Code) aborted=$($gf.Aborted)"
+$silent = Join-Path $base 'silent.mjs'
+Set-Content -LiteralPath $silent -Value "console.log('PASS  looks like a gate line')" -NoNewline
+$g0 = Invoke-Gate $silent
+Record 'node-exit-0-without-the-summary-is-an-abort' ($g0.Code -eq -1 -and $g0.Aborted) "code=$($g0.Code) aborted=$($g0.Aborted)"
+# A gate file that is not there (a copy race would have read as "PASS gate exited 1" under an adapter
+# that mapped every error to 1 — the 2026-09-02 review's medium finding).
+$gm = Invoke-Gate (Join-Path $base 'no-such-dir/manifest-gate.mjs')
+Record 'node-missing-gate-is-an-abort-not-exit-1' ($gm.Code -eq -1 -and $gm.Aborted -and $gm.Out -match 'script not found') "code=$($gm.Code) aborted=$($gm.Aborted)"
+# The REAL gate's own catch: with hooks/hook-lib.mjs gone its import throws inside the try, and the gate
+# must say ABORTED and exit 2, never the 1 of a caught mutation.
+$dir = Reset-Fixture $pluginFx
+Remove-Item -LiteralPath (Join-Path $dir 'hooks/hook-lib.mjs') -Force
+$gi = Invoke-Gate (Join-Path $dir 'manifest-gate.mjs')
+Record 'node-gate-own-throw-exits-2-not-1' ($gi.Code -eq -1 -and $gi.Aborted -and $gi.Out -match '^exit 2 without' -and $gi.Out -match 'manifest-gate: ABORTED') "code=$($gi.Code) aborted=$($gi.Aborted) head=$(($gi.Out -split "`n")[0])"
 
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 
