@@ -1,5 +1,6 @@
 # Self-test for slice-status.mjs, the observe-only slice status line (Claude Mods; ADR 0138), and for
-# mods.mjs, the hooks-module entry that registers it beside delegation-ledger.mjs.
+# mods.mjs, the hooks-module entry. Since ADR 0140 the entry registers delegation-ledger.mjs alone: the
+# module stays in the tree, unregistered, and this suite keeps its logic tested for a redesign.
 # Usage: pwsh plugins/ywr-harness/hooks/slice-status.selftest.ps1
 #
 # CI has no claude CLI, so the module is driven here under plain node with a FAKE engine: a fake `on`
@@ -8,9 +9,9 @@
 # (the result `next` resolved to is returned as is, the frozen event is never rewritten), the zone
 # boundaries match the org guide's start rule, the `--tree` count starts, grows and resets as ADR 0138
 # Decision 4 says, nothing shows outside a `.harness.json` root, a failing engine call never reaches the
-# call, the line carries no command or path text, and the entry registers both modules (the probe
-# imports `mods.mjs` itself, so a missing or renamed module file fails this suite; the manifest gate
-# checks only the entry path). What it cannot
+# call, the line carries no command or path text, and the entry registers the ledger and not this
+# module (the probe imports `mods.mjs` itself, so a missing or renamed module file fails this suite;
+# the manifest gate checks only the entry path). What it cannot
 # prove — the engine's event shapes, `isReadOnly` on a live shell call and how the line looks — is
 # `claude plugin validate`'s and the live `--plugin-dir` probe's; `claude plugin test` stays a local habit.
 $ErrorActionPreference = 'Stop'
@@ -99,6 +100,33 @@ const TREE = 'python scripts/harness/harness_gates.py --tree'
   eq('isTreeRun: every --tree spelling', yes.map(M.isTreeRun), yes.map(() => true))
   eq('isTreeRun: nothing else', no.map(M.isTreeRun), no.map(() => false))
 
+  // ADR 0139: the PowerShell reads the module holds read-only itself.
+  const reads = ['Get-Location', 'Get-ChildItem -Name docs | Select-Object -First 3', 'git status --short',
+    "git log --oneline -3 -- 'docs/x y.md'", 'cd C:\\repo; git diff --stat', 'git -C C:\\repo\\sub show --stat HEAD',
+    'Get-Content "C:\\Program Files\\x\\a.txt" -Tail 15', "Select-String -Path a.md -Pattern '^\\$x|(y)' | Out-String -Width 200",
+    "Get-Content a.md; '---'; Get-Content b.md", 'Get-ChildItem $env:USERPROFILE\\Downloads -Filter "*.pdf"',
+    'Where-Object Name -like "*.md"', 'GET-CONTENT a.md | measure', 'git rev-parse HEAD && git ls-files -z',
+    'Get-Location' + String.fromCharCode(13, 10) + 'git status', '"it\'s"', "'a''b'", 'Select-String -Pattern "a""b" x.md',
+    'Get-Content "C:\\dir\\"', 'Write-Output "$env:USERPROFILE\\x"', "Get-Content '$(not run)'", '"a""b"', '"=====ENV====="']
+  const writes = ['Set-Content a.md x', 'Get-Content a.md > b.md', 'Get-Content a.md | Out-File b.md', 'Get-ChildItem | Remove-Item',
+    'Get-ChildItem | ForEach-Object Delete', '% Line', 'Get-Content $(Remove-Item x)', 'Get-Content ${x}', 'Get-Content @(1)',
+    'Get-Content "$(rm x)"', '"exit=$LASTEXITCODE"', 'Get-Content a.md # it\'s\nRemove-Item b', 'Get-Content "a\\" ; Remove-Item b ; echo "c"',
+    'Get-Content \u2018a\u2019; Remove-Item b', 'Get-Content "a', "Get-Content 'a", 'Get-Content a`; Remove-Item b',
+    'git add -A', 'git -c core.pager=x log', 'git -C sub -c core.pager=x log', 'git -C sub', 'git diff --output=x.txt', 'git branch new',
+    'python gen.py', 'pwsh -File x.ps1', '& ./x.ps1', '[IO.File]::WriteAllText("a","b")', 'Get-Content a | Set-Content b',
+    'Get-Content [ab].md', '', '   ', 42, undefined,
+    // review findings of the ADR 0139 slice: a quote of the other kind, the call operator, a bare CR, git programs
+    'echo "\'" $(Remove-Item x) "\'"', 'Write-Output "a\'$(Remove-Item f)\'b"', "& 'C:\\x\\build.ps1'", '& "x.exe"', "& 'x'",
+    'Get-Location &', "Get-Location; & 'x.ps1'", 'Get-Location' + String.fromCharCode(13) + 'Remove-Item x',
+    'Get-Location' + String.fromCharCode(0x2028) + 'Remove-Item x', 'Get-Location' + String.fromCharCode(0x85) + 'Remove-Item x',
+    'git log ' + String.fromCharCode(0x2013) + '-output=x', 'git diff --ext-diff', 'git show --textconv HEAD', 'git status --% x',
+    "Remove-Item'x'", 'Remove-Item"x"', '"git" status', '. ./x.ps1', 'Write-Output "a`$(rm x)"', 'Get-Content "a$x"',
+    // the bounded re-review: an operator after a leading string is an expression; git reads env values raw
+    "'C:\\x.ts'-as'IO.StreamWriter'", "gc x; 'p'-as'IO.StreamWriter'", '"p"-as"IO.StreamWriter"', "'a'\"b\"", "'a'b",
+    'git diff $env:X', 'git log -p "$env:X"', 'git -C $env:R status']
+  eq('isPwshReadOnly: the reads', reads.map(M.isPwshReadOnly), reads.map(() => true))
+  eq('isPwshReadOnly: everything else counts', writes.map(M.isPwshReadOnly), writes.map(() => false))
+
   eq('normPath: slashes, trailing slash, drive-letter case',
     [M.normPath('C:\\Repo\\a.md'), M.normPath('c:/repo/'), M.normPath('/home/u/Repo/'), M.normPath('C:/'), M.normPath('')],
     ['c:/repo/a.md', 'c:/repo', '/home/u/Repo', 'c:/', null])
@@ -148,12 +176,16 @@ const TREE = 'python scripts/harness/harness_gates.py --tree'
   shellRun('git status', ok({ isReadOnly: true })); shellRun('pwsh docs/build.ps1')
   shellRun('Remove-Item x', ok(), 'PowerShell'); shellRun('rm x', { deny: 'no' })
   eq('shell calls without isReadOnly count; read-only and denied ones do not', T.state(), { files: 2, shell: 2 })
+  shellRun('Get-Location', ok(), 'PowerShell'); shellRun('git status', ok(), 'PowerShell')
+  eq('a PowerShell read in the ADR 0139 list does not count without the engine mark', T.state(), { files: 2, shell: 2 })
+  shellRun('Get-Location', ok())
+  eq('the list is PowerShell-only: a Bash call without the mark counts', T.state(), { files: 2, shell: 3 })
   shellRun('sed -i s/a/b/ f && pytest', ok({ isError: true }))
-  eq('a FAILED shell call counts: it can write before it fails', T.state(), { files: 2, shell: 3 })
+  eq('a FAILED shell call counts: it can write before it fails', T.state(), { files: 2, shell: 4 })
   shellRun(TREE, ok(FAILED_TREE))
-  eq('a failed --tree run while armed counts as a shell call, never as a reset', T.state(), { files: 2, shell: 4 })
+  eq('a failed --tree run while armed counts as a shell call, never as a reset', T.state(), { files: 2, shell: 5 })
   shellRun('python harness_gates.py --tree && python gen.py > docs/x.md')
-  eq('a --tree run with a command after it is a shell call, not a reset', T.state(), { files: 2, shell: 5 })
+  eq('a --tree run with a command after it is a shell call, not a reset', T.state(), { files: 2, shell: 6 })
   shellRun('python scripts/harness/harness_gates.py --tree 2>&1 | tail -1')
   eq('a new --tree run starts a new count, piped through a filter too', T.state(), { files: 0, shell: 0 })
 
@@ -286,8 +318,9 @@ const TREE = 'python scripts/harness/harness_gates.py --tree'
 {
   const evs = []
   ENTRY.register((ev, a, b) => { evs.push(ev); return { catch() {} } }, {})
-  eq('mods.mjs registers the ledger and the status line, each hook once',
-    evs.slice().sort(), ['agent.spawn', 'session.end', 'session.measure', 'tool.call', 'turn.complete', 'turn.step'])
+  // ADR 0140: the status line is off; the entry registers the ledger alone.
+  eq('mods.mjs registers the ledger only, each hook once (the status line is unregistered)',
+    evs.slice().sort(), ['agent.spawn', 'turn.complete', 'turn.step'])
 }
 
 for (const [n, v] of results) console.log(n + '\t' + v)

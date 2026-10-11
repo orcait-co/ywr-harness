@@ -3,11 +3,11 @@
 // own, so each file keeps its own contract and its own selftest:
 //
 // - `delegation-ledger.mjs`: the observe-only delegation ledger (ADR 0117, ADR 0118). Never draws.
-// - `slice-status.mjs`: the observe-only slice status line (ADR 0138). Draws through `$.ui.status` alone.
+//
+// `slice-status.mjs` (ADR 0138, ADR 0139) stays in the tree but is NOT registered (ADR 0140): its status
+// line is off until a new ADR redesigns it.
 import { register as registerLedger } from './delegation-ledger.mjs'
-import { register as registerSliceStatus } from './slice-status.mjs'
 
 export function register(on, options) {
   registerLedger(on, options)
-  registerSliceStatus(on, options)
 }

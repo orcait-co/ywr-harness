@@ -1,5 +1,6 @@
-// Hooks module (Claude Mods; ADR 0138) — the OBSERVE-ONLY slice status line. `mods.mjs` registers it
-// beside `delegation-ledger.mjs`; `hooks.json` names that entry under `modules`.
+// Hooks module (Claude Mods; ADR 0138) — the OBSERVE-ONLY slice status line. UNREGISTERED since
+// ADR 0140: `mods.mjs` (the entry `hooks.json` names under `modules`) does not import it, so no line
+// shows; the file and its selftest stay for a redesign, which a new ADR must register again.
 //
 // One line, pinned under the prompt by `$.ui.status` (one per plugin, beside the engine's notices; the
 // member's own statusline is untouched), with two halves:
@@ -11,7 +12,7 @@
 //   `harness_gates.py --tree` printed after the final edit), from `tool.call`: after a successful
 //   `--tree` run (a shell call that ENDS with it, `isTreeRun`), the distinct files under the project
 //   root an Edit / Write / NotebookEdit changed, and the Bash / PowerShell calls the engine did not mark
-//   `isReadOnly`, failed ones included. Before the first `--tree` run there is no `--tree` half, and a
+//   `isReadOnly`, failed ones included, less the PowerShell reads of ADR 0139's list. Before the first `--tree` run there is no `--tree` half, and a
 //   reset (a /clear, a root move, a lost worker) drops it again, so a lost count never reads as "no
 //   change"; the residuals ADR 0138 lists are writes the module cannot see.
 //
@@ -134,6 +135,110 @@ export function isTreeRun(command) {
   return false
 }
 
+// PowerShell commands the module holds read-only itself (ADR 0139). At 2.1.296 the engine marks no
+// PowerShell call `isReadOnly`, `Get-Location` included, while it marks Bash reads
+// (anthropics/claude-code#101149). Every simple command must be one of these readers, and anything else
+// counts as before, so a wrong answer can only hide a "run again", never show a write as "no change".
+const PWSH_READERS = new Set([
+  'get-content', 'gc', 'cat', 'type', 'get-childitem', 'gci', 'ls', 'dir', 'get-item', 'gi', 'test-path',
+  'resolve-path', 'get-location', 'gl', 'pwd', 'select-string', 'sls', 'select-object', 'select',
+  'where-object', 'where', 'measure-object', 'measure', 'sort-object', 'group-object', 'format-table', 'ft',
+  'format-list', 'fl', 'out-string', 'out-host', 'convertfrom-json', 'get-filehash', 'split-path',
+  'join-path', 'write-output', 'echo', 'write-host', 'set-location', 'cd', 'sl', 'push-location', 'pop-location',
+])
+// git subcommands that only read. Only `-C <dir>` pairs may come before the subcommand, so no `-c` can
+// set a command to run. No word may ask git to write a file or to run a diff program (`GIT_REFUSED`).
+const GIT_READS = new Set(['status', 'log', 'diff', 'show', 'ls-files', 'rev-parse', 'blame'])
+const GIT_REFUSED = /^--(?:output|ext-diff|textconv)/
+// Characters that stop the scan with "counts" in any quote state. PowerShell takes the typographic
+// quotes as quotes and the typographic dashes as dashes; the line separators other than CR and LF were
+// not measured. Built from code points, so none of them stands in this file.
+const PWSH_REFUSED = new Set([0x2018, 0x2019, 0x201A, 0x201B, 0x201C, 0x201D, 0x201E, 0x2013, 0x2014, 0x2015,
+  0x85, 0x2028, 0x2029].map(c => String.fromCharCode(c)))
+// Outside quotes: expansion and substitution (`$` other than `$env:NAME`, backtick, `( )`, `{ }`, `@`),
+// redirection (`< >`), a type literal or wildcard set (`[ ]`) and a comment (`#`). A lone `&` (the call
+// operator or a background job) is refused where the scan meets it.
+const PWSH_UNSAFE = new Set('$`(){}@<>[]#')
+// An environment variable read: the one expansion a qualifying command may hold, bare or inside "…".
+const PWSH_ENV_READ = /^\$env:[A-Za-z_]\w*/i
+
+// A PowerShell command as the read list needs it (ADR 0139): its simple commands, split at a newline, a
+// CR, `;`, `|`, `&&` or `||` outside quotes, each a list of words `{ text, quoted, string, runs, env }`. The scan follows
+// pwsh's own quote rules: '' and "" are escaped quotes, `$` and the backtick stay live inside "…", and a
+// backslash is a plain character. Answers null for anything it does not model, and the call counts.
+export function pwshWords(command) {
+  if (typeof command !== 'string') return null
+  const segs = [[]]
+  let word = null
+  let q = null
+  const end = () => { if (word) { segs[segs.length - 1].push(word); word = null } }
+  // `quoted`: some of the word stands in quotes. `string`: the word is ONE quoted token and nothing else,
+  // the only shape that pwsh reads as a plain string in command position ('a'-as'b' is an expression).
+  // `env`: the word reads an environment variable, whose value the scan cannot see.
+  const add = (c, quoted) => {
+    if (!word) word = { text: '', quoted: false, string: quoted, runs: 0, env: false }
+    word.text += c
+    if (quoted) word.quoted = true
+    else word.string = false
+  }
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]
+    const n = command[i + 1]
+    if (PWSH_REFUSED.has(c)) return null
+    if (c === '$' && q !== "'") {
+      const m = PWSH_ENV_READ.exec(command.slice(i))
+      if (!m) return null
+      add(m[0], q === '"')
+      word.env = true
+      i += m[0].length - 1
+    } else if (q) {
+      if (c === q && n === q) { add(c, true); i++ }
+      else if (c === q) q = null
+      else if (c === '`' && q === '"') return null
+      else add(c, true)
+    } else if (c === "'" || c === '"') {
+      q = c
+      add('', true)
+      if (++word.runs > 1) word.string = false
+    }
+    else if (PWSH_UNSAFE.has(c)) return null
+    else if (c === '&') {
+      if (n !== '&') return null
+      end(); segs.push([]); i++
+    } else if (c === '|') { end(); segs.push([]); if (n === '|') i++ }
+    else if (c === ';' || c === '\n' || c === '\r') { end(); segs.push([]) }
+    else if (/\s/.test(c)) end()
+    else add(c, false)
+  }
+  if (q) return null
+  end()
+  return segs.filter(s => s.length)
+}
+
+// Whether a PowerShell command only reads (ADR 0139): every simple command is a reader from the list, one
+// quoted token alone, which PowerShell only prints, or `git` with a read subcommand. `--%` stops pwsh's own
+// parsing, so a word that holds it counts. git takes an environment value as raw arguments, which could
+// be `--output=…`, so a git command that reads one counts.
+export function isPwshReadOnly(command) {
+  const segs = pwshWords(command)
+  if (!segs || !segs.length) return false
+  return segs.every(words => {
+    if (words.some(w => w.text.includes('--%'))) return false
+    const head = words[0]
+    if (head.string) return words.length === 1
+    if (head.quoted) return false
+    const h = head.text.toLowerCase()
+    if (h === 'git' || h === 'git.exe') {
+      let i = 1
+      while (words[i] && !words[i].quoted && words[i].text === '-C' && i + 2 < words.length) i += 2
+      const sub = words[i]
+      return Boolean(sub) && !sub.quoted && GIT_READS.has(sub.text) &&
+        !words.some(w => w.env || GIT_REFUSED.test(w.text))
+    }
+    return PWSH_READERS.has(h)
+  })
+}
+
 // Whether a call's output ENDS its `tree:` lines with the one `harness_gates.py --tree` prints for a
 // snapshot it took: `tree: <hex id> · HEAD …`. The LAST `tree:` line decides, so a failed run's
 // `tree: FAILED` outweighs an older line that a command before it printed; `--help` prints none.
@@ -173,7 +278,8 @@ export const MAX_ENTRIES = 10000
 // Every completion takes a sequence number. While a `--tree` run is in flight or after one succeeded, the
 // tracker records each counted change with its number; a run that succeeds keeps only the changes that
 // completed AFTER it started, so an Edit finishing beside a parallel `--tree` run is never wiped.
-// A shell call counts unless the engine marked it `isReadOnly` or a hook denied it (a denied call never
+// A shell call counts unless the engine marked it `isReadOnly`, a PowerShell call is a listed read
+// (`isPwshReadOnly`, ADR 0139) or a hook denied it (a denied call never
 // ran); a failed one counts too, since a command can write before it fails.
 export function createTracker() {
   let armed = false
@@ -226,7 +332,7 @@ export function createTracker() {
       // At the cap the OLDEST entry leaves, never the new one: a change after the latest start is what
       // a later pruning keeps, so dropping it could read as "no change".
       if (SHELL_TOOLS.has(tool)) {
-        if (denied(r) || r.isReadOnly === true) return moved
+        if (denied(r) || r.isReadOnly === true || (tool === 'PowerShell' && isPwshReadOnly(e.command))) return moved
         if (shell.length >= MAX_ENTRIES) shell.shift()
         shell.push(s)
         return armed || moved

@@ -1,6 +1,6 @@
 // Hooks module (Claude Mods, Claude Code 2.1.287+; ADR 0117, ADR 0118) — the OBSERVE-ONLY per-request
-// delegation ledger. `mods.mjs`, the entry `hooks.json` names under `modules`, registers it beside
-// `slice-status.mjs` (ADR 0138); the settings hooks beside it are unaffected.
+// delegation ledger. `mods.mjs`, the entry `hooks.json` names under `modules`, registers it (alone
+// since ADR 0140); the settings hooks beside it are unaffected.
 //
 // What it records, per finished model loop (the main loop's turn, or one run of a subagent's loop):
 // every request the loop made (`turn.step`: the model the engine resolved, the effort it sends, the

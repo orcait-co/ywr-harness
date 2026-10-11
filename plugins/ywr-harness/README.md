@@ -63,12 +63,9 @@ No prompt, task description or answer is written. It writes only in a repo whose
 `.harness.json`. Hosts below 2.1.287, `disableAllHooks`, `--safe-mode` and `--bare` drop it, and
 the nine hooks above keep running.
 
-`hooks/slice-status.mjs` pins one status line under the prompt through `$.ui.status` (ADR 0138),
-beside the engine's notices and apart from the member's statusline. Its first half maps the context
-fill to the org guide's slice-start zones; its second half, after a `harness_gates.py --tree` run,
-counts the files an Edit / Write / NotebookEdit changed under the root and the shell calls the
-engine did not mark read-only. It is observe-only like the ledger, writes no file, carries no command
-or file text, and shows only in a repo whose root holds `.harness.json`.
+`hooks/slice-status.mjs` held the slice status line of 0.67.0 (ADR 0138). Since 0.67.1 the entry
+does not register it, so no line shows (ADR 0140): its "run again" after every test or script run
+confused more than it helped. The file stays for a redesign.
 
 ## Adversarial review (workflow)
 
