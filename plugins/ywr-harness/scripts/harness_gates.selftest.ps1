@@ -51,6 +51,13 @@ if (-not $py) {
 #     found it; under `pwsh -File` (the runner's shape) the process ends anyway.
 #     The guard itself moved to lib/selftest-lib.ps1 (`Use-GitWorkerBinary`, ADR 0111) when three more
 #     git-bound suites adopted it; this header still owns the measurement.
+# (3) A fixture commit passes `-c maintenance.auto=false -c gc.auto=0`. On git 2.53 every commit
+#     starts a detached `git maintenance run --auto` (fact 130): 111 of a run's 1,150 git processes
+#     (GIT_TRACE2), each one free to write under a fixture's .git while the suite moves on or removes
+#     the root. Measured 2026-10-12, ABBA x4 on a loaded box: the pinned run was faster in every
+#     pair, median −12 s of ~170 s (~7%). The pins ride on the command line, not in
+#     GIT_CONFIG_COUNT, so the emitter's own git calls run with the environment a member's run has.
+#     Case FX proves the switch-off (fact 132).
 $gitPathBefore = Use-GitWorkerBinary
 function Restore-GitPath { if ($null -ne $gitPathBefore) { $env:PATH = $gitPathBefore } }
 # A fixture commit that FAILS is not a fixture: every current site's next assertion would go red
@@ -60,7 +67,7 @@ function Restore-GitPath { if ($null -ne $gitPathBefore) { $env:PATH = $gitPathB
 function Invoke-FixtureCommit([string]$Repo, [string]$Message) {
     $gitOut = & git -C $Repo add -A 2>&1
     if ($LASTEXITCODE -ne 0) { throw "fixture add failed in ${Repo}: $($gitOut | Out-String)" }
-    $gitOut = & git -C $Repo -c user.email=selftest@example.invalid -c user.name=selftest commit -q -m $Message 2>&1
+    $gitOut = & git -C $Repo -c user.email=selftest@example.invalid -c user.name=selftest -c maintenance.auto=false -c gc.auto=0 commit -q -m $Message 2>&1
     if ($LASTEXITCODE -ne 0) { throw "fixture commit '$Message' failed in ${Repo}: $($gitOut | Out-String)" }
 }
 
@@ -103,6 +110,38 @@ $CFG = @'
   ]
 }
 '@
+
+# --- FX: a fixture commit starts no auto maintenance (header lever 3) -----------------------------
+# The switch-off is silent when it breaks: every case stays green and only the time and the race
+# come back. So one fixture build runs under a trace2 event file, and no child it records may be a
+# `maintenance` or `gc` run. An unpinned control commit in the same repo then shows whether this git
+# starts one at all: where it does not, FX passes vacuously and says so in a SKIP line. The control
+# leaves one detached run behind, in a repo no later case reads. A GIT_TRACE2_EVENT set outside the
+# suite is put back after each traced call, so the cases after FX run in the caller's environment.
+function Get-FxTrace([string]$Trace, [scriptblock]$Run) {
+    $before = $env:GIT_TRACE2_EVENT
+    $env:GIT_TRACE2_EVENT = $Trace
+    $code = $null
+    try { $null = & $Run; $code = $LASTEXITCODE }
+    finally { if ($null -eq $before) { Remove-Item Env:GIT_TRACE2_EVENT -ErrorAction SilentlyContinue } else { $env:GIT_TRACE2_EVENT = $before } }
+    $events = @(if (Test-Path -LiteralPath $Trace) { Get-Content -LiteralPath $Trace })
+    return @{
+        Exit     = $code
+        Commits  = @($events | Where-Object { $_ -match '"event":"start"' -and $_ -match '"commit"' }).Count
+        Children = @($events | Where-Object { $_ -match '"event":"child_start"' -and $_ -match '"(maintenance|gc)"' })
+    }
+}
+$fxRepo = $null
+$fxPinned = Get-FxTrace (Join-Path $fxBase 'fx-trace2-pinned.json') { $script:fxRepo = New-Repo 'fx-no-maintenance' '' @() }
+$fxControl = Get-FxTrace (Join-Path $fxBase 'fx-trace2-control.json') {
+    & git -C $fxRepo -c user.email=selftest@example.invalid -c user.name=selftest commit -q --allow-empty -m 'control' 2>&1
+}
+$ok = (Assert-True 'FX a fixture commit is traced and starts no maintenance or gc child' ($fxPinned.Commits -ge 1 -and $fxPinned.Children.Count -eq 0) "commit starts=$($fxPinned.Commits) children=[$($fxPinned.Children -join ' | ')]") -and $ok
+if ($fxControl.Exit -eq 0 -and $fxControl.Commits -ge 1 -and $fxControl.Children.Count -eq 0) {
+    Write-Host 'SKIP [FX positive control] this git starts no auto maintenance on an unpinned commit, so FX passed vacuously (reported, not silent)' -ForegroundColor Yellow
+} else {
+    $ok = (Assert-True 'FX control: an unpinned commit is traced and starts the maintenance child the pins stop' ($fxControl.Exit -eq 0 -and $fxControl.Commits -ge 1 -and $fxControl.Children.Count -ge 1) "exit=$($fxControl.Exit) commit starts=$($fxControl.Commits) children=$($fxControl.Children.Count)") -and $ok
+}
 
 # --- A: gate composition — files appended only for file-scoped gates ---------------------------
 $a = New-Repo 'compose' $CFG @('api/app.py', 'web/main.ts')

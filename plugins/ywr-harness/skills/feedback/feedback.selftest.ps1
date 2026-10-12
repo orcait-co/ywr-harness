@@ -42,9 +42,26 @@ $sep = [IO.Path]::PathSeparator
 
 $ok = $true
 $savedPath = $env:PATH
-$savedMode = $env:YWR_FAKE_GH_MODE; $savedLog = $env:YWR_FAKE_GH_LOG
+$savedMode = $env:YWR_FAKE_GH_MODE; $savedLog = $env:YWR_FAKE_GH_LOG; $savedProto = $env:GIT_ALLOW_PROTOCOL
 $fx = New-FixtureRoot 'feedback-selftest'
-trap { $env:PATH = $savedPath; $env:YWR_FAKE_GH_MODE = $savedMode; $env:YWR_FAKE_GH_LOG = $savedLog; Remove-FixtureRoot $fx; break }
+trap { $env:PATH = $savedPath; $env:YWR_FAKE_GH_MODE = $savedMode; $env:YWR_FAKE_GH_LOG = $savedLog; $env:GIT_ALLOW_PROTOCOL = $savedProto; Remove-FixtureRoot $fx; break }
+
+# git is the other network boundary: init.ps1 fetches the origin before its upstream-ahead check, under
+# -DryRun too (ADR 0137), and the scaffolded fixture's origin is a github.com ssh URL. Unblocked, each of
+# the 12 init runs below made a real ssh attempt that failed in ~2 s, so ~24 s of this suite was network
+# (fact 131). `file` refuses ssh and https before any transport starts. init.ps1's own fetch code
+# still runs as written, and the FETCH FAILED line it prints is the same. N1 proves the refusal holds:
+# without it, the suite stays green and goes back to the network.
+# The refusal text is gettext-translated, so the probe pins LC_ALL=C for its own two calls.
+$env:GIT_ALLOW_PROTOCOL = 'file'
+$savedLcAll = $env:LC_ALL; $env:LC_ALL = 'C'
+try {
+    foreach ($probe in @(@('ssh', 'git@github.com:acme/scaffolded.git'), @('https', 'https://github.com/acme/scaffolded.git'))) {
+        $n1 = (& git ls-remote $probe[1] 2>&1 | Out-String)
+        $ok = (Assert-True "N1 fixture git refuses the $($probe[0]) transport before any network call" `
+                ($LASTEXITCODE -ne 0 -and $n1 -match "transport '$($probe[0])' not allowed") $n1.Trim()) -and $ok
+    }
+} finally { $env:LC_ALL = $savedLcAll }
 
 # --- fake gh -----------------------------------------------------------------------------------
 $fakeDir = Join-Path $fx 'fake-gh'
@@ -520,7 +537,7 @@ if (-not $alSnippet) {
 $meta = (Assert-Text 'META probe' 'abc' @('zzz') @() 6>$null)
 $ok = (Assert-True 'META a MustMatch miss is reported as a failure' (-not $meta) 'Assert-Text passed on a non-matching text') -and $ok
 
-$env:PATH = $savedPath; $env:YWR_FAKE_GH_MODE = $savedMode; $env:YWR_FAKE_GH_LOG = $savedLog
+$env:PATH = $savedPath; $env:YWR_FAKE_GH_MODE = $savedMode; $env:YWR_FAKE_GH_LOG = $savedLog; $env:GIT_ALLOW_PROTOCOL = $savedProto
 Remove-FixtureRoot $fx
 if ($ok) { Write-Host 'feedback.selftest: all cases passed' -ForegroundColor Green; exit 0 }
 Write-Host 'feedback.selftest: FAILED' -ForegroundColor Red; exit 1
