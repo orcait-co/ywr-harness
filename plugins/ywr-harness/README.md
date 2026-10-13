@@ -6,17 +6,18 @@ stack, directory layout, or conventions. That is why it ships as a plugin: the k
 identical in every repo, so it should be maintained in one place and consumed, not re-derived.
 
 Defects in anything here are fixed **in this repo**, never patched in a consuming repo — see
-`docs/adr/0010-harness-defects-fixed-in-canon.md`. The sanctioned escape hatch for urgency is
-`claude plugin disable`, which is reversible and visible; a local fork is neither.
+`docs/adr/0010-harness-defects-fixed-in-canon.md`. Managed settings keep the plugin on, so a member
+cannot disable it (ADR 0143). The escape hatch for urgency is the owner's managed `false`: report
+the problem with `/ywr-harness:feedback`. A local fork is never the remedy.
 
 ## Install
 
-Managed settings register the `ywrlabs` marketplace on every org machine (ADR 0010). Installing
-stays each member's choice:
-
-```
-/plugin install ywr-harness@ywrlabs
-```
+Managed settings register the `ywrlabs` marketplace and enable this plugin on every org machine
+(ADR 0143). It installs in the background of your next session, with no command, and loads
+from the session after that. That was measured in an interactive terminal session. The docs do
+not state the install for Desktop or VS Code, and the Desktop docs say a WSL session loads no
+plugins. If the prerequisite band names a missing tool, type `/ywr-harness:setup` and restart
+Claude Code.
 
 ## Everything here is namespaced
 

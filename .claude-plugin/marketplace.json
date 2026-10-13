@@ -1,6 +1,6 @@
 {
   "name": "ywrlabs",
-  "description": "YWR Labs internal Claude Code marketplace for orcait-co. Registration is delivered by managed settings; installation stays voluntary (ADR 0010).",
+  "description": "YWR Labs internal Claude Code marketplace for orcait-co. Managed settings register this marketplace and enable ywr-harness for every member (ADR 0143).",
   "owner": {
     "name": "YWR Labs Inc.",
     "email": "johnkim@ywrlabs.com"
@@ -10,7 +10,7 @@
       "name": "ywr-harness",
       "source": "./plugins/ywr-harness",
       "description": "Claude Code platform guards, the adversarial code-review standard, and a docs-as-code scaffold — portable across repos and stacks",
-      "version": "0.68.0"
+      "version": "0.68.1"
     }
   ]
 }
