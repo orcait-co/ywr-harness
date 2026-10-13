@@ -3,11 +3,14 @@
 // own, so each file keeps its own contract and its own selftest:
 //
 // - `delegation-ledger.mjs`: the observe-only delegation ledger (ADR 0117, ADR 0118). Never draws.
+// - `prerequisites.mjs`: the pwsh / node / python check, its band and `/ywr-harness:setup` (ADR 0142).
 //
 // `slice-status.mjs` (ADR 0138, ADR 0139) stays in the tree but is NOT registered (ADR 0140): its status
 // line is off until a new ADR redesigns it.
 import { register as registerLedger } from './delegation-ledger.mjs'
+import { register as registerPrerequisites } from './prerequisites.mjs'
 
 export function register(on, options) {
   registerLedger(on, options)
+  registerPrerequisites(on, options)
 }

@@ -282,7 +282,7 @@ async function main() {
   // CLASS; comment lines are skipped (they legitimately QUOTE the trap); a hit inside a single-quoted
   // string is still refused — bracing is correct in both contexts. Scope is `hooks/*.ps1` ONLY (ADR
   // 0116): a JS template literal interpolates only through a braced `${...}`, so the trap does not
-  // exist in `.mjs`. The pwsh hook that remains (session-start-node-check.ps1) is still scanned.
+  // exist in `.mjs`. No pwsh hook ships since ADR 0142; the scan stays for the next one.
   let hookGlued = 0
   const commentRx = new RegExp(`^${S}*#`, 'u')
   const gluedRx = /\$[A-Za-z_][A-Za-z0-9_]*[가-힣]/iu

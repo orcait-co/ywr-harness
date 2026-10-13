@@ -1,5 +1,5 @@
 # Self-test for slice-status.mjs, the observe-only slice status line (Claude Mods; ADR 0138), and for
-# mods.mjs, the hooks-module entry. Since ADR 0140 the entry registers delegation-ledger.mjs alone: the
+# mods.mjs, the hooks-module entry. Since ADR 0140 the entry does not register this module: the
 # module stays in the tree, unregistered, and this suite keeps its logic tested for a redesign.
 # Usage: pwsh plugins/ywr-harness/hooks/slice-status.selftest.ps1
 #
@@ -9,7 +9,7 @@
 # (the result `next` resolved to is returned as is, the frozen event is never rewritten), the zone
 # boundaries match the org guide's start rule, the `--tree` count starts, grows and resets as ADR 0138
 # Decision 4 says, nothing shows outside a `.harness.json` root, a failing engine call never reaches the
-# call, the line carries no command or path text, and the entry registers the ledger and not this
+# call, the line carries no command or path text, and the entry registers the other modules and not this
 # module (the probe imports `mods.mjs` itself, so a missing or renamed module file fails this suite;
 # the manifest gate checks only the entry path). What it cannot
 # prove — the engine's event shapes, `isReadOnly` on a live shell call and how the line looks — is
@@ -318,9 +318,10 @@ const TREE = 'python scripts/harness/harness_gates.py --tree'
 {
   const evs = []
   ENTRY.register((ev, a, b) => { evs.push(ev); return { catch() {} } }, {})
-  // ADR 0140: the status line is off; the entry registers the ledger alone.
-  eq('mods.mjs registers the ledger only, each hook once (the status line is unregistered)',
-    evs.slice().sort(), ['agent.spawn', 'turn.complete', 'turn.step'])
+  // ADR 0140: the status line is off; the entry registers the ledger and the prerequisite check (ADR 0142).
+  eq('mods.mjs registers the ledger and the prerequisite check, each hook once (the status line is unregistered)',
+    evs.slice().sort(), ['agent.spawn', 'command.run', 'session.start', 'turn.complete', 'turn.step', 'ui.render'])
+  eq('...and none of the status line\'s hooks', evs.filter(ev => ['session.measure', 'tool.call', 'session.end'].includes(ev)), [])
 }
 
 for (const [n, v] of results) console.log(n + '\t' + v)

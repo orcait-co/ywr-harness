@@ -272,8 +272,8 @@ function isFlattened(c) {
 /**
  * Payload-authored text made safe to echo in a banner: every flattened-class character -> a space,
  * trimmed (.NET semantics), then capped at `max` with `max - 1` characters + an ellipsis. Every Node
- * hook imports it; the one pwsh hook left (session-start-node-check.ps1) carries its own Inline(),
- * held to this function's behaviour by `Assert-InlineParity` (lib/selftest-lib.ps1).
+ * hook imports it. The hooks module `prerequisites.mjs` cannot import this file (a mod has no Node),
+ * so its `flatten()` repeats the class, pinned by its own selftest (ADR 0142).
  */
 export function inline(text, max = 80) {
   const s = String(text ?? '')

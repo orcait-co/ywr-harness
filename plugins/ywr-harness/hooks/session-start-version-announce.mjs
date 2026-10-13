@@ -72,7 +72,7 @@ import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, emit, sleep, psJoin } from './hook-lib.mjs'
 
-// One link, two shipped surfaces: this constant and the CHANGELOG header. manifest-gate.ps1
+// One link, two shipped surfaces: this constant and the CHANGELOG header. manifest-gate.mjs
 // asserts the two agree, so neither can drift alone.
 const rnUrl = 'https://claude.ai/code/artifact/a4387fdf-63d1-4a3d-9c8e-c362c9215a54#rn'
 

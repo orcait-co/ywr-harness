@@ -1,10 +1,9 @@
 # Self-test for hook-lib.mjs, the shared helpers of the plugin's Node hooks (ADR 0116).
 # Usage: pwsh plugins/ywr-harness/hooks/hook-lib.selftest.ps1
 #
-# The pwsh hooks' Inline() is held to hook-lib's inline() by Assert-InlineParity in their own suites;
-# this suite pins inline() — and the other helpers — against EXPECTED values, so the Node module is
-# not only "equal to whatever pwsh does": if both drifted together this is the suite that fails. It
-# also covers what the hooks' suites reach only through a whole hook: stdin decoding (BOM, empty),
+# No pwsh hook carries an Inline() copy any more (ADR 0142); this suite pins inline() — and the
+# other helpers — against EXPECTED values, so the module is held to the class itself, never only to
+# another copy of it. It also covers what the hooks' suites reach only through a whole hook: stdin decoding (BOM, empty),
 # fail-open JSON parsing, the PowerShell `[string]` cast, and emit's one-line UTF-8 output.
 #
 # The probe script is written to a temp file and builds every special character from a code point:

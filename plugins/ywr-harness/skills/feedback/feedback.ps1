@@ -268,9 +268,9 @@ if ($scaffolded) {
     if (Test-Path -LiteralPath $hook -PathType Leaf) {
         # The hook is Node (ADR 0116). `node` is found by scanning $env:PATH with .NET calls — NOT
         # Get-Command: ADR 0113's auto-loading window allows exactly the git, gh and claude lookups
-        # (feedback.selftest G1), and an absent command's Get-Command costs ~1.4 s. Same rule as the
-        # session-start node check: on Windows only a real node.exe counts (an exec'd command is never a
-        # .cmd/.bat shim); elsewhere a regular `node` file with an execute bit (where the runtime cannot
+        # (feedback.selftest G1), and an absent command's Get-Command costs ~1.4 s. The rule is how the
+        # host launches an exec-form `node`: on Windows only a real node.exe counts (an exec'd command is
+        # never a .cmd/.bat shim); elsewhere a regular `node` file with an execute bit (where the runtime cannot
         # read the mode, existence is enough).
         $nodeExe = ''
         $nodeFile = if ([IO.Path]::DirectorySeparatorChar -eq '\') { 'node.exe' } else { 'node' }

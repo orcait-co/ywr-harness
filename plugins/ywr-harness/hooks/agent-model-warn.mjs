@@ -64,8 +64,8 @@
 // renders through inline() and a length cap so it cannot forge banner lines. inline()'s class is
 // harness_config.CONTROL's — C0, DEL, U+0085 NEL, U+2028/U+2029 — plus the backtick: a model reads
 // this output, and it may take any of the three Unicode breaks as a line break. The class lives in
-// hook-lib.mjs; the three pwsh hooks that still carry their own Inline() are held to it by
-// Assert-InlineParity (lib/selftest-lib.ps1).
+// hook-lib.mjs; no pwsh hook is left to carry a copy, and the hooks module prerequisites.mjs repeats it
+// in flatten(), held to it by its own selftest (ADR 0142).
 // The prose states its rules and cites no decision numbers: a bare "ADR NNNN" resolves against the
 // repo the reader stands in, and this canon is private, so a member can never follow one (spec 0006
 // §3.1). No network, no git, no file writes — one node spawn per Agent call is the whole cost.

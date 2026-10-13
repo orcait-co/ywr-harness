@@ -23,7 +23,7 @@ stays each member's choice:
 Plugin components resolve as `ywr-harness:<name>`. A bare name does not resolve:
 
 ```
-/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:feedback   /ywr-harness:artifact-publish
+/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:feedback   /ywr-harness:artifact-publish   /ywr-harness:setup
 Workflow({name: 'ywr-harness:adversarial-review', args: {...}})
 ```
 
@@ -41,14 +41,14 @@ calls the scripts directly and never goes through the host's component registry.
 | `directory-added-guard.mjs` | `DirectoryAdded` | Visibility only by construction — the event carries no decision control and fires after the permission refresh. Its banner never reaches you: an `/add-dir` message is next-turn context for CLAUDE, an SDK `register_repo_root` one goes to the debug log. So it is English and tells the model that the added tree is editable and not to be assumed covered by this project's gates, which surfaces it contributes (`.claude/skills`, `.claude/commands`, `.claude/agents`, the two settings keys), and whether its instruction files (`CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules`, `CLAUDE.local.md`) are in context — and asks it to tell you in one sentence (ADR 0097). It speaks on every mid-session add whose payload parses; an unusable `directory` gets a SCHEMA DRIFT banner instead. |
 | `session-start-githooks-nudge.mjs` | `SessionStart` | Suggest-only (ADR 0029). Speaks exactly when the work tree carries `.githooks/` and this clone's `core.hooksPath` is unset — the state where no git hook runs and nothing else says so until slice close or CI. Names the one-line fix; never sets it. A wired clone, a repo without `.githooks/`, and a deliberate foreign `hooksPath` are all silent. |
 | `session-start-model-route-guard.mjs` | `SessionStart` (matcher `startup\|resume\|fork`) | Warn-only (ADR 0107, ADR 0130, ADR 0132). Speaks exactly when a setting can move a model alias to an older model, or a `CLAUDE_CODE_EFFORT_LEVEL` overrides every worker effort pin: an `ANTHROPIC_DEFAULT_*_MODEL`, a `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (any value; the second moves every workflow agent, the model of each `agent()` call included), a full id in `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_MODEL` / a settings `model`, a non-empty `modelOverrides`, or a `CLAUDE_CODE_USE_*` cloud provider; or a non-empty `CLAUDE_CODE_EFFORT_LEVEL`, which beats an agent's frontmatter `effort`, a per-call Agent `effort` (both per the docs) and a Workflow `agent()` `effort` (measured on 2.1.295) — read from the environment and the user, project and local settings files. One Korean line naming each setting and where it is set; never model context, never a change. Silent otherwise. `node session-start-model-route-guard.mjs --preflight` is the environment-only half the eval runner uses to refuse a paid run (one line per finding, exit 1; `preflight: clear`, exit 0); it never reads the effort variable, which the runner's wrapper sets itself. |
-| `session-start-node-check.ps1` | `SessionStart` (matcher `startup\|resume\|fork`) | Suggest-only. Speaks exactly when no `node` is found on `PATH` — the state in which the eight Node hooks cannot start and the host shows a hook error at session start, on a config change or added directory, on every Agent call and on every subagent stop, which reads like a defect in your repo. It names that cause, the fix (install Node.js LTS and restart Claude Code; `winget` / `brew` / the distro package), and the installed-but-invisible case (nvm, or Claude Code launched from a GUI/Dock that did not inherit the shell's `PATH`). Probes `PATH` entries by file, as the host launches an exec-form `node`: on Windows only `node.exe` counts (a `node.cmd`/`.bat`/`.ps1` shim cannot be launched and is named in the notice); elsewhere an executable `node` file (a non-executable one is named). Found: byte-silent. Stays PowerShell — it detects node's absence — and calls no cmdlet. Never blocks. |
 | `session-start-scaffold-refresh-nudge.mjs` | `SessionStart` | Suggest-only (ADR 0033). Speaks exactly when the work tree carries a ywr-harness scaffold whose TOOLCHAIN placements differ from the installed plugin's templates — the stale-vendor state ADR 0014 recorded as undetected. Byte comparison, EOL-insensitive (the seed `.gitattributes` makes CRLF/LF checkout variance legitimate); the placement map is read from `init.ps1`'s own literals by a small lexer (anything it cannot read as a bare string constant or a literal table is EXTRACTION DRIFT), so no second copy exists to drift. Comparison is exact apart from line endings — letter case, a BOM, U+00AD and NUL all count. Names the count, the files (capped list, cap stated), and the remedy; writes nothing. Seeds are never compared; a marker-less `post-commit` is skipped exactly as the scaffold refuses it. The advice is DIRECTION-AWARE (ADR 0042) via the repo's `.harness-version` stamp (written by `harness-init` on every successful run): repo ahead of this install → update the plugin, `harness-init` forbidden; repo behind → refresh, direction stated as measured; same version → hand-edit named; no readable stamp → the direction-blind caveat on the human banner AND the model context (a canon working tree mid-slice, or a multi-writer repo refreshed by a newer plugin, is *newer* than the installed copy and a re-run would revert it). When the running copy is itself a superseded cache install (a session that outlived a plugin update — ADR 0039), the advice flips: same file list, but the basis is named STALE, `/reload-plugins` (or a restart) is instructed, and `harness-init` is forbidden from that session — the loaded skill would place the old templates. The registry probe is best-effort; any failure returns the normal nudge. |
 | `session-start-version-announce.mjs` | `SessionStart` | Announce-once-per-version (ADR 0030). At the first session that loads a new plugin version it says so once — old → new, up to three bullets from `CHANGELOG.md` (the member release-notes canon, Korean), and the onboarding artifact's release-notes tab — then records the version in `~/.claude/ywr-harness/announced-version`, the plugin's only user-scope write. A machine's very first run gets a one-time link-only welcome instead (ADR 0031) — "업데이트됨" is claimed only when a previous version was recorded. Steady state and downgrades are silent; `manifest-gate.mjs` refuses a release whose top CHANGELOG entry does not match `plugin.json`. |
 | `subagent-telemetry.mjs` | `SubagentStop` | Appends a per-agent JSONL ledger to `<project>/.claude/telemetry/` — documented SubagentStop fields only (no model: the event carries none). Fail-open. |
 
 ### Hooks modules (Claude Mods)
 
-`hooks.json` names one entry under `modules`, `hooks/mods.mjs`, which registers two module files.
+`hooks.json` names one entry under `modules`, `hooks/mods.mjs`, which registers two module files:
+the delegation ledger and the prerequisite check.
 
 `hooks/delegation-ledger.mjs` is a function-hooks module (ADR 0117, ADR 0118). The host runs it in its own environment — not on `node` — from Claude Code 2.1.287.
 It hooks `agent.spawn`, `turn.step` and `turn.complete` and is **observe-only**: it passes every
@@ -61,7 +61,23 @@ slot or the oldest one; each file keeps its session's last 500 loops within 360 
 files never pass ~7 MiB per repo. A workflow worker shows as `loop: "unspawned"`; its steps show the model it inherited.
 No prompt, task description or answer is written. It writes only in a repo whose root holds
 `.harness.json`. Hosts below 2.1.287, `disableAllHooks`, `--safe-mode` and `--bare` drop it, and
-the nine hooks above keep running.
+the eight hooks above keep running.
+
+`hooks/prerequisites.mjs` checks the three tools the plugin needs (ADR 0142): `node` for the
+eight hooks above, `pwsh` 7+ for the skills' scripts and the selftests, `python` 3.9+ for the
+gate scripts. A mod needs neither `node` nor `pwsh`, so it can report any of them missing. At
+session start it runs each tool's `--version` in the background, so the start never waits for it.
+On a missing or too-old tool it shows one Korean band above the prompt naming the tools and
+`/ywr-harness:setup`, and adds one note for Claude to the conversation (hidden from you) naming
+the same. It installs nothing on its own. `/ywr-harness:setup` is the install, and typing it is
+your consent: on Windows it runs `winget install` for each missing tool (a UAC prompt can
+appear), shows the progress in the status line with a warning not to press Esc (an interrupt
+may cut the install off part-way; unmeasured — the next session's band shows what is left), reports each result and asks you to restart
+Claude Code — a running session keeps its old `PATH`. It never claims a tool is on `PATH`: the
+next session's check is the proof, and a band that comes back means installed-but-not-found (for
+`python`, possibly the Windows Store app execution alias; unmeasured). Off Windows, or without `winget`, it
+prints the commands and runs nothing. Where a host drops the module, `/ywr-harness:setup` runs
+as an ordinary skill and Claude does the same steps.
 
 `hooks/slice-status.mjs` held the slice status line of 0.67.0 (ADR 0138). Since 0.67.1 the entry
 does not register it, so no line shows (ADR 0140): its "run again" after every test or script run
@@ -231,19 +247,20 @@ do not run it.
 
 ## Prerequisites
 
-- `node` — runs eight of the nine hooks (`hooks/*.mjs`, with the shared `hooks/hook-lib.mjs`; Node
+- `node` — runs all eight hooks (`hooks/*.mjs`, with the shared `hooks/hook-lib.mjs`; Node
   costs ~70 ms per hook call against ~780 ms for pwsh, ADR 0116) and the gates
   `scripts/workflow-gates.mjs` and the workflow corpus gate. Absent `node`: those hooks cannot
   start on a member machine — the host reports a hook error and never a blocked call, since no
-  hook can block — and `session-start-node-check` (a PowerShell hook, so it can run without node)
-  says so once at each session start, with the fix; the suites report a skip locally and a hard
-  failure on CI, where they must actually run.
-- `pwsh` (PowerShell 7+) on `PATH` — `session-start-node-check.ps1`, the skills' scripts
-  (`harness-init`, `feedback`) and every selftest. Without it the Node hooks still run, but the node
-  notice itself shows a hook error naming `pwsh` at each session start.
+  hook can block; the suites report a skip locally and a hard failure on CI, where they must
+  actually run.
+- `pwsh` (PowerShell 7+) on `PATH` — the skills' scripts (`harness-init`, `feedback`) and every
+  selftest. No hook runs on it.
 - `python` 3.9+ (stdlib only) — every gate script under `scripts/` requires it:
   `harness_gates.py` (invoked by the `pre-commit` hook), `harness_retro.py` (by the
   `post-commit` hook), and `verify_map.py` (by `ywr-harness:verify`).
+
+The prerequisite check (`hooks/prerequisites.mjs`, above) names any of the three that is missing
+or too old at each session start, and `/ywr-harness:setup` installs them on your command.
 
 Hooks run wherever the session runs; the gates and selftests are also exercised on Linux pwsh,
 so nothing here may assume Windows.
@@ -282,7 +299,7 @@ caught.
 selftests above are hermetic — they call the scripts and never the host — each eval case runs a
 fresh, isolated `claude -p` child with ONLY this plugin loaded and grades what came out: a
 SessionStart hook's `additionalContext` reaching the model, `ywr-harness:verify` triggering on
-natural phrasing, the five `disable-model-invocation` skills staying uninvoked, and
+natural phrasing, the six `disable-model-invocation` skills staying uninvoked, and
 `ywr-harness:reviewer` resolving by its namespaced name with a `SubagentStop` ledger line behind
 it. Every case pins `model:` to one worker model alias (`opus`, ADR 0103/0107), and `manifest-gate.mjs`
 refuses a case that does not (or that carries an unknown frontmatter key or grader type — refusals the

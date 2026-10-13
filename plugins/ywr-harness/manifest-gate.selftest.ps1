@@ -383,8 +383,9 @@ Try-Case 'rn-url-hook-diverged' {
 # CLASS on a non-comment line; the comment-skip is what keeps hooks free to DOCUMENT the trap.
 Try-Case 'hangul-glued-variable' {
     param($d)
-    # A hook that stays pwsh (ADR 0116: the gate scans hooks/*.ps1 only — the trap cannot exist in .mjs).
-    $p = Join-Path $d 'hooks/session-start-node-check.ps1'
+    # A new pwsh hook (ADR 0116: the gate scans hooks/*.ps1 only — the trap cannot exist in .mjs).
+    # None ships since ADR 0142, so the case creates one.
+    $p = Join-Path $d 'hooks/session-start-probe.ps1'
     Add-Content -LiteralPath $p -Value "`n`$probe = `"지금 `$ver를 실행`"`n"
 }
 

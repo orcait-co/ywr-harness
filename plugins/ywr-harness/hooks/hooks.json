@@ -70,12 +70,6 @@
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start-model-route-guard.mjs"],
             "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "pwsh",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start-node-check.ps1"],
-            "timeout": 10
           }
         ]
       }
