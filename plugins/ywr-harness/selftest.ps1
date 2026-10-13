@@ -212,8 +212,9 @@ function Write-SuiteLine([string]$Line) {
 # label ("WARNING:" in English, a Korean label on the owner's ko-KR box — measured 2026-09-23), so
 # it is learned from one probe
 # child of the suites' shape, on first use only (~0.8 s measured; never under -Full or -List). A
-# probe that yields nothing leaves the WARN word, which covers an English host. A green run carries
-# no such line beyond its SKIPs, so this adds nothing to the green output.
+# probe that learns no label leaves the WARN word, which covers an English host only, so a failed
+# probe is never silent: the runner prints one `WARN [runner]` line with its reason after the results
+# (spec 0008 §3.1). A green run with a working probe carries no such line beyond its SKIPs.
 # Signal lines are matched on their PLAIN text: a child that decides it may colour its output (NO_COLOR
 # unset, e.g. launched from Git Bash) wraps a Write-Warning line in ANSI SGR codes, and a line that
 # starts with ESC matches no ^-anchored rule (fix check 2026-09-23: G1c/G1d red from Git Bash). The CSI
@@ -221,16 +222,19 @@ function Write-SuiteLine([string]$Line) {
 $script:ansiRx = [regex]::new([string][char]27 + '\[[0-9;?]*[ -/]*[@-~]')
 function ConvertTo-Plain([string]$Line) { return $script:ansiRx.Replace($Line, '') }
 $script:signalRx = $null
+$script:signalProbeMiss = $null
 function Get-SignalRx {
     if ($null -ne $script:signalRx) { return $script:signalRx }
     $rx = '^(SKIP|WARN|FAIL|KEEP)'
+    $learned = $false
     try {
         $probe = @(& ([Environment]::ProcessPath) -NoProfile -ExecutionPolicy Bypass -Command '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); Write-Warning ''ywr-warning-label-probe''' 2>&1 | ForEach-Object { "$_" })
         foreach ($l in $probe) {
             $m = [regex]::Match((ConvertTo-Plain $l), '^(\S.*?)\s*ywr-warning-label-probe\s*$')
-            if ($m.Success) { $rx += '|^' + [regex]::Escape($m.Groups[1].Value); break }
+            if ($m.Success) { $rx += '|^' + [regex]::Escape($m.Groups[1].Value); $learned = $true; break }
         }
-    } catch { }
+        if (-not $learned) { $script:signalProbeMiss = "no label line in $($probe.Count) probe line(s)" }
+    } catch { $script:signalProbeMiss = "the probe threw: $($_.Exception.Message)" }
     $script:signalRx = $rx
     return $rx
 }
@@ -339,6 +343,9 @@ foreach ($w in $work) {
         $signal = Get-SignalRx
         foreach ($l in $r.Lines) { $p = ConvertTo-Plain $l; if ($p -match $signal) { Write-SuiteLine $p } }
     }
+}
+if ($script:signalProbeMiss) {
+    Write-Host "WARN [runner] the Write-Warning label probe failed ($($script:signalProbeMiss)): a passing suite's localized warning line may be missing above; -Full prints every line" -ForegroundColor Yellow
 }
 $sum = [double]($results | Measure-Object -Property Seconds -Sum).Sum
 $slowest = $results | Sort-Object Seconds -Descending | Select-Object -First 1

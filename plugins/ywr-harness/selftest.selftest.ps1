@@ -9,9 +9,9 @@
 # equal the unsharded list, pairwise disjoint, every shard non-empty, sizes within one of each
 # other (round-robin). If that ever fails, a CI matrix would be green while a suite ran on no
 # shard — the silent-coverage-loss class this file exists to keep loud.
-# Section G makes the only real runs — five (G1, G3, G4, G5, G8), all of a COPY of the runner in
-# a fixture tree of stub suites (three; G8's own tree has two); G6 is -List again, G7 reads this
-# file's own FAIL echo.
+# Section G makes the only real runs — seven (G1, G3, G4, G5, G8, G9, G9b), all of a COPY of the runner in
+# a fixture tree of stub suites (three; G8's own tree has two, G9's and G9b's one each); G6 is -List again, G7 reads
+# this file's own FAIL echo.
 #
 # Usage: pwsh plugins/ywr-harness/selftest.selftest.ps1  (exit 0 = all green). 42–82 s measured
 # 2026-09-23 on a box shared with other agents' runs (section G is about half of it).
@@ -42,8 +42,8 @@ function Format-Nested([string]$Text) {
     return ((($Text.TrimEnd()) -split "`r?`n") | ForEach-Object { "    | $_" }) -join "`n"
 }
 
-function Assert-Case([string]$Name, $R, [int]$ExpectExit, [string[]]$MustMatch, [string[]]$MustNotMatch, [string]$NoNegative = '') {
-    $pre = @()
+function Assert-Case([string]$Name, $R, [int]$ExpectExit, [string[]]$MustMatch, [string[]]$MustNotMatch, [string]$NoNegative = '', [string[]]$PreFail = @()) {
+    $pre = @($PreFail | Where-Object { $_ })
     if ($R.Code -ne $ExpectExit) { $pre += "exit $($R.Code) (expected $ExpectExit)" }
     $script:LastFails = Get-AssertionFailure -Text $R.Out -MustMatch $MustMatch -MustNotMatch $MustNotMatch `
         -NoNegative $NoNegative -PreFail $pre
@@ -267,7 +267,7 @@ $ok = (Assert-True 'G2 results in discovery order (a, b, c) although c finished 
 $ok = (Assert-Case 'G1c passing suite condensed: its WARN, FAIL, KEEP and Write-Warning lines are kept' $g1 1 `
     @('(?m)^WARN \[a warn\] re-review trigger', '(?m)^FAIL \[a stray\] printed by a passing suite', '(?m)^KEEP \[a keep\] fixture kept',
         '(?m)^\S[^\r\n]*A-HOST-WARNING from a passing suite', '(?m)^WARNING: A-ANSI-WARNING coloured line') `
-    @('BODY-MARKER-A', '(?m)^PASS \[a body', '(?m)^--- a-slow')) -and $ok
+    @('BODY-MARKER-A', '(?m)^PASS \[a body', '(?m)^--- a-slow', '\[runner\]')) -and $ok
 # G1d — and they sit under their own suite's `ok` line, before the next suite's result.
 $kept = @('^SKIP \[a skip', '^WARN \[a warn\]', '^FAIL \[a stray\]', '^KEEP \[a keep\]', '^\S.*A-HOST-WARNING') | ForEach-Object { Get-LineIndex $g1.Out $_ }
 $ok = (Assert-True 'G1d the kept lines sit between their suite''s ok line and the next result' `
@@ -358,6 +358,32 @@ $ok = (Assert-Case "G8 a hung suite is killed at -SuiteTimeout ($hangLimit s) an
 $ok = (Assert-True 'G8b the hung suite''s grandchild died with it, and the run ended well before the stub''s 300 s' `
     ($stubReady -and $gcRead -and -not $gcAlive -and $hangClock.Elapsed.TotalSeconds -lt 120) `
     "stub ready before the kill=$stubReady (false: the limit fired mid-spawn — load, not the kill) · grandchild pid read=$gcRead alive=$gcAlive · wall $([int]$hangClock.Elapsed.TotalSeconds) s`n$(Format-Nested $g8.Out)") -and $ok
+
+# G9 / G9b — a label probe that fails is never silent (spec 0008 §3.1). Two copies of the runner: in
+# G9 the probe warns WITHOUT its marker (no label line); in G9b the probe calls a pwsh that does not
+# exist (it throws). Each must print exactly one `WARN [runner]` line with its reason, and the run stays
+# green. A swap that does not land exactly once fails its case, or the case would pass vacuously.
+$runnerText = [IO.File]::ReadAllText($runner)
+$probeCases = @(
+    @{ Id = 'G9'; Dir = 'probe-nolabel'; Old = "Write-Warning ''ywr-warning-label-probe''"; New = "Write-Warning ''label-probe-without-its-marker''"
+        Reason = 'no label line in \d+ probe line\(s\)'; Other = 'the probe threw'; What = 'learns no label' },
+    @{ Id = 'G9b'; Dir = 'probe-throws'; Old = '$probe = @(& ([Environment]::ProcessPath)'; New = '$probe = @(& (Join-Path $PSScriptRoot ''no-such-pwsh.exe'')'
+        Reason = 'the probe threw: \S'; Other = 'no label line in'; What = 'throws' })
+foreach ($pc in $probeCases) {
+    $fxProbe = Join-Path $fxBase $pc.Dir
+    New-Item -ItemType Directory -Force $fxProbe | Out-Null
+    $swapCount = ([regex]::Matches($runnerText, [regex]::Escape($pc.Old))).Count
+    [IO.File]::WriteAllText((Join-Path $fxProbe 'selftest.ps1'), $runnerText.Replace($pc.Old, $pc.New))
+    [IO.File]::WriteAllText((Join-Path $fxProbe 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
+    [IO.File]::WriteAllText((Join-Path $fxProbe 'p-ok.selftest.ps1'), "Write-Host 'PASS [p one]'`nexit 0`n")
+    $rp = Invoke-RunnerFresh (Join-Path $fxProbe 'selftest.ps1') @('-Jobs', '1')
+    $warnCount = ([regex]::Matches($rp.Out, '(?m)^WARN \[runner\]')).Count
+    $pre = @($(if ($swapCount -ne 1) { "the swap text appears $swapCount time(s) in selftest.ps1, expected 1 — the case proves nothing" }),
+        $(if ($warnCount -ne 1) { "$warnCount WARN [runner] line(s), expected exactly 1" }))
+    $ok = (Assert-Case "$($pc.Id) a probe that $($pc.What) prints exactly one WARN [runner] line with its reason; the run stays green" $rp 0 `
+        @('all gates green', '(?m)^ok   p-ok\.selftest\.ps1', ('(?m)^WARN \[runner\] the Write-Warning label probe failed \(' + $pc.Reason)) `
+        @($pc.Other, '(?m)^FAIL') -PreFail $pre) -and $ok
+}
 
 # Not cased: the runner's could-not-start and no-result branches. Neither is reachable from a
 # fixture without a test hook in the shipped runner — tried 2026-09-23: with PATH pointing at an
