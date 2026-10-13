@@ -227,7 +227,7 @@ function main(payload) {
   }
   if (efforts.length) {
     parts.push(`워커의 effort pin 을 덮어쓰는 설정이 있습니다: ${efforts.map(f => f.text).join('; ')}.`,
-      '조직 가이드: 워커 effort 는 역할별로 정합니다 — 의도한 설정이 아니면 값을 지우세요.')
+      'ywr-harness 규칙: 워커 effort 는 역할별로 정합니다 — 의도한 설정이 아니면 값을 지우세요.')
   }
   parts.push('이 훅은 안내만 하며 아무것도 바꾸거나 막지 않았습니다.')
   emit({ systemMessage: parts.join(' ') })

@@ -176,7 +176,7 @@ $ok = (Assert-Warn 'WF6 the subagent and the workflow model together warn with b
         ($wfCore + @('`CLAUDE_CODE_SUBAGENT_MODEL=haiku` \(환경변수\)', '`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=opus` \(환경변수\)')) @('effort pin')) -and $ok
 
 # --- the effort pin (ADR 0130) -------------------------------------------------------------------
-$effCore = @('^\[hook:model-route\]', 'effort pin 을 덮어쓰는', '역할별', '지우세요', '막지 않았습니다')
+$effCore = @('^\[hook:model-route\]', 'effort pin 을 덮어쓰는', 'ywr-harness 규칙: 워커 effort 는 역할별', '지우세요', '막지 않았습니다')
 $ok = (Assert-Warn 'E1 CLAUDE_CODE_EFFORT_LEVEL in the environment warns alone, with no model clause' `
         (Invoke-Guard -Env @{ CLAUDE_CODE_EFFORT_LEVEL = 'high' }) `
         ($effCore + @('`CLAUDE_CODE_EFFORT_LEVEL=high` \(환경변수\)', '호출별 `effort` 보다 우선')) @('family alias', '최신이 아닌 모델')) -and $ok

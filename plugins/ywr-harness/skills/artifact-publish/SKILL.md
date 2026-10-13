@@ -91,12 +91,11 @@ Nothing has left the machine yet. On stop, print what remains so the member can 
 ## 4. Publish, with the enforced read sequence
 
 For each confirmed item, publish `source` to its declared `url` with the Artifact tool. The
-tool's precondition is that THIS conversation has fetched the live version — and it is
-ORDER-SENSITIVE: the fetch counts only AFTER a refusal has handed over the served copy and that
-copy has been Read (ywr-harness fact 43; measured on the v0.40.0, v0.49.0 and v0.50.0 releases —
-the last one placed `action: read` before the first publish, and it counted for nothing: the
-refusals came anyway, +45k tokens). `read_file` never satisfies it (measured). The sequence,
-exactly as measured:
+tool refuses a republish until THIS conversation has Read the live version, and the order
+matters: a fetch placed BEFORE the first refusal counts for nothing (ywr-harness fact 43,
+measured on four releases, v0.40.0 to v0.51.0; the v0.50.0 run placed `action: read` first and
+paid +45k tokens for it). `read_file` never satisfies the precondition (measured). The sequence,
+as last measured (ywr-harness fact 138, Claude Code 2.1.296):
 
 1. `Artifact publish` of `source` to `url`. It is REFUSED — the contract, not an error: the tool
    saves the served page to a local file and demands it be Read line by line. From Claude Code
@@ -107,21 +106,26 @@ exactly as measured:
    count — denser lines need smaller slices (measured 2026-09-07 on a ~2,000-line page: 250-line
    reads exceeded the cap past the middle of the file, ~125-line slices did not). ~50k tokens at
    136 KB.
-3. `Artifact publish` again. It is REFUSED again, naming the fetch ("identical content already
-   refused … fetch the artifact's URL again — re-Reading a file an earlier refusal handed you
-   does not count"). The call costs a short result and stays in the sequence: both measured runs
-   had it, and whether the tool accepts the fetch without it is unmeasured — leaving it out risks
-   a second fetch (~45k), keeping it risks nothing.
-4. `Artifact action: read` of the `url` — the fetch AFTER the refusal (~45k tokens at 136 KB; the
-   page enters context). Once per conversation.
-5. `Artifact publish` — succeeds (the result names the new Version).
+3. `Artifact publish` again, unchanged. It is REFUSED as identical content. Read what the
+   refusal asks for:
+   - It says to publish again unchanged when the content already includes the live version's
+     changes → §3 proved that (the live body is a committed state of the source), so go to
+     step 4.
+   - It names a fetch of the URL ("fetch the artifact's URL again — re-Reading a file an
+     earlier refusal handed you does not count") → this is the older host behaviour of fact 43.
+     Call `Artifact action: read` of the `url` once (~45k tokens at 136 KB; the page enters
+     context), then go to step 4.
+   - It says neither → stop and report its text. A host change moved the precondition; never
+     publish again on a guess.
+4. `Artifact publish` — succeeds (the result names the new Version). Record in the close which
+   branch of step 3 ran: fact 138 is one measurement, and the next republish re-measures it.
 
 For a large page (megabytes) the saved copy counts as viewed and step 2 is not demanded. Never
 fight a refusal with `force`, and never read the served copy into context for a comparison — the
 hash is the proof (fact 38); §3's `read_file` is what proves nothing is lost, so the refusal's
-saved copy is never needed for a proof. Budget ≈95k tokens of served page per republish at 136 KB
-(steps 2 and 4), and none when §3 finds the page already live; a smaller page costs proportionally
-less.
+saved copy is never needed for a proof. Budget ≈50k tokens of served page per republish at 136 KB
+(step 2), ≈95k when step 3 names the fetch, and none when §3 finds the page already live; a
+smaller page costs proportionally less.
 
 A publish refused for OWNERSHIP is final for this machine: only the account that owns the URL
 can redeploy it. Report which account owns it and stop — never work around it.

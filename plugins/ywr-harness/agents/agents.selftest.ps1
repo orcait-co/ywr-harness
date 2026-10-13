@@ -1,8 +1,8 @@
 # Self-test for the plugin's agent definitions (ADR 0100, ADR 0109).
 # Usage: pwsh plugins/ywr-harness/agents/agents.selftest.ps1
 #
-# One thing no other suite reads: the PINS. Every agent's model and effort is a decision (org guide,
-# ADR 0025/0109), and a frontmatter edit changes what every Agent-tool spawn costs with nothing else
+# One thing no other suite reads: the PINS. Every agent's model and effort is a decision (the harness rule,
+# ADR 0025/0109; the org guide carried it until v1.19, ADR 0144), and a frontmatter edit changes what every Agent-tool spawn costs with nothing else
 # failing. The suite enumerates agents/*.md, so an agent added without a decided pin fails here.
 # ADR 0109 retired the Opus-session twin `worker-opus`: `worker` (sonnet · high) is the delegate on
 # every session model, measured faster at equal quality, so no agent pins opus.

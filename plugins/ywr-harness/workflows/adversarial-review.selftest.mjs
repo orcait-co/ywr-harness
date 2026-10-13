@@ -251,7 +251,7 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   else pass(name);
 }
 
-// 10. the spawn pins (org guide worker discipline). Effort and model are decisions
+// 10. the spawn pins (the ywr-harness worker discipline). Effort and model are decisions
 //     with measurements behind them, and both are one word in a helper call — a silent flip back
 //     to `high` would restore ~50% of the review's cost with nothing red, and dropping the
 //     explicit model would let workers inherit a deep-work session's Opus. Asserted per phase
