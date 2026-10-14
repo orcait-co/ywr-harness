@@ -14,7 +14,10 @@
 // no `model_param` proves the call gave no model, so the worker inherited the session's. On 2.1.287 to
 // 2.1.291 such a worker raises no `agent.spawn` (fact 89): its loop is written with `spawn: null` and
 // `loop: 'unspawned'`, whose steps still name the model and effort it ran on. On 2.1.292+ `unspawned`
-// means an evicted spawn row.
+// means an evicted spawn row. From Claude Code 2.1.299 a resumed agent raises `agent.spawn` again with
+// `e.resume` ({agentId}; fact 141): its first spawn row is KEPT and counts the resume in `resumes`, so
+// the per-call model and the first `tool_use_id`/`background` survive (ADR 0147). A resume with no row
+// in memory starts one from the resume event, flagged `from_resume`.
 //
 // Observe-only, by contract: every hook passes the event on unchanged (`next(e)`, `yield* next(e)`),
 // never rewrites `model`/`effort`, never denies, never draws, and swallows its own failures — the
@@ -52,7 +55,7 @@ export const MAX_STEPS = 200
 // crash) would otherwise leak; past this many, the oldest is dropped unwritten.
 export const MAX_OPEN = 256
 // Spawn rows outlive their loop (a resumed agent runs again under the same id), so they are capped
-// separately and higher (a row is ~300 B). An evicted row would make that agent's later run read as
+// separately and higher (a row is ~330 B); a resume moves its row to the newest end. An evicted row would make that agent's later run read as
 // `unspawned` — the workflow signal ADR 0117 Decision 6 counts on hosts before 2.1.292, and a plain
 // eviction after — so each record carries `spawn_rows_evicted`, the session's running count, and a
 // reader discounts `unspawned` when it is > 0.
@@ -116,6 +119,8 @@ export function spawnRow(e, r) {
     teammate: !!e.isTeammate,
     workflow: wf ? { run_id: wf.runId ?? null, agent_index: wf.agentIndex ?? null } : null,
     parent_agent_id: e.parentAgentId ?? null,
+    resumes: e.resume ? 1 : 0,
+    from_resume: !!e.resume,
   }
 }
 
@@ -158,6 +163,16 @@ export function createLedger({ maxOpen = MAX_OPEN, maxSpawns = MAX_SPAWNS, maxSt
     spawn(e, r) {
       const agentId = r && typeof r === 'object' ? r.agentId : undefined
       if (!agentId) return
+      const first = spawns.get(agentId)
+      if (e.resume && first) {
+        // ADR 0147: a loop row already written holds its own copy, so the count is the resumes so far.
+        // A denied resume runs nothing, so it changes nothing.
+        if ('deny' in r && r.deny) return
+        first.resumes++
+        spawns.delete(agentId)
+        spawns.set(agentId, first)
+        return
+      }
       spawns.set(agentId, spawnRow(e, r))
       cap(spawns, maxSpawns, () => { evicted++ })
     },

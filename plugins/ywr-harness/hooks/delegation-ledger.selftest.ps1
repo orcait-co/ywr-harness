@@ -124,7 +124,8 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   eq('agent-tool: loop kind, ids, ts; no per-row schema or session', [d.loop, d.agent_id, d.turn_id, d.ts, 'schema' in d, 'session_id' in d],
     ['agent-tool', 'a1', 't1', '2026-10-02T01:02:03.456Z', false, false])
   eq('agent-tool: spawn row', d.spawn, { tool_use_id: 'tu1', subagent_type: 'ywr-harness:mech', provider: 'ywr-harness/user', model_param: null,
-    parent_model: 'claude-opus-5-5', model: 'claude-haiku-4-5', denied: false, fork: false, background: false, teammate: false, workflow: null, parent_agent_id: null })
+    parent_model: 'claude-opus-5-5', model: 'claude-haiku-4-5', denied: false, fork: false, background: false, teammate: false, workflow: null, parent_agent_id: null,
+    resumes: 0, from_resume: false })
   eq('file: step_fields names the tuple order once', f.step_fields, ['index', 'model', 'effort', 'message_count', 'stop_reason', 'input_tokens',
     'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'usage_model'])
   eq('agent-tool: both steps as tuples, in order, with their usage; usage_model null when it equals model', d.steps,
@@ -199,6 +200,52 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   eq('an errored loop is written with its reason', [docs[1].complete.reason, docs[1].steps.length], ['error', 1])
 }
 
+// 4a. a resume on 2.1.299+ (fact 141): `agent.spawn` again, with `resume: {agentId}`, the SendMessage's
+//     tool_use_id, `background: true` and no model. The first row is kept and counts the resume (ADR 0147).
+{
+  const E = engine()
+  const first = { tool_use_id: 'tu-A', subagentType: 'ywr-harness:mech', model: 'haiku', parentModel: 'p', background: false, fork: false }
+  await spawn(E, first, { model: 'claude-haiku-5-5', agentId: 'R' })
+  await step(E, { turnId: 'r1', index: 0, model: 'claude-haiku-5-5', messageCount: 1, agentId: 'R' }, [], null)
+  await complete(E, { durationMs: 1, turnId: 'r1', agentId: 'R', reason: 'answer' }, {})
+  const resume = { tool_use_id: 'tu-SM', subagentType: 'ywr-harness:mech', parentModel: 'p', background: true, fork: false, resume: { agentId: 'R' } }
+  const rr = { model: 'claude-haiku-5-5', agentId: 'R' }
+  eq('resume: the result next resolved to is returned as is', (await spawn(E, resume, rr)) === rr, true)
+  await step(E, { turnId: 'r2', index: 0, model: 'claude-haiku-5-5', messageCount: 4, agentId: 'R' }, [], null)
+  await complete(E, { durationMs: 1, turnId: 'r2', agentId: 'R', reason: 'answer' }, {})
+  await spawn(E, resume, rr)
+  await complete(E, { durationMs: 1, turnId: 'r3', agentId: 'R', reason: 'answer' }, {})
+  const docs = last(E)[1].loops
+  eq('resume: every run keeps the first tool_use_id, background and model_param',
+    docs.map(d => [d.loop, d.spawn.tool_use_id, d.spawn.background, d.spawn.model_param, d.spawn.from_resume]),
+    [['agent-tool', 'tu-A', false, 'haiku', false], ['agent-tool', 'tu-A', false, 'haiku', false], ['agent-tool', 'tu-A', false, 'haiku', false]])
+  eq('resume: a written loop keeps the count it was written with (0, 1, 2)', docs.map(d => d.spawn.resumes), [0, 1, 2])
+  const N = engine()
+  await spawn(N, { ...resume, resume: { agentId: 'Q' } }, { model: 'claude-haiku-5-5', agentId: 'Q' })
+  await complete(N, { durationMs: 1, turnId: 'q1', agentId: 'Q', reason: 'answer' }, {})
+  const q = N.writes[0][1].loops[0]
+  eq('resume with no row in memory: a row from the resume event, flagged',
+    [q.loop, q.spawn.tool_use_id, q.spawn.background, q.spawn.model_param, q.spawn.resumes, q.spawn.from_resume],
+    ['agent-tool', 'tu-SM', true, null, 1, true])
+  const O = M.createLedger()
+  O.spawn({ tool_use_id: 'tu-O', subagentType: 't', model: 'haiku', background: false }, { model: 'm', agentId: 'O' })
+  O.step({ turnId: 'o1', index: 0, model: 'm', agentId: 'O' }, null)
+  O.spawn({ tool_use_id: 'tu-SM', subagentType: 't', background: true, resume: { agentId: 'O' } }, { model: 'm', agentId: 'O' })
+  const os = O.complete({ turnId: 'o1', agentId: 'O' }, { iso: 'i' }).spawn
+  eq('a resume while a loop is still open: that loop reads the kept first row with the count at its end (spec 0006 §3.4)',
+    [os.tool_use_id, os.background, os.model_param, os.resumes, os.from_resume], ['tu-O', false, 'haiku', 1, false])
+  const P = M.createLedger()
+  P.spawn({ subagentType: 't' }, { model: 'm', agentId: 'P' })
+  P.spawn({ subagentType: 't', model: 'opus' }, { model: 'm2', agentId: 'P' })
+  eq('a second non-resume spawn of one agentId still replaces the row', P.complete({ turnId: 'p', agentId: 'P' }, { iso: 'i' }).spawn.model_param, 'opus')
+  const D = M.createLedger()
+  D.spawn({ subagentType: 't' }, { model: 'm', agentId: 'D' })
+  D.spawn({ subagentType: 't', resume: { agentId: 'D' } }, { deny: 'no', agentId: 'D' })
+  D.spawn({ subagentType: 't', resume: { agentId: 'D' } }, { deny: 'no' })
+  eq('a denied resume, with or without an agentId, leaves the row and its count alone',
+    [D.complete({ turnId: 'd', agentId: 'D' }, { iso: 'i' }).spawn.resumes, D.sizes().spawns], [0, 1])
+}
+
 // 4b. an agent-team teammate (2.1.289+: `agent.spawn` with `isTeammate`): kind stays agent-tool, the row flags it
 {
   const E = engine()
@@ -209,7 +256,7 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   eq('teammate: agent-tool kind, schema 2', [d.loop, d.agent_id, E.writes[0][1].schema], ['agent-tool', 'T1', 2])
   eq('teammate: the whole spawn row (null tool_use_id joins by agentId)', d.spawn, { tool_use_id: null, subagent_type: 'researcher', provider: null,
     model_param: null, parent_model: 'claude-opus-5-5', model: 'claude-sonnet-5-5', denied: false, fork: false, background: false, teammate: true,
-    workflow: null, parent_agent_id: null })
+    workflow: null, parent_agent_id: null, resumes: 0, from_resume: false })
 }
 
 // 5. not adopted: a root without .harness.json gets nothing, the turn still gets its result
@@ -395,6 +442,14 @@ eq('pass-through: every next() was handed the very event the hook received (' + 
   eq('spawn rows capped at maxSpawns, each eviction counted', [S.sizes().spawns, S.sizes().evicted], [2, 1])
   const ev = S.complete({ turnId: 'x', agentId: '1' }, { iso: 'i' })
   eq('an evicted agent reads unspawned AND the record says rows were evicted', [ev.loop, ev.spawn_rows_evicted], ['unspawned', 1])
+  const U = M.createLedger({ maxSpawns: 2 })
+  U.spawn({ subagentType: 't' }, { model: 'm', agentId: 'old' })
+  U.spawn({ subagentType: 't' }, { model: 'm', agentId: 'mid' })
+  U.spawn({ subagentType: 't', resume: { agentId: 'old' } }, { model: 'm', agentId: 'old' })
+  U.spawn({ subagentType: 't' }, { model: 'm', agentId: 'new' })
+  eq('a resume moves its row to the newest end: the idle row is the one evicted',
+    [U.complete({ turnId: 'o', agentId: 'old' }, { iso: 'i' }).loop, U.complete({ turnId: 'm', agentId: 'mid' }, { iso: 'i' }).loop, U.sizes().evicted],
+    ['agent-tool', 'unspawned', 1])
   const T = M.createLedger({ maxSteps: 2 })
   T.step({ turnId: 'k', index: 0, model: 'm1', effort: 'low' }, null)
   T.step({ turnId: 'k', index: 1, model: 'm1', effort: 'low' }, null)
