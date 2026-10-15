@@ -33,6 +33,26 @@ if (-not $gitOk) {
     exit 0
 }
 $gitDir = Split-Path (Get-Command git).Source -Parent
+# ADR 0149 §2 (L2): on Windows the PATH `git` is the cmd\git.exe LAUNCHER (one extra process per git call);
+# the narrowed PATHs below carry the worker's directory (mingw64\bin) in its place — but ONLY when that
+# directory holds no gh, claude, python (python3 and py too: init.ps1 probes them) or node under any
+# extension PowerShell would resolve: those names
+# are the "unreachable" premise of every narrowed-PATH case here. A directory that shadows one keeps the
+# launcher directory and says so with a visible WARN line (never silent). Non-Windows: '' — unchanged.
+function Get-ShadowingCommand([string]$Dir) {
+    $exts = @('') + @(($env:PATHEXT -split ';') | Where-Object { $_ }) + @('.ps1') | Select-Object -Unique
+    $hits = @()
+    foreach ($name in @('gh', 'claude', 'python', 'python3', 'py', 'node')) {
+        foreach ($e in $exts) { if (Test-Path -LiteralPath (Join-Path $Dir "$name$e") -PathType Leaf) { $hits += "$name$e" } }
+    }
+    return $hits
+}
+$gitWorkerDir = Get-GitWorkerDir (Get-Command git).Source
+if ($gitWorkerDir) {
+    $shadow = @(Get-ShadowingCommand $gitWorkerDir)
+    if ($shadow.Count) { Write-Host "WARN [L2 git worker dir] $gitWorkerDir holds $($shadow -join ', '), which the narrowed PATH must not reach — keeping the cmd\ launcher directory $gitDir (ADR 0149 §2)" -ForegroundColor Yellow }
+    else { $gitDir = $gitWorkerDir }
+}
 # The refresh nudge feedback.ps1 quotes is a Node hook (ADR 0116), found by a PATH scan: absent node is
 # a reported skip locally and a FAIL on CI, and the narrowed child PATHs below must carry node's directory.
 Assert-NodeOrExit 'feedback'
@@ -43,8 +63,15 @@ $sep = [IO.Path]::PathSeparator
 $ok = $true
 $savedPath = $env:PATH
 $savedMode = $env:YWR_FAKE_GH_MODE; $savedLog = $env:YWR_FAKE_GH_LOG; $savedProto = $env:GIT_ALLOW_PROTOCOL
+# L4 (ADR 0149): the fixture commits take their identity from the environment, set once here — the four
+# per-fixture `git config user.*` spawns are gone. Nothing in feedback.ps1 or init.ps1 reads user.name/email.
+$savedGitId = @{}
+foreach ($k in 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL') { $savedGitId[$k] = [Environment]::GetEnvironmentVariable($k) }
+function Restore-GitIdentity { foreach ($k in $savedGitId.Keys) { [Environment]::SetEnvironmentVariable($k, $savedGitId[$k]) } }
+$env:GIT_AUTHOR_NAME = 'selftest'; $env:GIT_COMMITTER_NAME = 'selftest'
+$env:GIT_AUTHOR_EMAIL = 'selftest@example.invalid'; $env:GIT_COMMITTER_EMAIL = 'selftest@example.invalid'
 $fx = New-FixtureRoot 'feedback-selftest'
-trap { $env:PATH = $savedPath; $env:YWR_FAKE_GH_MODE = $savedMode; $env:YWR_FAKE_GH_LOG = $savedLog; $env:GIT_ALLOW_PROTOCOL = $savedProto; Remove-FixtureRoot $fx; break }
+trap { $env:PATH = $savedPath; $env:YWR_FAKE_GH_MODE = $savedMode; $env:YWR_FAKE_GH_LOG = $savedLog; $env:GIT_ALLOW_PROTOCOL = $savedProto; Restore-GitIdentity; Remove-FixtureRoot $fx; break }
 
 # git is the other network boundary: init.ps1 fetches the origin before its upstream-ahead check, under
 # -DryRun too (ADR 0137), and the scaffolded fixture's origin is a github.com ssh URL. Unblocked, each of
@@ -72,12 +99,14 @@ $env:YWR_FAKE_GH_LOG = $ghLog
 # No param block ON PURPOSE: with declared parameters PowerShell's binder parses gh's own flags
 # (--json, --limit, --state) as parameter names and throws "positional parameter cannot be found"
 # — measured on the first run of this suite. Bare $args keeps every token verbatim.
+# stderr goes through Write-Error, NOT [Console]::Error: the suite runs feedback.ps1 in a runspace (ADR 0149),
+# where the process's real stderr is not captured, but feedback.ps1's own `2>&1` still merges the error stream.
 $Rest = @($args | ForEach-Object { [string]$_ })
 $mode = $env:YWR_FAKE_GH_MODE
 if ($env:YWR_FAKE_GH_LOG) { Add-Content -LiteralPath $env:YWR_FAKE_GH_LOG -Value ($Rest -join [char]0x1F) -Encoding utf8 }
 $sub = "$($Rest[0]) $($Rest[1])"
 switch ($sub) {
-    'auth status'  { if ($mode -eq 'unauth') { [Console]::Error.WriteLine('You are not logged into any GitHub hosts. To log in, run: gh auth login'); exit 1 }; Write-Output 'github.com: Logged in'; exit 0 }
+    'auth status'  { if ($mode -eq 'unauth') { Write-Error 'You are not logged into any GitHub hosts. To log in, run: gh auth login' -ErrorAction Continue; exit 1 }; Write-Output 'github.com: Logged in'; exit 0 }
     # Kept although feedback.ps1 no longer lists labels (ADR 0085): a regression that re-adds the
     # preflight is then LOGGED (F2b reads the log) instead of dying on the unexpected-subcommand arm.
     'label list'   { Write-Output '[{"name":"bug"},{"name":"upstream-report"}]'; exit 0 }
@@ -92,8 +121,8 @@ switch ($sub) {
         else { Write-Output '[]' }
         exit 0
     }
-    'issue create' { if ($mode -eq 'createfail') { [Console]::Error.WriteLine('GraphQL: Resource not accessible by integration (createIssue)'); exit 1 }; Write-Output 'https://github.com/orcait-co/ywr-harness/issues/999'; exit 0 }
-    default        { [Console]::Error.WriteLine("fake gh: unexpected subcommand '$sub'"); exit 64 }
+    'issue create' { if ($mode -eq 'createfail') { Write-Error 'GraphQL: Resource not accessible by integration (createIssue)' -ErrorAction Continue; exit 1 }; Write-Output 'https://github.com/orcait-co/ywr-harness/issues/999'; exit 0 }
+    default        { Write-Error "fake gh: unexpected subcommand '$sub'" -ErrorAction Continue; exit 64 }
 }
 '@ | Set-Content -LiteralPath (Join-Path $fakeDir 'gh.ps1') -Encoding utf8
 
@@ -129,7 +158,36 @@ if ($ghLeak) {
 # NOT `$Args`: that name is PowerShell's automatic unbound-arguments variable, and a parameter
 # declared under it reads as EMPTY inside the function — every child ran without arguments on the
 # first run of this suite (all cases red on "a report needs a description").
+#
+# ADR 0149 (L1): every case but the canary runs feedback.ps1 in a NEW RUNSPACE of this process through the
+# lib's Invoke-ScriptInRunspace — no `pwsh -File` cold start per case (~3.4 s → ~2.3 s measured, fact 145).
+# The narrowed PATH is process-wide env, so it applies inside the runspace exactly as it did to a child.
+# Contract (lib): Code is feedback.ps1's own `exit N`; an abort (missing script, `throw`, a binding failure)
+# is Code -1, which no case's `want` accepts. What stays a REAL `pwsh -File` child, and why:
+#   - A1 (the canary, Invoke-FeedbackChild): members run feedback.ps1 as a process, so ONE happy-path case
+#     keeps the real shape, and A1c compares the runspace path against it (a divergence goes red);
+#   - G2/G3 (Invoke-AutoLoadProbe): their subject IS a fresh process's module auto-loading (ADR 0111 §5b);
+#   - the init.ps1 scaffold run (B0) and, inside feedback.ps1, its own init and node children.
+function ConvertTo-ArgTable([string[]]$ScriptArgs) {
+    # Call sites pass argv-shaped arrays ('-Description', 'x', '-File'); an array splat binds positionally,
+    # so fold to a hashtable: '-Name' + a following non-'-Name' token is a pair, otherwise a switch.
+    # LIMIT: a VALUE shaped like '-Word' would fold as a switch and fail to bind (Code -1), where a child bound
+    # it as the value. No call site passes one; a case that needs one calls Invoke-FeedbackChild instead.
+    $t = @{}
+    for ($i = 0; $i -lt $ScriptArgs.Count; $i++) {
+        $k = $ScriptArgs[$i].TrimStart('-')
+        if ($i + 1 -lt $ScriptArgs.Count -and $ScriptArgs[$i + 1] -notmatch '^-[A-Za-z]+$') { $t[$k] = $ScriptArgs[$i + 1]; $i++ }
+        else { $t[$k] = $true }
+    }
+    return $t
+}
 function Invoke-Feedback([string[]]$ScriptArgs, [string]$Path) {
+    $env:PATH = $Path
+    try { $r = Invoke-ScriptInRunspace -Path $script -Arguments (ConvertTo-ArgTable $ScriptArgs); $script:Exit = $r.Code; $o = [string]$r.Out }
+    finally { $env:PATH = $savedPath }
+    return $o
+}
+function Invoke-FeedbackChild([string[]]$ScriptArgs, [string]$Path) {
     $env:PATH = $Path
     try { $o = (& $pwshExe -NoProfile -File $script @ScriptArgs 2>&1 | Out-String); $script:Exit = $LASTEXITCODE }
     finally { $env:PATH = $savedPath }
@@ -163,27 +221,76 @@ function Invoke-GitQ([string]$Repo, [string[]]$GitArgs) { & git -C $Repo @GitArg
 $plain = Join-Path $fx 'plain'                 # a repo with no scaffold
 New-Item -ItemType Directory -Force -Path $plain | Out-Null
 Invoke-GitQ $plain @('-c', 'init.defaultBranch=main', 'init', '-q')
-Invoke-GitQ $plain @('config', 'user.email', 'selftest@example.invalid'); Invoke-GitQ $plain @('config', 'user.name', 'selftest')
 Set-Content -LiteralPath (Join-Path $plain 'README.md') -Value 'plain'
 Invoke-GitQ $plain @('add', '-A'); Invoke-GitQ $plain @('commit', '-q', '-m', 'init')
 
 $outDir = Join-Path $fx 'out'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
+# --- Z0: the contracts the in-process runner rests on (ADR 0149; same pins as init.selftest) ---------
+# `*>&1` captures SIX streams where a child's console capture saw two: feedback.ps1 reports through
+# Write-Host (Say) only, so a Write-Warning/-Verbose/-Debug/-Information would surface in $out for the
+# first time and could flip a `-notmatch`. The runner is a runspace in THIS process: a process-exit API
+# would end the whole suite where a child confined it. And the script's verdict is its own `exit`.
+$zWide = @(Select-String -LiteralPath $script -Pattern '\bWrite-(Warning|Verbose|Debug|Information)\b' | Where-Object { $_.Line -notmatch '^\s*#' })
+$ok = (Assert-True 'Z0 feedback.ps1 reports through Write-Host only (the *>&1 capture contract)' ($zWide.Count -eq 0) "lines: $(($zWide | ForEach-Object { $_.LineNumber }) -join ', ')") -and $ok
+$zExit = @(Select-String -LiteralPath $script -Pattern 'Environment\]::Exit|SetShouldExit' | Where-Object { $_.Line -notmatch '^\s*#' })
+$ok = (Assert-True 'Z0 feedback.ps1 never calls a process-exit API (runspace, not child)' ($zExit.Count -eq 0) "lines: $(($zExit | ForEach-Object { $_.LineNumber }) -join ', ')") -and $ok
+$zLast = @(Get-Content -LiteralPath $script | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^#' })[-1]
+$ok = (Assert-True 'Z0 feedback.ps1 ends in an explicit exit (Code is always its own verdict)' ($zLast -match '^\s*exit\s+\d+\s*$') "last statement: $zLast") -and $ok
+
+# L2 guard self-check (ADR 0149 §2): a worker directory holding gh / claude / python / node under ANY
+# resolvable spelling is seen by Get-ShadowingCommand, and an empty one is clean — so the guard cannot go
+# blind and let the narrowed PATH reach a real gh.
+$zClean = Join-Path $fx 'l2-clean'; $zDirty = Join-Path $fx 'l2-dirty'
+New-Item -ItemType Directory -Force -Path $zClean, $zDirty | Out-Null
+Set-Content -LiteralPath (Join-Path $zClean 'git.exe') -Value 'x'
+# The spellings follow what the guard resolves on this platform: PATHEXT exists on Windows only, so Linux
+# (CI ubuntu) resolves a bare name or .ps1 and the Windows spellings would not be seen there.
+$zDirtyNames = if ($IsWindows) { @('gh.cmd', 'claude', 'python.exe', 'python3.exe', 'py.exe', 'node.ps1') } else { @('gh', 'claude', 'python', 'python3', 'py.ps1', 'node') }
+foreach ($f in $zDirtyNames) { Set-Content -LiteralPath (Join-Path $zDirty $f) -Value 'x' }
+$zHit = @(Get-ShadowingCommand $zDirty)
+$ok = (Assert-True 'L2 the worker-dir guard sees a shadowing gh/claude/python/python3/py/node in every spelling and passes a clean directory' `
+        ($zHit.Count -eq 6 -and @(Get-ShadowingCommand $zClean).Count -eq 0) "dirty hits: $($zHit -join ', ')") -and $ok
+
 # =================================================================================================
 # A. DRAFT mode — plain repo
 # =================================================================================================
 $env:YWR_FAKE_GH_MODE = 'ok'; Reset-GhLog
-$out = Invoke-Feedback @('-Description', "the gate emitter prints nothing`nsecond line", '-Target', $plain, '-OutDir', $outDir) $pathWithGh
+# A1 is the CANARY: a real `pwsh -File` child (the shape members run), the one case that is not a runspace.
+$descA = "the gate emitter prints nothing`nsecond line"
+$out = Invoke-FeedbackChild @('-Description', $descA, '-Target', $plain, '-OutDir', $outDir) $pathWithGh
+$exitA = $script:Exit
 $bodyA = Get-BodyPath $out
 $textA = Read-Body $bodyA
-$ok = (Assert-Text 'A1 draft on a plain repo: exit 0, body written, sections present, no scaffold readers run' ("$out`n=====`n$textA") `
-        @('(?m)^\s*body:\s', '(?m)^\s*title:\s*\[upstream-report\] \(no origin remote\) plain: the gate emitter prints nothing',
+$a1Must = @('(?m)^\s*body:\s', '(?m)^\s*title:\s*\[upstream-report\] \(no origin remote\) plain: the gate emitter prints nothing',
           '(?m)^<!-- title: \[upstream-report\] ', '## Report', 'the gate emitter prints nothing\s+second line', '## Environment',
           ('running \(this copy\): \*\*v' + [regex]::Escape($manifestVer) + '\*\*'), 'claude: not on PATH', 'not a scaffolded repo',
-          'fingerprint: `fb[0-9a-f]{10}`', 'similar open reports: not searched', 'No file contents or diffs') `
-        @('@@', '\+\+\+ ', 'Traceback', '\[hook:scaffold-refresh-nudge\]', 'harness-init ->') `
+          'fingerprint: `fb[0-9a-f]{10}`', 'similar open reports: not searched', 'No file contents or diffs')
+$a1Not = @('@@', '\+\+\+ ', 'Traceback', '\[hook:scaffold-refresh-nudge\]', 'harness-init ->')
+$ok = (Assert-Text 'A1 draft on a plain repo: exit 0, body written, sections present, no scaffold readers run' ("$out`n=====`n$textA") `
+        $a1Must $a1Not `
         @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }), $(if (-not $bodyA) { 'no body: line' }))) -and $ok
+# A1c: the SAME case through the runspace path (what every other case uses) must agree with the child on
+# the exit code, on every A1 assertion, and on the output and body text themselves once the per-run body
+# file name is masked — a runspace/process divergence goes red here instead of hiding in the other cases.
+# Its own OutDir: feedback.ps1 names the body by the SECOND (yyyyMMdd-HHmmss), so two runs inside one second
+# in one directory write the same file — seen once in four runs before this directory was split off.
+$outDirRs = Join-Path $fx 'out-a1c'
+New-Item -ItemType Directory -Force -Path $outDirRs | Out-Null
+$outRs = Invoke-Feedback @('-Description', $descA, '-Target', $plain, '-OutDir', $outDirRs) $pathWithGh
+$exitRs = $script:Exit
+$bodyRs = Get-BodyPath $outRs
+$textRs = Read-Body $bodyRs
+function Get-Masked([string]$Text, [string]$BodyFile) { return ((($Text -replace "`r`n", "`n") -replace [regex]::Escape($BodyFile), '<body>').Trim()) }
+$maskOut = Get-Masked $out $bodyA; $maskOutRs = Get-Masked $outRs $bodyRs
+$maskBody = Get-Masked $textA $bodyA; $maskBodyRs = Get-Masked $textRs $bodyRs
+$ok = (Assert-Text 'A1c the canary case through the runspace path matches the real pwsh -File child: same exit code, same A1 assertions, same output and body' ("$outRs`n=====`n$textRs") `
+        $a1Must $a1Not `
+        @($(if ($exitRs -ne $exitA) { "exit differs: runspace $exitRs vs child $exitA" }),
+          $(if ($bodyRs -eq $bodyA) { 'the runspace run reused the child body file' }),
+          $(if ($maskOutRs -cne $maskOut) { "output differs after masking the body path`n--- child ---`n$maskOut`n--- runspace ---`n$maskOutRs" }),
+          $(if ($maskBodyRs -cne $maskBody) { 'body text differs between child and runspace' }))) -and $ok
 $ok = (Assert-True 'A1b no gh call is made when there is no drift (fingerprint search skipped)' ((Get-GhCalls).Count -eq 0) "calls: $((Get-GhCalls) -join ' | ')") -and $ok
 
 # A2: origin with embedded credentials -> owner/repo only, the URL never appears
@@ -219,7 +326,6 @@ $ok = (Assert-Text 'A5 default title truncates a long first line' $out @('(?m)^\
 $scaff = Join-Path $fx 'scaff'
 New-Item -ItemType Directory -Force -Path $scaff | Out-Null
 Invoke-GitQ $scaff @('-c', 'init.defaultBranch=main', 'init', '-q')
-Invoke-GitQ $scaff @('config', 'user.email', 'selftest@example.invalid'); Invoke-GitQ $scaff @('config', 'user.name', 'selftest')
 Invoke-GitQ $scaff @('remote', 'add', 'origin', 'git@github.com:acme/scaffolded.git')
 # Real scaffold run, python OFF the PATH so the docs build is a reported skip rather than a dependency.
 $env:PATH = $pathNoGh
@@ -538,6 +644,7 @@ $meta = (Assert-Text 'META probe' 'abc' @('zzz') @() 6>$null)
 $ok = (Assert-True 'META a MustMatch miss is reported as a failure' (-not $meta) 'Assert-Text passed on a non-matching text') -and $ok
 
 $env:PATH = $savedPath; $env:YWR_FAKE_GH_MODE = $savedMode; $env:YWR_FAKE_GH_LOG = $savedLog; $env:GIT_ALLOW_PROTOCOL = $savedProto
+Restore-GitIdentity
 Remove-FixtureRoot $fx
 if ($ok) { Write-Host 'feedback.selftest: all cases passed' -ForegroundColor Green; exit 0 }
 Write-Host 'feedback.selftest: FAILED' -ForegroundColor Red; exit 1

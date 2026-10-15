@@ -30,6 +30,10 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 # ~450 git calls (fixture builds plus the retro's own): the worker binary, not the cmd\git.exe launcher
 # (lib Use-GitWorkerBinary, ADR 0111). Left in place — under `pwsh -File` the process ends with it.
 $null = Use-GitWorkerBinary
+# Fixture identity through the environment, once: a per-repo `git config user.*` was two spawns per
+# fixture repo. Neither harness_retro.py nor a case reads a repo-local user.* value.
+$env:GIT_AUTHOR_NAME = 'selftest'; $env:GIT_COMMITTER_NAME = 'selftest'
+$env:GIT_AUTHOR_EMAIL = 'selftest@example.invalid'; $env:GIT_COMMITTER_EMAIL = 'selftest@example.invalid'
 
 $ok = $true
 
@@ -59,8 +63,6 @@ function New-Repo([string]$Name, [string]$Config) {
     $p = Join-Path $fxBase $Name
     New-Item -ItemType Directory -Force -Path $p | Out-Null
     & git -C $p init -q 2>$null
-    & git -C $p config user.email 'selftest@example.invalid' 2>$null
-    & git -C $p config user.name 'selftest' 2>$null
     if ($Config) { Write-F $p '.harness.json' $Config }
     Write-F $p 'docs/index.json' '{}'
     Write-F $p 'seed.txt' 'seed'
@@ -700,6 +702,37 @@ $ok = (Assert-True 'DL7 workflow rows name their type and model_param, ordered b
 $ok = (Assert-True 'DL7 D6 counts the workflow loops with no model given and no type named, per session and in the summary' ($o7 -match 'workflow with no model given: 2 of 5' -and $o7 -match 'ADR 0126 D6: 2 of 5 workflow loop\(s\) with no model given in 1 session\(s\)') $o7) -and $ok
 $ok = (Assert-True 'DL7 the unspawned heuristic is unchanged and workflow loops stay out of it' ($o7 -match 'ADR 0117 D6: 1 unspawned loop\(s\) on their session''s main model in 1 session\(s\); 1 also at the main loop''s effort') $o7) -and $ok
 $ok = (Assert-True 'DL7 workflow sorts after main and before unspawned' ($o7.IndexOf('workflow workflow-subagent') -lt $o7.IndexOf('   unspawned ·') -and $o7.IndexOf('   main ·') -lt $o7.IndexOf('workflow workflow-subagent')) $o7) -and $ok
+
+# DL8: malformed workflow rows. A list `model_param` was an unhashable row key and a number beside a
+# string broke the row sort, so each was a traceback; an empty `model_param` counted as an inherit. A
+# non-string or empty value reads as "?" and never counts as an inherit. A null spawn and a missing type stay "?" rows. The one well-formed inherit still counts, and
+# a step_fields entry that is not a string makes the file a named skip, not a zip over a list key.
+$dl8 = Join-Path $fxBase 'delegations-8'
+New-Item -ItemType Directory -Force -Path $dl8 | Out-Null
+Write-F $dl8 '.harness.json' '{}'
+$wfList = '{"subagent_type":"workflow-subagent","model_param":["opus"],"model":"claude-opus-5-5","teammate":false,"workflow":{"run_id":"wf_m","agent_index":1}}'
+$wfNum = '{"subagent_type":"workflow-subagent","model_param":5,"model":"claude-sonnet-5-5","teammate":false,"workflow":{"run_id":"wf_m","agent_index":2}}'
+$wfNumType = '{"subagent_type":7,"model_param":null,"model":"claude-sonnet-5-5","teammate":false,"workflow":{"run_id":"wf_m","agent_index":3}}'
+$wfNoType = '{"model_param":null,"model":"claude-sonnet-5-5","teammate":false,"workflow":{"run_id":"wf_m","agent_index":4}}'
+$wfEmpty = '{"subagent_type":"workflow-subagent","model_param":"","model":"claude-sonnet-5-5","teammate":false,"workflow":{"run_id":"wf_m","agent_index":5}}'
+$loops8 = @((DlLoop 'main' '["claude-opus-5-5"]' '["xhigh"]' 0 $u '[]'),
+    (DlLoop 'workflow' '["claude-opus-5-5"]' '["low"]' 0 $u '[]' $wfList),
+    (DlLoop 'workflow' '["claude-sonnet-5-5"]' '["low"]' 0 $u '[]' $wfNum),
+    (DlLoop 'workflow' '["claude-sonnet-5-5"]' '["low"]' 0 $u '[]' $wfNone),
+    (DlLoop 'workflow' '["claude-sonnet-5-5"]' '["low"]' 0 $u '[]' $wfNumType),
+    (DlLoop 'workflow' '["claude-sonnet-5-5"]' '["low"]' 0 $u '[]' $wfNoType),
+    (DlLoop 'workflow' '["claude-sonnet-5-5"]' '["low"]' 0 $u '[]' $wfEmpty),
+    (DlLoop 'workflow' '["claude-sonnet-5-5"]' '["low"]' 0 $u '[]'),
+    (DlLoop 'agent-tool' '["claude-haiku-4-5"]' '[]' 0 $u '[]' '{"subagent_type":"Explore","model_param":["x"],"model":"claude-haiku-4-5"}')) -join ','
+Write-F $dl8 '.claude/telemetry/delegations/slot-00.json' "{`"schema`":2,`"session_id`":`"bad-wf`",`"slot`":0,`"updated`":`"a`",`"step_fields`":$fieldsStd,`"loops_dropped`":0,`"loops`":[$loops8]}"
+Write-F $dl8 '.claude/telemetry/delegations/slot-01.json' "{`"schema`":2,`"session_id`":`"bad-fields`",`"slot`":1,`"updated`":`"b`",`"step_fields`":[[`"index`"]],`"loops_dropped`":0,`"loops`":[$(DlLoop 'main' '["m"]' '[]' 0 '' '[[1]]')]}"
+$rDL8 = Invoke-Retro $dl8 @('--delegations')
+$o8 = $rDL8.Out
+$ok = (Assert-True 'DL8 malformed spawn fields exit 0 with no traceback' ($rDL8.Code -eq 0 -and $o8 -notmatch 'Traceback') "exit=$($rDL8.Code): $o8") -and $ok
+$ok = (Assert-True 'DL8 a list, numeric or empty model_param reads as "?" on a workflow and an agent-tool row' ($o8 -match 'workflow workflow-subagent \(model_param \?\) · claude-opus-5-5 · low' -and $o8 -match 'workflow workflow-subagent \(model_param \?\) · claude-sonnet-5-5 · low — 2 loop' -and $o8 -match 'agent-tool Explore \(model_param \?\)') $o8) -and $ok
+$ok = (Assert-True 'DL8 a numeric type, a missing type and a null spawn are one "?" row of three loops' ($o8 -match 'workflow \? \(model_param none\) · claude-sonnet-5-5 · low — 3 loop') $o8) -and $ok
+$ok = (Assert-True 'DL8 only the well-formed unnamed worker with no model counts: 1 of 7' ($o8 -match 'workflow with no model given: 1 of 7' -and $o8 -match 'ADR 0126 D6: 1 of 7 workflow loop\(s\)') $o8) -and $ok
+$ok = (Assert-True 'DL8 a non-string step_fields entry skips its file, named' ($o8 -match 'skipped: slot-01\.json \(not a schema 2 slot\)' -and $o8 -notmatch 'session bad-fields') $o8) -and $ok
 
 # DL6: SLICE_RETRO=0 skips the per-commit run, never an explicit --delegations request (ADR 0120).
 $prevSR = $env:SLICE_RETRO

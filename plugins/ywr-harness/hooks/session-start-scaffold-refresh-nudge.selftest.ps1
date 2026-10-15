@@ -27,6 +27,12 @@ Assert-NodeOrExit 'session-start-scaffold-refresh-nudge'
 # pwsh runs init.ps1 (the scaffold fixture); node runs the hook under test.
 $pwshExe = (Get-Command pwsh).Source
 $nodeExe = (Get-Command node).Source
+# ~200 git calls (fixture builds plus the hook's own probes): the worker binary, not the cmd\git.exe
+# launcher (lib Use-GitWorkerBinary, ADR 0111, ADR 0149). AFTER pwsh and node are resolved, so the worker
+# directory can never shadow either of them (review, slice 126). Left in place — under `pwsh -File` the
+# process ends with it. The no-git cases below REPLACE the PATH (cases 20-21: ''), so they never see it,
+# and $savedPath, read after this line, restores it.
+$null = Use-GitWorkerBinary
 
 function Invoke-Hook([string]$Stdin, [string]$HookPath = $hook) {
     $o = ($Stdin | & $nodeExe $HookPath 2>&1 | Out-String)

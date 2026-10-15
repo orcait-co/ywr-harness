@@ -3,7 +3,9 @@
 # concurrent run with its condensed output (ADR 0088, section G).
 #
 # Sections A–F drive the LIVE runner with -List, which prints discovery + selection and runs
-# NOTHING — never a second full run (the runner is what discovers and runs this file; a positive
+# NOTHING. They run it in a RUNSPACE of this process (ADR 0149; Invoke-Runner, process state saved
+# and restored), except two real-child canaries (A, D '0/4') that cases A0p/D0p compare the runspace
+# path against. Never a second full run (the runner is what discovers and runs this file; a positive
 # end-to-end case over the live tree would recurse into the whole suite set). The partition
 # property is asserted on the same observable CI uses: the union of shards 1..N over -List must
 # equal the unsharded list, pairwise disjoint, every shard non-empty, sizes within one of each
@@ -24,9 +26,45 @@ trap { Remove-FixtureRoot $fxBase; break }   # exception-safe teardown
 # NOT `$Args`: that name is PowerShell's automatic unbound-arguments variable, and `@Args` splats
 # the (empty) automatic one rather than the parameter — the child then runs the runner with NO
 # arguments, i.e. the whole suite set, and this file appears to hang (found on its first run).
-function Invoke-Runner([string]$Path, [string[]]$Arguments) {
+function Invoke-RunnerChild([string]$Path, [string[]]$Arguments) {
     $out = & pwsh -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
+}
+# The -List and refusal cases run the runner in a RUNSPACE of this process (ADR 0149, L3): no pwsh
+# cold start (~0.8 s each, 29 cases). Argv-shaped arrays fold into the hashtable the lib splats (an
+# array splat binds positionally): `-Name value` is a pair, `-Name` alone a switch — the same fold as
+# init.selftest, except that a value like `-3` (a dash and a digit) is a value, not a switch name.
+# The runner pins [Console]::OutputEncoding to UTF-8 (process-wide). That pin is NOT undone: the console
+# page is shared by every process on the console, and a restore to a non-UTF-8 page is what canon C9
+# forbids (fact 140). The current directory, the environment and $PSStyle.OutputRendering are saved
+# here and restored after every call; case A0 asserts both. Residual (ADR 0149): the children that run
+# after A0 (D '0/4', F3) are read under the UTF-8 page. Under the runner and on CI the page is UTF-8
+# from the start, so only a standalone run on a non-UTF-8 console reads them differently from HEAD. Real-child behaviour (F3, section G) and one -List plus one refusal canary stay
+# children (A, D '0/4'); A0p/D0p compare the runspace path against those real children.
+function Get-ProcessState {
+    $envSnap = @{}
+    foreach ($e in [Environment]::GetEnvironmentVariables().GetEnumerator()) { $envSnap[[string]$e.Key] = [string]$e.Value }
+    return @{ CodePage = [Console]::OutputEncoding.CodePage; Cwd = [Environment]::CurrentDirectory; Loc = (Get-Location).Path
+        Render = "$($PSStyle.OutputRendering)"; Env = $envSnap }
+}
+function Restore-ProcessState($S) {
+    $now = Get-ProcessState
+    if ($now.Cwd -ne $S.Cwd) { try { [Environment]::CurrentDirectory = $S.Cwd } catch { } }
+    if ($now.Loc -ne $S.Loc) { try { Set-Location -LiteralPath $S.Loc } catch { } }
+    if ($now.Render -ne $S.Render) { try { $PSStyle.OutputRendering = $S.Render } catch { } }
+    foreach ($k in @($now.Env.Keys)) { if (-not $S.Env.ContainsKey($k)) { [Environment]::SetEnvironmentVariable($k, $null) } }
+    foreach ($k in $S.Env.Keys) { if ($now.Env[$k] -ne $S.Env[$k]) { [Environment]::SetEnvironmentVariable($k, $S.Env[$k]) } }
+}
+function Invoke-Runner([string]$Path, [string[]]$Arguments) {
+    $p = @{}
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $k = $Arguments[$i].TrimStart('-')
+        if ($i + 1 -lt $Arguments.Count -and ($Arguments[$i + 1] -notmatch '^-[A-Za-z]' )) { $p[$k] = $Arguments[$i + 1]; $i++ }
+        else { $p[$k] = [bool]$true }
+    }
+    $state = Get-ProcessState
+    try { return Invoke-ScriptInRunspace -Path $Path -Arguments $p }
+    finally { Restore-ProcessState $state }
 }
 # The listing lines are the `  - <plugin-relative path>` form; everything else in the output has
 # no leading spaces, so the prefix is the whole parse.
@@ -53,11 +91,39 @@ function Assert-Case([string]$Name, $R, [int]$ExpectExit, [string[]]$MustMatch, 
 $ok = $true
 
 # --- A. unsharded listing: the baseline every partition case compares against ----------------
-$base = Invoke-Runner $runner @('-List')
+# The baseline is a REAL `pwsh -File` child (canary, ADR 0149): the runner is started that way in
+# production, so one -List case keeps that path; the runspace path is compared against it in A0p.
+$base = Invoke-RunnerChild $runner @('-List')
 $baseList = Get-Listed $base
-$ok = (Assert-Case 'A -List: discovery listed, nothing ran' $base 0 `
-    @('suites: discovered=\d+', '  - selftest\.selftest\.ps1', '  - manifest-gate\.selftest\.ps1', 'LIST ONLY') `
-    @('--- manifest-gate\.mjs', 'all gates green', 'shard=')) -and $ok
+$aMust = @('suites: discovered=\d+', '  - selftest\.selftest\.ps1', '  - manifest-gate\.selftest\.ps1', 'LIST ONLY')
+$aMustNot = @('--- manifest-gate\.mjs', 'all gates green', 'shard=')
+$ok = (Assert-Case 'A -List: discovery listed, nothing ran' $base 0 $aMust $aMustNot) -and $ok
+# A0 — the runspace runs (ADR 0149) rest on three contracts, pinned here by name.
+# (1) The runner mutates only the process-wide state this adapter restores: its statements that set
+# the console encoding, the environment, the current directory or $PSStyle are exactly the two
+# encoding pins. A new one fails here, not as a leak into this suite.
+$runnerLines = @(Select-String -LiteralPath $runner -Pattern '^\s*(\[Console\]::\w+\s*=|\$OutputEncoding\s*=|\$env:\w+\s*=|\[Environment\]::(SetEnvironmentVariable|CurrentDirectory\s*=)|Set-Location|Push-Location|Set-Item\s+(-Path\s+)?env:|\$PSStyle\b|\[Threading\.Thread\]::CurrentThread|\[Globalization\.CultureInfo\]::\w*Culture\w*\s*=)' |
+        Where-Object { $_.Line -notmatch '^\s*#' } | ForEach-Object { $_.Line.Trim() })
+$ok = (Assert-True 'A0 selftest.ps1 sets only the two encoding pins as process-wide state (the runspace save/restore list)' `
+    ($runnerLines.Count -eq 2 -and $runnerLines[0] -match '^\[Console\]::OutputEncoding =' -and $runnerLines[1] -match '^\$OutputEncoding =') ($runnerLines -join "`n")) -and $ok
+# (2) The runner runs in THIS process: a process-exit API would end the whole suite.
+$procExit = @(Select-String -LiteralPath $runner -Pattern 'Environment\]::Exit|SetShouldExit' | Where-Object { $_.Line -notmatch '^\s*#' })
+$ok = (Assert-True 'A0 selftest.ps1 never calls a process-exit API (runspace, not child)' ($procExit.Count -eq 0) "lines: $(($procExit | ForEach-Object { $_.LineNumber }) -join ', ')") -and $ok
+# (3) A call leaves the process-wide state as it found it — read back, not assumed.
+$before = Get-ProcessState
+$null = Invoke-Runner $runner @('-List')
+$after = Get-ProcessState
+$envDiff = @(@($before.Env.Keys) + @($after.Env.Keys) | Sort-Object -Unique | Where-Object { $before.Env[$_] -ne $after.Env[$_] })
+$ok = (Assert-True 'A0 a runspace run leaves the directories, $PSStyle rendering and environment unchanged, and the code page unchanged or UTF-8' `
+    (($before.CodePage -eq $after.CodePage -or $after.CodePage -eq 65001) -and $before.Cwd -eq $after.Cwd -and $before.Loc -eq $after.Loc -and $before.Render -eq $after.Render -and $envDiff.Count -eq 0) `
+    "code page $($before.CodePage)->$($after.CodePage) · cwd $($before.Cwd)->$($after.Cwd) · loc $($before.Loc)->$($after.Loc) · render $($before.Render)->$($after.Render) · env diff [$($envDiff -join ', ')]") -and $ok
+# A0p — the runspace path agrees with the real child: same exit code, the same listing, and the same
+# verdict on the A case's own patterns.
+$aRs = Invoke-Runner $runner @('-List')
+$aRsFails = Get-AssertionFailure -Text $aRs.Out -MustMatch $aMust -MustNotMatch $aMustNot -PreFail @()
+$ok = (Assert-True 'A0p -List: the runspace run matches the real child (exit code, listing, the asserted lines)' `
+    ($aRs.Code -eq $base.Code -and ((Get-Listed $aRs) -join '|') -eq ($baseList -join '|') -and $aRsFails.Count -eq 0) `
+    "child exit=$($base.Code) runspace exit=$($aRs.Code) · runspace fails: $($aRsFails -join '; ')`n$(Format-Nested $aRs.Out)") -and $ok
 $ok = (Assert-True 'A2 listed count equals the discovered count' ($base.Out -match "discovered=$($baseList.Count)\b" -and $baseList.Count -ge 2) `
     "listed=$($baseList.Count) out:`n$(Format-Nested $base.Out)") -and $ok
 # Ordinal order by plugin-relative path with `/` separators — what makes the deal identical on
@@ -101,9 +167,18 @@ $ok = (Assert-True 'C3 shard 1/1 lists exactly the baseline' (((Get-Listed (Invo
 
 # --- D. malformed -Shard: exit 1 before anything is listed or run -----------------------------
 # The 20-digit form pins the TryParse path: a cast would throw a raw overflow instead of the refusal.
+# '0/4' is the REAL-child refusal canary (ADR 0149); the rest run in a runspace. D0p compares the two paths.
 foreach ($bad in '0/4', '5/4', 'a/b', '1/0', '01/4', '1/4/2', '4', '99999999999999999999/2') {
-    $ok = (Assert-Case "D malformed -Shard '$bad' refused" (Invoke-Runner $runner @('-List', '-Shard', $bad)) 1 `
-        @('FAIL — -Shard must be i/N', [regex]::Escape("got '$bad'")) @('suites: discovered', '  - ', 'LIST ONLY')) -and $ok
+    $dRun = if ($bad -eq '0/4') { Invoke-RunnerChild $runner @('-List', '-Shard', $bad) } else { Invoke-Runner $runner @('-List', '-Shard', $bad) }
+    $dMust = @('FAIL — -Shard must be i/N', [regex]::Escape("got '$bad'")); $dMustNot = @('suites: discovered', '  - ', 'LIST ONLY')
+    $ok = (Assert-Case "D malformed -Shard '$bad' refused" $dRun 1 $dMust $dMustNot) -and $ok
+    if ($bad -eq '0/4') {
+        $dRs = Invoke-Runner $runner @('-List', '-Shard', $bad)
+        $dRsFails = Get-AssertionFailure -Text $dRs.Out -MustMatch $dMust -MustNotMatch $dMustNot -PreFail @()
+        $ok = (Assert-True "D0p malformed -Shard '$bad': the runspace run matches the real child (exit code, the asserted lines)" `
+            ($dRs.Code -eq $dRun.Code -and $dRs.Code -eq 1 -and $dRsFails.Count -eq 0) `
+            "child exit=$($dRun.Code) runspace exit=$($dRs.Code) · runspace fails: $($dRsFails -join '; ')`n$(Format-Nested $dRs.Out)") -and $ok
+    }
 }
 
 # --- E. empty slice: N beyond the discovery is a misconfiguration, not a pass ----------------
@@ -140,7 +215,7 @@ $pathKeep = $env:PATH
 try {
     $env:PATH = $PSHOME
     if (Get-Command node -CommandType Application -ErrorAction SilentlyContinue) { $rNoNode = $null }
-    else { $rNoNode = Invoke-Runner (Join-Path $fxNoNode 'selftest.ps1') @('-Jobs', '1') }
+    else { $rNoNode = Invoke-RunnerChild (Join-Path $fxNoNode 'selftest.ps1') @('-Jobs', '1') }   # a real run with a narrowed PATH: a child, never a runspace
 } finally { $env:PATH = $pathKeep }
 if ($null -eq $rNoNode) { Write-Host "SKIP [F3 no node] node resolves inside `$PSHOME ($PSHOME) — cannot hide it (reported, not silent)" -ForegroundColor Yellow }
 else {
@@ -157,7 +232,8 @@ else {
 # with `wait-for-c` present, a-slow waits for c-pass's `c.done` marker, then for the process id it
 # names to exit, then 2 s more — so with >= 2 slots c finishes before a whatever the machine load.
 # Without the control file a-slow only sleeps 2 s — the -Jobs 1 run, where a waiting a-slow would
-# block the only slot.
+# block the only slot. The 2 s sleep needs the `a-sleep` marker (ADR 0149, W2): G1 and G3 set it,
+# G4 and later cases run without it.
 #
 # The runner is started in a FRESH HIDDEN console (CreateNoWindow) and read as UTF-8 bytes here.
 # The fresh console starts at the system OEM code page (cp949 on the owner's box, measured
@@ -208,7 +284,8 @@ if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'wait-for-c')) {
     }
     if ([DateTime]::UtcNow -ge $deadline) { Write-Host 'BARRIER TIMEOUT — c-pass never finished' }
 }
-Start-Sleep -Seconds 2
+# The 2 s margin applies only where a case sets `a-sleep` (G1: after the barrier; G3b: serial order).
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'a-sleep')) { Start-Sleep -Seconds 2 }
 Write-Host "PASS [a body $ko]"
 Write-Host "SKIP [a skip $ko] reported, not silent"
 Write-Host 'WARN [a warn] re-review trigger, suite still passes'
@@ -235,6 +312,10 @@ exit 0
 '@)
 $ctl = Join-Path $fxRun 'wait-for-c'
 $marker = Join-Path $fxRun 'c.done'
+$aSleep = Join-Path $fxRun 'a-sleep'
+function Set-ASleep([bool]$On) {
+    if ($On) { [IO.File]::WriteAllText($aSleep, 'on') } else { Remove-Item -LiteralPath $aSleep -Force -ErrorAction SilentlyContinue }
+}
 function Set-Barrier([bool]$On) {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     if ($On) { [IO.File]::WriteAllText($ctl, 'on') } else { Remove-Item -LiteralPath $ctl -Force -ErrorAction SilentlyContinue }
@@ -244,6 +325,7 @@ $summary = 'selftests: discovered=3 passed=2 failed=1'
 # G1 — concurrent (-Jobs 3, all three start at once): the verdict, the failed suite in full, the
 # passing suites condensed to one line each, the SKIP line kept — with its Korean intact.
 Set-Barrier $true
+Set-ASleep $true
 $g1 = Invoke-RunnerFresh $fxRunner @('-Jobs', '3')
 $ok = (Assert-Case 'G1 concurrent run: exit 1 naming the failed suite; failed body in full, passing suites one line each, SKIP line kept with Korean intact' $g1 1 `
     @([regex]::Escape($summary), 'FAIL — b-fail\.selftest\.ps1', 'jobs=3\b', 'PASS  stub manifest gate',
@@ -276,7 +358,7 @@ $ok = (Assert-True 'G1d the kept lines sit between their suite''s ok line and th
 
 # G3 — -Jobs 1: the same verdict and summary, and genuinely serial (done lines in discovery order;
 # without the barrier a-slow sleeps 2 s, so any overlap would let b and c finish first).
-Set-Barrier $false
+Set-Barrier $false   # a-sleep stays set from G1: G3b's serial-order margin
 $g3 = Invoke-RunnerFresh $fxRunner @('-Jobs', '1')
 $ok = (Assert-Case 'G3 -Jobs 1: same summary and failed-suite line as the concurrent run' $g3 1 `
     @([regex]::Escape($summary), 'FAIL — b-fail\.selftest\.ps1', 'jobs=1\b', ('(?m)^SKIP \[a skip ' + [regex]::Escape($ko) + '\]')) `
@@ -288,6 +370,7 @@ $ok = (Assert-True 'G3b -Jobs 1 runs one suite at a time (done lines in discover
 # G4 — -Full, default -Jobs: every suite's body printed, the passing ones included, Korean intact;
 # the condensed `ok` lines absent. The default slot count is min(logical CPUs, 8), stated as jobs=.
 $defJobs = [Math]::Min([Environment]::ProcessorCount, 8)
+Set-ASleep $false   # G4 asserts only that bodies print: no 2 s margin needed
 $g4 = Invoke-RunnerFresh $fxRunner @('-Full')
 $ok = (Assert-Case "G4 -Full prints every suite's body; the default is jobs=$defJobs" $g4 1 `
     @([regex]::Escape($summary), "jobs=$defJobs\b", 'BODY-MARKER-A', 'BODY-MARKER-C', '(?m)^PASS \[c one\]',

@@ -446,6 +446,14 @@ def _names(v: object) -> list[str]:
     return sorted({x for x in v if isinstance(x, str) and x}) if isinstance(v, list) else []
 
 
+def _text(v: object) -> str | None:
+    """A spawn row's string field: the string, None when absent or null, "?" for an empty string or
+    any other JSON type. A row key must be hashable and the row sort compares strings only, so a list
+    or a number there was a traceback; "?" names the row and is truthy, so a malformed field never
+    counts as an inherit (an empty `model_param` read as "no model given" before)."""
+    return v if v is None or (isinstance(v, str) and v) else "?"
+
+
 def read_slots(d: Path) -> tuple[list[tuple[str, dict]], list[str]]:
     """(name, document) for every readable schema-2 slot, and one `name (reason)` per skipped one.
     A write is a non-atomic whole-file rewrite (ADR 0118), so a partial file is an expected skip."""
@@ -470,7 +478,8 @@ def read_slots(d: Path) -> tuple[list[tuple[str, dict]], list[str]]:
             skipped.append(f"{p.name} (not JSON — a write in flight or a partial file)")
             continue
         if (not isinstance(doc, dict) or doc.get("schema") != LEDGER_SCHEMA
-                or not isinstance(doc.get("step_fields"), list) or not isinstance(doc.get("loops"), list)):
+                or not isinstance(doc.get("step_fields"), list) or not isinstance(doc.get("loops"), list)
+                or not all(isinstance(f, str) for f in doc["step_fields"])):
             skipped.append(f"{p.name} (not a schema {LEDGER_SCHEMA} slot)")
             continue
         docs.append((p.name, doc))
@@ -553,8 +562,9 @@ def delegations(root: Path, warns: list[str]) -> int:
             if kind == "agent-tool" and spawn.get("teammate") is True:
                 kind = "teammate"
             models, efforts = _names(lp.get("models")), _names(lp.get("efforts"))
-            rk = (kind, spawn.get("subagent_type") if kind in SPAWNED else None,
-                  spawn.get("model_param") if kind in SPAWNED else None,
+            stype, mparam = _text(spawn.get("subagent_type")), _text(spawn.get("model_param"))
+            # A spawned row with no type and one with a malformed type both print "?": one key.
+            rk = (kind, (stype or "?") if kind in SPAWNED else None, mparam if kind in SPAWNED else None,
                   "+".join(models), "+".join(efforts))
             agg = rows.setdefault(rk, {"loops": 0, "ms": 0, "from_steps": 0,
                                        "tokens": dict.fromkeys(TOKENS, 0)})
@@ -572,7 +582,7 @@ def delegations(root: Path, warns: list[str]) -> int:
                 # session's model — a fact, not a heuristic. A named type may pin its own model, so it
                 # is never counted.
                 wf += 1
-                wf_inherit += 0 if spawn.get("model_param") or spawn.get("subagent_type") != WF_TYPE else 1
+                wf_inherit += 0 if mparam or stype != WF_TYPE else 1
                 continue
             if kind != "unspawned":
                 continue

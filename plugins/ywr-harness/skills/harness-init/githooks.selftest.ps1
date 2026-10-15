@@ -95,6 +95,20 @@ if ($probe -ne 'OK') {
     exit 1
 }
 
+# The launcher path, kept for P5's git shim: that case's PATH is narrowed to one dir and must keep
+# resolving the same git it always did, so the shim must not follow the worker-dir prepend below.
+$gitLauncher = (Get-Command git).Source
+# ~370 git calls (fixture builds plus the hooks' own): the worker binary, not the cmd\git.exe launcher
+# (lib Use-GitWorkerBinary, ADR 0111). After the resolutions above, which read git's root from
+# `(Get-Command git).Source` and need the launcher's layout. Left in place — under `pwsh -File` the
+# process ends with it. Every PATH this suite builds starts from the then-current $env:PATH, so the
+# worker dir rides along; P5 REPLACES the PATH outright, so it never sees it.
+$null = Use-GitWorkerBinary
+# Fixture identity through the environment, once: a per-repo `git config user.*` was two spawns per
+# fixture repo. No hook under test and no case reads a repo-local user.* value.
+$env:GIT_AUTHOR_NAME = 'selftest'; $env:GIT_COMMITTER_NAME = 'selftest'
+$env:GIT_AUTHOR_EMAIL = 'selftest@example.invalid'; $env:GIT_COMMITTER_EMAIL = 'selftest@example.invalid'
+
 $fxBase = New-FixtureRoot 'githooks-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 $ok = $true
@@ -103,8 +117,6 @@ function New-Repo([string]$Name) {
     $p = Join-Path $fxBase $Name
     New-Item -ItemType Directory -Force -Path $p | Out-Null
     & git -C $p init -q 2>$null
-    & git -C $p config user.email 'selftest@example.invalid' 2>$null
-    & git -C $p config user.name 'selftest' 2>$null
     # An empty seed commit so HEAD exists; every case below diffs against something.
     & git -C $p commit -q --allow-empty -m seed 2>$null
     return $p
@@ -706,7 +718,7 @@ try {
     $binDir = Join-Path $fxBase 'pcm-bin'
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
     $gitShim = Join-Path $binDir 'git'
-    [IO.File]::WriteAllText($gitShim, "#!/bin/sh`nexec '$(ConvertTo-ShPath (Get-Command git).Source)' `"`$@`"`n")
+    [IO.File]::WriteAllText($gitShim, "#!/bin/sh`nexec '$(ConvertTo-ShPath $gitLauncher)' `"`$@`"`n")
     # POSIX needs the mode bit; Windows has none — git's MSYS sh treats a file opening with `#!` as
     # executable, which is what `command -v git` below proves rather than assumes.
     if (-not $IsWindows) { & chmod +x $gitShim }
