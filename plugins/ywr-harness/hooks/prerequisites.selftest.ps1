@@ -256,7 +256,7 @@ const OKS = {
 }
 const enoent = n => Object.assign(new Error(`ENOENT: Command '${n}' not found`), { code: 'ENOENT' })
 // `by`: argv[0] -> result object | Error to reject with | function(argv) | promise factory. Unlisted -> OKS.
-function fakeEngine({ by = {}, os = 'Windows_NT', noProcess = false, appendImpl = null, invalidateImpl = null, envThrows = false, statusImpl = null, spawnImpl = null } = {}) {
+function fakeEngine({ by = {}, os = 'Windows_NT', localAppData, envThrowsFor = [], noProcess = false, appendImpl = null, invalidateImpl = null, envThrows = false, statusImpl = null, spawnImpl = null } = {}) {
   const calls = { run: [], runOpts: [], append: [], invalidate: [], spawn: [], status: [], env: [] }
   const io = { active: 0, peak: 0 }
   const $ = {
@@ -266,7 +266,7 @@ function fakeEngine({ by = {}, os = 'Windows_NT', noProcess = false, appendImpl 
       status: t => { calls.status.push(t); if (statusImpl) statusImpl(t) },
     },
     session: { append: async m => { calls.append.push(m); if (appendImpl) return appendImpl(m) } },
-    env: { get: async k => { calls.env.push(k); if (envThrows) throw new Error('no env'); return k === 'OS' ? os : undefined } },
+    env: { get: async k => { calls.env.push(k); if (envThrows || envThrowsFor.includes(k)) throw new Error('no env'); return k === 'OS' ? os : k === 'LOCALAPPDATA' ? localAppData : undefined } },
   }
   if (!noProcess) {
     $.process = {
@@ -392,6 +392,61 @@ const bandText = n => n.children[0].children[0]
 }
 
 // ---------------------------------------------------------------------------------------------
+// The app execution alias path (ADR 0150, fact 147): a bare alias name refused at a home-folder cwd
+// ---------------------------------------------------------------------------------------------
+
+const LA = 'C:\\Users\\u\\AppData\\Local'
+const WA = n => LA + '\\Microsoft\\WindowsApps\\' + n + '.exe'
+eq('A1 aliasPath: the WindowsApps alias of the name under LOCALAPPDATA; one trailing separator is dropped',
+  [M.aliasPath(LA, 'pwsh'), M.aliasPath(LA + '\\', 'winget'), M.aliasPath('d:\\x', 'node')],
+  [WA('pwsh'), WA('winget'), 'd:\\x\\Microsoft\\WindowsApps\\node.exe'])
+eq('A2 aliasPath: no drive-rooted base gives null (unset, empty, relative, POSIX, UNC, a bare drive letter)',
+  [undefined, null, '', 'AppData\\Local', '/home/u', '\\\\srv\\share', 'C:'].map(b => M.aliasPath(b, 'pwsh')), [null, null, null, null, null, null, null])
+{
+  const E = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: { exitCode: 0, stdout: 'PowerShell 7.6.7\r\n', stderr: '' } } })
+  await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
+  eq('A3 session.start: a refused bare pwsh that answers by its alias path is ok -> no note, no band; the alias run is the one extra probe',
+    [E.calls.append.length, E.calls.invalidate.length, E.calls.run], [0, 0, [['node', '--version'], ['pwsh', '--version'], ['python', '--version'], [WA('pwsh'), '--version']]])
+}
+{
+  const E = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: enoent(WA('pwsh')) } })
+  await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
+  const F = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: { exitCode: 1, stdout: '', stderr: 'not recognized' } } })
+  await F.hook('session.start')(F.$, startEv, nextWith(SENT)); await tick()
+  eq('A4 session.start: an alias path that is refused too, or exits non-zero, leaves pwsh missing (the note names it)',
+    [E.calls.append.length, E.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH'), F.calls.append.length, F.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH')], [1, true, 1, true])
+}
+{
+  const E = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: new Error('timed out') } })
+  await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
+  const F = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) } })
+  await F.hook('session.start')(F.$, startEv, nextWith(SENT)); await tick()
+  eq('A5 session.start: an alias probe that times out or rejects otherwise ("unknown") does not hide the first missing: the note names pwsh',
+    [E.calls.append.length, E.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH'), F.calls.append.length, F.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH')], [1, true, 1, true])
+  const G = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: { exitCode: 0, stdout: 'PowerShell 6.2.7', stderr: '' } } })
+  await G.hook('session.start')(G.$, startEv, nextWith(SENT)); await tick()
+  eq('A5b session.start: an "old" answer by the alias path stands: the note names pwsh 6.2 as older than 7.0, not as missing',
+    [G.calls.append.length, G.calls.append[0]?.message.content[0].text.includes('`pwsh` 6.2 is older than the 7.0'), G.calls.append[0]?.message.content[0].text.includes('not on PATH')], [1, true, false])
+  const H = fakeEngine({ localAppData: LA, envThrowsFor: ['LOCALAPPDATA'], by: { pwsh: enoent('pwsh') } })
+  const before = unhandled
+  const r = await H.hook('session.start')(H.$, startEv, nextWith(SENT)); await tick()
+  eq('A5c session.start: a LOCALAPPDATA read that throws after OS reads Windows gives no retry and leaves pwsh missing, with no unhandled rejection',
+    [r === SENT, unhandled - before, H.calls.env.includes('LOCALAPPDATA'), H.calls.run.length, H.calls.append.length, H.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH')], [true, 0, true, 3, 1, true])
+}
+{
+  const E = fakeEngine({ os: 'Linux', localAppData: LA, by: { pwsh: enoent('pwsh') } })
+  await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
+  const F = fakeEngine({ localAppData: LA, by: { python: { exitCode: 9009, stdout: '', stderr: '' } } })
+  await F.hook('session.start')(F.$, startEv, nextWith(SENT)); await tick()
+  const G = fakeEngine({ localAppData: LA, by: { pwsh: new Error('timed out') } })
+  await G.hook('session.start')(G.$, startEv, nextWith(SENT)); await tick()
+  const H = fakeEngine({ by: { pwsh: enoent('pwsh') } })
+  await H.hook('session.start')(H.$, startEv, nextWith(SENT)); await tick()
+  eq('A6 session.start: no alias try off Windows, after a non-zero exit (the Store python alias), after a non-ENOENT rejection, or without LOCALAPPDATA',
+    [E.calls.run.length, F.calls.run.length, G.calls.run.length, H.calls.run.length, E.calls.append.length, F.calls.append.length, H.calls.append.length], [3, 3, 3, 3, 1, 1, 1])
+}
+
+// ---------------------------------------------------------------------------------------------
 // command.run: /ywr-harness:setup
 // ---------------------------------------------------------------------------------------------
 
@@ -451,6 +506,21 @@ const child = (pieces, code, { throwFirst = false } = {}) => (arg, done) => {
   })()
   g.result = Promise.resolve({ code, signal: null })
   return g
+}
+// The alias path for winget (ADR 0150): the install runs the winget the probe reached
+{
+  const E = fakeEngine({ localAppData: LA, by: { node: enoent('node'), [WA('node')]: enoent(WA('node')), winget: enoent('winget'), [WA('winget')]: { exitCode: 0, stdout: 'v1.29.380\n', stderr: '' } }, spawnImpl: child(['Successfully installed'], 0) })
+  const r = await runCmd(E)
+  eq('A7 setup: a refused bare winget that answers by its alias path installs, and the spawn runs that path',
+    [spawned(E), r.text.includes('App Installer'), r.text.split('\n')[1] === M.resultLine(T.node, 0)], [[M.wingetArgv(T.node, WA('winget'))], false, true])
+  eq('A8 wingetArgv: the default is the bare winget; a given exe replaces argv[0] only',
+    [M.wingetArgv(T.node)[0], M.wingetArgv(T.node, WA('winget'))[0], M.wingetArgv(T.node, WA('winget')).slice(1)], ['winget', WA('winget'), M.wingetArgv(T.node).slice(1)])
+  const F = fakeEngine({ localAppData: LA, by: { node: enoent('node'), [WA('node')]: enoent(WA('node')), winget: enoent('winget'), [WA('winget')]: enoent(WA('winget')) }, spawnImpl: noSpawn })
+  eq('A9 setup: a winget refused by name and by alias path is no winget (App Installer text, no spawn)', [(await runCmd(F)).text.includes('App Installer'), spawned(F)], [true, []])
+  const G = fakeEngine({ localAppData: LA, by: { node: enoent('node'), [WA('node')]: enoent(WA('node')) }, spawnImpl: child([], 1603) })
+  const r3 = await runCmd(G)
+  eq('A10 setup: a bare winget spawns as winget; the failure line names the bare winget, never the alias path',
+    [spawned(G), r3.text.split('\n')[1] === M.resultLine(T.node, 1603), r3.text.includes(WA('winget'))], [[M.wingetArgv(T.node)], true, false])
 }
 {
   const CR = ch(13), LF = ch(10)

@@ -11,7 +11,9 @@
 //   for them, so the probes never delay the session start. A probe that rejects with ENOENT / "not
 //   found", or a command that exits non-zero (the Windows Store `python` alias does), is MISSING; a
 //   `pwsh` below 7 or a `python` below 3.9 is OLD; anything else (a timeout, a surface without
-//   `$.process` — it is CLI only) is UNKNOWN and never speaks.
+//   `$.process`) is UNKNOWN and never speaks. On Windows a not-found refusal is tried once more by the
+//   app execution alias path (`aliasPath`, ADR 0150): the runner refuses a bare alias name when the cwd
+//   is an ancestor of the alias folder, as the home folder is (fact 147).
 // - `ui.render` on `AbovePrompt`: while a tool is missing or old, one Korean band (ADR 0045) names the
 //   tools and `/ywr-harness:setup`. The engine's own `[-]` collapses it. Nothing missing: `next(e)`.
 // - The model note: when the probes find a missing or old tool, `$.session.append` adds ONE English
@@ -32,7 +34,7 @@
 // class; the module cannot import hook-lib, which needs Node).
 //
 // The pure half (`TOOLS`, `parseVersion`, `verdictOf`, `needsOf`, `bandText`, `noteText`, `manualText`,
-// `lastLine`, `flatten`, `wingetArgv`, `resultLine`, `resultNote`, `unknownText`) is exported so `prerequisites.selftest.ps1` drives it
+// `lastLine`, `flatten`, `aliasPath`, `wingetArgv`, `resultLine`, `resultNote`, `unknownText`) is exported so `prerequisites.selftest.ps1` drives it
 // under plain node with a fake engine; the engine imports only `register`.
 
 export const COMMAND = 'ywr-harness:setup'
@@ -97,13 +99,41 @@ export function needsOf(verdicts) {
   return out
 }
 
-async function probeOne($, tool) {
-  try { return verdictOf(tool, { result: await $.process.run(tool.argv, { timeoutMs: PROBE_TIMEOUT_MS }) }) }
-  catch (error) { return verdictOf(tool, { error }) }
+// The per-user folder of Windows app execution aliases. The Store `pwsh` and `winget` are aliases there
+// (0-byte reparse points). `$.process.run` refuses a bare alias name with the not-found error when the
+// session's cwd is an ancestor of that folder, the home folder included, and runs the same alias by its
+// absolute path (fact 147, ADR 0150). The Desktop session that showed it ran in the home folder.
+const BS = '\\'
+export function aliasPath(localAppData, name) {
+  const base = String(localAppData ?? '')
+  if (!/^[A-Za-z]:\\/.test(base)) return null
+  return base.replace(/\\+$/, '') + BS + 'Microsoft' + BS + 'WindowsApps' + BS + name + '.exe'
 }
 
-async function probeAll($) {
-  return Promise.all(TOOLS.map(tool => probeOne($, tool)))
+async function runVerdict($, tool, argv) {
+  try { return { verdict: verdictOf(tool, { result: await $.process.run(argv, { timeoutMs: PROBE_TIMEOUT_MS }) }), refused: false } }
+  catch (error) { return { verdict: verdictOf(tool, { error }), refused: true } }
+}
+
+// One probe. On Windows a not-found refusal of the bare name tries the alias path once. Only an answer
+// ("ok" or "old") replaces the first "missing": an "unknown" retry (a timeout, another rejection) is no
+// evidence that the alias exists, and an "unknown" never speaks, so it would hide a missing tool. The
+// verdict carries `exe`, the command that answered, so the install runs `winget` the way the probe reached it.
+async function probeOne($, tool, win) {
+  const first = await runVerdict($, tool, tool.argv)
+  if (win && first.refused && first.verdict.state === 'missing') {
+    let path = null
+    try { path = aliasPath(await $.env.get('LOCALAPPDATA'), tool.argv[0]) } catch { /* no alias path */ }
+    if (path) {
+      const second = (await runVerdict($, tool, [path, ...tool.argv.slice(1)])).verdict
+      if (second.state === 'ok' || second.state === 'old') return { ...second, exe: path }
+    }
+  }
+  return { ...first.verdict, exe: tool.argv[0] }
+}
+
+async function probeAll($, win) {
+  return Promise.all(TOOLS.map(tool => probeOne($, tool, win)))
 }
 
 const needText = n => (n.state === 'old' ? `${n.tool.name} ${n.version} (${minText(n.tool)} 이상 필요)` : n.tool.name)
@@ -131,8 +161,10 @@ export function manualText(needs, isWindows) {
   return needs.map(n => (isWindows ? `- ${n.tool.name}: \`${wingetArgv(n.tool).join(' ')}\`` : `- ${n.tool.name}: ${n.tool.other}`)).join('\n')
 }
 
-export function wingetArgv(tool) {
-  return ['winget', 'install', '--id', tool.winget, '--exact', '--source', 'winget',
+// `exe` is the `winget` the probe reached: the bare name, or the alias path (fact 147). A line shown to the
+// member keeps the bare name, which a terminal resolves.
+export function wingetArgv(tool, exe = 'winget') {
+  return [exe, 'install', '--id', tool.winget, '--exact', '--source', 'winget',
     '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity', '--silent']
 }
 
@@ -201,7 +233,7 @@ async function isWindows($) {
 
 async function runSetup($) {
   const win = await isWindows($)
-  const verdicts = await probeAll($)
+  const verdicts = await probeAll($, win)
   if (verdicts.every(v => v.state === 'unknown')) {
     return {
       text: '이 환경에서는 도구를 확인할 수 없습니다. 아래 명령으로 직접 설치하세요.\n' + manualText(needsOf(TOOLS.map(() => ({ state: 'missing' }))), win),
@@ -225,7 +257,7 @@ async function runSetup($) {
       context: [`ywr-harness setup is not on Windows; it printed the install commands for ${needs.map(n => n.tool.name).join(', ')} and installed nothing.` + unknownNote],
     }
   }
-  const winget = await probeOne($, { name: 'winget', argv: ['winget', '--version'], min: null })
+  const winget = await probeOne($, { name: 'winget', argv: ['winget', '--version'], min: null }, win)
   if (winget.state !== 'ok') {
     return {
       text: '`winget` 을 찾지 못했습니다. Microsoft Store 에서 "앱 설치 관리자"(App Installer)를 설치하거나, 아래 도구를 직접 설치하세요.\n' +
@@ -244,7 +276,7 @@ async function runSetup($) {
       let code = null
       let shown = ''
       try {
-        const child = $.process.spawn({ argv: wingetArgv(tool) })
+        const child = $.process.spawn({ argv: wingetArgv(tool, winget.exe) })
         for await (const piece of child) {
           const line = lastLine(piece && piece.text)
           if (line && line !== shown) { shown = line; $.ui.status(`${head} — ${line}`) }
@@ -273,7 +305,7 @@ export function register(on) {
     const r = await next(e)
     void (async () => {
       try {
-        const found = needsOf(await probeAll($))
+        const found = needsOf(await probeAll($, await isWindows($)))
         needs = found.length ? found : null
         if (!needs) return
         try { $.ui.invalidate('ui.render') } catch { /* the band draws at the next render instead */ }
