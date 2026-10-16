@@ -214,7 +214,7 @@ try {
     #     `config_source` and every real payload made it exit 0 quietly).
     $out = Invoke-Hook '{"hook_event_name":"DirectoryAdded","dir":"C:\\x","source":"slash_command"}'
     $ok = (Assert-SystemMessage 'schema drift is reported, not swallowed' $out `
-            @('SCHEMA DRIFT', 'Keys received: dir, hook_event_name, source', '/ywr-harness:feedback',
+            @('SCHEMA DRIFT', 'Keys received: dir, hook_event_name, source', '/ywr-harness:report-issue',
             'tell the user in one sentence, in their language') `
             @('was added as a working directory', '\.claude/hooks/', '[\uAC00-\uD7A3]')) -and $ok
 

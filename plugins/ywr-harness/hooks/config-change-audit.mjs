@@ -39,7 +39,7 @@ import { readStdin, parseJson, isObject, getProp, psString, ieq, inline, emit, d
 // (control bytes and backticks only), is drift — never a tier-less banner.
 function drift(payload) {
   const keys = driftKeys(payload)
-  emit({ systemMessage: `[hook:config-audit] SCHEMA DRIFT — ConfigChange 페이로드의 'source' 필드가 없거나 비어 있거나 문자열이 아니어서, 어떤 설정 계층이 변경되었는지 확인할 수 없습니다. 수신된 키: ${keys}. hooks 레퍼런스의 ConfigChange 입력 형식이 바뀌었을 수 있습니다 — 플러그인 쪽 문제이니 /ywr-harness:feedback 으로 알려 주세요.` })
+  emit({ systemMessage: `[hook:config-audit] SCHEMA DRIFT — ConfigChange 페이로드의 'source' 필드가 없거나 비어 있거나 문자열이 아니어서, 어떤 설정 계층이 변경되었는지 확인할 수 없습니다. 수신된 키: ${keys}. hooks 레퍼런스의 ConfigChange 입력 형식이 바뀌었을 수 있습니다 — 플러그인 쪽 문제이니 /ywr-harness:report-issue 로 알려 주세요.` })
 }
 
 function main(payload) {

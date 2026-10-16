@@ -73,7 +73,7 @@ try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch { }
 #                        $null when nothing changed. A suite that must not leak the change past its own
 #                        end restores with `if ($null -ne $before) { $env:PATH = $before }`; under
 #                        `pwsh -File` (every runner's shape) the process ends and the PATH dies with it.
-# NOT for a suite whose subject is a narrowed PATH (feedback.selftest builds its own on purpose) or
+# NOT for a suite whose subject is a narrowed PATH (report-issue.selftest builds its own on purpose) or
 # whose subject is the launcher itself.
 function Get-GitWorkerDir {
     [OutputType([string])]

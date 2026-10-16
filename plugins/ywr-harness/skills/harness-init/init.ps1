@@ -910,7 +910,7 @@ foreach ($f in $skippedSeed) { Write-Host "  - $f" -ForegroundColor Yellow }
 
 # --- same-version drift report (ADR 0067) ---------------------------------------------------------
 # The prefix `upstream: SAME-VERSION drift` is a stable contract: the harness-init SKILL keys on
-# it to start the draft->confirm->file flow, and feedback.ps1's dry-run parser must keep ignoring
+# it to start the draft->confirm->file flow, and report-issue.ps1's dry-run parser must keep ignoring
 # these lines (they match none of its `~`/`!` shapes).
 if ($sameVersionDrift.Count) {
     if ($inTreeRun) {
@@ -919,12 +919,12 @@ if ($sameVersionDrift.Count) {
         Write-Host "  upstream: SAME-VERSION drift — $($sameVersionDrift.Count) file(s) marked ~ above differed from this plugin's templates while the stamp already reads v$repoStampRaw." -ForegroundColor Yellow
         if ($DryRun) {
             Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ADR 0010/0067). A real run will REVERT them; nothing was changed yet." -ForegroundColor Yellow
-            Write-Host "      Report it upstream BEFORE the real run (the draft reads the drift still in the working tree): /ywr-harness:feedback — one confirmation before anything is filed." -ForegroundColor Yellow
+            Write-Host "      Report it upstream BEFORE the real run (the draft reads the drift still in the working tree): /ywr-harness:report-issue — one confirmation before anything is filed." -ForegroundColor Yellow
         } else {
             Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ADR 0010/0067). This run REVERTED them." -ForegroundColor Yellow
             if ($revertSaved.Count) { Write-Host "      pre-revert copies: $revertDir" -ForegroundColor Yellow }
             if ($revertFailed.Count) { Write-Host "      pre-revert copy FAILED for: $($revertFailed -join ', ') — that content now survives only in git history." -ForegroundColor Yellow }
-            Write-Host "      Report it upstream so the canon fixes it for every repo: /ywr-harness:feedback — one confirmation before anything is filed." -ForegroundColor Yellow
+            Write-Host "      Report it upstream so the canon fixes it for every repo: /ywr-harness:report-issue — one confirmation before anything is filed." -ForegroundColor Yellow
         }
     }
 }

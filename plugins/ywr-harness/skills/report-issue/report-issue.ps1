@@ -2,7 +2,7 @@
 # rather than failing on a .NET 5+ surface halfway through (issue #51's class).
 #Requires -Version 7.0
 
-# ywr-harness:feedback — the member-side half of the upstream feedback loop (ADR 0064, spec 0013).
+# ywr-harness:report-issue — the member-side half of the upstream feedback loop (ADR 0064, spec 0013).
 #
 # Two modes, and the split IS the contract:
 #
@@ -268,7 +268,7 @@ if ($scaffolded) {
     if (Test-Path -LiteralPath $hook -PathType Leaf) {
         # The hook is Node (ADR 0116). `node` is found by scanning $env:PATH with .NET calls — NOT
         # Get-Command: ADR 0113's auto-loading window allows exactly the git, gh and claude lookups
-        # (feedback.selftest G1), and an absent command's Get-Command costs ~1.4 s. The rule is how the
+        # (report-issue.selftest G1), and an absent command's Get-Command costs ~1.4 s. The rule is how the
         # host launches an exec-form `node`: on Windows only a real node.exe counts (an exec'd command is
         # never a .cmd/.bat shim); elsewhere a regular `node` file with an execute bit (where the runtime cannot
         # read the mode, existence is enough).
@@ -293,7 +293,7 @@ if ($scaffolded) {
         if (-not $nodeExe) {
             $nudgeText = '(the refresh nudge could not run: node is not on PATH, and the nudge is a Node hook — so no toolchain-drift verdict was read for this repo here; the dry run below is the only drift reader that ran)'
         } else {
-            $payload = @{ hook_event_name = 'SessionStart'; session_id = 'ywr-harness-feedback'; source = 'startup'; cwd = $root } | ConvertTo-Json -Compress
+            $payload = @{ hook_event_name = 'SessionStart'; session_id = 'ywr-harness-report-issue'; source = 'startup'; cwd = $root } | ConvertTo-Json -Compress
             # stdout is the verdict and is all that gets parsed: node's stderr (a NODE_OPTIONS preload's
             # warning, a deprecation notice) goes to its own temp file and is quoted only when the run
             # failed (non-zero exit) or its stdout was not JSON — never merged into the JSON.
@@ -410,11 +410,11 @@ if ($drifted.Count) {
     [void]$b.AppendLine()
 }
 [void]$b.AppendLine('---')
-[void]$b.AppendLine("Drafted by ``/ywr-harness:feedback`` (ADR 0064). No file contents or diffs are included — only names, versions and commit subjects; the canon asks for a diff in this thread when it needs one.")
+[void]$b.AppendLine("Drafted by ``/ywr-harness:report-issue`` (ADR 0064). No file contents or diffs are included — only names, versions and commit subjects; the canon asks for a diff in this thread when it needs one.")
 
 $outDir = if ($OutDir) { $OutDir } else { [IO.Path]::GetTempPath() }
 if (-not (Test-Path -LiteralPath $outDir -PathType Container)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
-$bodyFile = Join-Path $outDir ("ywr-harness-feedback-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".md")
+$bodyFile = Join-Path $outDir ("ywr-harness-report-issue-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".md")
 Write-Utf8NoBom $bodyFile $b.ToString()
 
 # --- similar open reports (informational) ----------------------------------------------------------
@@ -440,7 +440,7 @@ if ($drifted.Count) {
     } else { $similar = 'NOT CHECKED (gh absent or not authenticated)' }
 }
 
-Say "feedback -> $root" Cyan
+Say "report-issue -> $root" Cyan
 Say "  body: $bodyFile"
 Say "  title: $Title"
 Say "  drift: $driftSummary"

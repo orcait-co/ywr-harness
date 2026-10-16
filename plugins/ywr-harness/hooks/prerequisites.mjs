@@ -57,7 +57,7 @@ export const TOOLS = [
   {
     name: 'pwsh', argv: ['pwsh', '--version'], min: [7, 0], winget: 'Microsoft.PowerShell',
     other: 'macOS: `brew install --cask powershell` · Linux: learn.microsoft.com/powershell',
-    uses: 'the harness-init and feedback skill scripts and every plugin selftest fail',
+    uses: 'the harness-init and report-issue skill scripts and every plugin selftest fail',
   },
   {
     name: 'python', argv: ['python', '--version'], min: [3, 9], winget: 'Python.Python.3.13',

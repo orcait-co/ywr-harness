@@ -71,7 +71,7 @@ $ok = (Assert-SystemMessage 'whitespace source reports drift' $out `
 #    of silence — it must now be reported, and the report must name the keys it did get.
 $out = Invoke-Hook '{"hook_event_name":"ConfigChange","config_source":"project_settings"}'
 $ok = (Assert-SystemMessage 'old config_source name is reported as drift' $out `
-        @('SCHEMA DRIFT', '수신된 키: config_source, hook_event_name', '/ywr-harness:feedback') `
+        @('SCHEMA DRIFT', '수신된 키: config_source, hook_event_name', '/ywr-harness:report-issue') `
         @('\[hook:config-audit\] project_settings', '\.claude/hooks/')) -and $ok
 # 8. payload text is inert: CR/LF, U+2028/U+2029/U+0085 and backticks in `source` flatten to spaces,
 #    so a hostile value cannot forge a second `[hook:*]` line; `file_path` is capped at exactly 300

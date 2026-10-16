@@ -8,7 +8,7 @@ identical in every repo, so it should be maintained in one place and consumed, n
 Defects in anything here are fixed **in this repo**, never patched in a consuming repo — see
 `docs/adr/0010-harness-defects-fixed-in-canon.md`. Managed settings keep the plugin on, so a member
 cannot disable it (ADR 0143). The escape hatch for urgency is the owner's managed `false`: report
-the problem with `/ywr-harness:feedback`. A local fork is never the remedy.
+the problem with `/ywr-harness:report-issue`. A local fork is never the remedy.
 
 ## Install
 
@@ -24,7 +24,7 @@ Claude Code.
 Plugin components resolve as `ywr-harness:<name>`. A bare name does not resolve:
 
 ```
-/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:feedback   /ywr-harness:artifact-publish   /ywr-harness:setup
+/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:report-issue   /ywr-harness:artifact-publish   /ywr-harness:setup
 Workflow({name: 'ywr-harness:adversarial-review', args: {...}})
 ```
 
@@ -197,9 +197,9 @@ different states, and rate-limit keys are legitimately absent on a session's fir
 the first API response. Context and quota use different threshold curves: 50% context is ordinary
 working state, 50% of a rate limit is already worth watching.
 
-## Upstream feedback (skill)
+## Upstream reports (`report-issue` skill)
 
-`/ywr-harness:feedback <description>` — send a defect or request to the canon (ADR 0064). The canon
+`/ywr-harness:report-issue <description>` — send a defect or request to the canon (ADR 0064). The canon
 repo is private, so the report is filed as an issue on the PUBLIC dist repo `orcait-co/ywr-harness`,
 and the canon's session-start inbox lists every open dist issue (ADR 0085 — no label is set, because
 GitHub drops one set by a filer without push access). The skill drafts the body
@@ -254,7 +254,7 @@ do not run it.
   start on a member machine — the host reports a hook error and never a blocked call, since no
   hook can block; the suites report a skip locally and a hard failure on CI, where they must
   actually run.
-- `pwsh` (PowerShell 7+) on `PATH` — the skills' scripts (`harness-init`, `feedback`) and every
+- `pwsh` (PowerShell 7+) on `PATH` — the skills' scripts (`harness-init`, `report-issue`) and every
   selftest. No hook runs on it.
 - `python` 3.9+ (stdlib only) — every gate script under `scripts/` requires it:
   `harness_gates.py` (invoked by the `pre-commit` hook), `harness_retro.py` (by the

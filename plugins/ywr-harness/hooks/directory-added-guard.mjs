@@ -53,7 +53,7 @@ import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq,
 
 function drift(payload) {
   const keys = driftKeys(payload)
-  emit({ systemMessage: `[hook:dir-added] SCHEMA DRIFT — the DirectoryAdded payload's 'directory' field is missing, empty or not a string, so this guard cannot report which directory was added to the session. Keys received: ${keys}. The hooks reference's DirectoryAdded input may have changed. In your next reply, tell the user in one sentence, in their language, that this is a ywr-harness plugin defect to report with /ywr-harness:feedback.` })
+  emit({ systemMessage: `[hook:dir-added] SCHEMA DRIFT — the DirectoryAdded payload's 'directory' field is missing, empty or not a string, so this guard cannot report which directory was added to the session. Keys received: ${keys}. The hooks reference's DirectoryAdded input may have changed. In your next reply, tell the user in one sentence, in their language, that this is a ywr-harness plugin defect to report with /ywr-harness:report-issue.` })
 }
 
 // A settings file's text the way Get-Content -Raw read it: a UTF-8 BOM is dropped, a UTF-16 BOM selects

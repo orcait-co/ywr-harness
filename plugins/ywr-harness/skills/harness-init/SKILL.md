@@ -72,13 +72,13 @@ the block, do this BEFORE the real run:
 
 1. Draft the report (nothing leaves the machine):
    ```
-   pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/feedback/feedback.ps1" -Target <repo root> -Description "<which files were edited and why — name the files from the block, and what the member says the edit fixes>"
+   pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.ps1" -Target <repo root> -Description "<which files were edited and why — name the files from the block, and what the member says the edit fixes>"
    ```
 2. Show the member the FULL body file it printed, and the `similar open reports:` line. A
    fingerprint hit there means this exact conflict is already filed — say so and default to NOT
    filing again.
 3. Ask ONE question: file it / skip. On file, run the exact FILE command the draft printed
-   (`feedback.ps1 -File -BodyPath …`). On skip, print that command so the member can file later.
+   (`report-issue.ps1 -File -BodyPath …`). On skip, print that command so the member can file later.
    Never file without the confirmation, never change the body after showing it, never include
    diff text (ADR 0064).
 4. Only then run the real `init.ps1`. The revert is intended — the canon ships the fix in a

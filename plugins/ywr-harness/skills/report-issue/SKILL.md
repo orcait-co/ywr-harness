@@ -1,10 +1,10 @@
 ---
-name: feedback
+name: report-issue
 description: Report a ywr-harness defect or request upstream. Drafts an issue body (running and installed plugin versions, Claude Code version, repo and .harness-version stamp, the scaffold-refresh nudge's verdict, what a harness-init re-run would change, the local commit history of those files — never file contents or diffs), shows it, and after ONE confirmation files it on the public dist repo orcait-co/ywr-harness via gh; without gh it keeps the body and prints where to file by hand. Use when something in the harness is wrong or missing, or when a repo had to patch a vendored toolchain file locally.
 disable-model-invocation: true
 ---
 
-# feedback — send a defect or request to the canon
+# report-issue — send a defect or request to the canon
 
 Harness defects are fixed in the canon and never patched in a consuming repo (ADR 0010). This
 skill is how a member gets a defect there: the canon `ywrlabs/ywr-harness` is private, so the
@@ -12,7 +12,7 @@ report is filed on the PUBLIC dist tracker (`orcait-co/ywr-harness`), and the ca
 inbox lists every open dist issue (ADR 0064, ADR 0085). The script sets no label: GitHub silently
 drops a label set by a filer without push access, so the inbox does not depend on one.
 
-Invoke: `/ywr-harness:feedback <description>`. `$ARGUMENTS` is the member's description. Two
+Invoke: `/ywr-harness:report-issue <description>`. `$ARGUMENTS` is the member's description. Two
 script runs, one confirmation between them — **never skip the review step**: the body goes to a
 public tracker.
 
@@ -24,7 +24,7 @@ expected, and (if a toolchain file was patched locally) why. Do not invent a des
 ## 2. Draft — nothing leaves the machine
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/feedback/feedback.ps1" -Description "<description>"
+pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.ps1" -Description "<description>"
 ```
 
 Run it from inside the repo the report is about (or add `-Target <repo root>`). It prints
@@ -55,7 +55,7 @@ may be the better move. That is the member's call — the fingerprint is a hint,
 ## 4. File exactly that file
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/feedback/feedback.ps1" -File -BodyPath "<body path from step 2>"
+pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.ps1" -File -BodyPath "<body path from step 2>"
 ```
 
 The script files the reviewed file (title line stripped) with `gh issue create` and prints one of:

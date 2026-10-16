@@ -1278,7 +1278,7 @@ $ok = (Assert-True 'X1 dry run prints the SAME-VERSION block' ($rX1.Out -match '
 $ok = (Assert-True 'X1 dry run says to report BEFORE the real run' ($rX1.Out -match 'BEFORE the real run') $rX1.Out) -and $ok
 $ok = (Assert-True 'X1 dry run leaves the local edit in place' ((Get-Content -LiteralPath $xEdit -Raw) -match 'local patch') 'edit reverted by a DRY run') -and $ok
 $ok = (Assert-True 'X1 dry run names no pre-revert copies' ($rX1.Out -notmatch 'pre-revert copies:') $rX1.Out) -and $ok
-$ok = (Assert-True 'X1 the report pointer is the namespaced skill' ($rX1.Out -match '/ywr-harness:feedback') $rX1.Out) -and $ok
+$ok = (Assert-True 'X1 the report pointer is the namespaced skill' ($rX1.Out -match '/ywr-harness:report-issue') $rX1.Out) -and $ok
 
 # X2: real run — revert happens, block + copies dir printed, the copy holds the LOCAL content.
 $rX2 = Invoke-Init @('-Target', $x)
@@ -1346,7 +1346,7 @@ $rX5 = (Invoke-Init @('-Target', $x5) -Script $x5Init).Out
 # case-insensitive — the first run of this case failed on exactly that. The second assertion is
 # the real discriminator: the dogfood note never prompts for a report.
 $ok = (Assert-True 'X5 in-tree run prints the dogfood note, not the report prompt' `
-    ($rX5 -match 'canon dogfood' -and $rX5 -cnotmatch 'SAME-VERSION drift' -and $rX5 -notmatch 'ywr-harness:feedback') $rX5) -and $ok
+    ($rX5 -match 'canon dogfood' -and $rX5 -cnotmatch 'SAME-VERSION drift' -and $rX5 -notmatch 'ywr-harness:report-issue') $rX5) -and $ok
 $ok = (Assert-True 'X5 in-tree run makes no pre-revert copies' ($rX5 -notmatch 'pre-revert copies:') $rX5) -and $ok
 
 # --- P: a non-git target places the hooks and says they will not run ---------------------------
