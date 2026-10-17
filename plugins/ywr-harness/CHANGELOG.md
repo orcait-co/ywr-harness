@@ -12,6 +12,17 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.69.2 — 2026-10-17
+
+- **CI 게이트 워크플로(`harness-gates.yml`)가 고정되지 않은 Python 인터프리터를 알려 줍니다 (ADR 0154, dist issue #10).**
+  `.python-version` 이 없는 uv 프로젝트의 `requires-python` 이 러너의 Python 3.12 를 받아들이지 않으면, CI 의 uv 는 그날의
+  최신 CPython 을 내려받아 씁니다. 그래서 새 CPython 이 나오면 레포를 바꾸지 않아도 설치가 실패할 수 있습니다. 3.15.0 이
+  나온 날 실제로 한 레포의 CI 가 게이트를 하나도 돌리지 못했습니다. 이제 그런 디렉터리는 green 런에 `::warning::` 이 붙고,
+  설치가 실패하면 고치는 법이 `::error::` 로 나옵니다. 고치는 법: 그 디렉터리에서 `uv python pin <버전>` 으로
+  `.python-version` 을 커밋하고, 파일 인자를 받는 게이트(ruff 등)가 없는 `.harness.json` 그룹에 그 파일을 claim 하세요.
+- 적용: 플러그인 업데이트 후 `/ywr-harness:harness-init` 을 다시 실행하면 레포의 `.github/workflows/harness-gates.yml` 이
+  갱신됩니다.
+
 ## v0.69.1 — 2026-10-17
 
 - `/ywr-harness:report-issue` 로 같은 폴더에서 1초 안에 초안을 두 번 만들면 앞의 초안 파일을 덮어쓰던 문제를 고쳤습니다. 이제 두 번째 초안은

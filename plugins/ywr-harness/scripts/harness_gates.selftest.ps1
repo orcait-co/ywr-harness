@@ -2014,6 +2014,107 @@ $t10 = Invoke-Gates $ag10 @('--tree')
 $ok = (Assert-True 'AG10 a broken branch ref fails loudly instead of printing HEAD none' `
         ($t10.Code -ne 0 -and $t10.Out -match 'tree: FAILED' -and $t10.Out -notmatch 'HEAD none') "exit=$($t10.Code) out=$($t10.Out)") -and $ok
 
+# --- AH: the uv install step names an unpinned interpreter (ADR 0154, dist issue #10) -----------
+# The step is extracted from the template BY NAME and run under bash with a stub `uv`, as AD2 runs
+# its neighbours. The stub records its argv and, on success, writes the `.venv/pyvenv.cfg` that the
+# step reads, with the version the case asks for. Each case anchors one mutation: AH2 fails a
+# full-version compare, AH4 a pin search that climbs above the gate directory, AH5/AH6 an error that
+# ignores the pin, AH6b/AH7b a pin trusted with no venv beside it, AH3 a lost `--locked`, AH9 a
+# reader that keeps every `version_info` line. AH0
+# fails a renamed step, so the case never runs nothing. The asserts match ASCII only: the step's Korean text
+# reaches this process through the console code page, which this suite does not pin.
+if ($bashExe) {
+    $ahInstall = Get-RunBlock $ciLines 'Install the project with uv (once per directory the uv gates run in)'
+    $ok = (Assert-True 'AH0 the uv install step script is found in the template' ($ahInstall -and $ahInstall -match 'pyvenv\.cfg' -and $ahInstall -match 'uv sync --locked') "install=[$ahInstall]") -and $ok
+    $ahWork = Join-Path $fxBase 'ah-work'
+    New-Item -ItemType Directory -Force -Path (Join-Path $ahWork 'stub') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $ahWork 'stub/uv'), (@'
+#!/bin/sh
+printf 'STUB uv %s' "$(basename "$PWD")"; for a in "$@"; do printf ' <%s>' "$a"; done; printf '\n'
+if [ "$STUB_PY" = forge ]; then
+  mkdir -p .venv
+  printf 'version_info = 3.15.0\nversion_info = ::error::forged\n' > .venv/pyvenv.cfg
+elif [ -n "$STUB_PY" ]; then
+  mkdir -p .venv
+  printf 'home = /x\nimplementation = CPython\nversion_info = %s\ninclude-system-site-packages = false\n' "$STUB_PY" > .venv/pyvenv.cfg
+fi
+if [ -n "$STUB_FAIL" ]; then echo 'error: stub failure' >&2; exit 2; fi
+exit 0
+'@ -replace "`r", ''))
+    [IO.File]::WriteAllText((Join-Path $ahWork 'install.sh'), $ahInstall)
+    $ahW = [IO.Path]::GetFullPath($ahWork) -replace '\\', '/'
+    # `-` stands for an empty value: an empty native argument is the one shape this driver avoids.
+    [IO.File]::WriteAllText((Join-Path $ahWork 'driver.sh'), (@"
+cd "`$1"
+chmod +x '$ahW/stub/uv' 2>/dev/null || true
+PATH="`$(cd '$ahW/stub' && pwd):/usr/bin:/bin:`$PATH"
+UV_DIRS="`$2"; RUNNER_PY='3.12.13'; STUB_PY="`$3"; STUB_FAIL="`$4"
+[ "`$STUB_PY" = '-' ] && STUB_PY=''
+[ "`$STUB_FAIL" = '-' ] && STUB_FAIL=''
+export PATH UV_DIRS RUNNER_PY STUB_PY STUB_FAIL
+bash '$ahW/install.sh'
+"@ -replace "`r", ''))
+    function Invoke-AhCase([string]$Name, [string[]]$Files, [string]$Dirs, [string]$StubPy, [string]$Fail) {
+        $t = Join-Path $ahWork $Name
+        New-Item -ItemType Directory -Force -Path $t | Out-Null
+        foreach ($f in $Files) {
+            $p = Join-Path $t $f
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $p) | Out-Null
+            [IO.File]::WriteAllText($p, "3.13`n")
+        }
+        foreach ($d in ($Dirs -split ' ')) { New-Item -ItemType Directory -Force -Path (Join-Path $t $d) | Out-Null }
+        $out = (& $bashExe "$ahW/driver.sh" ([IO.Path]::GetFullPath($t) -replace '\\', '/') $Dirs $StubPy $Fail 2>&1 | Out-String) -replace "`r", ''
+        return [pscustomobject]@{ Out = $out; Code = $LASTEXITCODE }
+    }
+    $h1 = Invoke-AhCase 'unpinned-newer' @() '.' '3.15.0' '-'
+    $ok = (Assert-True 'AH1 an unpinned directory on another minor gets a warning naming both versions and ADR 0154; the step passes' `
+            ($h1.Code -eq 0 -and $h1.Out -match '(?m)^::warning::uv sync \(\.\) .*CPython 3\.15\.0.*3\.12\.13.*ADR 0154' -and $h1.Out -match '(?m)^STUB uv \S+ <sync>$' -and $h1.Out -notmatch '<--locked>') "exit=$($h1.Code)`n$($h1.Out)") -and $ok
+    $h2 = Invoke-AhCase 'unpinned-same-minor' @() '.' '3.12.7' '-'
+    $ok = (Assert-True 'AH2 an unpinned directory on the runner minor, another patch, gets no warning and one interpreter line' `
+            ($h2.Code -eq 0 -and $h2.Out -notmatch '::warning::' -and $h2.Out -match '(?m)^uv interpreter \(\.\): CPython 3\.12\.7 ') "exit=$($h2.Code)`n$($h2.Out)") -and $ok
+    $h3 = Invoke-AhCase 'pinned-locked' @('.python-version', 'uv.lock') '.' '3.13.16' '-'
+    $ok = (Assert-True 'AH3 a pinned directory on another minor gets no warning, names its pin, and keeps --locked' `
+            ($h3.Code -eq 0 -and $h3.Out -notmatch '::warning::' -and $h3.Out -match '(?m)^uv interpreter \(\.\): CPython 3\.13\.16 .*\./\.python-version' -and $h3.Out -match '<sync> <--locked>') "exit=$($h3.Code)`n$($h3.Out)") -and $ok
+    # AH4/AH4b/AH4c (review 2026-10-17, medium): uv reads no pin above a project root, so a pin above
+    # the gate directory must not count. The first cut climbed to the repo root, and a root pin then
+    # hid both the warning and the error of a sub-project in the exact issue #10 shape.
+    $h4 = Invoke-AhCase 'pin-at-root' @('.python-version') 'api' '3.13.16' '-'
+    $ok = (Assert-True 'AH4 a pin above the gate directory does not count: uv ignores it, so the warning fires' `
+            ($h4.Code -eq 0 -and $h4.Out -match '(?m)^::warning::uv sync \(api\) .*CPython 3\.13\.16' -and $h4.Out -notmatch '(?m)^uv interpreter \(api\): CPython' -and $h4.Out -match 'STUB uv api <sync>') "exit=$($h4.Code)`n$($h4.Out)") -and $ok
+    $h4b = Invoke-AhCase 'pin-at-root-fail' @('.python-version') 'api' '-' 'yes'
+    $ok = (Assert-True 'AH4b a failed sync below a root pin still gets the error with the fix' `
+            ($h4b.Code -eq 2 -and $h4b.Out -match '(?m)^::error::uv sync \(api\) .*ADR 0154') "exit=$($h4b.Code)`n$($h4b.Out)") -and $ok
+    $h4c = Invoke-AhCase 'member-venv-at-root' @('.python-version') 'api' '-' '-'
+    $ok = (Assert-True 'AH4c a member whose venv sits above it gets a stated skip, never a warning' `
+            ($h4c.Code -eq 0 -and $h4c.Out -notmatch '::warning::' -and $h4c.Out -match '(?m)^uv interpreter \(api\): .*api/\.venv/pyvenv\.cfg') "exit=$($h4c.Code)`n$($h4c.Out)") -and $ok
+    $h5 = Invoke-AhCase 'unpinned-fail' @() '.' '-' 'yes'
+    $ok = (Assert-True 'AH5 a failed sync in an unpinned directory gets the error with the fix and keeps uv''s exit code' `
+            ($h5.Code -eq 2 -and $h5.Out -match '(?m)^::error::uv sync \(\.\) .*ADR 0154' -and $h5.Out -match 'stub failure') "exit=$($h5.Code)`n$($h5.Out)") -and $ok
+    $h6 = Invoke-AhCase 'pinned-fail' @('.python-version') '.' '3.13.16' 'yes'
+    $ok = (Assert-True 'AH6 a failed sync in a pinned directory that holds the venv gets no pin error and keeps uv''s exit code' `
+            ($h6.Code -eq 2 -and $h6.Out -notmatch '::error::') "exit=$($h6.Code)`n$($h6.Out)") -and $ok
+    # AH6b/AH7b (2026-10-17 fix-check leg, medium): uv reads no pin in a workspace member, and the
+    # member's venv sits at the workspace root. A pin in a directory without a venv is therefore not
+    # proof that uv read it: never a "pinned" line, and a failed sync still gets the error.
+    $h6b = Invoke-AhCase 'member-pin-fail' @('.python-version') '.' '-' 'yes'
+    $ok = (Assert-True 'AH6b a failed sync where a pin has no venv beside it gets the error naming that pin' `
+            ($h6b.Code -eq 2 -and $h6b.Out -match '(?m)^::error::uv sync \(\.\) .*\./\.python-version.*ADR 0154') "exit=$($h6b.Code)`n$($h6b.Out)") -and $ok
+    $h7b = Invoke-AhCase 'member-pin-ok' @('.python-version') '.' '-' '-'
+    $ok = (Assert-True 'AH7b a pin with no venv beside it is a stated skip naming the pin, never a pinned interpreter line' `
+            ($h7b.Code -eq 0 -and $h7b.Out -notmatch '::warning::' -and $h7b.Out -notmatch 'CPython' -and $h7b.Out -match '(?m)^uv interpreter \(\.\): .*\./\.venv/pyvenv\.cfg.*\./\.python-version') "exit=$($h7b.Code)`n$($h7b.Out)") -and $ok
+    $h7 = Invoke-AhCase 'no-venv' @() '.' '-' '-'
+    $ok = (Assert-True 'AH7 an unreadable interpreter is a stated skip, never a warning or a failure' `
+            ($h7.Code -eq 0 -and $h7.Out -notmatch '::warning::' -and $h7.Out -match '(?m)^uv interpreter \(\.\): .*\./\.venv/pyvenv\.cfg') "exit=$($h7.Code)`n$($h7.Out)") -and $ok
+    $h8 = Invoke-AhCase 'plural-pin' @('.python-versions') '.' '3.14.0' '-'
+    $ok = (Assert-True 'AH8 a .python-versions file counts as a pin' `
+            ($h8.Code -eq 0 -and $h8.Out -notmatch '::warning::' -and $h8.Out -match '\./\.python-versions') "exit=$($h8.Code)`n$($h8.Out)") -and $ok
+    # AH9: the version is echoed into an annotation line, so a second `version_info` line must not
+    # become a line of its own — GitHub would read `::error::forged` as a workflow command.
+    $h9 = Invoke-AhCase 'two-cfg-lines' @() '.' 'forge' '-'
+    $ok = (Assert-True 'AH9 only the first version_info line, version characters only, reaches the warning' `
+            ($h9.Code -eq 0 -and $h9.Out -match '(?m)^::warning::uv sync \(\.\) .*CPython 3\.15\.0 ' -and $h9.Out -notmatch '(?m)^::error::' -and $h9.Out -notmatch 'forged') "exit=$($h9.Code)`n$($h9.Out)") -and $ok
+}
+
 Remove-FixtureRoot $fxBase
 
 Restore-GitPath
