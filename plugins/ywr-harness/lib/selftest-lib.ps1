@@ -3,7 +3,7 @@
 # fixture lifecycle, — on their third copy / first measured failure — the boolean
 # `Assert-True` verdict and the child-output decoding pin, the in-process script
 # runner that replaced the per-case child pwsh in the spawn-bound suites (ADR 0071 option E),
-# and the git worker-binary bypass (ADR 0111).
+# and the git worker-binary bypass (ADR 0111). The runner's argv fold joined it on its third copy (O93).
 #
 # The guard half is the single owner of the empty-MustNotMatch rule.
 #
@@ -156,6 +156,75 @@ function Invoke-ScriptInRunspace([string]$Path, [hashtable]$Arguments = @{}) {
         $err = if ($ps) { ($ps.Streams.Error | Out-String) } else { '' }
         return @{ Out = (($_ | Out-String) + $err); Code = -1; Aborted = $true }
     } finally { if ($ps) { $ps.Dispose() } }
+}
+
+# Argv-shaped call sites ('-Target', $x, '-DryRun') fold into the hashtable Invoke-ScriptInRunspace
+# splats, by the script's OWN parameter metadata — the rule a `pwsh -File` child binds by, measured
+# 2026-10-16 (O93, which closed three shape-guessing folds that read a '-Word' value as a switch):
+#   - a [switch] name is $true and takes no value;
+#   - any other name takes the next token as its value — '-Word' and '-3' included — UNLESS that
+#     token names one of the script's parameters ('-Description -File' binds -File as the switch);
+#   - such a name with no value left is a binding failure: Code -1, Aborted, like the runspace's own
+#     binding refusal.
+# A name is matched as pwsh matches it: whole name or alias, case-insensitive, or a unique prefix. A
+# prefix of two parameters ('-T' for -Target and -Title) is a name in either slot, and it aborts, as a
+# child refuses it as ambiguous. A prefix of one own parameter and common ones binds the own one, as in a child.
+# LIMIT, not a child's rule: a positional token and the `-Name:value` form abort here (Code -1), where a
+# child binds them. No call site passes either; a case that needs one runs a real child.
+# The metadata is read once per script content (Get-Command and the parser read the file).
+$script:ArgvParamCache = @{}
+function Get-ScriptParamTable([string]$Path) {
+    $f = Get-Item -LiteralPath $Path
+    # Keyed by content, not path: the init suite's script copies share init.ps1's parse (73 ms each, measured).
+    $key = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($f.FullName)))
+    if (-not $script:ArgvParamCache.ContainsKey($key)) {
+        # Get-Command reports a script that does not parse as one with no parameters (measured), so ask the parser.
+        $parseErrors = $null
+        $null = [Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$parseErrors)
+        if ($parseErrors.Count) { throw "$($parseErrors.Count) parse error(s), first: $($parseErrors[0].Message)" }
+        $names = @{}
+        foreach ($p in (Get-Command -Name $f.FullName -CommandType ExternalScript).Parameters.Values) {
+            foreach ($n in @($p.Name) + @($p.Aliases)) { $names[$n] = $p }
+        }
+        $script:ArgvParamCache[$key] = $names
+    }
+    return $script:ArgvParamCache[$key]
+}
+# Returns $null for a token that names no parameter, else @{ Param = <metadata> } or @{ Ambiguous = <names> }.
+function Resolve-ArgvParam([hashtable]$Names, [string]$Token) {
+    if ($Token -notmatch '^-([A-Za-z_][\w-]*)$') { return $null }
+    $n = $Matches[1]
+    if ($Names.ContainsKey($n)) { return @{ Param = $Names[$n] } }
+    $hits = @($Names.Keys | Where-Object { $_.StartsWith($n, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $Names[$_].Name } | Select-Object -Unique)
+    # A child prefers the script's own parameter over a common one: '-D' binds -DryRun, not -Debug (measured).
+    if ($hits.Count -gt 1) {
+        $common = [Management.Automation.PSCmdlet]::CommonParameters + [Management.Automation.PSCmdlet]::OptionalCommonParameters
+        $own = @($hits | Where-Object { $_ -notin $common })
+        if ($own.Count -eq 1) { $hits = $own }
+    }
+    if ($hits.Count -eq 1) { return @{ Param = $Names[$hits[0]] } }
+    if ($hits.Count -gt 1) { return @{ Ambiguous = (($hits | Sort-Object) -join ', ') } }
+    return $null
+}
+function Invoke-ScriptArgv([string]$Path, [string[]]$Argv = @()) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @{ Out = "script not found: $Path"; Code = -1; Aborted = $true }
+    }
+    try { $names = Get-ScriptParamTable $Path }
+    catch { return @{ Out = "parameter metadata unreadable: $($_.Exception.Message)"; Code = -1; Aborted = $true } }
+    $t = @{}
+    for ($i = 0; $i -lt $Argv.Count; $i++) {
+        $r = Resolve-ArgvParam $names $Argv[$i]
+        if (-not $r) { return @{ Out = "argv fold: '$($Argv[$i])' names no parameter of $Path (positional and -Name:value tokens are not folded)"; Code = -1; Aborted = $true } }
+        if ($r.Ambiguous) { return @{ Out = "argv fold: '$($Argv[$i])' is ambiguous: $($r.Ambiguous)"; Code = -1; Aborted = $true } }
+        $p = $r.Param
+        if ($p.SwitchParameter) { $t[$p.Name] = $true; continue }
+        if ($i + 1 -ge $Argv.Count -or (Resolve-ArgvParam $names $Argv[$i + 1])) {
+            return @{ Out = "argv fold: missing an argument for parameter '$($p.Name)'"; Code = -1; Aborted = $true }
+        }
+        $t[$p.Name] = $Argv[$i + 1]; $i++
+    }
+    return Invoke-ScriptInRunspace -Path $Path -Arguments $t
 }
 
 function Get-AssertionFailure {

@@ -27,16 +27,9 @@ $null = Use-GitWorkerBinary
 # Code -1 with Aborted — never an exit code, so an infrastructure failure cannot pass as a G/H/S1
 # "exits 1" case. `-Script` runs a COPY of init.ps1 (cases H, R, X5 rewrite the plugin dir).
 function Invoke-Init([string[]]$Arguments, [string]$Script = $init) {
-    # Call sites pass argv-shaped arrays ('-Target', $x, '-DryRun'); an array splat binds positionally
-    # — '-Target' would bind AS the target — so fold it into a hashtable: a '-Name' followed by a
-    # non-dash value is a pair, a '-Name' followed by nothing or another '-Name' is a switch.
-    $p = @{}
-    for ($i = 0; $i -lt $Arguments.Count; $i++) {
-        $k = $Arguments[$i].TrimStart('-')
-        if ($i + 1 -lt $Arguments.Count -and -not $Arguments[$i + 1].StartsWith('-')) { $p[$k] = $Arguments[$i + 1]; $i++ }
-        else { $p[$k] = $true }
-    }
-    return Invoke-ScriptInRunspace -Path $Script -Arguments $p
+    # Call sites pass argv-shaped arrays ('-Target', $x, '-DryRun'); the lib folds them by init.ps1's own
+    # parameter metadata: `-Name value` pairs and switches bind as in a `pwsh -File` child (cases Z0f).
+    return Invoke-ScriptArgv $Script $Arguments
 }
 
 # --- Z0: the two contracts the in-process adapter rests on (review 2026-09-02, low ×2) ------------
@@ -67,8 +60,30 @@ $ok = (Assert-True 'Z0 a missing script is an abort (code -1), not an exit code'
 # required"; the runner must report an abort instead (re-review 2026-09-02, high).
 $binder = Join-Path $fxBase 'binder.ps1'
 Set-Content -LiteralPath $binder -Value "[CmdletBinding()] param([string]`$Target)`nWrite-Host ran`nexit 0" -NoNewline
-$rZ0b = Invoke-Init @('-Targett', $fxBase) -Script $binder
+# Straight to the runspace: the argv fold would refuse '-Targett' first, and this case pins the runspace's own binding.
+$rZ0b = Invoke-ScriptInRunspace -Path $binder -Arguments @{ Targett = $fxBase }
 $ok = (Assert-True 'Z0 a parameter-binding failure is an abort (code -1), never an exit code' ($rZ0b.Code -eq -1 -and $rZ0b.Aborted -and $rZ0b.Out -match 'Targett') "code=$($rZ0b.Code) aborted=$($rZ0b.Aborted) out=$($rZ0b.Out)") -and $ok
+# Z0f — the lib's argv fold (Invoke-ScriptArgv, O93) binds the way a `pwsh -File` child binds, measured 2026-10-16:
+# a dash-shaped value is a value, a real parameter name is a name, a dangling or ambiguous name aborts.
+$folder = Join-Path $fxBase 'folder.ps1'
+Set-Content -LiteralPath $folder -Value "[CmdletBinding()] param([string]`$Target, [string]`$Title, [switch]`$DryRun)`nWrite-Host `"T=[`$Target] Ti=[`$Title] D=`$DryRun`"`nexit 0" -NoNewline
+$broken = Join-Path $fxBase 'broken.ps1'
+Set-Content -LiteralPath $broken -Value 'param([string]$Target' -NoNewline
+foreach ($fc in @(
+        @{ Name = "'-Target -Word' binds -Word as the value"; Argv = @('-Target', '-Word'); Path = $folder; Rx = 'T=\[-Word\] Ti=\[\] D=False' },
+        @{ Name = "unique prefixes bind: '-Ti x -Dr'"; Argv = @('-Ti', 'x', '-Dr'); Path = $folder; Rx = 'T=\[\] Ti=\[x\] D=True' },
+        @{ Name = "'-D' binds -DryRun: the script's own parameter wins over the common -Debug"; Argv = @('-D'); Path = $folder; Rx = 'T=\[\] Ti=\[\] D=True' },
+        @{ Name = "'-Target -DryRun' aborts: a parameter name is never a value"; Argv = @('-Target', '-DryRun'); Path = $folder; Rx = "missing an argument for parameter 'Target'" },
+        @{ Name = "a dangling '-Target' aborts"; Argv = @('-Target'); Path = $folder; Rx = "missing an argument for parameter 'Target'" },
+        @{ Name = "'-T' (Target, Title) aborts as ambiguous"; Argv = @('-T', 'x'); Path = $folder; Rx = "'-T' is ambiguous: Target, Title" },
+        @{ Name = "'-Title -T' aborts: an ambiguous name is never a value"; Argv = @('-Title', '-T'); Path = $folder; Rx = "missing an argument for parameter 'Title'" },
+        @{ Name = 'a positional token aborts (a stated limit)'; Argv = @('x'); Path = $folder; Rx = "'x' names no parameter" },
+        @{ Name = 'an unparseable script aborts'; Argv = @('-Target', 'x'); Path = $broken; Rx = 'parameter metadata unreadable' })) {
+    $rf = Invoke-ScriptArgv $fc.Path $fc.Argv
+    $wantRun = $fc.Rx -like 'T=*'
+    $okf = if ($wantRun) { $rf.Code -eq 0 -and -not $rf.Aborted } else { $rf.Code -eq -1 -and $rf.Aborted }
+    $ok = (Assert-True "Z0f fold: $($fc.Name)" ($okf -and $rf.Out -match $fc.Rx) "code=$($rf.Code) aborted=$($rf.Aborted) out=$($rf.Out)") -and $ok
+}
 $rZ0g = Invoke-Init @('-Target', $fxBase) -Script $binder
 $ok = (Assert-True 'Z0 the same script with the right argument name runs and exits 0' ($rZ0g.Code -eq 0 -and -not $rZ0g.Aborted -and $rZ0g.Out -match 'ran') "code=$($rZ0g.Code) out=$($rZ0g.Out)") -and $ok
 # Code is what a child would have returned; init.ps1 ends in an explicit `exit`, so Code is always

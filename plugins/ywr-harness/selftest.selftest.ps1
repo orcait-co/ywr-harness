@@ -31,9 +31,8 @@ function Invoke-RunnerChild([string]$Path, [string[]]$Arguments) {
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 # The -List and refusal cases run the runner in a RUNSPACE of this process (ADR 0149, L3): no pwsh
-# cold start (~0.8 s each, 29 cases). Argv-shaped arrays fold into the hashtable the lib splats (an
-# array splat binds positionally): `-Name value` is a pair, `-Name` alone a switch — the same fold as
-# init.selftest, except that a value like `-3` (a dash and a digit) is a value, not a switch name.
+# cold start (~0.8 s each, 29 cases). Argv-shaped arrays fold by the runner's own parameter metadata
+# (the lib's Invoke-ScriptArgv: pairs and switches bind as in a `pwsh -File` child), so `-Jobs -3` binds -3 as the value.
 # The runner pins [Console]::OutputEncoding to UTF-8 (process-wide). That pin is NOT undone: the console
 # page is shared by every process on the console, and a restore to a non-UTF-8 page is what canon C9
 # forbids (fact 140). The current directory, the environment and $PSStyle.OutputRendering are saved
@@ -56,14 +55,8 @@ function Restore-ProcessState($S) {
     foreach ($k in $S.Env.Keys) { if ($now.Env[$k] -ne $S.Env[$k]) { [Environment]::SetEnvironmentVariable($k, $S.Env[$k]) } }
 }
 function Invoke-Runner([string]$Path, [string[]]$Arguments) {
-    $p = @{}
-    for ($i = 0; $i -lt $Arguments.Count; $i++) {
-        $k = $Arguments[$i].TrimStart('-')
-        if ($i + 1 -lt $Arguments.Count -and ($Arguments[$i + 1] -notmatch '^-[A-Za-z]' )) { $p[$k] = $Arguments[$i + 1]; $i++ }
-        else { $p[$k] = [bool]$true }
-    }
     $state = Get-ProcessState
-    try { return Invoke-ScriptInRunspace -Path $Path -Arguments $p }
+    try { return Invoke-ScriptArgv $Path $Arguments }
     finally { Restore-ProcessState $state }
 }
 # The listing lines are the `  - <plugin-relative path>` form; everything else in the output has

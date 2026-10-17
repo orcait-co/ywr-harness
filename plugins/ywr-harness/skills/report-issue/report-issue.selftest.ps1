@@ -168,22 +168,11 @@ if ($ghLeak) {
 #     keeps the real shape, and A1c compares the runspace path against it (a divergence goes red);
 #   - G2/G3 (Invoke-AutoLoadProbe): their subject IS a fresh process's module auto-loading (ADR 0111 §5b);
 #   - the init.ps1 scaffold run (B0) and, inside report-issue.ps1, its own init and node children.
-function ConvertTo-ArgTable([string[]]$ScriptArgs) {
-    # Call sites pass argv-shaped arrays ('-Description', 'x', '-File'); an array splat binds positionally,
-    # so fold to a hashtable: '-Name' + a following non-'-Name' token is a pair, otherwise a switch.
-    # LIMIT: a VALUE shaped like '-Word' would fold as a switch and fail to bind (Code -1), where a child bound
-    # it as the value. No call site passes one; a case that needs one calls Invoke-FeedbackChild instead.
-    $t = @{}
-    for ($i = 0; $i -lt $ScriptArgs.Count; $i++) {
-        $k = $ScriptArgs[$i].TrimStart('-')
-        if ($i + 1 -lt $ScriptArgs.Count -and $ScriptArgs[$i + 1] -notmatch '^-[A-Za-z]+$') { $t[$k] = $ScriptArgs[$i + 1]; $i++ }
-        else { $t[$k] = $true }
-    }
-    return $t
-}
+# Call sites pass argv-shaped arrays ('-Description', 'x', '-File'); the lib folds them by report-issue.ps1's
+# own parameter metadata: pairs and switches bind as in a `pwsh -File` child, so a '-Word' description is a value (A4).
 function Invoke-Feedback([string[]]$ScriptArgs, [string]$Path) {
     $env:PATH = $Path
-    try { $r = Invoke-ScriptInRunspace -Path $script -Arguments (ConvertTo-ArgTable $ScriptArgs); $script:Exit = $r.Code; $o = [string]$r.Out }
+    try { $r = Invoke-ScriptArgv $script $ScriptArgs; $script:Exit = $r.Code; $o = [string]$r.Out }
     finally { $env:PATH = $savedPath }
     return $o
 }
@@ -278,10 +267,13 @@ $ok = (Assert-True 'A1b draft file is <OutDir>/ywr-harness-report-issue-<yyyyMMd
 # A1c: the SAME case through the runspace path (what every other case uses) must agree with the child on
 # the exit code, on every A1 assertion, and on the output and body text themselves once the per-run body
 # file name is masked — a runspace/process divergence goes red here instead of hiding in the other cases.
-# Its own OutDir: report-issue.ps1 names the body by the SECOND (yyyyMMdd-HHmmss), so two runs inside one second
-# in one directory write the same file — seen once in four runs before this directory was split off.
+# Its own OutDir, seeded with an empty draft for every second from 1 s before to 300 s after (a loaded runner
+# delays the run's clock read; 302 empty files cost nothing): the run must take the
+# `-2` name beside its second's seed and leave the seed empty (O93 — before it, a same-second run overwrote it).
 $outDirRs = Join-Path $fx 'out-a1c'
 New-Item -ItemType Directory -Force -Path $outDirRs | Out-Null
+$seedFrom = Get-Date
+foreach ($s in -1..300) { [IO.File]::WriteAllText((Join-Path $outDirRs ('ywr-harness-report-issue-' + $seedFrom.AddSeconds($s).ToString('yyyyMMdd-HHmmss') + '.md')), '') }
 $outRs = Invoke-Feedback @('-Description', $descA, '-Target', $plain, '-OutDir', $outDirRs) $pathWithGh
 $exitRs = $script:Exit
 $bodyRs = Get-BodyPath $outRs
@@ -295,6 +287,10 @@ $ok = (Assert-Text 'A1c the canary case through the runspace path matches the re
           $(if ($bodyRs -eq $bodyA) { 'the runspace run reused the child body file' }),
           $(if ($maskOutRs -cne $maskOut) { "output differs after masking the body path`n--- child ---`n$maskOut`n--- runspace ---`n$maskOutRs" }),
           $(if ($maskBodyRs -cne $maskBody) { 'body text differs between child and runspace' }))) -and $ok
+$seedRs = if ($bodyRs) { (Split-Path -Leaf $bodyRs) -replace '-2\.md$', '.md' } else { '' }
+$ok = (Assert-True 'A1d a draft in a second that already has one takes the -2 name and leaves the earlier file untouched' `
+        ([bool]$bodyRs -and ((Split-Path -Leaf $bodyRs) -cmatch '^ywr-harness-report-issue-\d{8}-\d{6}-2\.md$') -and `
+         ((Get-Item -LiteralPath (Join-Path $outDirRs $seedRs)).Length -eq 0)) "body: $bodyRs") -and $ok
 $ok = (Assert-True 'A1b no gh call is made when there is no drift (fingerprint search skipped)' ((Get-GhCalls).Count -eq 0) "calls: $((Get-GhCalls) -join ' | ')") -and $ok
 
 # A2: origin with embedded credentials -> owner/repo only, the URL never appears
@@ -314,10 +310,13 @@ $ok = (Assert-Text 'A3 no description -> exit 1 with a FAIL line and no body fil
         @('FAIL — a report needs a description') @('(?m)^\s*body:') `
         @($(if ($script:Exit -ne 1) { "exit $script:Exit (want 1)" }), $(if ($after -ne $before) { 'a body file was written' }))) -and $ok
 
-# A4: -Title override
-$out = Invoke-Feedback @('-Description', 'x', '-Title', 'custom title here', '-Target', $plain, '-OutDir', $outDir) $pathWithGh
+# A4: -Title override. The description is shaped like a parameter name: a child binds '-Word' as the
+# value, and so must the runspace fold (O93 — the old fold read it as a switch and aborted).
+$out = Invoke-Feedback @('-Description', '-Word', '-Title', 'custom title here', '-Target', $plain, '-OutDir', $outDir) $pathWithGh
 $textA4 = Read-Body (Get-BodyPath $out)
-$ok = (Assert-Text 'A4 -Title is used verbatim as the body title line' $textA4 @('(?m)^<!-- title: custom title here -->') @('\[upstream-report\]')) -and $ok
+$ok = (Assert-Text 'A4 -Title is used verbatim as the body title line; a -Word description binds as the value' $textA4 `
+        @('(?m)^<!-- title: custom title here -->', '(?m)^-Word\s*$') @('\[upstream-report\]') `
+        @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }))) -and $ok
 
 # A5: a long first line is truncated in the default title, with an ellipsis
 $long = ('w' * 100)

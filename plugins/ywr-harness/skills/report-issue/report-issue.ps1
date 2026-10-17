@@ -414,8 +414,26 @@ if ($drifted.Count) {
 
 $outDir = if ($OutDir) { $OutDir } else { [IO.Path]::GetTempPath() }
 if (-not (Test-Path -LiteralPath $outDir -PathType Container)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
-$bodyFile = Join-Path $outDir ("ywr-harness-report-issue-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".md")
-Write-Utf8NoBom $bodyFile $b.ToString()
+# The name carries the second; a second draft in the same second and directory takes `-2`, `-3`, …
+# CreateNew makes the claim atomic, so two concurrent runs never write one file (O93).
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$bodyBytes = [Text.UTF8Encoding]::new($false).GetBytes($b.ToString().Replace("`r`n", "`n"))
+$bodyFile = $null
+for ($n = 1; -not $bodyFile -and $n -le 100; $n++) {
+    $cand = Join-Path $outDir ("ywr-harness-report-issue-$stamp" + $(if ($n -gt 1) { "-$n" } else { '' }) + '.md')
+    try { $fs = [IO.File]::Open($cand, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write) }
+    catch { if (Test-Path -LiteralPath $cand) { continue } else { throw } }
+    # A failed write removes its own claim: FILE mode files what DRAFT wrote, never a partial body.
+    try { $fs.Write($bodyBytes, 0, $bodyBytes.Length); $fs.Dispose() }
+    catch {
+        $writeErr = $_
+        try { $fs.Dispose() } catch { }   # the flush in Dispose can fail the same way the write did
+        Remove-Item -LiteralPath $cand -Force -ErrorAction SilentlyContinue
+        throw $writeErr
+    }
+    $bodyFile = $cand
+}
+if (-not $bodyFile) { Say "FAIL — 100 draft names for $stamp already exist in $outDir" Red; exit 1 }
 
 # --- similar open reports (informational) ----------------------------------------------------------
 $similar = if ($scaffolded -and -not $driftKnown) { 'not searched (drift UNKNOWN — the dry run did not compare)' } else { 'not searched (no toolchain drift — the fingerprint would only name the repo and version)' }
