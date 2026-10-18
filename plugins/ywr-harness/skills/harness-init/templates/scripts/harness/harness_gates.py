@@ -120,10 +120,45 @@ def decl_changed_keys(root: Path, rev_range: str | None) -> list[str] | None:
     return keys
 
 
-def changed_lines(root: Path, rev_range: str | None, is_exempt=None) -> tuple[int, int] | None:
-    """(total, counted) added+deleted across the range and the working tree. `counted` excludes
+# git's own binary test (`buffer_is_binary`): a NUL byte among the first 8,000 bytes.
+BINARY_SNIFF = 8000
+
+
+def added_lines(path: Path) -> int | None:
+    """The added-line count `git diff --numstat` prints for `path` as a new file, or None for a
+    binary, which numstat prints as `-` and the measure skips. A symlink is one line (its target),
+    a directory — an untracked nested repository — one line, like a gitlink. `.gitattributes` is
+    not read: a text file marked `binary` or `-diff` there counts its lines, an error toward the
+    larger tier. Read in chunks, so a large untracked file costs time, never memory. Raises
+    OSError when the path cannot be read."""
+    if path.is_symlink() or path.is_dir():
+        return 1
+    n = 0
+    last = b""
+    with open(path, "rb") as fh:
+        chunk = fh.read(BINARY_SNIFF)
+        if b"\0" in chunk:
+            return None
+        while chunk:
+            n += chunk.count(b"\n")
+            last = chunk[-1:]
+            chunk = fh.read(1 << 20)
+    return n + (1 if last and last != b"\n" else 0)
+
+
+def changed_lines(root: Path, rev_range: str | None, is_exempt=None,
+                  untracked=()) -> tuple[int, int] | None:
+    """(total, counted) added+deleted across the range, the working tree and the `untracked`
+    files of the scope. `counted` excludes
     paths `is_exempt` marks as declared docs-only surfaces (ADR 0035) — the size measure should
     not be inflated by files the declaration already says carry no executable meaning.
+
+    `git diff` never lists an untracked file, and a slice closes with its new files untracked:
+    until 0.69.3 each one weighed 0 lines, the "unknown treated as 0" below forbids — the canon's
+    slice 141 read `small — 3 counted line(s)` on a tree `git add -N` read as `full — 629`
+    (handoff O100). `untracked` is the list `hc.changed_files` already ran for the scope, so
+    their lines are counted here in Python by `added_lines`, with no second git process; a path
+    that cannot be read makes the whole measure unknown.
 
     The caller's `is_exempt` must decide by MEMBERSHIP in a set built from the same name-only
     listing that classified the review scope, never by matching patterns against this function's
@@ -149,6 +184,17 @@ def changed_lines(root: Path, rev_range: str | None, is_exempt=None) -> tuple[in
                     got = True
         except subprocess.CalledProcessError:
             return None
+    for rel in untracked:
+        try:
+            n = added_lines(root / rel)
+        except OSError:
+            return None
+        if n is None:
+            continue
+        total += n
+        if not (is_exempt and is_exempt(rel)):
+            counted += n
+        got = True
     return (total, counted) if got else (0, 0)
 
 
@@ -855,7 +901,6 @@ def main() -> int:
 
     derived_paths = {f for f in files if f not in docs_paths and identical_to_source(f)}
     exempt_paths = docs_paths | derived_paths
-    sizes = changed_lines(root, args.rev_range, lambda p: p in exempt_paths) if prov.get("source") != "explicit" else None
     # `skip` stays a docs-only decision (ADR 0037): derived files never contribute to the
     # all-docs test, so a pure propagation diff earns `small` via an empty counted set, not
     # `skip` — the exemption narrows the measure and the criticality attribution, never the
@@ -898,7 +943,6 @@ def main() -> int:
     # — and a non-empty exclusion is stated on the tier line, never silent. With neither class
     # in the diff the counted figures equal the totals and the wording below is byte-identical
     # to the unweighted form.
-    lines, counted = sizes if sizes is not None else (None, None)
     ex_parts = []
     if docs_paths:
         ex_parts.append(f"{len(docs_paths)} docs-only file(s)")
@@ -914,16 +958,26 @@ def main() -> int:
         tier, why = "skip", "every changed file is a declared docs surface; deterministic gates suffice"
     elif harness_only:
         tier, why = "small", "code-bearing changes are confined to the declared harness layer"
-    elif sizes is None:
-        tier, why = "full", "changed-line count could not be measured — unknown is not small"
-    elif len(code_files) <= SMALL_MAX_FILES and counted <= SMALL_MAX_LINES:
-        tier, why = "small", (f"{len(code_files)} counted file(s) / {counted} counted line(s), no critical surface{exempt_note}"
-                              if exempt_note else
-                              f"{len(files)} file(s) / {lines} changed line(s), no critical surface")
     else:
-        tier, why = "full", (f"{len(code_files)} counted file(s) / {counted} counted line(s){exempt_note}"
-                             if exempt_note else
-                             f"{len(files)} file(s) / {lines} changed line(s)")
+        # Measured only here (review 2026-10-18, low): no earlier branch reads a line count, and
+        # the measure reads every untracked file of the scope to its end, so a critical, skip or
+        # harness-layer verdict pays neither that read nor the numstat calls. `prov["untracked"]`
+        # has no default: a scope without the list must fail loudly, never weigh its new files
+        # at 0 lines again (handoff O100).
+        sizes = (changed_lines(root, args.rev_range, lambda p: p in exempt_paths, prov["untracked"])
+                 if prov.get("source") != "explicit" else None)
+        if sizes is None:
+            tier, why = "full", "changed-line count could not be measured — unknown is not small"
+        else:
+            lines, counted = sizes
+            if len(code_files) <= SMALL_MAX_FILES and counted <= SMALL_MAX_LINES:
+                tier, why = "small", (f"{len(code_files)} counted file(s) / {counted} counted line(s), no critical surface{exempt_note}"
+                                      if exempt_note else
+                                      f"{len(files)} file(s) / {lines} changed line(s), no critical surface")
+            else:
+                tier, why = "full", (f"{len(code_files)} counted file(s) / {counted} counted line(s){exempt_note}"
+                                     if exempt_note else
+                                     f"{len(files)} file(s) / {lines} changed line(s)")
 
     # Narrowings that changed WHAT could escalate — as opposed to the size measure, which the
     # exempt_note above covers — are appended to the reason itself, whatever branch won: a

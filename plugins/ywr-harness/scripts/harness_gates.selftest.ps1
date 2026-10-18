@@ -896,6 +896,86 @@ $rT5 = Invoke-Gates $t5 @()
 $ok = (Assert-True 'T5 a docs-to-code rename cannot smuggle its lines out of the measure (tier full)' ($rT5.Out -match 'review tier: full') $rT5.Out) -and $ok
 $ok = (Assert-True 'T5 the renamed code file never earns small' ($rT5.Out -notmatch 'review tier: small') $rT5.Out) -and $ok
 
+# T6: untracked files weigh their lines (handoff O100). `git diff --numstat` never lists an
+# untracked file, and a slice closes with its new files untracked, so until 0.69.3 each one weighed
+# 0 lines and a 200-line new code file earned `small`. The oracle is git itself: after `git add -N`
+# the same files reach numstat, and the tier line must not move (T6b). Fixture: 200 lines with a
+# final newline, 3 without, an empty file, a binary (a NUL byte — numstat prints `-`), a 300-line
+# docs file (exempt), and an untracked nested repository (one line, like a gitlink; it stays
+# untracked in both runs). Each branch of `added_lines` moves the exact figures T6 pins.
+$t6 = New-Repo 'tier-untracked' $CFG @()
+New-Item -ItemType Directory -Force -Path (Join-Path $t6 'api'), (Join-Path $t6 'docs') | Out-Null
+Set-Content -LiteralPath (Join-Path $t6 'api/new.py') -Value ((1..200 | ForEach-Object { "code = $_`n" }) -join '') -NoNewline
+Set-Content -LiteralPath (Join-Path $t6 'api/tail.py') -Value "a`nb`nc" -NoNewline
+Set-Content -LiteralPath (Join-Path $t6 'api/empty.py') -Value '' -NoNewline
+[IO.File]::WriteAllBytes((Join-Path $t6 'api/blob.py'), [byte[]](@(0) + @(1..400 | ForEach-Object { 10 })))
+Set-Content -LiteralPath (Join-Path $t6 'docs/big.md') -Value ((1..300 | ForEach-Object { "doc line $_" }) -join "`n") -NoNewline
+& git init -q (Join-Path $t6 'api/nested') 2>$null
+$rT6 = Invoke-Gates $t6 @()
+$ok = (Assert-True 'T6 untracked files weigh their lines: a 200-line new code file earns full' ($rT6.Out -match 'review tier: full — 5 counted file\(s\) / 204 counted line\(s\) — 1 docs-only file\(s\) excluded') $rT6.Out) -and $ok
+& git -C $t6 add -N -- api/new.py api/tail.py api/empty.py api/blob.py docs/big.md 2>$null
+$rT6b = Invoke-Gates $t6 @()
+$t6Tier = ([regex]::Match($rT6.Out, '(?m)^review tier: .*$')).Value
+$t6bTier = ([regex]::Match($rT6b.Out, '(?m)^review tier: .*$')).Value
+$ok = (Assert-True 'T6b the untracked count equals numstat''s own after git add -N (same tier line)' ($t6Tier -ne '' -and $t6Tier -eq $t6bTier) "untracked: $t6Tier`nadd -N:    $t6bTier") -and $ok
+
+# T6c: the two branches T6's fixture cannot reach portably, through a direct import (case V's
+# pattern; review 2026-10-18, low). A path that cannot be read makes the whole measure unknown,
+# never a 0 (red against a per-file `continue`). A symlink counts 1 line, its target, whether the
+# target is a 50-line file or missing (red without the is_symlink branch: 50, or an OSError). A
+# host that refuses os.symlink (Windows without the privilege) reports that half as a SKIP. The
+# numstat half must answer on its own first, or the unknown check would pass on a git failure.
+# T6d, same process (bounded re-review, low): the measure runs only in the size branch, so a
+# critical verdict never calls it — case F's fixture through main() with changed_lines made to
+# raise. Red if the measure is hoisted above the tier chain again; no tier line would show it.
+$t6cScript = Join-Path $fxBase 'untracked_direct.py'
+Set-Content -LiteralPath $t6cScript -NoNewline -Value @'
+import contextlib, io, os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import harness_gates as hg
+root, crit = Path(sys.argv[2]), Path(sys.argv[3])
+fails = []
+if hg.changed_lines(root, None, None, []) is None:
+    fails.append("the numstat half failed on its own, so the unknown check below proves nothing")
+if hg.changed_lines(root, None, None, ["no-such-untracked.py"]) is not None:
+    fails.append("an unreadable untracked path did not make the measure unknown")
+tgt = root / "t6c-target.txt"
+tgt.write_text("".join(f"l{i}\n" for i in range(50)), encoding="utf-8")
+try:
+    os.symlink(tgt, root / "t6c-link")
+    os.symlink(root / "t6c-missing", root / "t6c-dangling")
+except (OSError, NotImplementedError) as e:
+    print("T6c-SKIP-SYMLINK " + type(e).__name__)
+else:
+    for name in ("t6c-link", "t6c-dangling"):
+        try:
+            n = hg.added_lines(root / name)
+        except OSError as e:
+            n = type(e).__name__
+        if n != 1:
+            fails.append(f"{name} counted {n}, not 1")
+print("T6c-OK" if not fails else "T6c-FAIL: " + "; ".join(fails))
+def boom(*a, **k):
+    raise RuntimeError("changed_lines ran on a critical verdict")
+hg.changed_lines = boom
+sys.argv = ["harness_gates.py", "--repo", str(crit)]
+out = io.StringIO()
+try:
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        hg.main()
+    tier_ok = "review tier: full — critical surface touched" in out.getvalue()
+    print("T6d-OK" if tier_ok else "T6d-FAIL: the fixture did not read critical")
+except RuntimeError as e:
+    print("T6d-FAIL: " + str(e))
+'@
+$rT6c = (& $py.Source $t6cScript $PSScriptRoot $t6 (Join-Path $fxBase 'critical') 2>&1 | Out-String)
+$ok = (Assert-True 'T6c an unreadable untracked path makes the measure unknown; a symlink counts 1 line' ($rT6c -match 'T6c-OK') $rT6c) -and $ok
+$ok = (Assert-True 'T6d a critical verdict never runs the line measure (it runs only in the size branch)' ($rT6c -match 'T6d-OK') $rT6c) -and $ok
+if ($rT6c -match 'T6c-SKIP-SYMLINK (\S+)') {
+    Write-Host "SKIP [T6c symlink] this host refused os.symlink ($($Matches[1])) — CI ubuntu runs this half" -ForegroundColor Yellow
+}
+
 # --- U: a script-gate declaration is checked key by key (2026-07-29 queue, #3) -------------------
 # An unknown key ("args": "--fast" — no argument field exists, ADR 0024 keeps flags inside the
 # script) must WARN, not vanish; a JSON-string "files" must not be truthy-coerced — bool("false")

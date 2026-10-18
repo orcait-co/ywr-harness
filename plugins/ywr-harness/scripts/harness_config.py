@@ -1139,7 +1139,7 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
         untracked = git_paths(root, "ls-files", "--others", "--exclude-standard")
         files = sorted(set(tracked) | set(untracked))
         return files, {"source": "all", "tracked_files": len(tracked),
-                       "untracked_files": len(untracked)}
+                       "untracked_files": len(untracked), "untracked": untracked}
     if explicit:
         files = [norm(p) for p in explicit]
         return files, {"source": "explicit", "explicit": len(files), "range": rev_range}
@@ -1170,6 +1170,9 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
     untracked = git_paths(root, "ls-files", "--others", "--exclude-standard")
     prov["worktree_files"] = len(worktree)
     prov["untracked_files"] = len(untracked)
+    # The list itself too: the emitter's line measure reads these files, and `git diff --numstat`
+    # never lists them (handoff O100) — handed over here so the measure starts no second ls-files.
+    prov["untracked"] = untracked
     files.update(worktree)
     files.update(untracked)
     return sorted(files), prov
