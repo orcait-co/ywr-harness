@@ -67,7 +67,16 @@ param(
     [int]$SuiteTimeout = 900,
     # Print every suite's full captured output, in discovery order, instead of the condensed
     # one-line-per-passing-suite view. Debugging aid; the verdict and exit code do not change.
-    [switch]$Full
+    [switch]$Full,
+    # Run only the suites whose declared read set (selftest-reads.json) a changed plugin file
+    # matches — the canon's local slice-close run (ADR 0157). The change is the working tree
+    # against HEAD, or against -Base. The runner widens it to the full run, and prints why, when a
+    # shared input changed, when no green full run is recorded in this clone, when a tool version
+    # changed since that run, or when that run is older than the window cap. CI never passes it.
+    [switch]$Changed,
+    # With -Changed only: the commit the change is measured from (default HEAD). The working tree
+    # is always part of the change.
+    [string]$Base = ''
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -102,6 +111,14 @@ if ($Shard) {
     $shardIndex = $i
     $shardCount = $n
 }
+if ($Changed -and $shardCount) {
+    Write-Host 'FAIL — -Changed and -Shard do not combine: a shard is a CI slice of the full run (ADR 0157)' -ForegroundColor Red
+    exit 1
+}
+if ($Base -and -not $Changed) {
+    Write-Host 'FAIL — -Base needs -Changed' -ForegroundColor Red
+    exit 1
+}
 
 # --- discovery ------------------------------------------------------------------------------
 # Recursive: a selftest sitting anywhere in the plugin is discovered, so adding a directory
@@ -134,7 +151,275 @@ if ($all.Count -eq 0) {
     exit 1
 }
 
+# --- read-set map (ADR 0157) ----------------------------------------------------------------
+# selftest-reads.json declares, per suite, the files whose content can change its verdict. The
+# runner checks the map on EVERY run, so CI fails a map that went stale: each discovered suite has
+# an entry and no entry names a missing suite, every glob matches a file, and every plugin file is
+# claimed by a suite, by `full` (a change re-runs everything) or by `none` (no suite reads it; the
+# two gates ahead of the suites do). A suite always reads itself. Keys starting `//` are comments.
+# Globs are ordinal and `/`-separated: `*` stays inside one path segment, `**` crosses segments. A
+# glob starting `/` is repo-root-relative, for the few suites that read outside the plugin; it is
+# checked and matched only when the plugin sits below its repo's root (the canon shape).
+function ConvertTo-GlobPattern([string]$Glob) {
+    # Escape first, then turn the escaped stars back into the glob meanings, longest first.
+    return [regex]::Escape($Glob).Replace('\*\*/', '(?:[^\n]*/)?').Replace('\*\*', '[^\n]*').Replace('\*', '[^/\n]*')
+}
+# NUL-separated git output (ADR 0077); quotepath off so a non-ASCII name arrives as itself.
+# Loops, not pipelines: this runs on every run, and a Where-Object per file and glob cost ~0.5 s.
+function Split-Nul($Out) {
+    $list = [System.Collections.Generic.List[string]]::new()
+    foreach ($p in ((@($Out) -join "`n").Split([char]0))) { $p = $p.Trim("`n"); if ($p) { $list.Add($p) } }
+    return $list.ToArray()
+}
+function Test-AnyMatch($Globs, [string]$Path) { foreach ($g in $Globs) { if ($g.Rx.IsMatch($Path)) { return $true } }; return $false }
+# Files: plugin-relative, tracked plus untracked-not-ignored inside git, the filesystem outside it.
+# Repo files outside the plugin are listed root-relative with a leading `/`.
+$script:inGit = $false
+$script:gitTop = ''
+$script:gitPrefix = ''
+$pluginFiles = @()
+$rootFiles = @()
+# The work tree's top is the nearest ancestor holding a `.git` entry (a directory, or a worktree's
+# file): found by a walk, not a rev-parse, because a process start is most of this check's cost.
+# A walk that finds a `.git` git does not accept fails at ls-files below and falls back.
+$top = $PSScriptRoot
+while ($top -and -not (Test-Path -LiteralPath (Join-Path $top '.git'))) { $top = Split-Path -Parent $top }
+if ($top) {
+    $script:inGit = $true
+    $script:gitTop = $top
+    $script:gitPrefix = if ($PSScriptRoot.Length -gt $top.Length) { $PSScriptRoot.Substring($top.Length).TrimStart('\', '/').Replace('\', '/') + '/' } else { '' }
+    $listed = & git -C $script:gitTop -c core.quotepath=false ls-files -z --cached --others --exclude-standard 2>$null
+    if ($LASTEXITCODE -ne 0) { $script:inGit = $false }
+    foreach ($p in (Split-Nul $listed)) {
+        if ($script:gitPrefix -and $p.StartsWith($script:gitPrefix, [StringComparison]::Ordinal)) { $pluginFiles += $p.Substring($script:gitPrefix.Length) }
+        elseif ($script:gitPrefix) { $rootFiles += "/$p" }
+        else { $pluginFiles += $p }
+    }
+}
+if (-not $script:inGit) {
+    $pluginFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File | ForEach-Object { Get-SuiteRel $_ })
+    $rootFiles = @()
+}
+$script:nested = [bool]$script:gitPrefix
+$script:pluginText = $pluginFiles -join "`n"
+$script:rootText = $rootFiles -join "`n"
+$mapProblems = [System.Collections.Generic.List[string]]::new()
+$mapPath = Join-Path $PSScriptRoot 'selftest-reads.json'
+$map = $null
+if (-not (Test-Path -LiteralPath $mapPath -PathType Leaf)) {
+    $mapProblems.Add('selftest-reads.json is missing')
+} else {
+    try { $map = Get-Content -LiteralPath $mapPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable } catch { $mapProblems.Add("selftest-reads.json does not parse: $($_.Exception.Message)") }
+    if ($null -ne $map -and $map -isnot [System.Collections.IDictionary]) { $mapProblems.Add('selftest-reads.json is not an object'); $map = $null }
+}
+$suiteRx = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
+$fullRx = @(); $noneRx = @(); $versionRx = @()
+function ConvertTo-Globs($Value, [string]$Where) {
+    if ($Value -isnot [System.Collections.IList] -or @($Value | Where-Object { $_ -isnot [string] -or -not $_ }).Count) {
+        $mapProblems.Add("$Where is not a list of non-empty strings"); return @()
+    }
+    return @(foreach ($g in $Value) {
+            $pat = ConvertTo-GlobPattern $g
+            # One multiline match over the joined list, not one match per file.
+            $pool = if ($g.StartsWith('/')) { $script:rootText } else { $script:pluginText }
+            $checked = $script:nested -or -not $g.StartsWith('/')
+            if ($checked -and -not [regex]::IsMatch($pool, "(?m)^$pat$", [Text.RegularExpressions.RegexOptions]::CultureInvariant)) { $mapProblems.Add("$Where glob '$g' matches no file") }
+            [pscustomobject]@{ Glob = $g; Rx = [regex]::new("^$pat$", [Text.RegularExpressions.RegexOptions]::CultureInvariant) }
+        })
+}
+if ($map) {
+    $fullRx = ConvertTo-Globs $map['full'] 'full'
+    $noneRx = ConvertTo-Globs $map['none'] 'none'
+    $versionRx = if ($map.Contains('version_only')) { ConvertTo-Globs $map['version_only'] 'version_only' } else { @() }
+    $suitesMap = $map['suites']
+    if ($suitesMap -isnot [System.Collections.IDictionary]) {
+        $mapProblems.Add('suites is not an object')
+    } else {
+        # Ordinal on purpose: the hashtable compares keys case-insensitively, a suite path does not.
+        foreach ($k in @($suitesMap.Keys | ForEach-Object { [string]$_ } | Sort-Object)) {
+            if ($k.StartsWith('//')) { continue }
+            if (-not $byRel.ContainsKey($k)) { $mapProblems.Add("suites names '$k', which is not a discovered suite"); continue }
+            $suiteRx[$k] = ConvertTo-Globs $suitesMap[$k] "suites['$k']"
+        }
+        foreach ($r in $rels) { if (-not $suiteRx.ContainsKey($r)) { $mapProblems.Add("suite '$r' has no read set") } }
+    }
+    # Every glob as one alternation: one match per file instead of one per file and glob.
+    $allGlobs = @($fullRx) + @($noneRx) + @($suiteRx.Values | ForEach-Object { $_ })
+    $claimRx = [regex]::new((@($allGlobs | ForEach-Object { "(?:$($_.Rx))" }) -join '|'), [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+    foreach ($f in $pluginFiles) {
+        if ($byRel.ContainsKey($f) -or ($allGlobs.Count -and $claimRx.IsMatch($f))) { continue }
+        $mapProblems.Add("'$f' is claimed by no suite, no full glob and no none glob")
+    }
+}
+if ($mapProblems.Count) {
+    foreach ($m in $mapProblems) { Write-Host "FAIL — read-set map: $m" -ForegroundColor Red }
+    $failed += 'selftest-reads.json'
+}
+
+# --- changed-file selection (-Changed, ADR 0157) ---------------------------------------------
+# The full-run record lives in the clone's git dir, never in the tree: the last green unsharded
+# full run's UTC time, HEAD and tool series. Worktrees of one clone share it.
+$script:windowDays = 7
+$script:windowCommits = 5
+function Get-ToolSeries {
+    $v = [ordered]@{ os = [Runtime.InteropServices.RuntimeInformation]::OSDescription.Trim(); pwsh = "$($PSVersionTable.PSVersion)" }
+    foreach ($t in @(@('git', 'git'), @('node', 'node'), @('python', 'python', 'python3', 'py'))) {
+        $v[$t[0]] = 'n/a'
+        foreach ($n in $t[1..($t.Count - 1)]) {
+            $cmd = Get-Command $n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $cmd) { continue }
+            $o = (& $cmd.Source --version 2>&1 | ForEach-Object { "$_" }) -join ' '
+            if ($LASTEXITCODE -eq 0 -and $o -match '\d+\.\d+(?:\.\d+)?[^\s]*') { $v[$t[0]] = $Matches[0]; break }
+        }
+    }
+    return $v
+}
+function Get-StatePath {
+    if (-not $script:inGit) { return $null }
+    $d = & git -C $PSScriptRoot rev-parse --path-format=absolute --git-common-dir 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $d) { return $null }
+    return Join-Path (Join-Path "$d".Trim() 'ywr-harness') 'selftest-full-run.json'
+}
+# Repo-relative paths that differ between a commit and the working tree, untracked-not-ignored
+# files included. $null when git cannot list them.
+function Get-ChangeSince([string]$Rev) {
+    $d = & git -C $script:gitTop -c core.quotepath=false diff --name-only --no-renames -z $Rev 2>$null
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $u = & git -C $script:gitTop -c core.quotepath=false ls-files -z --others --exclude-standard 2>$null
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return , @(@(Split-Nul $d) + @(Split-Nul $u) | Sort-Object -Unique -CaseSensitive)
+}
+# Content hashes of repo-relative paths: the blob hash `git add` would store, or 'deleted'. The paths
+# go as arguments, never through stdin, where a piped list gains `\r` on Windows. $null on failure.
+function Get-ContentHashes([string[]]$Paths) {
+    $h = [System.Collections.Generic.Dictionary[string, string]]::new([System.StringComparer]::Ordinal)
+    $live = [System.Collections.Generic.List[string]]::new()
+    foreach ($p in $Paths) {
+        if (Test-Path -LiteralPath (Join-Path $script:gitTop $p) -PathType Leaf) { $live.Add($p) } else { $h[$p] = 'deleted' }
+    }
+    for ($i = 0; $i -lt $live.Count; $i += 200) {
+        $chunk = $live.GetRange($i, [Math]::Min(200, $live.Count - $i)).ToArray()
+        $out = @(& git -C $script:gitTop hash-object -- @chunk 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $out.Count -ne $chunk.Count) { return $null }
+        for ($k = 0; $k -lt $chunk.Count; $k++) { $h[$chunk[$k]] = "$($out[$k])".Trim() }
+    }
+    return , $h
+}
+$fullReason = ''
 $tests = $all
+if ($Changed) {
+    $statePath = Get-StatePath
+    if (-not $statePath) {
+        $fullReason = 'the plugin is not in a git work tree, so no change can be read'
+    } else {
+        $ref = if ($Base) { $Base } else { 'HEAD' }
+        $null = & git -C $script:gitTop rev-parse --verify --quiet "$ref^{commit}" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "FAIL — -Base does not name a commit: $ref" -ForegroundColor Red
+            exit 1
+        }
+        $state = $null
+        if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+            try { $state = Get-Content -LiteralPath $statePath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable } catch { $state = $null }
+        }
+        $stateOk = $state -is [System.Collections.IDictionary] -and $state['head'] -and $state['utc'] -and
+            $state['series'] -is [System.Collections.IDictionary] -and $state['dirty'] -is [System.Collections.IDictionary]
+        $stateReason = ''
+        $age = $null
+        $since = -1
+        if ($stateOk) {
+            $now = Get-ToolSeries
+            $moved = @(foreach ($k in $now.Keys) { if ("$($state['series'][$k])" -cne "$($now[$k])") { "$k $($state['series'][$k]) -> $($now[$k])" } })
+            try { $age = ([DateTime]::UtcNow - [DateTime]::Parse("$($state['utc'])", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal)).TotalDays } catch { }
+            $null = & git -C $script:gitTop merge-base --is-ancestor "$($state['head'])" HEAD 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $c = & git -C $PSScriptRoot rev-list --count "$($state['head'])..HEAD" -- . 2>$null
+                if ($LASTEXITCODE -eq 0) { $since = [int]"$c".Trim() }
+            }
+            if ($moved.Count) { $stateReason = "a tool changed since the last full run: $($moved -join '; ')" }
+            elseif ($null -eq $age -or $age -lt -0.01) { $stateReason = "the recorded full run has an unreadable or future time ($($state['utc']))" }
+            elseif ($age -gt $script:windowDays) { $stateReason = "the last full run is $([Math]::Round($age, 1)) days old (window $($script:windowDays) days)" }
+            elseif ($since -lt 0) { $stateReason = "the last full run's HEAD $($state['head']) is not an ancestor of HEAD" }
+            elseif ($since -ge $script:windowCommits) { $stateReason = "$since plugin commits since the last full run (window $($script:windowCommits))" }
+        }
+        # With a usable record, the change runs from the last green full run, not from HEAD: a commit
+        # made since that run is part of it (review 2026-10-18). The paths that run saw dirty count
+        # too, since a revert is a change; one that still holds the content it tested drops out.
+        # -Base adds its own change on top. Without a usable record the change runs from -Base or HEAD.
+        $fromRecord = $stateOk -and -not $stateReason
+        $from = if ($fromRecord) { "$($state['head'])" } else { $ref }
+        $paths = Get-ChangeSince $from
+        if ($null -ne $paths -and $fromRecord) {
+            $recDirty = $state['dirty']
+            $extra = @($recDirty.Keys | ForEach-Object { [string]$_ })
+            if ($Base) { $more = Get-ChangeSince $ref; if ($null -eq $more) { $paths = $null } else { $extra += $more } }
+            if ($null -ne $paths) {
+                $paths = @(@($paths) + $extra | Sort-Object -Unique -CaseSensitive)
+                $seen = @($paths | Where-Object { $recDirty.Contains($_) })
+                $nowHash = Get-ContentHashes $seen
+                if ($null -eq $nowHash) { $paths = $null }
+                else { $paths = @($paths | Where-Object { -not ($recDirty.Contains($_) -and "$($recDirty[$_])" -ceq $nowHash[$_]) }) }
+            }
+        }
+        if ($null -eq $paths) {
+            $fullReason = 'git could not list the change'
+        } else {
+            # Plugin files plugin-relative; repo files outside the plugin count only when a `/` glob names them.
+            $rootGlobs = @($suiteRx.Values | ForEach-Object { $_ } | Where-Object { $_.Glob.StartsWith('/') })
+            $changedFiles = @(foreach ($p in $paths) {
+                    if (-not $script:gitPrefix) { $p }
+                    elseif ($p.StartsWith($script:gitPrefix, [StringComparison]::Ordinal)) { $p.Substring($script:gitPrefix.Length) }
+                    elseif (Test-AnyMatch $rootGlobs "/$p") { "/$p" }
+                })
+            # A version_only file whose diff changes only `"version": "…"` lines selects no suite: its
+            # readers read the value at run time. A file new since $from shows every line, so it selects.
+            $versionLine = '^[+-]\s*"version"\s*:\s*"[^"]*"\s*,?\s*$'
+            $bumped = @(foreach ($f in $changedFiles) {
+                    if (-not (Test-AnyMatch $versionRx $f)) { continue }
+                    $repoPath = if ($f.StartsWith('/')) { $f.Substring(1) } else { "$($script:gitPrefix)$f" }
+                    # A path the full run saw dirty was tested as dirty content, not as $from: a diff
+                    # against $from cannot tell what changed since, so it gets no exemption.
+                    if ($fromRecord -and $recDirty.Contains($repoPath)) { continue }
+                    $hunk = @(& git -C $script:gitTop -c core.quotepath=false diff -U0 --no-color --no-ext-diff $from -- $repoPath 2>$null |
+                            ForEach-Object { "$_" } | Where-Object { $_ -match '^[+-]' -and $_ -notmatch '^(\+\+\+|---) ' })
+                    if ($LASTEXITCODE -eq 0 -and $hunk.Count -and -not @($hunk | Where-Object { $_ -notmatch $versionLine }).Count) { $f }
+                })
+            $fromText = if ($fromRecord) { "the last full run ($($from.Substring(0, [Math]::Min(7, $from.Length))))$(if ($Base) { " and $ref" })" } else { $ref }
+            Write-Host "changed: $($changedFiles.Count) file(s) since $fromText, working tree included"
+            foreach ($f in $changedFiles) { Write-Host "  * $f$(if ($bumped -ccontains $f) { ' (version line only: selects no suite)' })" }
+            $rawCount = $changedFiles.Count
+            $changedFiles = @($changedFiles | Where-Object { $bumped -cnotcontains $_ })
+            $shared = @($changedFiles | Where-Object { Test-AnyMatch $fullRx $_ })
+            if ($rawCount -eq 0) {
+                $fullReason = 'the change is empty, so the selection would be empty'
+            } elseif ($mapProblems.Count) {
+                $fullReason = 'the read-set map failed its check'
+            } elseif ($shared.Count) {
+                $fullReason = "a shared input changed: $($shared -join ', ')"
+            } elseif (-not $stateOk) {
+                $fullReason = "no green full run is recorded in this clone ($statePath)"
+            } elseif ($stateReason) {
+                $fullReason = $stateReason
+            } else {
+                $picked = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+                $unclaimed = @()
+                foreach ($f in $changedFiles) {
+                    $hit = $f.StartsWith('/') -or $byRel.ContainsKey($f) -or (Test-AnyMatch $noneRx $f)
+                    if ($byRel.ContainsKey($f)) { [void]$picked.Add($f) }
+                    foreach ($k in $suiteRx.Keys) { if (Test-AnyMatch $suiteRx[$k] $f) { [void]$picked.Add($k); $hit = $true } }
+                    if (-not $hit) { $unclaimed += $f }
+                }
+                if ($unclaimed.Count) {
+                    $fullReason = "a changed file matches no read set: $($unclaimed -join ', ')"
+                } else {
+                    $tests = @($all | Where-Object { $picked.Contains((Get-SuiteRel $_)) })
+                    Write-Host "selection: $($tests.Count) of $($all.Count) suites by read set (last full run $([Math]::Round($age, 1)) days and $since plugin commit(s) ago, same tools)" -ForegroundColor Cyan
+                }
+            }
+        }
+    }
+    if ($fullReason) { Write-Host "selection: FULL RUN — $fullReason" -ForegroundColor Yellow }
+}
 if ($shardCount) {
     $tests = @(for ($k = 0; $k -lt $all.Count; $k++) { if ((($k % $shardCount) + 1) -eq $shardIndex) { $all[$k] } })
     Write-Host "suites: discovered=$($all.Count) shard=$shardIndex/$shardCount selected=$($tests.Count) template-excluded=$templateExcluded"
@@ -143,13 +428,27 @@ if ($shardCount) {
         exit 1
     }
 } else {
-    Write-Host "suites: discovered=$($all.Count) template-excluded=$templateExcluded"
+    Write-Host "suites: discovered=$($all.Count)$(if ($tests.Count -ne $all.Count) { " selected=$($tests.Count)" }) template-excluded=$templateExcluded"
 }
 foreach ($t in $tests) { Write-Host "  - $(Get-SuiteRel $t)" }
 
 if ($List) {
     Write-Host 'LIST ONLY — nothing ran' -ForegroundColor Yellow
-    exit 0
+    exit $(if ($failed.Count) { 1 } else { 0 })
+}
+
+# --- full-run snapshot (ADR 0157) -----------------------------------------------------------
+# A run of every suite may write the full-run record. Its HEAD and the content of each dirty path
+# are read HERE, before any gate or suite starts: an edit or a commit made while the suites run is
+# then a change against the record, never content the record calls tested (review 2026-10-18).
+$snapshot = $null
+if (-not $shardCount -and $tests.Count -eq $all.Count -and (Get-StatePath)) {
+    $snapHead = "$(& git -C $PSScriptRoot rev-parse HEAD 2>$null)".Trim()
+    if ($LASTEXITCODE -eq 0 -and $snapHead) {
+        $dirtyPaths = Get-ChangeSince 'HEAD'
+        $snapDirty = if ($null -ne $dirtyPaths) { Get-ContentHashes $dirtyPaths } else { $null }
+        if ($null -ne $snapDirty) { $snapshot = @{ Head = $snapHead; Dirty = $snapDirty } }
+    }
 }
 
 # --- manifest + wiring gate ----------------------------------------------------------------
@@ -352,12 +651,35 @@ $slowest = $results | Sort-Object Seconds -Descending | Select-Object -First 1
 Write-Host "timing: suites wall-clock $(Format-Seconds $clock.Elapsed.TotalSeconds) s at jobs=$Jobs · sum of suite times $(Format-Seconds $sum) s$(if ($slowest) { " · slowest $($slowest.Rel) $(Format-Seconds $slowest.Seconds) s" })"
 
 Write-Host ''
-$shardNote = if ($shardCount) { " shard=$shardIndex/$shardCount selected=$($tests.Count)" } else { '' }
+$isFullRun = -not $shardCount -and $tests.Count -eq $all.Count
+$shardNote = if ($shardCount) { " shard=$shardIndex/$shardCount selected=$($tests.Count)" } elseif (-not $isFullRun) { " selected=$($tests.Count)" } else { '' }
 Write-Host "selftests: discovered=$($all.Count)$shardNote passed=$($tests.Count - $testFails) failed=$testFails"
 if ($skipped.Count) { Write-Host "skipped gates: $($skipped -join ', ')" -ForegroundColor Yellow }
 if ($failed.Count) {
     Write-Host "FAIL — $($failed -join ', ')" -ForegroundColor Red
     exit 1
+}
+# A green unsharded run of every suite is the full-run record -Changed reads (ADR 0157). A record
+# that cannot be written (a read-only mount, no git dir) only costs the next -Changed run a full run.
+if ($isFullRun) {
+    $statePath = Get-StatePath
+    if ($statePath) {
+        try {
+            if ($null -eq $snapshot) { throw 'git could not read HEAD or hash the working tree before the run' }
+            $record = [ordered]@{ utc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture); head = $snapshot.Head; series = Get-ToolSeries; dirty = $snapshot.Dirty }
+            $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $statePath)
+            $tmp = "$statePath.$PID.tmp"
+            [IO.File]::WriteAllText($tmp, ($record | ConvertTo-Json -Depth 3), [Text.UTF8Encoding]::new($false))
+            Move-Item -LiteralPath $tmp -Destination $statePath -Force
+            Write-Host "full-run record: $statePath"
+        } catch {
+            Write-Host "WARN [runner] the full-run record was not written ($($_.Exception.Message)); the next -Changed run is a full run" -ForegroundColor Yellow
+        }
+    }
+}
+if (-not $isFullRun -and -not $shardCount) {
+    Write-Host "ywr-harness plugin: selected gates green — $($tests.Count) of $($all.Count) suites by read set, NOT a full run$(if ($skipped.Count) { " ($($skipped.Count) skipped — see above)" })" -ForegroundColor Green
+    exit 0
 }
 Write-Host "ywr-harness plugin: all gates green$(if ($shardCount) { " (shard $shardIndex/$shardCount)" })$(if ($skipped.Count) { " ($($skipped.Count) skipped — see above)" })" -ForegroundColor Green
 exit 0

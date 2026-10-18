@@ -12,11 +12,15 @@ by `/ywr-harness:harness-init` (ADR 0054).
 
 ## Invariants
 
-1. **Zero-install stack** — PowerShell 7, Python 3.9+ stdlib only, Node built-ins only, and no
-   dependency manifest: a harness that needs an install step will not run in CI it did not
-   configure. A non-stdlib import or a new install step is a finding.
-2. **Namespaced names** — every plugin component is referenced as `ywr-harness:<name>`; a bare
-   name does not resolve, and `manifest-gate.mjs` fails the build on one in shipped text.
+1. **Zero-install stack** — PowerShell 7, Python 3.9+ stdlib only, Node built-ins only, no
+   dependency manifest. `manifest-gate.mjs` fails a non-stdlib Python import, a non-built-in Node
+   import and a dependency manifest (ADR 0158). Review what it cannot parse: an import built at run
+   time, a PowerShell module, a new install step in a script or workflow, and the line reader's
+   known limits (spec 0008 §3.5: mixed `'''`/`"""` quotes, code after a closing triple quote, a
+   one-line `def`/`class` body or a header colon in brackets).
+2. **Namespaced names** — `manifest-gate.mjs` fails a bare workflow call and a bare backticked
+   skill command in shipped text. Review a bare component name in any other form, such as a
+   `subagent_type` value.
 3. **Declarations, never command strings** — repo-specific values live in `.harness.json`; every
    command-shaped field is a selector from a closed set (ADR 0012), and a repo's own gate is a
    closed-set runner plus an allowlist-validated path (ADR 0024). A repo-supplied value that
@@ -33,21 +37,22 @@ by `/ywr-harness:harness-init` (ADR 0054).
    (ADR 0097: DirectoryAdded's goes to the model on `/add-dir`, to the debug log on
    `register_repo_root`) — read the event's delivery in the raw hooks reference before choosing
    the language.
-6. **Secrets** — never committed (`.env` gitignored, `.env.example` only). The pre-push hook scans
-   added lines; a false positive is exempted per line with `harness:allow-secret`, never with
-   `--no-verify`. NEVER quote a scanner's trigger string in comments, handoffs or commit messages —
-   the quotation becomes the next finding on an immutable pushed blob; describe it in prose.
-7. **Vendored copies stay identical and pinned** — the plugin's copies and the scaffold templates
-   are byte-identical (`manifest-gate.mjs`, ADR 0014), and every `uses:` in the shipped template
-   and the canon's workflows is a 40-hex SHA plus `# vX.Y.Z` (ADR 0087).
-8. **The shipped tree never moves under a released version** — the first commit touching
-   `plugins/ywr-harness/` after a tag bumps `plugin.json` + `.claude-plugin/marketplace.json` and
-   opens the CHANGELOG top entry (ADR 0073).
-9. **One git subprocess boundary** — every git call whose output is parsed goes through
-   `harness_config.git_run()`/`git_lines()` or `harness_retro.git()`: bytes pipes, one explicit
-   UTF-8/`backslashreplace` decode, `-c core.quotepath=false`, and a path list NUL-separated both
-   ways (issue #40, ADR 0077). Text mode at this boundary, or a new direct
-   `subprocess.run(["git", ...])` that parses paths, is a finding.
+6. **Secrets** — the pre-push hook scans added lines; a false positive takes `harness:allow-secret`
+   on its line, never `--no-verify`. Review what no scanner reads: a committed `.env` (only
+   `.env.example` is tracked). Separately, NEVER quote a scanner's trigger
+   string in comments, handoffs or commit messages — the quotation becomes the next finding on an
+   immutable pushed blob; describe it in prose.
+7. **Vendored copies stay identical and pinned** — `manifest-gate.mjs` fails a drifted copy
+   (ADR 0014), and `ci-enabled-plugins.selftest` fails a `uses:` without a 40-hex SHA plus
+   `# vX.Y.Z` (ADR 0087). Review what no gate reads: a pin's freshness.
+8. **The shipped tree never moves under a released version** — `manifest-gate.mjs` fails a plugin
+   change under a released version that does not bump it (ADR 0073).
+9. **One git subprocess boundary** — `harness_config.git_run()`/`git_lines()` and
+   `harness_retro.git()` own every git call (issue #40, ADR 0077). `manifest-gate.mjs` fails a
+   direct git call in a `.py` file without `# harness:git-boundary <reason>` (ADR 0158). Review each
+   new marker's reason, a git argv whose first item is a name, a subprocess call under an alias,
+   a git call the line reader cannot see (spec 0008 §3.5), and text mode or a newline-separated path
+   list at the boundary.
 10. **A changed spec section is rewritten whole** — a diff that edits a spec section rewrites the
     whole lowest-level numbered section in STE-lite (docs/README.md §Writing style, ADR 0125). The
     rewrite covers every sentence and table cell, not only the new ones. With no numbered heading,

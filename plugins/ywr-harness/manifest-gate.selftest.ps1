@@ -775,6 +775,8 @@ if (-not $gitHere -or -not $realAdrDir -or -not (Test-Path -LiteralPath $realAdr
     $r = New-AdrRefRepo 'adr-ref-control' @{}
     $g = Run-GateAt $r
     Record 'adr-ref-control-resolves' ($g.rc -eq 0 -and $g.out -match 'adr references: [1-9]\d* reference\(s\) in \d+ of \d+ tracked text file\(s\) resolve') "exit=$($g.rc) resolved-line=$([bool]($g.out -match 'adr references: \d+ reference'))"
+    # The same control run carries the stack and git-boundary checks over the copied canon tree (ADR 0158).
+    Record 'stack-control-passes' ($g.rc -eq 0 -and $g.out -match 'PASS  zero-install stack: [1-9]\d* python import\(s\) in \d+ file\(s\) and [1-9]\d* js specifier' -and $g.out -match 'PASS  git boundary: [1-9]\d* direct git call\(s\) in listed \.py files, each marked') "exit=$($g.rc)"
 
     $r = New-AdrRefRepo 'adr-ref-unresolved' @{ 'scripts/note.md' = "see ADR $badNum for why`n" }
     $g = Run-GateAt $r
@@ -818,6 +820,64 @@ if (-not $gitHere -or -not $realAdrDir -or -not (Test-Path -LiteralPath $realAdr
     New-Item -ItemType Directory -Force -Path (Join-Path $r 'docs/adr') | Out-Null
     $g = Run-GateAt $r
     Record 'adr-ref-skip-not-git' ($g.rc -eq 0 -and $g.out -match 'adr references: skipped — the canon shape is not inside a git work tree' -and $g.out -notmatch 'adr references: \d+ reference') "exit=$($g.rc)"
+    Record 'stack-skip-not-git' ($g.out -match 'stack and git boundary: skipped — the canon shape is not inside a git work tree' -and $g.out -notmatch 'zero-install stack: \d+') "exit=$($g.rc)"
+
+    # --- canon zero-install stack and git boundary (REVIEW.md invariants 1 and 9, ADR 0158) ----------
+    # The same git fixture. The adr-ref control run above passed both checks; each batch below adds
+    # files that the check must name line by line, beside lines it must leave alone, so one gate run
+    # proves every branch of its batch. The fixture text is assembled here: this suite is a .ps1
+    # file, which neither check reads.
+    $lf = { param([string[]]$l) ($l -join "`n") + "`n" }
+    $tq = '"' * 3
+    $stackFiles = @{
+        'scripts/s1.py'      = & $lf @('from __future__ import annotations', 'import os, json as j', 'import localmod', 'from yaml import safe_load', 'import requests.adapters',
+            'import os; import yamlsemi', 'try: import tryimp')
+        'scripts/localmod.py' = "x = 1`n"
+        'tools/deep/yaml.py' = "x = 1`n"
+        'scripts/s2.py'      = & $lf @("${tq}Doc.", 'import notreal', $tq, "x = ${tq}one line${tq}", '# import alsonotreal', 'import tomllib',
+            "# a comment that holds $tq", 'import afterhash', "SEP = '$tq'", 'import aftersep', "${tq}See ## heading.${tq}", 'import afterdoc',
+            "x = 1  # a trailing comment that holds $tq", 'import aftertrail')
+        'scripts/s7.py'      = & $lf @('x = 1', "${tq}never closed", 'import hidden')
+        'scripts/s3.mjs'     = & $lf @("import fs from 'node:fs'", "import { a } from './s4.mjs'", "import x from 'lodash'", "// import y from 'leftpad'", "const p = require('path')", "const q = await import('chalk')", 'import {', '  b,', "} from 'dayjs'")
+        'scripts/s4.mjs'     = & $lf @("export { c } from 'node:path'", "import t from 'claude-code/testing'")
+        'hooks/s5.test.ts'   = & $lf @("import { test } from 'claude-code/testing'")
+        'tools/package.json' = "{}`n"
+    }
+    $r = New-AdrRefRepo 'stack-batch' $stackFiles @{ 'scripts/s6.py' = & $lf @('import untrackedpkg') }
+    $g = Run-GateAt $r
+    $want = @(
+        "scripts/s1\.py:4 imports 'yaml'", "scripts/s1\.py:5 imports 'requests\.adapters'",
+        "scripts/s1\.py:6 imports 'yamlsemi'", "scripts/s1\.py:7 imports 'tryimp'",
+        "scripts/s2\.py:6 imports 'tomllib'", "scripts/s2\.py:8 imports 'afterhash'", "scripts/s2\.py:10 imports 'aftersep'", "scripts/s2\.py:12 imports 'afterdoc'",
+        "scripts/s2\.py:14 imports 'aftertrail'",
+        'scripts/s7\.py:2 opens a triple-quoted string that never closes . lines 3-3 NOT CHECKED',
+        "scripts/s3\.mjs:3 imports 'lodash'", "scripts/s3\.mjs:6 imports 'chalk'", "scripts/s3\.mjs:9 imports 'dayjs'",
+        "scripts/s4\.mjs:2 imports 'claude-code/testing'",
+        'zero-install stack: tools/package\.json is a dependency manifest',
+        "scripts/s6\.py:1 \(untracked\) imports 'untrackedpkg'")
+    # s1:3 imports a sibling module, which reaches; a yaml.py far away does not whitelist yaml (s1:4).
+    $spare = @('s1\.py:[123] ', 's2\.py:([2-579]|11|13) ', 's3\.mjs:[1245] ', 's4\.mjs:1 ', 's5\.test\.ts', 's7\.py:3 ', 'scripts/s1\.py:[0-9]+ \(untracked\)', 'PASS  zero-install stack')
+    $missing = @($want | Where-Object { $g.out -notmatch $_ })
+    $wrong = @($spare | Where-Object { $g.out -match $_ })
+    Record 'stack-batch-names-each-violation' ($g.rc -eq 1 -and $missing.Count -eq 0 -and $wrong.Count -eq 0) "exit=$($g.rc) missing=[$($missing -join ' | ')] wrongly-named=[$($wrong -join ' | ')]"
+
+    $gitFiles = @{
+        'scripts/g1.py' = & $lf @('import subprocess', 'subprocess.run(["git", "status"])', 'subprocess.run(["git", "log"])  # harness:git-boundary a test reason',
+            '# harness:git-boundary the line below', 'subprocess.run(["git", "diff"])', 'subprocess.run(["git", "show"])  # harness:git-boundary',
+            'subprocess.check_output("git rev-parse HEAD", shell=True)', 'subprocess.run(["gitk"])', 'x = ["git"]',
+            'subprocess.run(("git", "diff"), text=True)', 'print("git")',
+            'subprocess.run(', '    ("git", "log"),', ')', 'def h():', '    return ("git", "status")')
+    }
+    $r = New-AdrRefRepo 'git-batch' $gitFiles
+    $g = Run-GateAt $r
+    $want = @('git boundary: scripts/g1\.py:2 starts git directly', 'git boundary: scripts/g1\.py:6 carries harness:git-boundary with no reason',
+        'git boundary: scripts/g1\.py:7 starts git directly', 'git boundary: scripts/g1\.py:9 starts git directly',
+        'git boundary: scripts/g1\.py:10 starts git directly', 'git boundary: scripts/g1\.py:13 starts git directly',
+        'git boundary: scripts/g1\.py:16 starts git directly')
+    $spare = @('g1\.py:([1358]|11|12|14|15) ', 'PASS  git boundary')
+    $missing = @($want | Where-Object { $g.out -notmatch $_ })
+    $wrong = @($spare | Where-Object { $g.out -match $_ })
+    Record 'git-boundary-batch-names-each-site' ($g.rc -eq 1 -and $missing.Count -eq 0 -and $wrong.Count -eq 0) "exit=$($g.rc) missing=[$($missing -join ' | ')] wrongly-named=[$($wrong -join ' | ')]"
 }
 
 # --- eval suite structure (ADR 0076 / spec 0014) -------------------------------------------------

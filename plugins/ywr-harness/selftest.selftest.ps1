@@ -81,6 +81,14 @@ function Assert-Case([string]$Name, $R, [int]$ExpectExit, [string[]]$MustMatch, 
     return (Write-CaseVerdict -Name $Name -Fail $script:LastFails -Detail (Format-Nested $R.Out))
 }
 
+# Every runner copy needs a read-set map (ADR 0157). A stub tree's map claims every file through
+# `none` — the G cases write marker files mid-run — and gives each stub suite an empty read set.
+function Write-StubMap([string]$Dir, [string[]]$Suites) {
+    $m = [ordered]@{ full = @(); none = @('**'); suites = [ordered]@{} }
+    foreach ($s in $Suites) { $m.suites[$s] = @() }
+    [IO.File]::WriteAllText((Join-Path $Dir 'selftest-reads.json'), ($m | ConvertTo-Json -Depth 3))
+}
+
 $ok = $true
 
 # --- A. unsharded listing: the baseline every partition case compares against ----------------
@@ -89,7 +97,7 @@ $ok = $true
 $base = Invoke-RunnerChild $runner @('-List')
 $baseList = Get-Listed $base
 $aMust = @('suites: discovered=\d+', '  - selftest\.selftest\.ps1', '  - manifest-gate\.selftest\.ps1', 'LIST ONLY')
-$aMustNot = @('--- manifest-gate\.mjs', 'all gates green', 'shard=')
+$aMustNot = @('--- manifest-gate\.mjs', 'all gates green', 'shard=', 'FAIL — read-set map', 'selected=')
 $ok = (Assert-Case 'A -List: discovery listed, nothing ran' $base 0 $aMust $aMustNot) -and $ok
 # A0 — the runspace runs (ADR 0149) rest on three contracts, pinned here by name.
 # (1) The runner mutates only the process-wide state this adapter restores: its statements that set
@@ -204,6 +212,7 @@ New-Item -ItemType Directory -Force $fxNoNode | Out-Null
 Copy-Item -LiteralPath $runner -Destination (Join-Path $fxNoNode 'selftest.ps1')
 [IO.File]::WriteAllText((Join-Path $fxNoNode 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
 [IO.File]::WriteAllText((Join-Path $fxNoNode 'p-pass.selftest.ps1'), "Write-Host 'PASS [stub]'`nexit 0`n")
+Write-StubMap $fxNoNode @('p-pass.selftest.ps1')
 $pathKeep = $env:PATH
 try {
     $env:PATH = $PSHOME
@@ -303,6 +312,7 @@ Write-Host 'BODY-MARKER-C'
 [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'c.done'), "$PID")
 exit 0
 '@)
+Write-StubMap $fxRun @('a-slow.selftest.ps1', 'b-fail.selftest.ps1', 'c-pass.selftest.ps1')
 $ctl = Join-Path $fxRun 'wait-for-c'
 $marker = Join-Path $fxRun 'c.done'
 $aSleep = Join-Path $fxRun 'a-sleep'
@@ -403,6 +413,7 @@ Start-Sleep -Seconds 300
 exit 0
 '@)
 [IO.File]::WriteAllText((Join-Path $fxHang 'p-ok.selftest.ps1'), "Write-Host 'PASS [p one]'`nexit 0`n")
+Write-StubMap $fxHang @('h-hang.selftest.ps1', 'p-ok.selftest.ps1')
 $gcFile = Join-Path $fxHang 'grandchild.pid'
 $readyFile = Join-Path $fxHang 'ready'
 $holdFile = Join-Path $fxHang 'hold'
@@ -452,6 +463,7 @@ foreach ($pc in $probeCases) {
     [IO.File]::WriteAllText((Join-Path $fxProbe 'selftest.ps1'), $runnerText.Replace($pc.Old, $pc.New))
     [IO.File]::WriteAllText((Join-Path $fxProbe 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
     [IO.File]::WriteAllText((Join-Path $fxProbe 'p-ok.selftest.ps1'), "Write-Host 'PASS [p one]'`nexit 0`n")
+    Write-StubMap $fxProbe @('p-ok.selftest.ps1')
     $rp = Invoke-RunnerFresh (Join-Path $fxProbe 'selftest.ps1') @('-Jobs', '1')
     $warnCount = ([regex]::Matches($rp.Out, '(?m)^WARN \[runner\]')).Count
     $pre = @($(if ($swapCount -ne 1) { "the swap text appears $swapCount time(s) in selftest.ps1, expected 1 — the case proves nothing" }),
@@ -459,6 +471,193 @@ foreach ($pc in $probeCases) {
     $ok = (Assert-Case "$($pc.Id) a probe that $($pc.What) prints exactly one WARN [runner] line with its reason; the run stays green" $rp 0 `
         @('all gates green', '(?m)^ok   p-ok\.selftest\.ps1', ('(?m)^WARN \[runner\] the Write-Warning label probe failed \(' + $pc.Reason)) `
         @($pc.Other, '(?m)^FAIL') -PreFail $pre) -and $ok
+}
+
+# --- H. read-set map and -Changed selection (ADR 0157) ------------------------------------------
+# A git fixture in the canon shape: the runner copy sits in plug/ below the repo root, so the `/`
+# globs are live. s-a reads a.txt; s-b reads b.txt, ver.json (version_only) and the root outside.txt;
+# shared.txt is a `full` input; doc.txt is read by no suite. Most cases are -List runs in a runspace
+# (no suite runs). Four are real children: the full runs that write the record (H3, H12b, H17) and
+# one selected run (H12). The later cases write the record directly (Set-SelRecord). The record lives in the fixture's own git dir.
+$fxSel = Join-Path $fxBase 'select'
+$plug = Join-Path $fxSel 'plug'
+New-Item -ItemType Directory -Force $plug | Out-Null
+Copy-Item -LiteralPath $runner -Destination (Join-Path $plug 'selftest.ps1')
+[IO.File]::WriteAllText((Join-Path $plug 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
+foreach ($s in 's-a', 's-b') { [IO.File]::WriteAllText((Join-Path $plug "$s.selftest.ps1"), "Write-Host 'PASS [$s]'`nexit 0`n") }
+# s-a edits a.txt while it runs when the fixture root holds `edit-during` (H17).
+[IO.File]::WriteAllText((Join-Path $plug 's-a.selftest.ps1'), "if (Test-Path -LiteralPath (Join-Path `$PSScriptRoot '../edit-during')) { [IO.File]::WriteAllText((Join-Path `$PSScriptRoot 'a.txt'), ""a during``n"") }`nWrite-Host 'PASS [s-a]'`nexit 0`n")
+foreach ($f in 'a.txt', 'b.txt', 'shared.txt', 'doc.txt') { [IO.File]::WriteAllText((Join-Path $plug $f), "$f`n") }
+$verJson = Join-Path $plug 'ver.json'
+[IO.File]::WriteAllText($verJson, "{`n  `"name`": `"stub`",`n  `"version`": `"1.0.0`"`n}`n")
+[IO.File]::WriteAllText((Join-Path $fxSel 'outside.txt'), "outside`n")
+$selMapPath = Join-Path $plug 'selftest-reads.json'
+$selMap = @'
+{
+  "//": "fixture map",
+  "full": ["shared.txt", "selftest.ps1", "selftest-reads.json"],
+  "none": ["doc.txt", "manifest-gate.mjs"],
+  "version_only": ["ver.json"],
+  "suites": {
+    "//s-a.selftest.ps1": "a comment key is not a suite",
+    "s-a.selftest.ps1": ["a.txt"],
+    "s-b.selftest.ps1": ["b.txt", "ver.json", "/outside.txt"]
+  }
+}
+'@
+[IO.File]::WriteAllText($selMapPath, $selMap)
+function Invoke-SelGit([string[]]$GitArgs) {
+    $o = & git -C $fxSel -c core.autocrlf=false -c user.name=selftest -c user.email=selftest@example.invalid @GitArgs 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "selection fixture: git $($GitArgs -join ' ') failed: $o" }
+    return $o.Trim()
+}
+$null = Invoke-SelGit @('init', '-q', '--template=')
+$null = Invoke-SelGit @('add', '-A')
+$null = Invoke-SelGit @('commit', '-q', '-m', 'fixture')
+$selRunner = Join-Path $plug 'selftest.ps1'
+$recordPath = Join-Path (Invoke-SelGit @('rev-parse', '--path-format=absolute', '--git-common-dir')) 'ywr-harness/selftest-full-run.json'
+function Reset-Sel { $null = Invoke-SelGit @('checkout', '-q', '--', '.'); $null = Invoke-SelGit @('clean', '-q', '-f') }
+function Set-SelText([string]$Rel, [string]$Text) { [IO.File]::WriteAllText((Join-Path $fxSel $Rel), $Text) }
+
+$ok = (Assert-Case 'H1 -Changed on a clean tree is a full run: the change is empty, so a selection would be empty' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('selection: FULL RUN — the change is empty', '  - s-a\.selftest\.ps1', '  - s-b\.selftest\.ps1', 'LIST ONLY') @('FAIL — read-set map', 'by read set')) -and $ok
+Set-SelText 'plug/a.txt' "a changed`n"
+$ok = (Assert-Case 'H2 -Changed with no recorded full run is a full run that names the record' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('changed: 1 file\(s\) since HEAD, working tree included', '  \* a\.txt', 'selection: FULL RUN — no green full run is recorded in this clone', '  - s-b\.selftest\.ps1') @('by read set', '(?m)^FAIL —')) -and $ok
+$h3 = Invoke-RunnerFresh $selRunner @('-Jobs', '2')
+$rec = if (Test-Path -LiteralPath $recordPath) { Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json -AsHashtable } else { $null }
+$selHead = Invoke-SelGit @('rev-parse', 'HEAD')
+$aHash = Invoke-SelGit @('hash-object', '--', 'plug/a.txt')
+$ok = (Assert-Case 'H3 a green full run writes the record: UTC time, HEAD, tool series, and the content it tested of each dirty path' $h3 0 `
+    @('all gates green', 'full-run record: ', 'selftests: discovered=2 passed=2 failed=0') @('(?m)^FAIL', 'selected gates', 'selected=', 'WARN \[runner\] the full-run record') `
+    -PreFail @($(if (-not $rec -or $rec['head'] -ne $selHead -or -not $rec['utc'] -or -not $rec['series'] -or -not $rec['series']['pwsh'] -or -not $rec['dirty'] -or $rec['dirty']['plug/a.txt'] -ne $aHash) { "record missing or wrong: $(if ($rec) { $rec | ConvertTo-Json -Compress -Depth 3 } else { 'absent' })" }))) -and $ok
+$ok = (Assert-Case 'H3b a dirty path that still holds the content the full run tested drops out of the change' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('changed: 0 file\(s\) since the last full run \([0-9a-f]{7}\), working tree included', 'selection: FULL RUN — the change is empty') @('  \* a\.txt', 'by read set')) -and $ok
+Reset-Sel
+$ok = (Assert-Case 'H3c reverting a path the full run saw dirty is a change' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('  \* a\.txt', 'selection: 1 of 2 suites by read set', '(?m)^  - s-a\.selftest\.ps1') @('(?m)^  - s-b', 'selection: FULL RUN')) -and $ok
+Set-SelText 'plug/a.txt' "a changed again`n"
+$ok = (Assert-Case 'H4 a changed file selects exactly the suites whose read set names it' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('selection: 1 of 2 suites by read set \(last full run [\d.]+ days and 0 plugin commit\(s\) ago, same tools\)', '(?m)^  - s-a\.selftest\.ps1', 'suites: discovered=2 selected=1') @('(?m)^  - s-b', 'selection: FULL RUN')) -and $ok
+Set-SelText 'outside.txt' "outside changed`n"
+$ok = (Assert-Case 'H5 a repo file outside the plugin selects through a / glob' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('  \* /outside\.txt', 'selection: 2 of 2 suites by read set', '(?m)^  - s-b\.selftest\.ps1') @('selection: FULL RUN', '(?m)^FAIL')) -and $ok
+$h12 = Invoke-RunnerFresh $selRunner @('-Changed', '-Jobs', '2')
+$recText = if (Test-Path -LiteralPath $recordPath) { [IO.File]::ReadAllText($recordPath) } else { '' }
+$ok = (Assert-Case 'H12b selecting every suite by read set is a full run: it says all gates green and refreshes the record' $h12 0 `
+    @('selection: 2 of 2 suites by read set', 'all gates green', 'full-run record: ') @('NOT a full run', 'selected=')) -and $ok
+# outside.txt keeps the content H12b tested, so only a.txt moves on.
+Set-SelText 'plug/a.txt' "a third`n"
+$h12s = Invoke-RunnerFresh $selRunner @('-Changed', '-Jobs', '2')
+$recAfter = if (Test-Path -LiteralPath $recordPath) { [IO.File]::ReadAllText($recordPath) } else { '' }
+$ok = (Assert-Case 'H12 a selected run runs only its selection, says NOT a full run, and leaves the record alone' $h12s 0 `
+    @('selected gates green — 1 of 2 suites by read set, NOT a full run', 'selftests: discovered=2 selected=1 passed=1 failed=0', '(?m)^ok   s-a\.selftest\.ps1', 'PASS  stub manifest gate') `
+    @('all gates green', 'done s-b', 'full-run record:', '  \* /outside\.txt') -PreFail @($(if ($recAfter -ne $recText) { 'the selected run rewrote the full-run record' }))) -and $ok
+# The cases below start from a WRITTEN record, not from a full run: the runs above already prove how a
+# run writes one, and each real child costs seconds. The record keeps the series that H12b wrote.
+function Set-SelRecord([hashtable]$Dirty) {
+    $r = [IO.File]::ReadAllText($recordPath) | ConvertFrom-Json -AsHashtable
+    $r['head'] = Invoke-SelGit @('rev-parse', 'HEAD')
+    $r['utc'] = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    $r['dirty'] = $Dirty
+    [IO.File]::WriteAllText($recordPath, ($r | ConvertTo-Json -Depth 3))
+}
+# A clean record: one commit that changes b.txt, then a record at it with no dirty path.
+Reset-Sel
+Set-SelText 'plug/b.txt' "b pre`n"
+$null = Invoke-SelGit @('commit', '-q', '-am', 'b pre')
+Set-SelRecord @{}
+$ok = (Assert-Case 'H13 -Base adds its own change: HEAD~1 brings back b.txt, which the full run already tested' (Invoke-Runner $selRunner @('-Changed', '-Base', 'HEAD~1', '-List')) 0 `
+    @('changed: 1 file\(s\) since the last full run \([0-9a-f]{7}\) and HEAD~1, working tree included', '  \* b\.txt', 'selection: 1 of 2 suites by read set', '(?m)^  - s-b') @('(?m)^  - s-a', 'selection: FULL RUN')) -and $ok
+$ok = (Assert-Case 'H13b without -Base the same clean tree is an empty change' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('selection: FULL RUN — the change is empty') @('by read set', '  \* b\.txt')) -and $ok
+Set-SelText 'plug/doc.txt' "doc changed`n"
+$ok = (Assert-Case 'H6 a file no suite reads selects nothing' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('selection: 0 of 2 suites by read set', 'suites: discovered=2 selected=0') @('(?m)^  - ', 'selection: FULL RUN')) -and $ok
+Reset-Sel
+Set-SelText 'plug/ver.json' "{`n  `"name`": `"stub`",`n  `"version`": `"1.0.1`"`n}`n"
+$ok = (Assert-Case 'H7 a version_only file whose diff changes only the version line selects nothing' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('  \* ver\.json \(version line only: selects no suite\)', 'selection: 0 of 2 suites by read set') @('(?m)^  - ', 'selection: FULL RUN')) -and $ok
+Set-SelText 'plug/ver.json' "{`n  `"name`": `"stub2`",`n  `"version`": `"1.0.1`"`n}`n"
+$ok = (Assert-Case 'H7b any other changed line in a version_only file selects as usual' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('selection: 1 of 2 suites by read set', '(?m)^  - s-b\.selftest\.ps1') @('version line only', '(?m)^  - s-a', 'selection: FULL RUN')) -and $ok
+Reset-Sel
+Set-SelText 'plug/shared.txt' "shared changed`n"
+$ok = (Assert-Case 'H8 a full input changes: a full run that names it' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('selection: FULL RUN — a shared input changed: shared\.txt', '(?m)^  - s-a', '(?m)^  - s-b') @('by read set', '(?m)^FAIL')) -and $ok
+Reset-Sel
+Set-SelText 'plug/new.txt' "new`n"
+$ok = (Assert-Case 'H9 an untracked file no glob claims fails the map check; -Changed does not select around it' (Invoke-Runner $selRunner @('-Changed', '-List')) 1 `
+    @('FAIL — read-set map: ''new\.txt'' is claimed by no suite, no full glob and no none glob', 'selection: FULL RUN — the read-set map failed its check') @('by read set', 'all gates green')) -and $ok
+Reset-Sel
+# H10 — the record's guards, each by one mutation of a copy of the record (restored after each).
+Set-SelText 'plug/a.txt' "a changed`n"
+$recGood = [IO.File]::ReadAllText($recordPath)
+$recCases = @(
+    @{ Id = 'H10a'; What = 'a tool version differs from the record'; Edit = { param($r) $r['series']['pwsh'] = '0.0.0' }; Rx = 'FULL RUN — a tool changed since the last full run: pwsh 0\.0\.0 -> ' },
+    @{ Id = 'H10b'; What = 'the record is older than the 7-day window'; Edit = { param($r) $r['utc'] = [DateTime]::UtcNow.AddDays(-8).ToString('o', [Globalization.CultureInfo]::InvariantCulture) }; Rx = 'FULL RUN — the last full run is 8(\.\d)? days old \(window 7 days\)' },
+    @{ Id = 'H10c'; What = 'the record''s HEAD is not an ancestor'; Edit = { param($r) $r['head'] = '0' * 40 }; Rx = 'FULL RUN — the last full run''s HEAD 0{40} is not an ancestor of HEAD' },
+    @{ Id = 'H10e'; What = 'the record''s time lies in the future'; Edit = { param($r) $r['utc'] = [DateTime]::UtcNow.AddDays(2).ToString('o', [Globalization.CultureInfo]::InvariantCulture) }; Rx = 'FULL RUN — the recorded full run has an unreadable or future time' },
+    @{ Id = 'H10f'; What = 'the record has no dirty map'; Edit = { param($r) $r.Remove('dirty') }; Rx = 'FULL RUN — no green full run is recorded' },
+    @{ Id = 'H10d'; What = 'the record does not parse'; Edit = $null; Rx = 'FULL RUN — no green full run is recorded' })
+foreach ($rc in $recCases) {
+    if ($rc.Edit) { $r = $recGood | ConvertFrom-Json -AsHashtable; & $rc.Edit $r; [IO.File]::WriteAllText($recordPath, ($r | ConvertTo-Json -Depth 3)) }
+    else { [IO.File]::WriteAllText($recordPath, '{ not json') }
+    $ok = (Assert-Case "$($rc.Id) a full run when $($rc.What)" (Invoke-Runner $selRunner @('-Changed', '-List')) 0 @($rc.Rx) @('by read set', '(?m)^FAIL')) -and $ok
+    [IO.File]::WriteAllText($recordPath, $recGood)
+}
+Reset-Sel
+# H16 — a commit made after the full run is part of the change, though the tree is clean against HEAD
+# (review 2026-10-18: the change once ran from HEAD, so such a commit selected nothing).
+Set-SelText 'plug/b.txt' "b post`n"
+$null = Invoke-SelGit @('commit', '-q', '-am', 'b post')
+$ok = (Assert-Case 'H16 a commit since the full run selects its suites on a clean tree' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('  \* b\.txt', 'selection: 1 of 2 suites by read set \(last full run [\d.]+ days and 1 plugin commit\(s\) ago', '(?m)^  - s-b') @('(?m)^  - s-a', 'selection: FULL RUN')) -and $ok
+# H11 — the commit window: the fifth plugin commit since the record forces a full run.
+foreach ($i in 2..5) { Set-SelText 'plug/doc.txt' "doc $i`n"; $null = Invoke-SelGit @('commit', '-q', '-am', "doc $i") }
+Set-SelText 'plug/a.txt' "a again`n"
+$ok = (Assert-Case 'H11 five plugin commits since the record force a full run' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('selection: FULL RUN — 5 plugin commits since the last full run \(window 5\)') @('by read set', '(?m)^FAIL')) -and $ok
+Reset-Sel
+# H17 — the record holds what the suites tested: s-a edits a.txt during a full run, and that edit is a
+# change afterwards (review 2026-10-18: the record once hashed the tree after the run).
+$editMark = Join-Path $fxSel 'edit-during'
+[IO.File]::WriteAllText($editMark, '1')
+$h17 = Invoke-RunnerFresh $selRunner @('-Jobs', '2')
+Remove-Item -LiteralPath $editMark -Force
+Set-SelText 'plug/b.txt' "b after`n"
+$ok = (Assert-Case 'H17 an edit made during the full run stays a change: a.txt selects s-a beside the b.txt change' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('  \* a\.txt', '  \* b\.txt', 'selection: 2 of 2 suites by read set') @('selection: FULL RUN', '(?m)^FAIL') `
+    -PreFail @($(if ($h17.Code -ne 0 -or $h17.Out -notmatch 'full-run record: ') { "the H17 full run did not write a record (exit $($h17.Code))" }))) -and $ok
+Reset-Sel
+# H18 — a version_only file the full run saw dirty gets no exemption: its version bump plus a name edit
+# were tested, and reverting the name leaves a diff of the version line alone against HEAD.
+Set-SelText 'plug/ver.json' "{`n  `"name`": `"stub3`",`n  `"version`": `"1.0.2`"`n}`n"
+Set-SelRecord @{ 'plug/ver.json' = (Invoke-SelGit @('hash-object', '--', 'plug/ver.json')) }
+Set-SelText 'plug/ver.json' "{`n  `"name`": `"stub`",`n  `"version`": `"1.0.2`"`n}`n"
+$ok = (Assert-Case 'H18 a version_only file the full run saw dirty selects when it moves on, even to a version-only diff' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
+    @('  \* ver\.json', 'selection: 1 of 2 suites by read set', '(?m)^  - s-b') @('version line only', 'selection: FULL RUN', '(?m)^  - s-a')) -and $ok
+Reset-Sel
+# H14 — refusals before anything runs.
+$ok = (Assert-Case 'H14 -Changed with -Shard is refused' (Invoke-Runner $selRunner @('-Changed', '-Shard', '1/2', '-List')) 1 `
+    @('FAIL — -Changed and -Shard do not combine') @('LIST ONLY', 'suites: discovered')) -and $ok
+$ok = (Assert-Case 'H14b -Base without -Changed is refused' (Invoke-Runner $selRunner @('-Base', 'HEAD', '-List')) 1 `
+    @('FAIL — -Base needs -Changed') @('LIST ONLY', 'suites: discovered')) -and $ok
+$ok = (Assert-Case 'H14c a -Base that names no commit is refused' (Invoke-Runner $selRunner @('-Changed', '-Base', 'no-such-ref', '-List')) 1 `
+    @('FAIL — -Base does not name a commit: no-such-ref') @('LIST ONLY', 'suites: discovered')) -and $ok
+# H15 — the map check, one defect per case, on -List (no -Changed): each fails the run with its reason.
+$mapCases = @(
+    @{ Id = 'H15a'; What = 'a glob that matches no file'; Text = $selMap.Replace('["a.txt"]', '["a.txt", "zzz.txt"]'); Rx = 'suites\[''s-a\.selftest\.ps1''\] glob ''zzz\.txt'' matches no file' },
+    @{ Id = 'H15b'; What = 'a / glob that matches no repo file'; Text = $selMap.Replace('"/outside.txt"', '"/nope.txt"'); Rx = 'suites\[''s-b\.selftest\.ps1''\] glob ''/nope\.txt'' matches no file' },
+    @{ Id = 'H15c'; What = 'a suite with no read set'; Text = $selMap.Replace('"s-b.selftest.ps1": ["b.txt", "ver.json", "/outside.txt"]', '"x": []'); Rx = 'suite ''s-b\.selftest\.ps1'' has no read set' },
+    @{ Id = 'H15d'; What = 'an entry for no discovered suite'; Text = $selMap.Replace('"s-a.selftest.ps1": ["a.txt"],', '"s-a.selftest.ps1": ["a.txt"], "s-c.selftest.ps1": [],'); Rx = 'suites names ''s-c\.selftest\.ps1'', which is not a discovered suite' },
+    @{ Id = 'H15e'; What = 'a map that does not parse'; Text = '{ "full": ['; Rx = 'selftest-reads\.json does not parse' },
+    @{ Id = 'H15f'; What = 'a missing map'; Text = $null; Rx = 'selftest-reads\.json is missing' })
+foreach ($mc in $mapCases) {
+    if ($null -eq $mc.Text) { Remove-Item -LiteralPath $selMapPath -Force } else { [IO.File]::WriteAllText($selMapPath, $mc.Text) }
+    $ok = (Assert-Case "$($mc.Id) the map check fails the run on $($mc.What)" (Invoke-Runner $selRunner @('-List')) 1 `
+        @("FAIL — read-set map: $($mc.Rx)") @('all gates green', 'by read set')) -and $ok
+    [IO.File]::WriteAllText($selMapPath, $selMap)
 }
 
 # Not cased: the runner's could-not-start and no-result branches. Neither is reachable from a

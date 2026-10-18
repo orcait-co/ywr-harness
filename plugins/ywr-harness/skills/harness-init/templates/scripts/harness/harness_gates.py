@@ -273,7 +273,9 @@ def hooks_status(root: Path) -> str | None:
     # inline; CLAUDE.md and spec 0007 §3.1 name them as the boundary's one stated exception.
     git_text = dict(cwd=root, capture_output=True, text=True, encoding="utf-8", errors="backslashreplace")
     try:
+        # harness:git-boundary exit 1 means unset, read from returncode (the stated exception above)
         scoped = subprocess.run(["git", "config", "--show-scope", "--path", "--get", "core.hooksPath"], **git_text)
+        # harness:git-boundary the same read at the local scope
         out = subprocess.run(["git", "config", "--local", "--path", "--get", "core.hooksPath"], **git_text)
     except OSError:
         return ".githooks/ present, but git could not be run here — wiring unknown"

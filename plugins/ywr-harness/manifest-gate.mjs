@@ -474,7 +474,17 @@ async function main() {
   // tag-less shallow clone reads the same line, which is why the fetch-depth-0 script gate
   // (harness-gates.yml) is the enforcing CI leg.
   const gitExe = whichOnPath('git')
-  const insideWorkTree = () => gitRun(['-C', repoRoot, 'rev-parse', '--is-inside-work-tree']).status === 0
+  // Both memoized: the lockstep, ADR-reference, stack and git-boundary checks share one probe and one
+  // listing (ADR 0158: a new check starts no new process). `-t` tags each path: `?` marks an untracked,
+  // not ignored file, which the stack and git-boundary checks read and the ADR-reference check skips.
+  let insideMemo, listMemo
+  const insideWorkTree = () => (insideMemo ??= gitRun(['-C', repoRoot, 'rev-parse', '--is-inside-work-tree']).status === 0)
+  const repoLs = () => {
+    if (listMemo) return listMemo
+    const r = gitRun(['-C', repoRoot, 'ls-files', '-z', '-t', '--cached', '--others', '--exclude-standard'])
+    const entries = r.status === 0 ? r.text.split('\0').filter(Boolean).map(e => ({ tracked: e[0] !== '?', rel: e.slice(2) })) : []
+    return (listMemo = { status: r.status, entries })
+  }
   if (!inTree) {
     note('release lockstep: skipped — not the canon dogfood shape (the release tag lives in the canon history; a marketplace cache and a hand-vendored copy have none)')
   } else {
@@ -727,12 +737,12 @@ async function main() {
       const m = new RegExp(`^(${D}{4})-`, 'u').exec(a)
       if (m) adrIds.add(m[1])
     }
-    const ls = gitRun(['-C', repoRoot, 'ls-files', '-z'])
+    const ls = repoLs()
     if (ls.status !== 0) {
       bad(`adr references: git ls-files exited ${ls.status ?? -1} — NOT CHECKED, not passed`)
     } else {
       let adrScanned = 0, adrRefs = 0, adrFiles = 0, adrBad = 0
-      for (const rel of ls.text.split('\0').filter(Boolean)) {
+      for (const rel of ls.entries.filter(e => e.tracked).map(e => e.rel)) {
         if (adrRefExcludeRx.test(rel)) continue
         const full = join(repoRoot, rel)
         if (!isFile(full)) continue                       // deleted in the work tree
@@ -762,6 +772,184 @@ async function main() {
       }
       if (adrBad === 0) {
         good(`adr references: ${adrRefs} reference(s) in ${adrFiles} of ${adrScanned} tracked text file(s) resolve to docs/adr (${adrIds.size} record(s))`)
+      }
+    }
+  }
+
+  // --- canon zero-install stack and git boundary (REVIEW.md invariants 1 and 9, ADR 0158) --------
+  // Both read the git-listed files: tracked, plus untracked and not ignored, so a new file counts at a
+  // local close; a finding on an untracked file says so. Stack: a .py file imports only a module of
+  // the Python 3.9+ stdlib or a repo module that the importer can reach — a listed .py (or package)
+  // in its own directory, in that directory's harness/, or in the scripts/harness/ or docs/ beside
+  // it, the places the canon scripts put on sys.path; a .mjs/.js/.cjs/.ts file imports only a `node:`
+  // or bare built-in, a relative path, or a host module of `claude plugin test` in a *.test.ts; no
+  // dependency manifest is listed. Git boundary: a .py line that starts git directly — a list or
+  // tuple argv whose first item is "git", or a `subprocess.*`/`os.system`/`os.popen` command string
+  // that starts with `git ` — carries `# harness:git-boundary <reason>` on the line or on the comment
+  // line directly above it. Lines, not a parser: a line splits on `;`, a one-line compound header such
+  // as `try:` is dropped, and a triple-quoted string is tracked by its tokens outside comments and
+  // one-line strings. A string still open at the end of a file fails as NOT CHECKED for the lines it
+  // hid. Judgment keeps the rest: an import built at run time, a git argv whose first item is a name,
+  // a subprocess call under an alias, a new install step in a workflow. Known limits of the line
+  // reader, left to the review (ADR 0158): a `'''` inside a `"""` string (or the reverse) flips the
+  // string state; code after a closing triple quote on the same line is not read; a header colon
+  // inside brackets or a string, and a one-line `def`/`class` body, hide an import; a `;`, an import
+  // or a git argv inside a comment or a string can raise a false FAIL; a triple quote in a comment on
+  // a string's closing line is counted; `cfg["git"]` reads as a git argv. Canon shape only, like the
+  // ADR references; every skip says why.
+  // STDLIB: sys.stdlib_module_names of CPython 3.13 without its private names and without tomllib
+  // (3.11): the modules that import on every 3.9+ interpreter. 3.12 and 3.13 removed modules, so the
+  // newest list is also the safe one.
+  const STDLIB = new Set(('__future__ abc antigravity argparse array ast asyncio atexit base64 bdb binascii bisect builtins ' +
+    'bz2 cProfile calendar cmath cmd code codecs codeop collections colorsys compileall concurrent configparser contextlib ' +
+    'contextvars copy copyreg csv ctypes curses dataclasses datetime dbm decimal difflib dis doctest email encodings ' +
+    'ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch fractions ftplib functools gc genericpath getopt ' +
+    'getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib importlib inspect io ipaddress ' +
+    'itertools json keyword linecache locale logging lzma mailbox marshal math mimetypes mmap modulefinder msvcrt ' +
+    'multiprocessing netrc nt ntpath nturl2path numbers opcode operator optparse os pathlib pdb pickle pickletools pkgutil ' +
+    'platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile pyclbr pydoc pydoc_data pyexpat ' +
+    'queue quopri random re readline reprlib resource rlcompleter runpy sched secrets select selectors shelve shlex shutil ' +
+    'signal site smtplib socket socketserver sqlite3 sre_compile sre_constants sre_parse ssl stat statistics string ' +
+    'stringprep struct subprocess symtable sys sysconfig syslog tabnanny tarfile tempfile termios textwrap this threading ' +
+    'time timeit tkinter token tokenize trace traceback tracemalloc tty turtle turtledemo types typing unicodedata ' +
+    'unittest urllib uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xml xmlrpc zipapp zipfile ' +
+    'zipimport zlib zoneinfo').split(' '))
+  const HOST_MODULES = new Set(['claude-code/testing'])
+  const depManifestRx = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|requirements[^/]*\.txt|pyproject\.toml|setup\.py|setup\.cfg|Pipfile|Pipfile\.lock|poetry\.lock|uv\.lock)$/iu
+  const pyCompoundRx = /^\s*(?:(?:try|else|finally)\s*:|(?:if|elif|while|with|for|except)\b[^:]*:)\s*/u
+  const pyImportRx = /^\s*import\s+([A-Za-z_][\w.]*(?:\s+as\s+\w+)?(?:\s*,\s*[A-Za-z_][\w.]*(?:\s+as\s+\w+)?)*)\s*(?:#.*)?$/u
+  const pyFromRx = /^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+\S/u
+  const jsSpecRxs = [
+    /^\s*(?:import|export)\b[^'"`]*?\bfrom\s*(['"])([^'"]+)\1/u,
+    /^\s*\}\s*from\s*(['"])([^'"]+)\1/u,
+    /^\s*import\s*(['"])([^'"]+)\1/u,
+  ]
+  const jsCallRx = /\b(?:import|require)\(\s*(['"])([^'"]+)\1\s*\)/gu
+  // A list `[` anywhere, or a tuple `(` that opens a line (indented or not) or follows `=`, `,`, `(`,
+  // `[`, `:`, `return` or `yield` — never a call's own parenthesis, so `print("git")` stays out.
+  const gitArgvRx = /(?:\[|(?:^\s*|[=,([:]\s*|\b(?:return|yield)\s+)\()\s*[rRbBuU]?(['"])git(?:\.exe)?\1\s*[,\])]/u
+  const gitStrRx = /\b(?:subprocess\.\w+|os\.system|os\.popen)\(\s*[rRbBfFuU]?(['"])git\s/u
+  const markRx = /#\s*harness:git-boundary\b(.*)$/u
+  // Outside a string, the tokens of one line: a whole triple-quoted string, a lone triple quote that
+  // opens one (the rest of the line is its text), a one-line string (consumed whole, so a quote inside
+  // it does not count), or a comment (ends the line). Inside a string there is no comment and no
+  // nested string, so every triple quote counts.
+  const pyTokRx = /"""[\s\S]*?"""|'''[\s\S]*?'''|"""|'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|#.*$/gu
+  const tripleCount = (s, inString) => {
+    if (inString) return (s.match(/"""|'''/gu) || []).length
+    let n = 0
+    for (const m of s.matchAll(pyTokRx)) { if (m[0] === '"""' || m[0] === "'''") { n++; break } }
+    return n
+  }
+  if (!inTree) {
+    note('stack and git boundary: skipped — not the canon dogfood shape (the invariants bind the canon tree)')
+  } else if (!gitExe) {
+    note('stack and git boundary: skipped — git not on PATH (reported, not silent)')
+  } else if (!insideWorkTree()) {
+    note('stack and git boundary: skipped — the canon shape is not inside a git work tree, so there is no tracked-file list (reported, not silent)')
+  } else {
+    const ls = repoLs()
+    if (ls.status !== 0) {
+      bad(`stack and git boundary: git ls-files exited ${ls.status ?? -1} — NOT CHECKED, not passed`)
+    } else {
+      // One entry per path: an unmerged path is listed once per stage.
+      const seen = new Set()
+      const entries = ls.entries.filter(e => (seen.has(e.rel) ? false : (seen.add(e.rel), true)))
+      const listedPy = new Set(entries.map(e => e.rel).filter(r => /\.py$/iu.test(r)))
+      const dirOf = (r) => (r.includes('/') ? r.slice(0, r.lastIndexOf('/')) : '')
+      const under = (d, rest) => (d ? `${d}/${rest}` : rest)
+      const isLocal = (rel, top) => {
+        const d0 = dirOf(rel), d1 = d0 ? dirOf(d0) : null
+        const dirs = [d0, under(d0, 'harness')]
+        if (d1 !== null) dirs.push(under(d1, 'scripts/harness'), under(d1, 'docs'))
+        return dirs.some(d => listedPy.has(under(d, `${top}.py`)) || listedPy.has(under(d, `${top}/__init__.py`)))
+      }
+      const { builtinModules } = await import('node:module')
+      const nodeBuiltins = new Set(builtinModules)
+      let pyImports = 0, pyFiles = 0, jsSpecs = 0, jsFiles = 0, gitSites = 0, stackBad = 0, gitBad = 0
+      for (const { rel, tracked } of entries) {
+        const tag = tracked ? '' : ' (untracked)'
+        if (depManifestRx.test(rel)) {
+          bad(`zero-install stack: ${rel}${tag} is a dependency manifest — the harness installs nothing (REVIEW.md invariant 1, ADR 0158)`)
+          stackBad++
+          continue
+        }
+        const isPy = /\.py$/iu.test(rel)
+        const isJs = /\.(mjs|js|cjs|ts)$/iu.test(rel)
+        if (!isPy && !isJs) continue
+        const full = join(repoRoot, rel)
+        if (!isFile(full)) continue                       // deleted in the work tree
+        const lines = fs.readFileSync(full).toString('utf8').split('\n')
+        if (isPy) {
+          pyFiles++
+          let inStr = false, openedAt = 0
+          for (let i = 0; i < lines.length; i++) {
+            const ln = lines[i].replace(/\r$/u, '')
+            const trimmed = ln.trimStart()
+            if (!inStr && trimmed.startsWith('#')) continue
+            const wasInStr = inStr
+            if (tripleCount(ln, inStr) % 2 === 1) { inStr = !inStr; if (inStr) openedAt = i + 1 }
+            if (wasInStr) continue
+            const mods = []
+            for (const seg of ln.split(';')) {
+              const code = seg.replace(pyCompoundRx, '')
+              let m = pyImportRx.exec(code)
+              if (m) for (const part of m[1].split(',')) mods.push(part.trim().split(/\s+/u)[0])
+              else if ((m = pyFromRx.exec(code))) mods.push(m[1])
+            }
+            for (const mod of mods) {
+              pyImports++
+              const top = mod.split('.')[0]
+              if (!STDLIB.has(top) && !isLocal(rel, top)) {
+                bad(`zero-install stack: ${rel}:${i + 1}${tag} imports '${mod}' — not in the Python 3.9+ stdlib and no repo module the file can reach (REVIEW.md invariant 1, ADR 0158)`)
+                stackBad++
+              }
+            }
+            if (gitArgvRx.test(ln) || gitStrRx.test(ln)) {
+              gitSites++
+              const prev = i > 0 ? lines[i - 1].replace(/\r$/u, '').trimStart() : ''
+              const mark = markRx.exec(ln) || (prev.startsWith('#') ? markRx.exec(prev) : null)
+              if (!mark) {
+                bad(`git boundary: ${rel}:${i + 1}${tag} starts git directly — route it through harness_config.git_run()/git_lines() or harness_retro.git(), or mark it '# harness:git-boundary <reason>' (REVIEW.md invariant 9, ADR 0158)`)
+                gitBad++
+              } else if (!/\S/u.test(mark[1])) {
+                bad(`git boundary: ${rel}:${i + 1}${tag} carries harness:git-boundary with no reason — the marker names why this call bypasses the boundary`)
+                gitBad++
+              }
+            }
+          }
+          if (inStr) {
+            const last = lines.length - (lines[lines.length - 1] === '' ? 1 : 0)   // a final newline ends no line
+            bad(`stack and git boundary: ${rel}:${openedAt}${tag} opens a triple-quoted string that never closes — lines ${openedAt + 1}-${last} NOT CHECKED, not passed`)
+            stackBad++; gitBad++
+          }
+        } else {
+          jsFiles++
+          const hostOk = /\.test\.ts$/iu.test(rel)
+          for (let i = 0; i < lines.length; i++) {
+            const ln = lines[i]
+            const trimmed = ln.trimStart()
+            if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue
+            const specs = []
+            for (const rx of jsSpecRxs) { const m = rx.exec(ln); if (m) { specs.push(m[2]); break } }
+            for (const m of ln.matchAll(jsCallRx)) specs.push(m[2])
+            for (const spec of specs) {
+              jsSpecs++
+              const ok = spec.startsWith('./') || spec.startsWith('../') || spec.startsWith('node:') ||
+                nodeBuiltins.has(spec) || (hostOk && HOST_MODULES.has(spec))
+              if (!ok) {
+                bad(`zero-install stack: ${rel}:${i + 1}${tag} imports '${spec}' — not a Node built-in, a relative path or a host test module (REVIEW.md invariant 1, ADR 0158)`)
+                stackBad++
+              }
+            }
+          }
+        }
+      }
+      if (stackBad === 0) {
+        good(`zero-install stack: ${pyImports} python import(s) in ${pyFiles} file(s) and ${jsSpecs} js specifier(s) in ${jsFiles} file(s) resolve to the stdlib, built-ins or the repo; no dependency manifest listed`)
+      }
+      if (gitBad === 0) {
+        good(`git boundary: ${gitSites} direct git call(s) in listed .py files, each marked harness:git-boundary with a reason`)
       }
     }
   }

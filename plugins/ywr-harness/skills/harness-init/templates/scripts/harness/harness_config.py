@@ -1094,7 +1094,7 @@ def git_run(root: Path, *args: str, stdin: str | None = None, env: dict | None =
     # distinct, because U+FFFD-merged paths collapse into one set entry and silently shrink the
     # audit scope (review 2026-08-12, medium).
     proc = subprocess.run(
-        ["git", "-c", "core.quotepath=false", *args],
+        ["git", "-c", "core.quotepath=false", *args],  # harness:git-boundary git_run is the boundary
         cwd=root, capture_output=True,
         input=None if stdin is None else stdin.encode("utf-8"),
         env=None if env is None else {**os.environ, **env},
@@ -1160,6 +1160,7 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
         # Verify which failure this is: with HEAD genuinely absent, the honest worktree scope is
         # staged (index vs the empty tree) plus unstaged (index vs worktree), both of which git
         # answers without HEAD. Any other diff failure re-raises and stays loud.
+        # harness:git-boundary the exit code is the answer; no output is read
         probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "HEAD"],
                                cwd=root, capture_output=True)
         if probe.returncode == 0:
