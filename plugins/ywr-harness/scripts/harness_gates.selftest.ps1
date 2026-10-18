@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 $gates = Join-Path $PSScriptRoot 'harness_gates.py'
 $fxBase = New-FixtureRoot 'harness-gates-selftest'
-trap { Remove-FixtureRoot $fxBase; if ($null -ne $gitPathBefore) { $env:PATH = $gitPathBefore }; break }
+trap { if ($script:gatesDriver) { try { $script:gatesDriver.Kill($true); $null = $script:gatesDriver.WaitForExit(5000) } catch { } }; Remove-FixtureRoot $fxBase; if ($null -ne $gitPathBefore) { $env:PATH = $gitPathBefore }; break }
 
 $py = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
 if (-not $py) {
@@ -72,10 +72,183 @@ function Invoke-FixtureCommit([string]$Repo, [string]$Message) {
 }
 
 $ok = $true
-function Invoke-Gates([string]$Repo, [string[]]$Extra) {
+# --- the in-process runner (ADR 0160) ------------------------------------------------------------
+# (4) A child emitter run cost 334 ms, a `main()` call in a warm interpreter 222 ms (2026-10-18, this
+#     box, 20 runs each): ~125 runs, ~14 s. So one python process imports harness_gates once and runs
+#     each request through `main()`: argv, the caller's whole environment and cwd at call time, stdout and
+#     stderr captured, and the exit code `sys.exit(main())` gives. Each request is one ASCII JSON line on
+#     stdin and one on stdout. A child's `2>&1 | Out-String` puts stderr first, because python
+#     line-buffers its stderr and block-buffers a piped stdout; the reply text is rebuilt in that order.
+#     Child-only, never the driver: J (PYTHONIOENCODING is read at interpreter start) and the RUN
+#     cases at the end, which run their repos both ways and compare. $env:HARNESS_GATES_SELFTEST_RUNNER
+#     = 'child' forces every run into a child (ADR 0111 §3 fallback), and 'both' runs every call both
+#     ways and fails on any difference.
+#     Fail closed (review 2026-10-18): a driver that gives no reply in 120 s, ends, or breaks the
+#     protocol is a FAIL, and the later calls run as children so the other cases still report. The
+#     protocol keeps its own copies of fds 0 and 1; the emitter's fd 0 is devnull and its fds 1 and 2
+#     go to a stray file, so a write that bypasses sys.stdout/sys.stderr is a FAIL, not a desync or a
+#     silent loss. A request that changes a module global of harness_gates or harness_config (a
+#     cache, a mutated table) is a FAIL: the next call would see it, and a child never does. A reply
+#     whose stream order a child could print differently (stdout flushed, or past 4 KiB, under the
+#     8 KiB pipe buffer) is run again as a child, counted in the closing note.
+$drvScript = Join-Path $fxBase 'gates_driver.py'
+Set-Content -LiteralPath $drvScript -NoNewline -Value @'
+import contextlib, io, json, os, sys, traceback, types
+sys.path[0] = sys.argv[1]
+home = os.getcwd()
+proto_in = os.fdopen(os.dup(0), "r", encoding="utf-8")
+proto_out = os.fdopen(os.dup(1), "w", encoding="utf-8")
+os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
+stray = os.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "gates_driver.stray"), os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0))
+os.dup2(stray, 1)
+os.dup2(stray, 2)
+sys.argv = [os.path.join(sys.argv[1], "harness_gates.py")]
+import harness_gates
+def state():
+    snap = {"sys.path": repr(sys.path)}
+    for mod in (harness_gates, harness_gates.hc):
+        for k, v in vars(mod).items():
+            if k.startswith("__") or isinstance(v, (types.ModuleType, type)):
+                continue
+            if hasattr(v, "cache_info"):
+                snap[mod.__name__ + "." + k] = repr(v.cache_info().currsize)
+            elif not callable(v):
+                snap[mod.__name__ + "." + k] = type(v).__name__ + " " + repr(v)
+    return snap
+baseline = state()
+class Out(io.StringIO):
+    flushed = False
+    def flush(self):
+        if self.getvalue():
+            self.flushed = True
+def exit_code(value, err):
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        v = int(value)
+        return ((v + 2**31) % 2**32) - 2**31 if os.name == "nt" else v & 0xFF
+    print(value, file=err)
+    return 1
+while True:
+    line = proto_in.readline()
+    if not line:
+        break
+    req = json.loads(line)
+    os.environ.clear()
+    os.environ.update(req["env"])
+    os.chdir(req["cwd"])
+    sys.argv = [harness_gates.__file__] + req["argv"]
+    out, err = Out(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            code = exit_code(harness_gates.main(), err)
+        except SystemExit as e:
+            code = exit_code(e.code, err)
+        except BaseException:
+            traceback.print_exc()
+            code = 1
+    os.chdir(home)
+    os.lseek(stray, 0, 0)
+    chunks = []
+    while True:
+        b = os.read(stray, 65536)
+        if not b:
+            break
+        chunks.append(b)
+    os.ftruncate(stray, 0)
+    os.lseek(stray, 0, 0)
+    now = state()
+    leaked = sorted(k for k in set(baseline) | set(now) if baseline.get(k) != now.get(k))
+    unordered = out.flushed or len(out.getvalue().encode("utf-8")) > 4096
+    proto_out.write(json.dumps({"out": out.getvalue(), "err": err.getvalue(), "code": code,
+                                "stray": b"".join(chunks).decode("utf-8", "backslashreplace"),
+                                "leaked": leaked, "unordered": unordered}) + "\n")
+    proto_out.flush()
+'@
+$runnerMode = if ($env:HARNESS_GATES_SELFTEST_RUNNER -in @('child', 'both')) { $env:HARNESS_GATES_SELFTEST_RUNNER } else { 'driver' }
+$script:gatesDriver = $null
+function Stop-GatesDriver {
+    if ($null -eq $script:gatesDriver) { return }
+    try { $script:gatesDriver.StandardInput.Close(); if (-not $script:gatesDriver.WaitForExit(5000)) { $script:gatesDriver.Kill($true) } } catch { }
+    $script:gatesDriver.Dispose(); $script:gatesDriver = $null
+}
+function Start-GatesDriver {
+    $psi = [Diagnostics.ProcessStartInfo]::new($py.Source)
+    foreach ($x in @($drvScript, $PSScriptRoot)) { $psi.ArgumentList.Add($x) }
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $psi.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+    $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $psi.WorkingDirectory = $PSScriptRoot
+    $script:gatesDriver = [Diagnostics.Process]::Start($psi)
+    $script:gatesDriverErr = $script:gatesDriver.StandardError.ReadToEndAsync()
+}
+function ConvertTo-ChildText([string]$Text) {
+    # What `& python ... 2>&1 | Out-String` makes of the same bytes: one string per line, joined by Out-String.
+    if ($Text.Length -eq 0) { return '' }
+    $lines = @($Text -split "`r?`n")
+    if ($Text.EndsWith("`n")) { $lines = @($lines | Select-Object -First ($lines.Count - 1)) }
+    return ($lines | Out-String)
+}
+function Invoke-GatesChild([string]$Repo, [string[]]$Extra) {
     $a = @($gates, '--repo', $Repo) + $Extra
     $out = & $py.Source @a 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
+}
+function Invoke-GatesDriver([string]$Repo, [string[]]$Extra) {
+    if ($null -eq $script:gatesDriver) { Start-GatesDriver }
+    $envNow = @{}
+    foreach ($e in [Environment]::GetEnvironmentVariables().GetEnumerator()) { $envNow[[string]$e.Key] = [string]$e.Value }
+    $req = [ordered]@{ argv = [string[]](@('--repo', $Repo) + $Extra); env = $envNow; cwd = (Get-Location).ProviderPath }
+    $script:gatesDriver.StandardInput.WriteLine(($req | ConvertTo-Json -Compress -Depth 3 -EscapeHandling EscapeNonAscii))
+    $script:gatesDriver.StandardInput.Flush()
+    $read = $script:gatesDriver.StandardOutput.ReadLineAsync()
+    if (-not $read.Wait(120000)) { throw 'no reply within 120 s' }
+    $line = $read.Result
+    if ($null -eq $line) {
+        # The driver's own traceback lands in the stray file: its fd 2 points there (re-review 2026-10-18).
+        $strayFile = Join-Path $fxBase 'gates_driver.stray'
+        $strayText = if (Test-Path -LiteralPath $strayFile) { [IO.File]::ReadAllText($strayFile) } else { '' }
+        throw "the driver ended: $(if ($script:gatesDriverErr.Wait(5000)) { $script:gatesDriverErr.Result }) $strayText"
+    }
+    $r = $line | ConvertFrom-Json
+    if ([string]$r.stray) { throw "the emitter wrote past sys.stdout/sys.stderr: $([string]$r.stray)" }
+    if (@($r.leaked).Count) { throw "the call changed module state that the next call would see: $(@($r.leaked) -join ', ')" }
+    return @{ Out = (ConvertTo-ChildText ([string]$r.err + [string]$r.out)); Code = [int]$r.code; Unordered = [bool]$r.unordered }
+}
+$script:childRerun = 0
+function Invoke-Gates([string]$Repo, [string[]]$Extra, [switch]$Child) {
+    if ($Child -or $script:runnerMode -eq 'child') { return (Invoke-GatesChild $Repo $Extra) }
+    try { $d = Invoke-GatesDriver $Repo $Extra }
+    catch {
+        $script:ok = (Assert-True 'RUN driver: every emitter call through the driver returns a clean reply' $false "--repo $Repo $($Extra -join ' '): $($_.Exception.Message.Trim()) — every later run is a child") -and $script:ok
+        if ($script:gatesDriver) { try { $script:gatesDriver.Kill($true) } catch { } }
+        Stop-GatesDriver; $script:runnerMode = 'child'
+        return (Invoke-GatesChild $Repo $Extra)
+    }
+    if ($d.Unordered) { $script:childRerun++; return (Invoke-GatesChild $Repo $Extra) }
+    if ($script:runnerMode -eq 'both') {
+        $c = Invoke-GatesChild $Repo $Extra
+        $script:ok = (Assert-True "RUN both: driver = child for --repo $Repo $($Extra -join ' ')" ($c.Out -ceq $d.Out -and $c.Code -eq $d.Code) "child exit=$($c.Code)`n$($c.Out)`n--- driver exit=$($d.Code)`n$($d.Out)") -and $script:ok
+    }
+    return $d
+}
+Write-Host "note [harness_gates] runner: $runnerMode (ADR 0160)"
+# (5) New-Repo copies one `.git` that `git init --template=<empty dir>` made, in place of a `git init`
+#     per fixture: 76 ms a spawn against 18 ms a copy (2026-10-18, this box), 101 fixtures. The copy
+#     carries no sample hooks, no `info/exclude` and no `description`; no git command the emitter runs
+#     reads them, and AC5 creates `info/exclude` itself. The template is made on the fixture root's
+#     own volume, so `core.ignorecase`, `core.symlinks` and `core.filemode` are probed where they apply.
+$script:repoTemplate = $null
+function Get-RepoTemplate {
+    if ($null -ne $script:repoTemplate) { return $script:repoTemplate }
+    $empty = Join-Path $fxBase '.template-empty'
+    $t = Join-Path $fxBase '.template-repo'
+    New-Item -ItemType Directory -Force -Path $empty | Out-Null
+    $gitOut = & git init -q "--template=$empty" $t 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "fixture template init failed: $($gitOut | Out-String)" }
+    $script:repoTemplate = Join-Path $t '.git'
+    return $script:repoTemplate
 }
 function New-Repo([string]$Name, [string]$Config, [string[]]$Files) {
     $p = Join-Path $fxBase $Name
@@ -84,7 +257,7 @@ function New-Repo([string]$Name, [string]$Config, [string[]]$Files) {
     # counted as a changed file and every file-count and tier assertion was off by one — the config
     # file silently joining the diff it configures.
     if (-not [string]::IsNullOrEmpty($Config)) { Set-Content -LiteralPath (Join-Path $p '.harness.json') -Value $Config -NoNewline }
-    & git -C $p init -q 2>$null
+    Copy-Item -LiteralPath (Get-RepoTemplate) -Destination (Join-Path $p '.git') -Recurse -Force
     Set-Content -LiteralPath (Join-Path $p 'seed.txt') -Value 'seed' -NoNewline
     Invoke-FixtureCommit $p 'seed'
     foreach ($f in $Files) {
@@ -219,7 +392,7 @@ $ok = (Assert-True 'I present review canon is not flagged' ($rI.Out -notmatch 'N
 # --- J: non-ASCII output survives a hostile console codepage ------------------------------------
 $prevIo = $env:PYTHONIOENCODING
 $env:PYTHONIOENCODING = 'cp1252'
-try { $rJ = Invoke-Gates $a @() }
+try { $rJ = Invoke-Gates $a @() -Child }
 finally {
     if ($null -eq $prevIo) { Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue } else { $env:PYTHONIOENCODING = $prevIo }
 }
@@ -2195,6 +2368,30 @@ bash '$ahW/install.sh'
             ($h9.Code -eq 0 -and $h9.Out -match '(?m)^::warning::uv sync \(\.\) .*CPython 3\.15\.0 ' -and $h9.Out -notmatch '(?m)^::error::' -and $h9.Out -notmatch 'forged') "exit=$($h9.Code)`n$($h9.Out)") -and $ok
 }
 
+# --- RUN: the in-process runner prints what a child prints (ADR 0160) ----------------------------
+# Last on purpose: a state leak from any earlier driver run would show here. Each repo runs as a real
+# child and through the driver, and the two must match byte for byte with the same exit code. The four
+# shapes are a clean run, a stderr warn beside stdout, the one non-zero scope exit, and an argparse
+# refusal, which leaves through SystemExit.
+if ($runnerMode -eq 'child' -and $env:HARNESS_GATES_SELFTEST_RUNNER -eq 'child') {
+    Write-Host 'SKIP [RUN] every run was a child, so the driver has nothing to match (reported, not silent)' -ForegroundColor Yellow
+} elseif ($runnerMode -eq 'child') {
+    $ok = (Assert-True 'RUN1-RUN4 driver = child' $false 'the driver failed earlier in this run (see RUN driver), so nothing was matched') -and $ok
+} else {
+    foreach ($rc in @(
+            @{ Name = 'RUN1 a clean run (case A''s repo): driver = child'; Repo = $a; Extra = @(); Want = { param($x) $x -eq 0 } },
+            @{ Name = 'RUN2 a stderr warn beside stdout (case S2''s repo): driver = child'; Repo = $s2; Extra = @(); Want = { param($x) $x -eq 0 } },
+            @{ Name = 'RUN3 an unresolvable range (case Y1): driver = child, non-zero'; Repo = $y1; Extra = @('--range', 'no-such-ref..HEAD'); Want = { param($x) $x -ne 0 } },
+            @{ Name = 'RUN4 an unknown option (argparse, SystemExit): driver = child, exit 2'; Repo = $a; Extra = @('--no-such-option'); Want = { param($x) $x -eq 2 } })) {
+        $c = Invoke-Gates $rc.Repo $rc.Extra -Child
+        try { $d = Invoke-GatesDriver $rc.Repo $rc.Extra }
+        catch { $d = @{ Out = "driver fault: $($_.Exception.Message.Trim())"; Code = -1 } }
+        $ok = (Assert-True $rc.Name ($c.Out -ceq $d.Out -and $c.Code -eq $d.Code -and (& $rc.Want $c.Code)) "child exit=$($c.Code)`n$($c.Out)`n--- driver exit=$($d.Code)`n$($d.Out)") -and $ok
+    }
+}
+Write-Host "note [harness_gates] runner at the end: $runnerMode · $childRerun driver repl(ies) re-run as a child for stream order (ADR 0160)"
+
+Stop-GatesDriver
 Remove-FixtureRoot $fxBase
 
 Restore-GitPath
