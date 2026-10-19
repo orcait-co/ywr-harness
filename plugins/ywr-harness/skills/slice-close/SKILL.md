@@ -99,13 +99,23 @@ scope (it throws). **→ Explicit shard groups, or the measurements: `reference.
 Put repo-specific angles in `lensExtra`; a redefined lens set never receives canonical updates.
 
 **Read the result's `digest` first** — its first key, one line: confirmed count by severity,
-out-of-scope / nit / rejected counts, any coverage loss (dead lenses, finders or skeptics, unverified
-findings, capped finds), tier, shards, pin mode and `canary_ok`. A completion notice truncates
+`multi_lens` (confirmed findings that two or more lenses raised), out-of-scope / nit / rejected
+counts, any coverage loss (dead lenses, finders or skeptics, unverified findings, capped finds), tier, shards, pin mode and `canary_ok`. A completion notice truncates
 around 14k characters, so the digest survives it; open the full lists only for what it names.
 
-**Disposition**: every confirmed finding is fixed or gets an explicit reason — and so does each
+**Disposition**: every confirmed finding ends in exactly one of three buckets — and so does each
 site in its `also_at` list (the same claim at another file:line): a site is dispositioned on its
-own, never by its representative's verdict. A confirmed finding marked `unverified: true` (every skeptic leg died, twice) is read against its
+own, never by its representative's verdict (ADR 0163):
+
+- **fixed** — the fix is checked as below.
+- **valid, no action** — the claim is true, but no change is worth making now. The reason says
+  why and names the record that keeps it: an ADR residual, a spec known limit, a handoff item or
+  a `BACKLOG.md` entry. A true claim with no record is not this bucket.
+- **false on reading** — the closer read the claim against the code and it does not hold. The
+  reason quotes the line or guard that shows it. Two or more keys in the finding's `lenses` mean
+  independent lenses raised it; the reason then answers each lens's claim in `also_at`.
+
+A confirmed finding marked `unverified: true` (every skeptic leg died, twice) is read against its
 claim before it is fixed or dispositioned. A **high or medium** in `rejected[]` whose skeptic
 votes split 1–1 is read by the closer against its claim before it counts as rejected; if true, it
 is dispositioned like a confirmed one (a result with only `rejected_count` is an older workflow —
@@ -185,10 +195,11 @@ is written **once**, in that commit's message body (ADR 0090).
   the gates that passed; the tier **and its reason**; the `ignored-tree claims:` line as printed (a
   standing claim with its reason; `none checked` / `NOT CHECKED` quoted, never summarised as
   clean); `prepared: reused at …` when stages 1–3 came from a ready report; the review outcome
-  (confirmed / rejected counts, `stats.worker_pins`, and `stats.find_omitted` with
+  (confirmed / rejected counts, `multi_lens`, `stats.worker_pins`, and `stats.find_omitted` with
   `capped_finders` when a finder hit its cap, and `stats.cap_unreported` when a finder did not say
   whether it did — unknown coverage, never read as full) or the skip reason;
-  the fix disposition (gate re-runs, every per-finding verdict, `also_at` sites and split
+  the fix disposition (each finding's bucket — fixed / valid, no action / false on reading — with
+  the count per bucket, gate re-runs, every per-finding verdict, `also_at` sites and split
   rejections, any re-review criterion); `review basis:` after a rebase; the verify verdict; and
   what went ungated or unverified. **Never paste a CI skip directive into the body** — GitHub skips
   every push- and PR-triggered workflow when the pushed commit's message contains one (the

@@ -730,7 +730,7 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   const r = result.rejected?.[0];
   const reason = skeptics(spawns)[0]?.schema?.properties?.reason;
   if (result.rejected_count !== 1 || result.rejected?.length !== 1) fail(name, `rejected_count=${result.rejected_count} rejected=${JSON.stringify(result.rejected)}`);
-  else if (Object.keys(r).join() !== 'severity,title,file,line,also_at,votes') fail(name, `shape=${Object.keys(r).join()}`);
+  else if (Object.keys(r).join() !== 'severity,title,file,line,also_at,lenses,votes') fail(name, `shape=${Object.keys(r).join()}`);
   else if (r.severity !== 'medium' || r.title !== 'm1' || r.file !== 'f.md' || r.line !== 10) fail(name, JSON.stringify(r));
   else if (JSON.stringify(r.votes.map((v) => [v.refuted, v.reason.length])) !== '[[false,4],[true,300]]') fail(name, `votes=${JSON.stringify(r.votes.map((v) => [v.refuted, v.reason.length]))}`);
   else if (result.confirmed[0]?.verify_reasons?.[0]?.length !== 300) fail(name, `confirmed reason length=${result.confirmed[0]?.verify_reasons?.[0]?.length}`);
@@ -855,7 +855,7 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   const d = result.digest;
   if (Object.keys(result)[0] !== 'digest') fail(name, `first key=${Object.keys(result)[0]}`);
   else if (typeof d !== 'string' || /[\r\n]/.test(d) || d.length > 400) fail(name, `digest=${JSON.stringify(d)} (${d?.length})`);
-  else if (!d.startsWith('confirmed 2 (h0 m0 l2) · out_of_scope_confirmed 0 · nits 0 · rejected 0 · coverage full · tier small · shards 1 · pins pinned · canary_ok true · full lists follow')) fail(name, d);
+  else if (!d.startsWith('confirmed 2 (h0 m0 l2) · multi_lens 0 · out_of_scope_confirmed 0 · nits 0 · rejected 0 · coverage full · tier small · shards 1 · pins pinned · canary_ok true · full lists follow')) fail(name, d);
   else if (/LOSS/.test(d)) fail(name, `clean run reported loss: ${d}`);
   else if (spawns.some((x) => /digest/.test(x.label))) fail(name, 'digest spawned an agent');
   else pass(name);
@@ -879,7 +879,7 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
     findings: (k) => (k === 'correctness-pitfalls' ? [F('f.md', 10, 'high', 'h1'), F('g.md', 11, 'low', 'o1')] : [F('f.md', 20, 'low', 'l1')]),
     verdict: (prompt, label) => (label === 'verify:l1' ? { refuted: true, reason: 'no' } : { refuted: false, reason: 'r' }) });
   const d = result.digest ?? '';
-  if (!d.startsWith('confirmed 1 (h1 m0 l0) · out_of_scope_confirmed 1 · nits 0 · rejected 1 · coverage full') || !d.includes('pins opus-low')) fail(name, d);
+  if (!d.startsWith('confirmed 1 (h1 m0 l0) · multi_lens 0 · out_of_scope_confirmed 1 · nits 0 · rejected 1 · coverage full') || !d.includes('pins opus-low')) fail(name, d);
   else pass(name);
 }
 {
@@ -887,6 +887,51 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   const { result } = await run({ noOmitted: ['boundary-ui-tests'] });
   const d = result.digest ?? '';
   if (!d.includes('COVERAGE LOSS: cap_unreported 1') || d.includes('coverage full')) fail(name, d);
+  else pass(name);
+}
+
+// 14e. lens agreement (ywr-harness ADR 0163, pstack candidate 9). Every deduped finding carries `lenses`: the distinct
+//      lens keys of its representative and its also_at sites, shard suffix dropped, first-seen order. The digest and
+//      stats count the in-scope confirmed findings with two or more. Only merged reports count — a signal for the
+//      closer, never a verdict or a gate input.
+{
+  const name = '14e1 a file:line two lenses report carries both lenses; a one-lens finding carries one; digest and stats count 1';
+  const { result } = await run({ findings: (k) => (k === 'correctness-pitfalls'
+    ? [F('f.md', 5, 'medium', 'm5')] : [F('f.md', 5, 'low', 'l5'), F('f.md', 30, 'low', 'l30')]) });
+  const two = result.confirmed.find((f) => f.line === 5), one = result.confirmed.find((f) => f.line === 30);
+  if (JSON.stringify(two?.lenses) !== '["correctness-pitfalls","boundary-ui-tests"]') fail(name, `line 5 lenses=${JSON.stringify(two?.lenses)}`);
+  else if (JSON.stringify(one?.lenses) !== '["boundary-ui-tests"]') fail(name, `line 30 lenses=${JSON.stringify(one?.lenses)}`);
+  else if (!result.digest.startsWith('confirmed 2 (h0 m1 l1) · multi_lens 1 · ') || result.stats.multi_lens !== 1) fail(name, `${result.digest} stats=${result.stats.multi_lens}`);
+  else pass(name);
+}
+{
+  const name = '14e2 two shards of ONE lens at one file:line are one lens, not agreement';
+  const { result } = await run({ args: { tier: 'small', shards: 2, scope: { files: ['a.md', 'b.md'], context: 'c' } },
+    findings: (k) => (k.startsWith('correctness-pitfalls#') ? [F('a.md', 1)] : []) });
+  const f = result.confirmed[0];
+  if (result.confirmed.length !== 1 || f.also_at.length !== 1) fail(name, `confirmed=${result.confirmed.length} also_at=${f?.also_at?.length} — the shard twin did not merge, so the next check is vacuous`);
+  else if (JSON.stringify(f.lenses) !== '["correctness-pitfalls"]' || result.stats.multi_lens !== 0) fail(name, `lenses=${JSON.stringify(f.lenses)} multi_lens=${result.stats.multi_lens}`);
+  else pass(name);
+}
+{
+  const name = '14e3 rejected and out-of-scope findings carry lenses; multi_lens counts in-scope confirmed only; a nit carries lenses';
+  const { result } = await run({ findings: (k) => [F('f.md', 7, 'low', 'refute-me'), F('g.md', 8, 'low', 'outside'), F('f.md', 9, 'nit', 'n9')],
+    verdict: (prompt) => (prompt.includes('refute-me') ? { refuted: true, reason: 'no' } : { refuted: false, reason: 'r' }) });
+  const both = '["correctness-pitfalls","boundary-ui-tests"]';
+  const rej = result.rejected?.[0], out = result.out_of_scope_confirmed[0], nit = result.nits_unverified[0];
+  if (result.rejected?.length !== 1 || JSON.stringify(rej.lenses) !== both) fail(name, `rejected lenses=${JSON.stringify(rej?.lenses)}`);
+  else if (result.out_of_scope_confirmed.length !== 1 || JSON.stringify(out.lenses) !== both) fail(name, `out_of_scope lenses=${JSON.stringify(out?.lenses)}`);
+  else if (JSON.stringify(nit?.lenses) !== both) fail(name, `nit lenses=${JSON.stringify(nit?.lenses)}`);
+  else if (result.stats.multi_lens !== 0 || !result.digest.includes(' · multi_lens 0 · ')) fail(name, `multi_lens=${result.stats.multi_lens} ${result.digest}`);
+  else pass(name);
+}
+{
+  const name = '14e4 the grouping stage merges a cross-file claim, and the merged finding carries both lenses';
+  const { result } = await run({ args: { tier: 'small', scope: { files: ['a.md', 'b.md'], context: 'c' } },
+    findings: (k) => (k === 'correctness-pitfalls' ? fill('a.md', 7, 1) : fill('b.md', 7, 1)), groups: [[0, 7]] });
+  const rep = result.confirmed.find((f) => f.file === 'a.md' && f.line === 1);
+  if (result.stats.deduped !== 13) fail(name, `deduped=${result.stats.deduped} (want 14 → 13 grouped)`);
+  else if (JSON.stringify(rep?.lenses) !== '["correctness-pitfalls","boundary-ui-tests"]' || result.stats.multi_lens !== 1) fail(name, `lenses=${JSON.stringify(rep?.lenses)} multi_lens=${result.stats.multi_lens}`);
   else pass(name);
 }
 

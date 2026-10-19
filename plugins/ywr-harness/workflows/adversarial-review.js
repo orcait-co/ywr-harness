@@ -325,6 +325,8 @@ ${u.lens.prompt}
 // 파인더 단위 = 렌즈 × 샤드. 분할이 없으면 라벨은 종전과 같다(`find:<key>`); 분할되면 `find:<key>#<i>`.
 const UNITS = LENSES.flatMap(l => SHARDS.map((shard, si) => ({ lens: l, shard, si, sn: SHARDS.length })))
 const unitKey = (u) => (u.shard ? `${u.lens.key}#${u.si + 1}` : u.lens.key)
+// 단위 키 → 렌즈 키(ywr-harness ADR 0163). 한 런의 단위는 전부 분할이거나 전부 비분할이라 단위 키가 겹치지 않는다.
+const UNIT_LENS = new Map(UNITS.map(u => [unitKey(u), u.lens.key]))
 
 // find effort medium(이전의 high 고정을 대체한다). 그 결정은 실측으로 medium 을 기각했지만
 // 그때 잃은 3건이 전부 "스코프 텍스트 밖 왕복이 필요한" 인용 결함이었고, 같은 슬라이스가 그
@@ -450,6 +452,10 @@ if (deduped.length > 12) {
   }
 }
 lap('dedupe') // 그룹핑 미실행이면 0
+// 렌즈 합의(ywr-harness ADR 0163, pstack 후보 9): 대표와 also_at 의 고유 렌즈 키, 처음 나온 순서. 샤드 접미(`#n`)는 떼므로
+// 같은 렌즈의 두 샤드는 한 렌즈다. 1차 키와 그룹핑이 합친 보고만 센다 — 12건 이하에서 두 렌즈가 같은 결함을 다른 라인에
+// 적으면 따로 남아 각각 1렌즈다(과소 집계). 판정·게이트는 바꾸지 않는다: 닫는 쪽이 읽는 신호일 뿐이다.
+for (const f of deduped) f.lenses = [...new Set([f.lens, ...f.also_at.map(a => a.lens)].map(k => UNIT_LENS.get(k) ?? k))]
 const alsoAtSites = deduped.reduce((n, f) => n + f.also_at.length, 0)
 log(`[${TIER}] 파인더 ${found.filter(Boolean).length}/${UNITS.length} — 원지적 ${all.length} → 중복제거 후 ${deduped.length}${alsoAtSites ? ` (묶인 보고 ${alsoAtSites}건은 대표의 also_at 으로 보존)` : ''}`)
 
@@ -509,7 +515,7 @@ const kept = verified.filter(f => f.votes.every(v => !v.refuted))
 // 오케스트레이터 프리픽스를 다시 읽었다. 1-1 분할로 떨어진 high/medium 은 닫는 쪽이 읽고 판단한다.
 const REASON_CHARS = 300
 const rejectedAll = verified.filter(f => !f.votes.every(v => !v.refuted))
-  .map(f => ({ severity: f.severity, title: f.title, file: f.file, line: f.line ?? null, also_at: f.also_at,
+  .map(f => ({ severity: f.severity, title: f.title, file: f.file, line: f.line ?? null, also_at: f.also_at, lenses: f.lenses,
     votes: f.votes.map(v => ({ refuted: v.refuted === true, reason: String(v.reason ?? '').slice(0, REASON_CHARS), ...(v.dead ? { dead: true } : {}) })) }))
 const rejected = rejectedAll.length
 outTokens.total = budget.spent() - _t0
@@ -537,11 +543,13 @@ const confirmedAll = kept.map(({ votes, ...f }) => {
 })
 
 // digest 는 반환값의 첫 키다(handoff O41d): Workflow 완료 알림은 ~13.9k 자에서 잘리므로, 다음 결정에 필요한 것 —
-// 심각도별 확정 수, 스코프 밖·nit·반증 수, 커버리지 손실, 티어·샤드·핀 모드·카나리아 — 을 한 줄(≤ ~400자)로 맨 앞에 둔다.
+// 심각도별 확정 수, 렌즈 2개 이상이 낸 확정 수(multi_lens, ywr-harness ADR 0163), 스코프 밖·nit·반증 수, 커버리지 손실,
+// 티어·샤드·핀 모드·카나리아 — 을 한 줄(≤ ~400자)로 맨 앞에 둔다.
 // 이미 계산된 값에서만 만든다(에이전트 호출 없음). 커버리지 손실은 0 이 아닌 항목만 적되, 손실이 있으면 반드시 보인다
 // (조직 가이드: 조용히 자르지 않는다). 없으면 'coverage full' 로 그 사실을 적는다.
 const confirmedIn = confirmedAll.filter(isInScope)
 const outOfScope = SCOPE_FILES ? confirmedAll.filter(f => !isInScope(f)) : []
+const multiLens = confirmedIn.filter(f => f.lenses.length > 1).length
 const bySev = xs => ['high', 'medium', 'low'].map(s => `${s[0]}${xs.filter(f => f.severity === s).length}`).join(' ')
 const loss = [
   deadLenses.length && `dead_lenses ${deadLenses.length}`, deadFinders.length && `dead_finders ${deadFinders.length}`,
@@ -549,7 +557,7 @@ const loss = [
   findOmitted && `find_omitted ${findOmitted}`, unreportedCap.length && `cap_unreported ${unreportedCap.length}`,
 ].filter(Boolean)
 const PIN_MODE = OPUS_LOW ? 'opus-low' : 'pinned'
-const digest = `confirmed ${confirmedIn.length} (${bySev(confirmedIn)}) · out_of_scope_confirmed ${outOfScope.length} · nits ${nits.length} · rejected ${rejected} · ` +
+const digest = `confirmed ${confirmedIn.length} (${bySev(confirmedIn)}) · multi_lens ${multiLens} · out_of_scope_confirmed ${outOfScope.length} · nits ${nits.length} · rejected ${rejected} · ` +
   (loss.length ? `COVERAGE LOSS: ${loss.join(', ')}` : 'coverage full') +
   ` · tier ${TIER} · shards ${SHARDED ? SHARDS.length : 1} · pins ${PIN_MODE} · canary_ok ${CANARY_OK} · full lists follow (confirmed, out_of_scope_confirmed, nits_unverified, rejected, stats)`
 
@@ -559,7 +567,7 @@ return {
   out_of_scope_confirmed: outOfScope,
   nits_unverified: nits, // skeptic 생략 — 오케스트레이터가 직접 판정
   rejected_count: rejected,
-  rejected: rejectedAll, // [{severity, title, file, line, also_at, votes: [{refuted, reason, dead?}]}] — ywr-harness ADR 0089
+  rejected: rejectedAll, // [{severity, title, file, line, also_at, lenses, votes: [{refuted, reason, dead?}]}] — ywr-harness ADR 0089 · 0163
   // lenses/dead_lenses 는 반환값 노출이 목적이다: 오케스트레이터가 log 를 못 봐도
   // 커버리지 축소를 알 수 있어야 한다. dead_lenses 가 비어있지 않으면 게이트는 부분 커버리지다.
   // output_tokens 라는 이름이 exact 로 읽히던 것이 결함이었다 — 이름과 basis 로
@@ -575,6 +583,7 @@ return {
     find_cap: FIND_CAP, find_omitted: findOmitted, capped_finders: cappedFinders, cap_unreported: unreportedCap,
     // verified = 산 skeptic 표가 1개 이상인 지적 수(표가 전혀 없는 지적은 unverified_by_death 로 따로 — 검증된 척 세지 않는다).
     deduped: deduped.length, verified: toVerify.length - unverifiedByDeath, nit_passthrough: nits.length,
+    multi_lens: multiLens, // 스코프 안 확정 중 lenses 가 2개 이상인 수 — 묶인 보고만 센다; 따로 남은 같은 결함은 빠진다(ywr-harness ADR 0163)
     dead_skeptics: deadSkeptics, unverified_by_death: unverifiedByDeath,
     output_tokens_upper_bound: outTokens,
     agents_per_phase: agentsPerPhase,

@@ -88,6 +88,13 @@ $ok = (Assert-Text 'C10 SKILL.md states why the skill is owner-typed and records
         @('\*\*Owner-typed on purpose\*\* \(ADR 0105\)', 'ADR 0034', 'prepared: reused at') `
         @('(?m)^disable-model-invocation: false')) -and $ok
 
+# C11: the three disposition buckets and the lens-agreement signal (ADR 0163, pstack candidate 9). What
+# can regress silently is a "valid, no action" with no record behind it, a "false on reading" with no
+# quoted line, or the old two-way wording that let a true claim close on a bare reason.
+$ok = (Assert-Text 'C11 disposition: three buckets, no-action names its record, false-on-reading quotes the code, lenses and multi_lens read' $skill `
+        @('ends in exactly one of three buckets', '\*\*fixed\*\*', '\*\*valid, no action\*\*', 'names the record that keeps it', 'A true claim with no record is not this bucket', '\*\*false on reading\*\*', 'quotes the line or guard', 'finding''s `lenses`', '`multi_lens`', 'count per bucket') `
+        @('every confirmed finding is fixed or gets an explicit reason')) -and $ok
+
 # --- META: the assertion guard must be able to fail -----------------------------------------------
 $accepted = Assert-Text 'META probe' 'meta probe' @('meta probe') @() 6>$null
 if ($accepted -or $script:LastFails.Count -ne 1 -or ($script:LastFails[0] -notmatch 'no MustNotMatch')) {
