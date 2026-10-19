@@ -103,13 +103,19 @@ function Get-TreeSig([string]$root) {
     }
     return $sig
 }
+# $build lays the tree at the WORKING path, and the pristine snapshot is one copy of it. On Windows,
+# Defender scans a freshly written file on its first open, synchronously: ~2.7 s per 117-file plugin
+# copy, .ps1 at ~50 ms a file, and a scanned file stays cheap for any process (fact 165). Built the
+# other way round, the copy opened the fresh pristine and the first asserted reset the fresh working
+# tree — two scans a family. Now the copy's read is the one scan, the state is taken from the scanned
+# working tree, and a pristine file is opened only when a reset restores it. A pristine copy that
+# differed would differ from the state on its first restore, which the assert throws on.
 function New-Fixture([string]$name, [scriptblock]$build) {
-    # $build lays the pristine tree at the path it is given; the working tree is one copy of it.
-    $pristine = Join-Path $base "$name.pristine"
-    & $build $pristine
     $work = Join-Path $base $name
-    Copy-Item -LiteralPath $pristine -Destination $work -Recurse -Force
-    return @{ name = $name; pristine = $pristine; work = $work; state = (Get-TreeState $pristine); sig = (Get-TreeSig $work) }
+    & $build $work
+    $pristine = Join-Path $base "$name.pristine"
+    Copy-Item -LiteralPath $work -Destination $pristine -Recurse -Force
+    return @{ name = $name; pristine = $pristine; work = $work; state = (Get-TreeState $work); sig = (Get-TreeSig $work) }
 }
 function Assert-FixturePristine($fx) {
     $have = Get-TreeState $fx.work
@@ -602,7 +608,9 @@ if (-not $gitHere) {
     $koBody = "ko line one`nko line two`n"
     $lockFx = New-Fixture 'lockstep' {
         param($repo)
-        Copy-Item -LiteralPath $canonFx.pristine -Destination $repo -Recurse -Force
+        # From the canon WORKING tree after an asserted reset, never its pristine copy: that copy's
+        # files are unscanned, and copying them would pay the first-open scan again (fact 165).
+        Copy-Item -LiteralPath (Reset-Fixture $canonFx) -Destination $repo -Recurse -Force
         Set-LockstepVersion $repo '9.9.9'
         $p = Join-Path $repo 'plugins/ywr-harness/README.md'
         $lf = $latin1.GetString([IO.File]::ReadAllBytes($p)).Replace("`r`n", "`n")
@@ -748,7 +756,8 @@ if (-not $gitHere -or -not $realAdrDir -or -not (Test-Path -LiteralPath $realAdr
 } else {
     $adrFx = New-Fixture 'adr-ref' {
         param($repo)
-        Copy-Item -LiteralPath $canonFx.pristine -Destination $repo -Recurse -Force
+        # The canon working tree after an asserted reset, as the lockstep fixture copies it (fact 165).
+        Copy-Item -LiteralPath (Reset-Fixture $canonFx) -Destination $repo -Recurse -Force
         # Copy-PluginTree's whole-directory fallback carries the owner's gitignored eval results (the
         # git-listed copy has none); tracked in the fixture, a model answer
         # quoting a foreign number would fail the control on one machine only.

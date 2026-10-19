@@ -432,7 +432,67 @@ if ($shardCount) {
 }
 foreach ($t in $tests) { Write-Host "  - $(Get-SuiteRel $t)" }
 
+# --- start order (ADR 0161) -------------------------------------------------------------------
+# The wall of a concurrent run is the last suite to finish, and -Parallel hands suites to its slots
+# in input order. Discovery order put the slowest suites last (2026-10-19: 178 s measured, 140 s
+# simulated longest first). So at -Jobs 2 and above the suites that took longest in their last run
+# start first; a suite with no recorded time starts before every timed one, since a new suite may be
+# the slowest. -Jobs 1 keeps discovery order. The times sit beside the full-run record, in the clone's
+# git dir, and change no verdict.
+$work = @(for ($k = 0; $k -lt $tests.Count; $k++) {
+        [pscustomobject]@{ Index = $k; Rel = (Get-SuiteRel $tests[$k]); Name = $tests[$k].Name; Path = $tests[$k].FullName }
+    })
+# The common dir is read from files, not from `git rev-parse` (~64 ms a process; -List runs this on
+# every call). `.git` is the git dir itself, or a worktree's or submodule's file naming its gitdir, and
+# a gitdir that holds a `commondir` file names the common dir relative to itself. A git environment
+# override, or anything this cannot read, falls back to Get-StatePath's rev-parse.
+function Get-CommonDirFromFiles {
+    if (-not $script:inGit -or $env:GIT_DIR -or $env:GIT_COMMON_DIR) { return $null }
+    try {
+        $dotGit = Join-Path $script:gitTop '.git'
+        if ([IO.Directory]::Exists($dotGit)) { $gitDir = $dotGit }
+        else {
+            if (([IO.File]::ReadAllText($dotGit)).Trim() -notmatch '^gitdir:\s*(.+)$') { return $null }
+            $gitDir = [IO.Path]::GetFullPath($Matches[1].Trim(), $script:gitTop)
+        }
+        $cd = Join-Path $gitDir 'commondir'
+        $common = if ([IO.File]::Exists($cd)) { [IO.Path]::GetFullPath(([IO.File]::ReadAllText($cd)).Trim(), $gitDir) } else { [IO.Path]::GetFullPath($gitDir) }
+        if (-not [IO.Directory]::Exists($common)) { return $null }
+        return $common
+    } catch { return $null }
+}
+$commonForTimes = Get-CommonDirFromFiles
+$timesPath = if ($commonForTimes) { Join-Path (Join-Path $commonForTimes 'ywr-harness') 'selftest-times.json' } else {
+    $statePathForTimes = Get-StatePath
+    if ($statePathForTimes) { Join-Path (Split-Path -Parent $statePathForTimes) 'selftest-times.json' } else { $null }
+}
+$times = @{}
+$timesProblem = ''
+if ($timesPath -and (Test-Path -LiteralPath $timesPath -PathType Leaf)) {
+    try {
+        $doc = [IO.File]::ReadAllText($timesPath) | ConvertFrom-Json -AsHashtable
+        if ($doc -isnot [Collections.IDictionary] -or $doc['seconds'] -isnot [Collections.IDictionary]) { throw 'it holds no "seconds" object' }
+        foreach ($k in $doc['seconds'].Keys) {
+            $v = $doc['seconds'][$k]
+            if ($v -is [bool] -or $v -isnot [ValueType]) { continue }
+            $d = [double]$v
+            if ([double]::IsFinite($d) -and $d -ge 0) { $times[[string]$k] = $d }
+        }
+    } catch { $times = @{}; $timesProblem = "the times file does not parse ($($_.Exception.Message))" }
+}
+$timed = @($work | Where-Object { $times.ContainsKey($_.Rel) }).Count
+if ($Jobs -lt 2) { $orderNote = 'discovery order (-Jobs 1)' }
+elseif (-not $timesPath) { $orderNote = 'discovery order (not a git clone, so no suite times are kept)' }
+elseif ($timesProblem) { $orderNote = "discovery order ($timesProblem)" }
+elseif (-not $timed) { $orderNote = 'discovery order (no suite time is recorded in this clone)' }
+else {
+    $work = @($work | Sort-Object -Stable @{ Expression = { [int]$times.ContainsKey($_.Rel) } },
+        @{ Expression = { if ($times.ContainsKey($_.Rel)) { $times[$_.Rel] } else { 0 } }; Descending = $true }, Index)
+    $orderNote = "longest first by recorded time ($timed of $($work.Count) suites timed)"
+}
+
 if ($List) {
+    Write-Host "start order: $orderNote — $(($work | ForEach-Object { $_.Rel }) -join ', ')"
     Write-Host 'LIST ONLY — nothing ran' -ForegroundColor Yellow
     exit $(if ($failed.Count) { 1 } else { 0 })
 }
@@ -493,9 +553,7 @@ if ((Test-Path -LiteralPath $wfGate) -and (Test-Path -LiteralPath $wfDir)) {
 # CLAUDE_CONFIG_DIR, PATH, GIT_CONFIG_GLOBAL) dies with the suite, and no suite writes global git
 # config or the plugin tree, or asserts on timing (audited 2026-09-23). A suite that ever breaks
 # that is fixed in the suite, not by serialising the runner; -Jobs 1 is the interim fallback.
-$work = @(for ($k = 0; $k -lt $tests.Count; $k++) {
-        [pscustomobject]@{ Index = $k; Rel = (Get-SuiteRel $tests[$k]); Name = $tests[$k].Name; Path = $tests[$k].FullName }
-    })
+# $work is built, in start order, ahead of -List (ADR 0161).
 function Format-Seconds([double]$Seconds) { $Seconds.ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) }
 function Get-PassCount([string[]]$Lines) { @($Lines | Where-Object { $_ -match '^PASS' }).Count }
 function Write-SuiteLine([string]$Line) {
@@ -537,7 +595,7 @@ function Get-SignalRx {
     $script:signalRx = $rx
     return $rx
 }
-Write-Host "--- suites: $($work.Count) selected, jobs=$Jobs — one 'done' line per suite as it finishes (completion order)" -ForegroundColor Cyan
+Write-Host "--- suites: $($work.Count) selected, jobs=$Jobs, start order: $orderNote — one 'done' line per suite as it finishes (completion order)" -ForegroundColor Cyan
 $results = [System.Collections.Generic.List[object]]::new()
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $work | ForEach-Object -ThrottleLimit $Jobs -Parallel {
@@ -649,6 +707,30 @@ if ($script:signalProbeMiss) {
 $sum = [double]($results | Measure-Object -Property Seconds -Sum).Sum
 $slowest = $results | Sort-Object Seconds -Descending | Select-Object -First 1
 Write-Host "timing: suites wall-clock $(Format-Seconds $clock.Elapsed.TotalSeconds) s at jobs=$Jobs · sum of suite times $(Format-Seconds $sum) s$(if ($slowest) { " · slowest $($slowest.Rel) $(Format-Seconds $slowest.Seconds) s" })"
+# The times the next run orders by (ADR 0161): this run's suites merged over the times read at start,
+# failed and timed-out suites included, undiscovered names dropped. Two runs that overlap in one clone
+# are last-writer-wins, and a file that did not parse is replaced: either costs only order, never a
+# verdict. A write that fails changes no exit code.
+if ($timesPath -and $results.Count) {
+    try {
+        $known = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        foreach ($t in $all) { [void]$known.Add((Get-SuiteRel $t)) }
+        $merged = @{}
+        foreach ($k in $times.Keys) { if ($known.Contains($k)) { $merged[$k] = $times[$k] } }
+        foreach ($r in $results) { $merged[$r.Rel] = [Math]::Round($r.Seconds, 1) }
+        $sorted = [ordered]@{}
+        foreach ($k in @($merged.Keys | Sort-Object -CaseSensitive)) { $sorted[$k] = $merged[$k] }
+        $doc = [ordered]@{ '//' = 'ADR 0161: the seconds of each suite''s newest run; selftest.ps1 starts the longest first at -Jobs 2 and above'
+            utc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture); seconds = $sorted }
+        # -ErrorAction Stop: a cmdlet's non-terminating error would pass the catch and print a raw record.
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $timesPath) -ErrorAction Stop
+        $tmp = "$timesPath.$PID.tmp"
+        [IO.File]::WriteAllText($tmp, ($doc | ConvertTo-Json -Depth 3), [Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $tmp -Destination $timesPath -Force -ErrorAction Stop
+    } catch {
+        Write-Host "WARN [runner] the suite times were not written ($($_.Exception.Message)); the next run starts in the order it can read" -ForegroundColor Yellow
+    }
+}
 
 Write-Host ''
 $isFullRun = -not $shardCount -and $tests.Count -eq $all.Count

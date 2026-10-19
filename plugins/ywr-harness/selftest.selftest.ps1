@@ -531,6 +531,16 @@ $aHash = Invoke-SelGit @('hash-object', '--', 'plug/a.txt')
 $ok = (Assert-Case 'H3 a green full run writes the record: UTC time, HEAD, tool series, and the content it tested of each dirty path' $h3 0 `
     @('all gates green', 'full-run record: ', 'selftests: discovered=2 passed=2 failed=0') @('(?m)^FAIL', 'selected gates', 'selected=', 'WARN \[runner\] the full-run record') `
     -PreFail @($(if (-not $rec -or $rec['head'] -ne $selHead -or -not $rec['utc'] -or -not $rec['series'] -or -not $rec['series']['pwsh'] -or -not $rec['dirty'] -or $rec['dirty']['plug/a.txt'] -ne $aHash) { "record missing or wrong: $(if ($rec) { $rec | ConvertTo-Json -Compress -Depth 3 } else { 'absent' })" }))) -and $ok
+# H19 — the suite times (ADR 0161) sit beside the record. H3 is the clone's first run, so it starts in
+# discovery order and says why; afterwards the file holds a time for each suite it ran.
+$timesFile = Join-Path (Split-Path -Parent $recordPath) 'selftest-times.json'
+function Read-SelTimes { if (Test-Path -LiteralPath $timesFile) { [IO.File]::ReadAllText($timesFile) | ConvertFrom-Json -AsHashtable } else { $null } }
+$t3 = Read-SelTimes
+$ok = (Assert-Case 'H19 the first run in a clone starts in discovery order, says why, and records each suite''s time' $h3 0 `
+    @('--- suites: 2 selected, jobs=2, start order: discovery order \(no suite time is recorded in this clone\)') @('longest first', 'WARN \[runner\] the suite times') `
+    -PreFail @($(if (-not $t3 -or -not $t3['utc'] -or $t3['seconds'] -isnot [Collections.IDictionary] -or $t3['seconds'].Count -ne 2 -or
+            @('s-a.selftest.ps1', 's-b.selftest.ps1' | Where-Object { $t3['seconds'][$_] -isnot [double] -and $t3['seconds'][$_] -isnot [long] }).Count) {
+            "times file missing or wrong: $(if ($t3) { $t3 | ConvertTo-Json -Compress -Depth 3 } else { 'absent' })" }))) -and $ok
 $ok = (Assert-Case 'H3b a dirty path that still holds the content the full run tested drops out of the change' (Invoke-Runner $selRunner @('-Changed', '-List')) 0 `
     @('changed: 0 file\(s\) since the last full run \([0-9a-f]{7}\), working tree included', 'selection: FULL RUN — the change is empty') @('  \* a\.txt', 'by read set')) -and $ok
 Reset-Sel
@@ -548,11 +558,20 @@ $ok = (Assert-Case 'H12b selecting every suite by read set is a full run: it say
     @('selection: 2 of 2 suites by read set', 'all gates green', 'full-run record: ') @('NOT a full run', 'selected=')) -and $ok
 # outside.txt keeps the content H12b tested, so only a.txt moves on.
 Set-SelText 'plug/a.txt' "a third`n"
+$t12b = Read-SelTimes
 $h12s = Invoke-RunnerFresh $selRunner @('-Changed', '-Jobs', '2')
 $recAfter = if (Test-Path -LiteralPath $recordPath) { [IO.File]::ReadAllText($recordPath) } else { '' }
 $ok = (Assert-Case 'H12 a selected run runs only its selection, says NOT a full run, and leaves the record alone' $h12s 0 `
     @('selected gates green — 1 of 2 suites by read set, NOT a full run', 'selftests: discovered=2 selected=1 passed=1 failed=0', '(?m)^ok   s-a\.selftest\.ps1', 'PASS  stub manifest gate') `
     @('all gates green', 'done s-b', 'full-run record:', '  \* /outside\.txt') -PreFail @($(if ($recAfter -ne $recText) { 'the selected run rewrote the full-run record' }))) -and $ok
+# H19b — a selected run rewrites the times file with its own suite and keeps the time of the suite it
+# did not run. Both earlier runs recorded both suites, so this run orders by time.
+$t12s = Read-SelTimes
+$ok = (Assert-Case 'H19b a selected run orders by recorded time, rewrites its own suite''s time and keeps the other' $h12s 0 `
+    @('--- suites: 1 selected, jobs=2, start order: longest first by recorded time \(1 of 1 suites timed\)') @('start order: discovery', 'WARN \[runner\] the suite times') `
+    -PreFail @($(if (-not $t12b -or -not $t12s -or $t12s['utc'] -eq $t12b['utc'] -or $t12s['seconds'].Count -ne 2 -or
+            "$($t12s['seconds']['s-b.selftest.ps1'])" -ne "$($t12b['seconds']['s-b.selftest.ps1'])" -or $null -eq $t12s['seconds']['s-a.selftest.ps1']) {
+            "before: $(if ($t12b) { $t12b | ConvertTo-Json -Compress -Depth 3 } else { 'absent' }) after: $(if ($t12s) { $t12s | ConvertTo-Json -Compress -Depth 3 } else { 'absent' })" }))) -and $ok
 # The cases below start from a WRITTEN record, not from a full run: the runs above already prove how a
 # run writes one, and each real child costs seconds. The record keeps the series that H12b wrote.
 function Set-SelRecord([hashtable]$Dirty) {
@@ -659,6 +678,68 @@ foreach ($mc in $mapCases) {
         @("FAIL — read-set map: $($mc.Rx)") @('all gates green', 'by read set')) -and $ok
     [IO.File]::WriteAllText($selMapPath, $selMap)
 }
+# H20 — the start order (ADR 0161) from a written times file, on -List: -List prints the order and runs
+# nothing. Discovery order is s-a, s-b. Each case states its slots, since the default follows the CPUs.
+$orderCases = @(
+    @{ Id = 'H20'; What = 'the longest recorded suite starts first'; Jobs = '2'; Text = '{"seconds": {"s-a.selftest.ps1": 1, "s-b.selftest.ps1": 50.5}}'
+        Rx = 'longest first by recorded time \(2 of 2 suites timed\) — s-b\.selftest\.ps1, s-a\.selftest\.ps1'; Not = 'start order: discovery' },
+    @{ Id = 'H20b'; What = 'an untimed suite starts before every timed one, and an undiscovered name counts for nothing'; Jobs = '2'
+        Text = '{"seconds": {"s-a.selftest.ps1": 50, "gone.selftest.ps1": 99}}'
+        Rx = 'longest first by recorded time \(1 of 2 suites timed\) — s-b\.selftest\.ps1, s-a\.selftest\.ps1'; Not = 'start order: discovery' },
+    @{ Id = 'H20c'; What = 'equal times keep discovery order'; Jobs = '2'; Text = '{"seconds": {"s-a.selftest.ps1": 5, "s-b.selftest.ps1": 5}}'
+        Rx = 'longest first by recorded time \(2 of 2 suites timed\) — s-a\.selftest\.ps1, s-b\.selftest\.ps1'; Not = 'start order: discovery' },
+    @{ Id = 'H20d'; What = '-Jobs 1 keeps discovery order'; Jobs = '1'; Text = '{"seconds": {"s-a.selftest.ps1": 1, "s-b.selftest.ps1": 50}}'
+        Rx = 'discovery order \(-Jobs 1\) — s-a\.selftest\.ps1, s-b\.selftest\.ps1'; Not = 'longest first' },
+    @{ Id = 'H20e'; What = 'a times file that does not parse gives discovery order and says so'; Jobs = '2'; Text = '{ "seconds": '
+        Rx = 'discovery order \(the times file does not parse \(.+\)\) — s-a\.selftest\.ps1, s-b\.selftest\.ps1'; Not = 'longest first' },
+    @{ Id = 'H20f'; What = 'a negative, a boolean or a text time counts for nothing'; Jobs = '2'
+        Text = '{"seconds": {"s-a.selftest.ps1": true, "s-b.selftest.ps1": -1, "x": "9"}}'
+        Rx = 'discovery order \(no suite time is recorded in this clone\) — s-a\.selftest\.ps1, s-b\.selftest\.ps1'; Not = 'longest first' },
+    @{ Id = 'H20h'; What = 'an infinite time counts for nothing'; Jobs = '2'; Text = '{"seconds": {"s-a.selftest.ps1": 1e400, "s-b.selftest.ps1": 1}}'
+        Rx = 'longest first by recorded time \(1 of 2 suites timed\) — s-a\.selftest\.ps1, s-b\.selftest\.ps1'; Not = 'start order: discovery' })
+foreach ($oc in $orderCases) {
+    [IO.File]::WriteAllText($timesFile, $oc.Text)
+    $ok = (Assert-Case "$($oc.Id) $($oc.What)" (Invoke-Runner $selRunner @('-List', '-Jobs', $oc.Jobs)) 0 `
+        @("(?m)^start order: $($oc.Rx)\r?$", 'LIST ONLY') @($oc.Not, '(?m)^FAIL')) -and $ok
+}
+# H20i — a worktree finds the clone's times file through its `.git` file and the gitdir's `commondir`,
+# which the runner reads without a git process. The worktree holds the fixture's committed runner copy.
+# The git fallback reaches the same file, so a GIT_TRACE2 log proves the file path: no git start may
+# carry --git-common-dir, and the log must hold the runner's own ls-files start (re-review, slice 146).
+$wtSel = Join-Path $fxBase 'select-worktree'
+$null = Invoke-SelGit @('worktree', 'add', '-q', '--detach', $wtSel, 'HEAD')
+[IO.File]::WriteAllText($timesFile, '{"seconds": {"s-a.selftest.ps1": 1, "s-b.selftest.ps1": 50}}')
+$wtTrace = Join-Path $fxBase 'h20i-git-trace.txt'
+$env:GIT_TRACE2 = $wtTrace
+try { $h20i = Invoke-Runner (Join-Path $wtSel 'plug/selftest.ps1') @('-List', '-Jobs', '2') }
+finally { Remove-Item Env:GIT_TRACE2 -ErrorAction SilentlyContinue }
+$wtTraceText = if (Test-Path -LiteralPath $wtTrace) { [IO.File]::ReadAllText($wtTrace) } else { '' }
+$ok = (Assert-Case 'H20i a worktree of the clone orders by the clone''s times file, found without a git process' $h20i 0 `
+    @('(?m)^start order: longest first by recorded time \(2 of 2 suites timed\) — s-b\.selftest\.ps1, s-a\.selftest\.ps1\r?$') @('start order: discovery', '(?m)^FAIL') `
+    -PreFail @($(if ($wtTraceText -notmatch 'ls-files') { 'the GIT_TRACE2 log holds no ls-files start, so it proves nothing' }),
+        $(if ($wtTraceText -match '--git-common-dir') { 'the runner started git rev-parse --git-common-dir: the file path fell back' }))) -and $ok
+$ok = (Assert-Case 'H20g a tree outside git starts in discovery order and says no times are kept' (Invoke-Runner $fxRunner @('-List', '-Jobs', '2')) 0 `
+    @('(?m)^start order: discovery order \(not a git clone, so no suite times are kept\) — a-slow\.selftest\.ps1, b-fail\.selftest\.ps1, c-pass\.selftest\.ps1\r?$') @('longest first', '(?m)^FAIL')) -and $ok
+# H21 — a times write that fails (ADR 0161). In this clone a FILE stands where the `ywr-harness` state dir
+# goes, so the write throws. The one suite fails, so the run proves three things at once: a failed run
+# reaches the write, the write prints exactly one WARN line, and the run goes on to its summary line,
+# which prints after the write. A real run in a runspace: no pwsh start for the runner. One case only,
+# since this suite sets the runner's wall (fact 164).
+$fxBlk = Join-Path $fxBase 'times-blocked'
+New-Item -ItemType Directory -Force $fxBlk | Out-Null
+$blkRunner = Join-Path $fxBlk 'selftest.ps1'
+Copy-Item -LiteralPath $runner -Destination $blkRunner
+[IO.File]::WriteAllText((Join-Path $fxBlk 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
+[IO.File]::WriteAllText((Join-Path $fxBlk 'k-fail.selftest.ps1'), "Write-Host 'FAIL [k-fail] on purpose'`nexit 1`n")
+Write-StubMap $fxBlk @('k-fail.selftest.ps1')
+$null = & git -C $fxBlk init -q --template= 2>&1
+if ($LASTEXITCODE -ne 0) { throw 'times-blocked fixture: git init failed' }
+[IO.File]::WriteAllText((Join-Path $fxBlk '.git/ywr-harness'), 'a file where the state dir goes')
+$h21 = Invoke-Runner $blkRunner @('-Jobs', '2')
+$timesWarns = ([regex]::Matches($h21.Out, '(?m)^WARN \[runner\] the suite times were not written \(')).Count
+$ok = (Assert-Case 'H21 a failed run reaches the times write; a write that fails prints exactly one WARN line and the run goes on to its summary' $h21 1 `
+    @('selftests: discovered=1 passed=0 failed=1', 'FAIL — k-fail\.selftest\.ps1') @('all gates green') `
+    -PreFail @($(if ($timesWarns -ne 1) { "$timesWarns times WARN line(s), expected exactly 1" }))) -and $ok
 
 # Not cased: the runner's could-not-start and no-result branches. Neither is reachable from a
 # fixture without a test hook in the shipped runner — tried 2026-09-23: with PATH pointing at an
