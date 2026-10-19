@@ -1197,10 +1197,17 @@ if hc.compose(["echo", "x"], "sub/dir", w2) != "cd sub/dir && echo x" or w2:
     fails.append("a clean cwd mis-composed or spuriously warned")
 if hc.compose(["echo", "x"], "bad dir") != "echo x":
     fails.append("the warns-less call changed behavior")
+# CONTROL's class pinned to EXPECTED code points over every UTF-16 code unit, as hook-lib.selftest pins
+# inline() and report-issue.selftest I1 pins Inline(): C0, DEL, NEL, U+2028, U+2029 (no backtick here).
+want = set(range(0x20)) | {0x7F, 0x85, 0x2028, 0x2029}
+got = {m.start() for m in hc.CONTROL.finditer("".join(map(chr, range(0x10000))))}
+if got != want:
+    fails.append("CONTROL off its class: missing " + ",".join("U+%04X" % c for c in sorted(want - got)) +
+                 " extra " + ",".join("U+%04X" % c for c in sorted(got - want)[:8]))
 print("V-OK" if not fails else "V-FAIL: " + "; ".join(fails))
 '@
 $rV = (& $py.Source $vScript $PSScriptRoot 2>&1 | Out-String)
-$ok = (Assert-True 'V token_ok refuses a trailing newline; compose warns on a refused cwd (never silent)' ($rV -match 'V-OK') $rV) -and $ok
+$ok = (Assert-True 'V token_ok refuses a trailing newline; compose warns on a refused cwd (never silent); CONTROL is exactly its class' ($rV -match 'V-OK') $rV) -and $ok
 
 # --- W: derived-copy exemption (ADR 0037) — byte-identical placements stop counting -------------
 # The exemption is exactly as wide as verified identity: an identical copy leaves the size

@@ -20,6 +20,16 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib/selftest-lib.ps1')   # assertion core
 $runner = Join-Path $PSScriptRoot 'selftest.ps1'
+# The runner dot-sources lib/runner-signal.ps1 after its -List exit, so a runner copy that runs suites needs
+# the lib beside it; a -List-only fixture does not. $LibText replaces the lib's text (the G9 mutations).
+$runnerLib = Join-Path $PSScriptRoot 'lib/runner-signal.ps1'
+function Copy-Runner([string]$Dest, [string]$LibText = '') {
+    Copy-Item -LiteralPath $runner -Destination $Dest
+    $libDir = Join-Path (Split-Path $Dest -Parent) 'lib'
+    New-Item -ItemType Directory -Force $libDir | Out-Null
+    if ($LibText) { [IO.File]::WriteAllText((Join-Path $libDir 'runner-signal.ps1'), $LibText) }
+    else { Copy-Item -LiteralPath $runnerLib -Destination (Join-Path $libDir 'runner-signal.ps1') }
+}
 $fxBase = New-FixtureRoot 'selftest-runner-selftest'
 trap { Remove-FixtureRoot $fxBase; break }   # exception-safe teardown
 
@@ -209,7 +219,7 @@ $ok = (Assert-Case 'F2 the live listing declares template-excluded=0' $base 0 @(
 # can come only from the gate branch under test.
 $fxNoNode = Join-Path $fxBase 'no-node'
 New-Item -ItemType Directory -Force $fxNoNode | Out-Null
-Copy-Item -LiteralPath $runner -Destination (Join-Path $fxNoNode 'selftest.ps1')
+Copy-Runner (Join-Path $fxNoNode 'selftest.ps1')
 [IO.File]::WriteAllText((Join-Path $fxNoNode 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
 [IO.File]::WriteAllText((Join-Path $fxNoNode 'p-pass.selftest.ps1'), "Write-Host 'PASS [stub]'`nexit 0`n")
 Write-StubMap $fxNoNode @('p-pass.selftest.ps1')
@@ -267,7 +277,7 @@ function Get-LineIndex([string]$Text, [string]$Rx) {
 $fxRun = Join-Path $fxBase 'run'
 New-Item -ItemType Directory -Force $fxRun | Out-Null
 $fxRunner = Join-Path $fxRun 'selftest.ps1'
-Copy-Item -LiteralPath $runner -Destination $fxRunner
+Copy-Runner $fxRunner
 [IO.File]::WriteAllText((Join-Path $fxRun 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
 # Each stub pins UTF-8 as the real suites do (lib/selftest-lib.ps1) and builds its Korean from
 # code points, so what is under test is the runner's capture, not the stub's source decoding.
@@ -401,7 +411,7 @@ $ok = (Assert-Case 'G5 -Shard 3/3 -Jobs 2: c-pass alone, the gate still runs, gr
 $fxHang = Join-Path $fxBase 'hang'
 New-Item -ItemType Directory -Force $fxHang | Out-Null
 $hangRunner = Join-Path $fxHang 'selftest.ps1'
-Copy-Item -LiteralPath $runner -Destination $hangRunner
+Copy-Runner $hangRunner
 [IO.File]::WriteAllText((Join-Path $fxHang 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
 [IO.File]::WriteAllText((Join-Path $fxHang 'h-hang.selftest.ps1'), @'
 if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'hold')) { Start-Sleep -Seconds 300 }
@@ -446,11 +456,12 @@ $ok = (Assert-True 'G8b the hung suite''s grandchild died with it, and the run e
     ($stubReady -and $gcRead -and -not $gcAlive -and $hangClock.Elapsed.TotalSeconds -lt 120) `
     "stub ready before the kill=$stubReady (false: the limit fired mid-spawn — load, not the kill) · grandchild pid read=$gcRead alive=$gcAlive · wall $([int]$hangClock.Elapsed.TotalSeconds) s`n$(Format-Nested $g8.Out)") -and $ok
 
-# G9 / G9b — a label probe that fails is never silent (spec 0008 §3.1). Two copies of the runner: in
+# G9 / G9b — a label probe that fails is never silent (spec 0008 §3.1). Two runner fixtures, each with a
+# mutated copy of lib/runner-signal.ps1, where the probe lives: in
 # G9 the probe warns WITHOUT its marker (no label line); in G9b the probe calls a pwsh that does not
 # exist (it throws). Each must print exactly one `WARN [runner]` line with its reason, and the run stays
 # green. A swap that does not land exactly once fails its case, or the case would pass vacuously.
-$runnerText = [IO.File]::ReadAllText($runner)
+$libText = [IO.File]::ReadAllText($runnerLib)
 $probeCases = @(
     @{ Id = 'G9'; Dir = 'probe-nolabel'; Old = "Write-Warning ''ywr-warning-label-probe''"; New = "Write-Warning ''label-probe-without-its-marker''"
         Reason = 'no label line in \d+ probe line\(s\)'; Other = 'the probe threw'; What = 'learns no label' },
@@ -459,14 +470,14 @@ $probeCases = @(
 foreach ($pc in $probeCases) {
     $fxProbe = Join-Path $fxBase $pc.Dir
     New-Item -ItemType Directory -Force $fxProbe | Out-Null
-    $swapCount = ([regex]::Matches($runnerText, [regex]::Escape($pc.Old))).Count
-    [IO.File]::WriteAllText((Join-Path $fxProbe 'selftest.ps1'), $runnerText.Replace($pc.Old, $pc.New))
+    $swapCount = ([regex]::Matches($libText, [regex]::Escape($pc.Old))).Count
+    Copy-Runner (Join-Path $fxProbe 'selftest.ps1') $libText.Replace($pc.Old, $pc.New)
     [IO.File]::WriteAllText((Join-Path $fxProbe 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
     [IO.File]::WriteAllText((Join-Path $fxProbe 'p-ok.selftest.ps1'), "Write-Host 'PASS [p one]'`nexit 0`n")
     Write-StubMap $fxProbe @('p-ok.selftest.ps1')
     $rp = Invoke-RunnerFresh (Join-Path $fxProbe 'selftest.ps1') @('-Jobs', '1')
     $warnCount = ([regex]::Matches($rp.Out, '(?m)^WARN \[runner\]')).Count
-    $pre = @($(if ($swapCount -ne 1) { "the swap text appears $swapCount time(s) in selftest.ps1, expected 1 — the case proves nothing" }),
+    $pre = @($(if ($swapCount -ne 1) { "the swap text appears $swapCount time(s) in lib/runner-signal.ps1, expected 1 — the case proves nothing" }),
         $(if ($warnCount -ne 1) { "$warnCount WARN [runner] line(s), expected exactly 1" }))
     $ok = (Assert-Case "$($pc.Id) a probe that $($pc.What) prints exactly one WARN [runner] line with its reason; the run stays green" $rp 0 `
         @('all gates green', '(?m)^ok   p-ok\.selftest\.ps1', ('(?m)^WARN \[runner\] the Write-Warning label probe failed \(' + $pc.Reason)) `
@@ -482,7 +493,7 @@ foreach ($pc in $probeCases) {
 $fxSel = Join-Path $fxBase 'select'
 $plug = Join-Path $fxSel 'plug'
 New-Item -ItemType Directory -Force $plug | Out-Null
-Copy-Item -LiteralPath $runner -Destination (Join-Path $plug 'selftest.ps1')
+Copy-Runner (Join-Path $plug 'selftest.ps1')
 [IO.File]::WriteAllText((Join-Path $plug 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
 foreach ($s in 's-a', 's-b') { [IO.File]::WriteAllText((Join-Path $plug "$s.selftest.ps1"), "Write-Host 'PASS [$s]'`nexit 0`n") }
 # s-a edits a.txt while it runs when the fixture root holds `edit-during` (H17).
@@ -496,7 +507,7 @@ $selMap = @'
 {
   "//": "fixture map",
   "full": ["shared.txt", "selftest.ps1", "selftest-reads.json"],
-  "none": ["doc.txt", "manifest-gate.mjs"],
+  "none": ["doc.txt", "manifest-gate.mjs", "lib/runner-signal.ps1"],
   "version_only": ["ver.json"],
   "suites": {
     "//s-a.selftest.ps1": "a comment key is not a suite",
@@ -728,7 +739,7 @@ $ok = (Assert-Case 'H20g a tree outside git starts in discovery order and says n
 $fxBlk = Join-Path $fxBase 'times-blocked'
 New-Item -ItemType Directory -Force $fxBlk | Out-Null
 $blkRunner = Join-Path $fxBlk 'selftest.ps1'
-Copy-Item -LiteralPath $runner -Destination $blkRunner
+Copy-Runner $blkRunner
 [IO.File]::WriteAllText((Join-Path $fxBlk 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
 [IO.File]::WriteAllText((Join-Path $fxBlk 'k-fail.selftest.ps1'), "Write-Host 'FAIL [k-fail] on purpose'`nexit 1`n")
 Write-StubMap $fxBlk @('k-fail.selftest.ps1')

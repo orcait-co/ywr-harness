@@ -642,6 +642,34 @@ if (-not $alSnippet) {
     $ok = (Assert-Text 'G3 the extracted lookup restores a prior enum None exactly (stays None, not widened to All)' $o3 @('(?m)^AL=None\s*$') @('(?m)^AL=All')) -and $ok
 }
 
+# =================================================================================================
+# I. Inline()'s character class, pinned to EXPECTED values like hook-lib.selftest pins inline()
+# =================================================================================================
+# report-issue.ps1's Inline() is the one pwsh copy of the one-line rule left (the hooks and the inbox import
+# hook-lib.mjs's inline()). B2b reaches it through four hostile characters only, so a narrowed class could
+# pass. This case runs the REAL function, extracted from the AST parsed for G, on one string of every UTF-16
+# code unit in order between two 'x' (Trim never reaches a unit). The result must equal that string with exactly
+# the class turned to spaces — C0, DEL, NEL, U+2028, U+2029 and the backtick, spelled here by code point and
+# never as the character. One string comparison, not a pwsh loop per unit; the loop runs only on a miss, to name it.
+$inFail = @()
+$inDef = @($alAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Inline' }, $true))
+if ($inDef.Count -ne 1) { $inFail += "want exactly one function Inline in report-issue.ps1, found $($inDef.Count)" }
+else {
+    . ([scriptblock]::Create($inDef[0].Extent.Text))
+    $inIn = 'x' + [string]::new([char[]](0..0xFFFF)) + 'x'
+    $inWantChars = $inIn.ToCharArray()
+    foreach ($c in @(0..0x1F) + @(0x7F, 0x85, 0x2028, 0x2029, 0x60)) { $inWantChars[$c + 1] = ' ' }
+    $inWant = [string]::new($inWantChars)
+    $inOut = Inline $inIn
+    if ($inOut.Length -ne $inIn.Length) { $inFail += "Inline changed the length: $($inIn.Length) -> $($inOut.Length)" }
+    elseif ($inOut -cne $inWant) {
+        $inMiss = @(for ($c = 0; $c -lt 0x10000; $c++) {
+            if ($inOut[$c + 1] -cne $inWant[$c + 1]) { 'U+{0:X4} became U+{1:X4}, want U+{2:X4}' -f $c, [int]$inOut[$c + 1], [int]$inWant[$c + 1] } })
+        $inFail += "$($inMiss.Count) unit(s) off the class: $(($inMiss | Select-Object -First 8) -join ', ')$(if ($inMiss.Count -gt 8) { ', ...' })"
+    }
+}
+$ok = (Assert-True 'I1 Inline() flattens exactly C0, DEL, U+0085, U+2028, U+2029 and the backtick to a space, over every UTF-16 code unit' ($inFail.Count -eq 0) ($inFail -join ' · ')) -and $ok
+
 # --- META: the harness itself must be able to fail ------------------------------------------------
 $meta = (Assert-Text 'META probe' 'abc' @('zzz') @() 6>$null)
 $ok = (Assert-True 'META a MustMatch miss is reported as a failure' (-not $meta) 'Assert-Text passed on a non-matching text') -and $ok
