@@ -3,13 +3,14 @@
 #
 # CI has no claude CLI, so the module is driven here under plain node with a FAKE engine: a fake `on`
 # captures the hooks, a fake `$` answers process.run / process.spawn / env.get / session.append /
-# ui.invalidate / ui.resolve / ui.status, and each `next` is a stub whose result the hook must hand back
+# ui.invalidate / ui.resolve / ui.status / clock.after, and each `next` is a stub whose result the hook must hand back
 # untouched. The module draws with a GLOBAL `h` (the engine's JSX factory), so the probe defines one before
 # it imports the module. What this suite proves is the contract the host cannot check for us: the pure half
 # (version parsing, the missing / old / ok / unknown verdict, the Korean band and the English model note,
 # the exact winget argv, the exit-code lines, the inline-class flattening of child output) is right; the
 # hook set is exactly session.start, ui.render on AbovePrompt and command.run on ywr-harness:setup, and no
-# prompt.compose; session.start returns what `next` resolved to BEFORE the probes settle, and a probe that
+# prompt.compose; session.start returns what `next` resolved to BEFORE the probes settle, starts them on a
+# `$.clock.after(0, ...)` timer and runs them directly when that call throws (ADR 0164), and a probe that
 # misses, is old, is unknown, or whose append or invalidate fails never reaches the session; the band and
 # the note speak only for a missing or old tool; `/ywr-harness:setup` installs nothing off Windows, without
 # winget or when no tool can be probed, runs the winget installs one at a time in TOOLS order, streams only
@@ -256,8 +257,11 @@ const OKS = {
 }
 const enoent = n => Object.assign(new Error(`ENOENT: Command '${n}' not found`), { code: 'ENOENT' })
 // `by`: argv[0] -> result object | Error to reject with | function(argv) | promise factory. Unlisted -> OKS.
-function fakeEngine({ by = {}, os = 'Windows_NT', localAppData, envThrowsFor = [], noProcess = false, appendImpl = null, invalidateImpl = null, envThrows = false, statusImpl = null, spawnImpl = null } = {}) {
-  const calls = { run: [], runOpts: [], append: [], invalidate: [], spawn: [], status: [], env: [] }
+// `clock`: 'timer' runs each $.clock.after callback on a real setTimeout, 'manual' holds it in `timers`,
+// 'throws' throws from the call, 'late-throw' schedules the callback and then throws, 'none' leaves $.clock out.
+function fakeEngine({ by = {}, os = 'Windows_NT', localAppData, envThrowsFor = [], noProcess = false, appendImpl = null, invalidateImpl = null, envThrows = false, statusImpl = null, spawnImpl = null, clock = 'timer' } = {}) {
+  const calls = { run: [], runOpts: [], append: [], invalidate: [], spawn: [], status: [], env: [], after: [] }
+  const timers = []
   const io = { active: 0, peak: 0 }
   const $ = {
     ui: {
@@ -284,9 +288,20 @@ function fakeEngine({ by = {}, os = 'Windows_NT', localAppData, envThrowsFor = [
       },
     }
   }
+  if (clock !== 'none') {
+    $.clock = {
+      after: (ms, fn) => {
+        calls.after.push(ms)
+        if (clock === 'throws') throw new Error('no clock')
+        if (clock === 'manual') timers.push(fn); else setTimeout(fn, ms)
+        if (clock === 'late-throw') throw new Error('timer built, then failed')
+        return { cancel() {} }
+      },
+    }
+  }
   const C = capture(M.register)
   const hook = ev => C.byEv(ev)[0].fn
-  return { $, calls, io, hook, hooks: C.hooks }
+  return { $, calls, io, hook, hooks: C.hooks, timers }
 }
 const startEv = { reason: 'startup' }
 const bandEv = (hasSurvey = false) => ({ props: { hasSurvey } })
@@ -389,6 +404,28 @@ const bandText = n => n.children[0].children[0]
   let thrown = null
   try { await G.hook('session.start')(G.$, startEv, rej) } catch (e) { thrown = e.message }
   eq('S20 session.start: a rejection of next(e) itself reaches the host (the module never swallows the host\'s own result)', [thrown, G.calls.run.length], ['next failed', 0])
+}
+
+// K: the probes run on a $.clock.after timer (ADR 0164)
+{
+  const E = fakeEngine({ by: { node: enoent('node') }, clock: 'manual' })
+  const r = await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
+  eq('K1 session.start: one $.clock.after with delay 0; no probe runs before the timer fires',
+    [r === SENT, E.calls.after, E.timers.length, E.calls.run.length, E.calls.append.length], [true, [0], 1, 0, 0])
+  await E.timers[0](); await tick()
+  eq('K2 session.start: the timer runs the three probes and appends one note',
+    [E.calls.run.map(a => a[0]), E.calls.append.length], [['node', 'pwsh', 'python'], 1])
+  for (const [id, clock] of [['K3', 'throws'], ['K4', 'none']]) {
+    const F = fakeEngine({ by: { node: enoent('node') }, clock })
+    const before = unhandled
+    const r2 = await F.hook('session.start')(F.$, startEv, nextWith(SENT)); await tick()
+    eq(`${id} session.start: with clock '${clock}' the probes run directly; one note, the result returned, nothing unhandled`,
+      [r2 === SENT, F.calls.run.length, F.calls.append.length, unhandled - before], [true, 3, 1, 0])
+  }
+  const L = fakeEngine({ by: { node: enoent('node') }, clock: 'late-throw' })
+  await L.hook('session.start')(L.$, startEv, nextWith(SENT)); await tick(40)
+  eq('K5 session.start: a clock call that scheduled the timer and then threw still runs the probes once; one note',
+    [L.calls.run.length, L.calls.append.length], [3, 1])
 }
 
 // ---------------------------------------------------------------------------------------------

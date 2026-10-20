@@ -7,8 +7,9 @@
 // environment of its own, with no Node (fact 135), and `$.process.run` reaches the host's commands.
 //
 // What it does:
-// - `session.start`: after `next(e)` resolves it starts the three `--version` probes and does not wait
-//   for them, so the probes never delay the session start. A probe that rejects with ENOENT / "not
+// - `session.start`: after `next(e)` resolves it starts the three `--version` probes on a
+//   `$.clock.after(0, …)` timer and does not wait for them, so the probes never delay the session start
+//   (ADR 0164; a host without the call runs them directly). A probe that rejects with ENOENT / "not
 //   found", or a command that exits non-zero (the Windows Store `python` alias does), is MISSING; a
 //   `pwsh` below 7 or a `python` below 3.9 is OLD; anything else (a timeout, a surface without
 //   `$.process`) is UNKNOWN and never speaks. On Windows a not-found refusal is tried once more by the
@@ -303,7 +304,10 @@ export function register(on) {
 
   on('session.start', async ($, e, next) => {
     const r = await next(e)
-    void (async () => {
+    let started = false // one run: a clock call that scheduled the timer and then threw must not start a second
+    const probe = async () => {
+      if (started) return
+      started = true
       try {
         const found = needsOf(await probeAll($, await isWindows($)))
         needs = found.length ? found : null
@@ -311,7 +315,8 @@ export function register(on) {
         try { $.ui.invalidate('ui.render') } catch { /* the band draws at the next render instead */ }
         await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: noteText(needs) }] } })
       } catch { /* a failed probe or append says nothing */ }
-    })()
+    }
+    try { $.clock.after(0, probe) } catch { void probe() }
     return r
   })
 
