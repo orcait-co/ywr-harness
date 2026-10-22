@@ -4,6 +4,7 @@
 # `Assert-True` verdict and the child-output decoding pin, the in-process script
 # runner that replaced the per-case child pwsh in the spawn-bound suites (ADR 0071 option E),
 # and the git worker-binary bypass (ADR 0111). The runner's argv fold joined it on its third copy (O93).
+# The process start key joined it on its second copy (ADR 0166).
 #
 # The guard half is the single owner of the empty-MustNotMatch rule.
 #
@@ -434,3 +435,23 @@ function Remove-FixtureRoot {
         Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+# --- process start key (O117, ADR 0166) -----------------------------------------------------------
+# A recycled PID is not the process a suite recorded: only the same PID with the same start key is. On
+# Windows the key is StartTime, the kernel's creation time. On Linux .NET derives StartTime from a
+# per-process boot time, so two processes read one start ~1-4 ms apart (0 of 20 equal, measured
+# 2026-10-21, fact 171); the key there is /proc's raw starttime field. Returns $null for a process that
+# is gone. A stub suite that records a key gets the same definition as text from Get-StartKeyFn.
+function Get-StartKey([int]$Id) {
+    $p = Get-Process -Id $Id -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    try {
+        if ($IsLinux) {
+            $f = [IO.File]::ReadAllText("/proc/$Id/stat")
+            $f = $f.Substring($f.LastIndexOf(')') + 2) -split ' '
+            return $(if ($f[0] -ne 'Z') { $f[19] })   # an unreaped zombie has exited
+        }
+        return "$($p.StartTime.Ticks)"
+    } catch { return $null }
+}
+function Get-StartKeyFn { "function Get-StartKey {${function:Get-StartKey}}`n" }

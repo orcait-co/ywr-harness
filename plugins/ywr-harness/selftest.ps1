@@ -197,7 +197,8 @@ if ($top) {
     }
 }
 if (-not $script:inGit) {
-    $pluginFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File | ForEach-Object { Get-SuiteRel $_ })
+    # -Force: Linux pwsh hides a dotfile without it, so `.claude-plugin/` would match no glob (O118).
+    $pluginFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -Force | ForEach-Object { Get-SuiteRel $_ })
     $rootFiles = @()
 }
 $script:nested = [bool]$script:gitPrefix
@@ -556,9 +557,16 @@ if ((Test-Path -LiteralPath $wfGate) -and (Test-Path -LiteralPath $wfDir)) {
 # $work is built, in start order, ahead of -List (ADR 0161).
 function Format-Seconds([double]$Seconds) { $Seconds.ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) }
 function Get-PassCount([string[]]$Lines) { @($Lines | Where-Object { $_ -match '^PASS' }).Count }
-# The signal-line rule (Write-SuiteLine, ConvertTo-Plain, Get-SignalRx) lives in lib/runner-signal.ps1, which
-# scripts/canon-selftest.ps1 dot-sources too. Here, after the -List exit, so a -List run never opens it.
+# The signal-line rule (Write-SuiteLine, ConvertTo-Plain, Get-SignalRx) and the suite process
+# (Clear-StdHandleInherit, Invoke-SuiteProcess) live in lib/runner-signal.ps1, which scripts/canon-selftest.ps1
+# dot-sources too (ADR 0162, ADR 0166). Here, after the -List exit, so a -List run never opens it.
 . (Join-Path $PSScriptRoot 'lib/runner-signal.ps1')
+# The runner's own stdout and stderr stop being inheritable before the first suite starts (ADR 0165, fact
+# 169), so no suite descendant can hold the caller's pipe. The step comes HERE, after the two gates: they
+# stream through this process's stdout, so their output never depends on the step. Every native call after
+# this point captures both of its streams.
+$noInheritMiss = Clear-StdHandleInherit
+$suiteFn = Get-SuiteProcessFn
 Write-Host "--- suites: $($work.Count) selected, jobs=$Jobs, start order: $orderNote — one 'done' line per suite as it finishes (completion order)" -ForegroundColor Cyan
 $results = [System.Collections.Generic.List[object]]::new()
 $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -569,69 +577,14 @@ $work | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     # and with the top pin removed it still let the Korean case fail, because this script's own
     # stdout writer had already been fixed at its first write.
     #
-    # The child is a Process object, not `& pwsh`, because a timeout needs a handle to kill (ADR
-    # 0098). It is the runner's own pwsh ([Environment]::ProcessPath), read as UTF-8 on both pipes —
-    # the children inherit the console code page the pin above set. Its stderr follows its stdout
-    # rather than interleaving; nothing keys on that order (the verdict is the exit code).
+    # The child is the runner's own pwsh ([Environment]::ProcessPath), started by Invoke-SuiteProcess from
+    # lib/runner-signal.ps1: a Process object whose every wait has a bound (ADR 0098, ADR 0165). This thread
+    # does not see the runner's functions, so it dot-sources the definition from $suiteFn. The children
+    # inherit the console code page the pin above set.
     $s = $_
-    $limit = $using:SuiteTimeout
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    $lines = @()
-    $code = -1
-    try {
-        $psi = [Diagnostics.ProcessStartInfo]::new([Environment]::ProcessPath)
-        foreach ($a in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $s.Path)) { $psi.ArgumentList.Add($a) }
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
-        $psi.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
-        $p = [Diagnostics.Process]::Start($psi)
-        # Both pipes drain asynchronously: a full pipe must never block the child.
-        $outTask = $p.StandardOutput.ReadToEndAsync()
-        $errTask = $p.StandardError.ReadToEndAsync()
-        $timedOut = -not $p.WaitForExit($limit * 1000)
-        $unkillable = $false
-        if ($timedOut) {
-            # The whole tree: a suite's own children (fixture gits, nested pwsh) would otherwise
-            # keep the pipes open and the job alive.
-            try { $p.Kill($true) } catch { }
-            # A kill that threw or did not take must not trade one unbounded wait for another.
-            $unkillable = -not $p.WaitForExit(30000)
-        } else {
-            $p.WaitForExit()   # returns at once; the untimed overload is what flushes the async readers
-        }
-        if ($unkillable) {
-            $lines = @("FAIL — this suite exceeded -SuiteTimeout $limit s and was still running 30 s after the kill; its output is lost")
-        } elseif ([Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask, $errTask), 30000)) {
-            # (A descendant that escaped the tree could still hold a pipe: never wait on it forever.)
-            # Each pipe split on its own, so an unterminated last stdout line never fuses with stderr;
-            # the empty piece after a final newline is not a line.
-            $lines = @(foreach ($t in @($outTask.Result, $errTask.Result)) {
-                    if (-not $t) { continue }
-                    $parts = $t -split "`r?`n"
-                    if ($parts[-1] -eq '') { $parts = $parts[0..($parts.Count - 2)] }
-                    $parts
-                })
-        } else {
-            $lines = @("FAIL — this suite's output pipes stayed open 30 s after it exited; its output is lost")
-        }
-        if ($unkillable) {
-            $code = -1
-        } elseif ($timedOut) {
-            $lines = @($lines) + "FAIL — this suite exceeded -SuiteTimeout $limit s and was killed with its process tree"
-            $code = -1
-        } else {
-            $code = $p.ExitCode
-        }
-    } catch {
-        # A suite the runner could not even start is a FAILED suite with a reason, never a
-        # missing row (and never the previous iteration's exit code on a reused runspace).
-        $lines = @($lines) + "FAIL — the runner could not run this suite: $($_.Exception.Message)"
-        $code = -1
-    }
-    $sw.Stop()
-    [pscustomobject]@{ Index = $s.Index; Code = $code; Seconds = $sw.Elapsed.TotalSeconds; Lines = [string[]]$lines; Rel = $s.Rel }
+    . ([scriptblock]::Create($using:suiteFn))
+    $r = Invoke-SuiteProcess -Exe ([Environment]::ProcessPath) -ArgList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $s.Path) -Limit $using:SuiteTimeout
+    [pscustomobject]@{ Index = $s.Index; Code = $r.Code; Seconds = $r.Seconds; Lines = $r.Lines; Rel = $s.Rel }
 } | ForEach-Object {
     $results.Add($_)
     $v = if ($_.Code -eq 0) { 'PASS' } else { 'FAIL' }
@@ -667,6 +620,9 @@ foreach ($w in $work) {
 }
 if ($script:signalProbeMiss) {
     Write-Host "WARN [runner] the Write-Warning label probe failed ($($script:signalProbeMiss)): a passing suite's localized warning line may be missing above; -Full prints every line" -ForegroundColor Yellow
+}
+if ($noInheritMiss) {
+    Write-Host "WARN [runner] the runner's stdout and stderr stay inheritable ($noInheritMiss): a stuck suite descendant can hold this run's output pipe" -ForegroundColor Yellow
 }
 $sum = [double]($results | Measure-Object -Property Seconds -Sum).Sum
 $slowest = $results | Sort-Object Seconds -Descending | Select-Object -First 1

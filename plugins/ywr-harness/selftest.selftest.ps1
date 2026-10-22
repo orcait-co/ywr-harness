@@ -11,9 +11,9 @@
 # equal the unsharded list, pairwise disjoint, every shard non-empty, sizes within one of each
 # other (round-robin). If that ever fails, a CI matrix would be green while a suite ran on no
 # shard — the silent-coverage-loss class this file exists to keep loud.
-# Section G makes the only real runs — seven (G1, G3, G4, G5, G8, G9, G9b), all of a COPY of the runner in
-# a fixture tree of stub suites (three; G8's own tree has two, G9's and G9b's one each); G6 is -List again, G7 reads
-# this file's own FAIL echo.
+# Section G makes the only real runs — eight (G1, G3, G4, G5, G8, G9, G9b, G10), all of a COPY of the runner in
+# a fixture tree of stub suites (three; G8's own tree has two, G9's, G9b's and G10's one each); G6 is -List again, G7
+# reads this file's own FAIL echo. G10 starts first and is collected after G9.
 #
 # Usage: pwsh plugins/ywr-harness/selftest.selftest.ps1  (exit 0 = all green). 42–82 s measured
 # 2026-09-23 on a box shared with other agents' runs (section G is about half of it).
@@ -31,7 +31,13 @@ function Copy-Runner([string]$Dest, [string]$LibText = '') {
     else { Copy-Item -LiteralPath $runnerLib -Destination (Join-Path $libDir 'runner-signal.ps1') }
 }
 $fxBase = New-FixtureRoot 'selftest-runner-selftest'
-trap { Remove-FixtureRoot $fxBase; break }   # exception-safe teardown
+# Exception-safe teardown. A trap covers its whole scope, so it also stops G10's held run and its grandchild,
+# which start below; a throw before they exist skips those two steps.
+trap {
+    if ($heldRun) { try { $heldRun.P.Kill($true) } catch { } }
+    if (Get-Command Get-HeldGrandchild -ErrorAction SilentlyContinue) { $gc = Get-HeldGrandchild; if ($gc) { Stop-Process -Id $gc.Id -Force -ErrorAction SilentlyContinue } }
+    Remove-FixtureRoot $fxBase; break
+}
 
 # NOT `$Args`: that name is PowerShell's automatic unbound-arguments variable, and `@Args` splats
 # the (empty) automatic one rather than the parameter — the child then runs the runner with NO
@@ -93,11 +99,72 @@ function Assert-Case([string]$Name, $R, [int]$ExpectExit, [string[]]$MustMatch, 
 
 # Every runner copy needs a read-set map (ADR 0157). A stub tree's map claims every file through
 # `none` — the G cases write marker files mid-run — and gives each stub suite an empty read set.
+# A stub tree has no git, so the runner lists it from the filesystem: the dotfile named in `none`
+# fails every G run on Linux if that listing drops dotfiles again (O118).
 function Write-StubMap([string]$Dir, [string[]]$Suites) {
-    $m = [ordered]@{ full = @(); none = @('**'); suites = [ordered]@{} }
+    [void][IO.Directory]::CreateDirectory((Join-Path $Dir '.dot'))
+    [IO.File]::WriteAllText((Join-Path $Dir '.dot/probe.txt'), 'dotfile probe')
+    $m = [ordered]@{ full = @(); none = @('**', '.dot/probe.txt'); suites = [ordered]@{} }
     foreach ($s in $Suites) { $m.suites[$s] = @() }
     [IO.File]::WriteAllText((Join-Path $Dir 'selftest-reads.json'), ($m | ConvertTo-Json -Depth 3))
 }
+
+# G10 — a held pipe (ADR 0165, decisions 2 to 4). The one suite starts a grandchild that sleeps 180 s and writes
+# its PID, then prints a line and exits 0, so the grandchild holds the suite's pipe. The grace later the suite is
+# an `ok` with its own line kept and the runner's held-pipe WARN. The grandchild also inherits whatever the runner
+# leaked, so this file reads the runner's output to end-of-file while the grandchild still sleeps only if the
+# runner's own stdout is not inheritable (Windows; fact 169). The run starts HERE and is collected after G9, so its
+# waits overlap the cases between (speed rule). A host too slow to finish the suite inside 2 s gets one more run at
+# 8 s, as canon C11 does. G8 already covers the kill with its tree and the line kept from before the kill.
+$fxHeld = Join-Path $fxBase 'held'
+New-Item -ItemType Directory -Force $fxHeld | Out-Null
+Copy-Runner (Join-Path $fxHeld 'selftest.ps1')
+[IO.File]::WriteAllText((Join-Path $fxHeld 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
+$heldPid = Join-Path $fxHeld 'grandchild.pid'
+[IO.File]::WriteAllText((Join-Path $fxHeld 'b-held.selftest.ps1'), @'
+$g = Start-Process -FilePath ([Environment]::ProcessPath) -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 180' -NoNewWindow -PassThru
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'grandchild.pid'), "$($g.Id)")
+Write-Host 'WARN [b] written before exit'
+exit 0
+'@)
+Write-StubMap $fxHeld @('b-held.selftest.ps1')
+# A recycled PID is not the grandchild: the process must be a pwsh that started after this run did.
+function Get-HeldGrandchild {
+    $gcId = 0
+    if (-not ((Test-Path -LiteralPath $heldPid) -and [int]::TryParse(([IO.File]::ReadAllText($heldPid)).Trim(), [ref]$gcId))) { return $null }
+    $gp = Get-Process -Id $gcId -ErrorAction SilentlyContinue
+    try { if ($gp -and $gp.ProcessName -eq 'pwsh' -and $gp.StartTime -ge $script:heldStart) { return $gp } } catch { }
+    return $null
+}
+function Start-HeldCase([int]$Limit) {
+    Remove-Item -LiteralPath $heldPid -Force -ErrorAction SilentlyContinue
+    $script:heldStart = [DateTime]::Now
+    $psi = [Diagnostics.ProcessStartInfo]::new([Environment]::ProcessPath)
+    foreach ($a in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $fxHeld 'selftest.ps1'), '-Jobs', '1', '-SuiteTimeout', "$Limit")) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $psi.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+    $p = [Diagnostics.Process]::Start($psi)
+    return @{ P = $p; Out = $p.StandardOutput.ReadToEndAsync(); Err = $p.StandardError.ReadToEndAsync(); Limit = $Limit }
+}
+# The runner's exit, then its end-of-file; the grandchild is read at that moment, then stopped.
+function Receive-HeldCase($Run) {
+    $exited = $Run.P.WaitForExit(90000)
+    if (-not $exited) { try { $Run.P.Kill($true) } catch { } }
+    $eof = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($Run.Out, $Run.Err), 10000)
+    $gc = Get-HeldGrandchild
+    $pre = @()
+    if (-not (Test-Path -LiteralPath $heldPid)) { $pre += 'the suite never wrote its grandchild PID, so the case set up no pipe holder' }
+    if (-not $exited) { $pre += 'the runner was still running 90 s after it started' }
+    if (-not $eof) { $pre += "the runner's output did not reach end-of-file 10 s after its exit: the grandchild held the caller's pipe" }
+    elseif (-not $gc -and (Test-Path -LiteralPath $heldPid)) { $pre += 'the grandchild was gone at end-of-file, so the case proves nothing about the caller''s pipe' }
+    if ($gc) { Stop-Process -Id $gc.Id -Force -ErrorAction SilentlyContinue }
+    $text = if ($eof) { $Run.Out.Result + $Run.Err.Result } else { '' }
+    return @{ Out = $text; Code = $(if ($exited) { $Run.P.ExitCode } else { -2 }); Pre = $pre; Limit = $Run.Limit }
+}
+$heldRun = Start-HeldCase 2
 
 $ok = $true
 
@@ -413,10 +480,13 @@ New-Item -ItemType Directory -Force $fxHang | Out-Null
 $hangRunner = Join-Path $fxHang 'selftest.ps1'
 Copy-Runner $hangRunner
 [IO.File]::WriteAllText((Join-Path $fxHang 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
-[IO.File]::WriteAllText((Join-Path $fxHang 'h-hang.selftest.ps1'), @'
+# A recycled PID is not the grandchild: only the same PID with the same start key is (O117). The stub and this
+# file share the one definition, Get-StartKey of lib/selftest-lib.ps1.
+$startKeyFn = Get-StartKeyFn
+[IO.File]::WriteAllText((Join-Path $fxHang 'h-hang.selftest.ps1'), $startKeyFn + @'
 if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'hold')) { Start-Sleep -Seconds 300 }
 $kid = Start-Process -FilePath ([Environment]::ProcessPath) -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 300' -NoNewWindow -PassThru
-[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'grandchild.pid'), "$($kid.Id)")
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'grandchild.pid'), "$($kid.Id) $(Get-StartKey $kid.Id)")
 Write-Host 'PASS [h before the hang]'
 [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'ready'), '1')
 Start-Sleep -Seconds 300
@@ -436,8 +506,9 @@ foreach ($attempt in @(@{ Limit = 1; Hold = $true }, @{ Limit = 8; Hold = $false
     $g8 = Invoke-RunnerFresh $hangRunner @('-Jobs', '2', '-SuiteTimeout', "$hangLimit")
     $hangClock.Stop()
     $gcPid = 0
-    $gcRead = (Test-Path -LiteralPath $gcFile) -and [int]::TryParse(([IO.File]::ReadAllText($gcFile)).Trim(), [ref]$gcPid)
-    $gcAlive = $gcRead -and [bool](Get-Process -Id $gcPid -ErrorAction SilentlyContinue)
+    $gcParts = @(if (Test-Path -LiteralPath $gcFile) { ([IO.File]::ReadAllText($gcFile)).Trim() -split ' ' })
+    $gcRead = $gcParts.Count -eq 2 -and [int]::TryParse($gcParts[0], [ref]$gcPid)
+    $gcAlive = $gcRead -and (Get-StartKey $gcPid) -ceq $gcParts[1]
     $stubReady = Test-Path -LiteralPath $readyFile
     if ($gcAlive) { Stop-Process -Id $gcPid -Force -ErrorAction SilentlyContinue }
     if ($attempt.Hold) { $g8Forced = @{ Run = $g8; Ready = $stubReady; GcRead = $gcRead }; continue }
@@ -454,7 +525,7 @@ $ok = (Assert-Case "G8 a hung suite is killed at -SuiteTimeout ($hangLimit s) an
     @('all gates green', '(?m)^--- p-ok')) -and $ok
 $ok = (Assert-True 'G8b the hung suite''s grandchild died with it, and the run ended well before the stub''s 300 s' `
     ($stubReady -and $gcRead -and -not $gcAlive -and $hangClock.Elapsed.TotalSeconds -lt 120) `
-    "stub ready before the kill=$stubReady (false: the limit fired mid-spawn — load, not the kill) · grandchild pid read=$gcRead alive=$gcAlive · wall $([int]$hangClock.Elapsed.TotalSeconds) s`n$(Format-Nested $g8.Out)") -and $ok
+    "stub ready before the kill=$stubReady (false: the limit fired mid-spawn — load, not the kill) · grandchild record '$($gcParts -join ' ')' (pid and start key) read=$gcRead alive=$gcAlive · wall $([int]$hangClock.Elapsed.TotalSeconds) s`n$(Format-Nested $g8.Out)") -and $ok
 
 # G9 / G9b — a label probe that fails is never silent (spec 0008 §3.1). Two runner fixtures, each with a
 # mutated copy of lib/runner-signal.ps1, where the probe lives: in
@@ -483,6 +554,17 @@ foreach ($pc in $probeCases) {
         @('all gates green', '(?m)^ok   p-ok\.selftest\.ps1', ('(?m)^WARN \[runner\] the Write-Warning label probe failed \(' + $pc.Reason)) `
         @($pc.Other, '(?m)^FAIL') -PreFail $pre) -and $ok
 }
+
+$g10 = Receive-HeldCase $heldRun
+# Load symptoms only: the suite killed, or killed before it wrote its PID or its line.
+if ($g10.Out -match '(?m)^done b-held\.selftest\.ps1 FAIL' -or $g10.Out -notmatch '(?m)^WARN \[b\] written before exit' -or -not (Test-Path -LiteralPath $heldPid)) {
+    Write-Host 'INFO [G10 the 2 s limit fired before the suite finished (load) — re-run at 8 s]'
+    $heldRun = Start-HeldCase 8; $g10 = Receive-HeldCase $heldRun
+}
+$ok = (Assert-Case 'G10 a held pipe after exit: the suite is ok with its own line and a held-pipe WARN; the caller''s pipe reaches end-of-file' $g10 0 `
+    @('(?m)^ok   b-held\.selftest\.ps1', '(?m)^WARN \[b\] written before exit', 'all gates green',
+        "(?m)^WARN \[runner\] this suite exited, but a process it started still held its output pipe $($g10.Limit) s later") `
+    @('stay inheritable', 'still running 30 s after the kill', 'the runner could not run this suite', '(?m)^FAIL') -PreFail $g10.Pre) -and $ok
 
 # --- H. read-set map and -Changed selection (ADR 0157) ------------------------------------------
 # A git fixture in the canon shape: the runner copy sits in plug/ below the repo root, so the `/`
