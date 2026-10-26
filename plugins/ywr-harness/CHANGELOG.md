@@ -12,6 +12,16 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.69.13 — 2026-10-26
+
+- slice retro에 새 검사 SIZE가 생겼습니다(ADR 0171). `retro.source_scope` 안의 소스 파일이 이번 commit(또는 범위)에서
+  1,000줄을 처음 넘으면 한 번 알려 줍니다. 이미 1,000줄을 넘던 파일은 매 commit마다 반복해서 알리지 않고,
+  `harness_retro.py --coverage`가 그런 파일을 줄 수와 함께 모아 보여 줍니다.
+- 큰 파일을 건드리지 않은 commit에서는 post-commit retro가 git을 더 부르지 않습니다. 작업 트리 파일을 먼저 세어 보고, 1,000줄
+  이상인 파일만 git으로 정확히 다시 셉니다.
+- `harness_retro.py --delegations`의 각 행에 Agent 도구로 띄운 agent가 재개(resume)된 횟수가 나옵니다. 재개가 없던 행은
+  예전과 똑같이 출력됩니다.
+
 ## v0.69.12 — 2026-10-26
 
 - `docs/check_docs.py`의 STE-lite 검사에 새 규칙 R8이 생겼습니다(ADR 0170). 새 ADR과 바꾼 spec section에서 em dash, 두 절을 잇는

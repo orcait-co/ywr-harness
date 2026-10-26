@@ -1,7 +1,8 @@
 """Slice retro gate — a zero-token deterministic retrospective, run from `post-commit`.
 
-Ported from `ywr-platform` ADR 0072, which established the seven checks and their rationale over
-several slices. This is the portable version: everything that repo hardcoded now comes from
+Ported from `ywr-platform` ADR 0072, which established seven checks and their rationale over
+several slices. An eighth, SIZE, reports an in-scope file that crosses 1,000 lines in the checked
+range (ADR 0171). This is the portable version: everything that repo hardcoded now comes from
 `.harness.json`.
 
 ## Why Python and not the original POSIX sh
@@ -24,8 +25,8 @@ principle; the hook's `|| true` keeps the commit untouched).
   python harness_retro.py                  # the commit just made (HEAD); a merge commit
                                            # resolves as HEAD^1..HEAD (first-parent, ADR 0043)
   python harness_retro.py main~3..HEAD     # a whole slice — absorbs mid-slice false positives
-  python harness_retro.py --coverage       # full unowned / dead-mapping audit
-  python harness_retro.py --delegations    # the delegation ledger's report (ADR 0120)
+  python harness_retro.py --coverage       # full unowned / dead-mapping / large-file audit
+  python harness_retro.py --delegations    # the delegation ledger's report (ADR 0120, 0171)
   SLICE_RETRO=0 git commit ...             # skip once
 
 A check whose declaration is empty is DISABLED, and the disablement is reported under --coverage.
@@ -295,6 +296,107 @@ def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, li
     return name_status_z(raw), subjects, pre, post
 
 
+SIZE_LIMIT = 1000
+_ARGV_BUDGET = 16000  # characters of pathspec per git call; Windows allows ~32k for the whole command line
+
+
+def worktree_lines(root: Path, rel: str) -> int:
+    """Lines of a working-tree file as `git grep -c ''` counts them, with no git call: 0 for a
+    binary file (a NUL in the first 8000 bytes, git's own test, which `-I` skips), a missing
+    file, a symlink or an unreadable one; otherwise the `\\n` count, plus one for an unterminated
+    last line. The HEAD fast path of SIZE only decides WHICH files go to git for the exact count."""
+    p = root / rel
+    try:
+        if p.is_symlink() or not p.is_file():
+            return 0
+        data = p.read_bytes()
+    except OSError:
+        return 0
+    if b"\0" in data[:8000]:
+        return 0
+    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+
+
+def _chunks(paths: list[str]) -> list[list[str]]:
+    out: list[list[str]] = []
+    cur: list[str] = []
+    size = 0
+    for x in paths:
+        if cur and size + len(x) + 1 > _ARGV_BUDGET:
+            out.append(cur)
+            cur, size = [], 0
+        cur.append(x)
+        size += len(x) + 1
+    if cur:
+        out.append(cur)
+    return out
+
+
+def counts_at(root: Path, rev: str, paths: list[str], min_lines: int = 1) -> dict[str, int]:
+    """{path: line count at <rev>} by `git grep -I -c --null -e ''`, for the paths that hold at least
+    <min_lines> lines. Git omits a binary file and an empty one, so an absent key reads as 0.
+    Empty <paths> asks for every tracked file at <rev> (the `--coverage` list).
+    The output is `rev:path\\0count\\n` per file; it is walked by NUL and then newline, never split
+    on `:` (a path can hold one) or on a line break alone (a path can hold one too)."""
+    out: dict[str, int] = {}
+    pre = len(rev) + 1
+    for chunk in _chunks(paths) if paths else [[]]:  # no paths = every tracked file at <rev>
+        raw = git(root, "--literal-pathspecs", "grep", "-I", "-c", "--null", "-e", "", rev,
+                  *(("--", *chunk) if chunk else ()), ok_exits=(1,))  # exit 1 = no file matched
+        pos = 0
+        while pos < len(raw):
+            z = raw.find("\0", pos)
+            nl = raw.find("\n", z + 1) if z >= 0 else -1
+            if z < 0 or nl < 0:
+                break
+            try:
+                n = int(raw[z + 1:nl])
+            except ValueError:
+                n = 0
+            if n >= min_lines:
+                out[hc.norm(raw[pos + pre:z])] = n
+            pos = nl + 1
+    return out
+
+
+def size_crossings(root: Path, cand: list[str], pre: str, post: str) -> list[tuple[str, int]]:
+    """[(path, lines after)] for each candidate with fewer than SIZE_LIMIT lines before the range and
+    SIZE_LIMIT or more after it (ADR 0171). A file absent before counts 0.
+
+    Speed rule: a commit that touches no large file pays NO git call. With `post` = HEAD the
+    working-tree line count picks the candidates first (a residual, named in spec 0007 §3.4:
+    unstaged edits that shorten a file can hide a crossing); only those go to git, for the exact
+    HEAD count. Any other post rev asks git directly. The count before the range is derived from
+    `diff --numstat`: before = after - added + deleted, 0 for a root commit or a binary side."""
+    if not cand:
+        return []
+    if post == "HEAD":
+        cand = [x for x in cand if worktree_lines(root, x) >= SIZE_LIMIT]
+        if not cand:
+            return []
+    after = counts_at(root, post, cand, SIZE_LIMIT)
+    if not after:
+        return []
+    hit = sorted(after)
+    before: dict[str, int] = {}
+    if pre:
+        for chunk in _chunks(hit):
+            raw = git(root, "diff", "--numstat", "-z", "--no-renames", pre, post, "--", *chunk)
+            for rec in raw.split("\0"):
+                cols = rec.split("\t", 2)
+                if len(cols) != 3:
+                    continue
+                path = hc.norm(cols[2])
+                if cols[0].isdigit() and cols[1].isdigit() and path in after:
+                    before[path] = max(0, after[path] - int(cols[0]) + int(cols[1]))
+                elif path in after:
+                    before[path] = 0  # `-` columns: a binary side counts 0 lines, as git grep -I does
+        # A path the diff does not list is unchanged between pre and post: it did not cross.
+        for x in hit:
+            before.setdefault(x, after[x])
+    return [(x, after[x]) for x in hit if before.get(x, 0) < SIZE_LIMIT]
+
+
 def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | None) -> list[str]:
     changes, subjects, pre, post = resolve_range(root, rev_range)
     if not changes:
@@ -381,6 +483,15 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
     for sp, p in sorted({(s, p) for s, p in pairs if not (root / p).exists()}):
         f.append(f"DEADMAP: {sp} maps {p} which does not exist — renamed or deleted; fix implements_in")
 
+    # 8) SIZE — an in-scope file that CROSSES the limit in this range (ADR 0171). Crossing-only is
+    #    the UNMAPPED adoption strategy again: new growth reports once, the baseline stays out of
+    #    each commit and lives under --coverage. A deleted file never reports. A range with no
+    #    start (a bare rev, `..X`) has no before count to compare, so it skips the check.
+    if scope and (pre or not rev_range):
+        cand = sorted({c[1][-1] for c in changes if c[0][:1] != "D" and hc.any_match(scope, c[1][-1])})
+        for x, n in size_crossings(root, cand, pre, post):
+            f.append(f"SIZE: {x} crossed {SIZE_LIMIT:,} lines (now {n:,}) — consider splitting it")
+
     return f
 
 
@@ -416,6 +527,18 @@ def coverage(root: Path, cfg: dict, warns: list[str]) -> int:
                 print(f"   {x}")
         else:
             print(f"-- unowned files: none ({len(in_scope)} in scope, all owned or ignored)")
+        # SIZE's baseline (ADR 0171): the files the per-commit check will never report again. One
+        # git call over HEAD; the scope filter runs here, so the argv stays short.
+        if git(root, "rev-parse", "-q", "--verify", "HEAD", ok_exits=(1,)).strip():
+            big = {x: n for x, n in counts_at(root, "HEAD", [], SIZE_LIMIT).items() if hc.any_match(scope, x)}
+        else:
+            big = {}  # no commit yet: nothing is tracked at HEAD
+        if big:
+            print(f"-- files at or over {SIZE_LIMIT:,} lines (in scope, tracked at HEAD): {len(big)}")
+            for x, n in sorted(big.items(), key=lambda kv: (-kv[1], kv[0])):
+                print(f"   {x}\t{n:,}")
+        else:
+            print(f"-- files at or over {SIZE_LIMIT:,} lines: none")
     print(f"-- ignore register: {cfg['retro_ignore_file']}"
           + ("" if (root / cfg["retro_ignore_file"]).is_file() else "   (absent — nothing is exempt)"))
     for w in warns:
@@ -507,7 +630,8 @@ def _fmt_row(key: tuple, agg: dict) -> str:
     kind, stype, mparam, models, efforts = key
     who = kind if kind not in SPAWNED else f"{kind} {stype or '?'} (model_param {mparam or 'none'})"
     tok = agg["tokens"]
-    line = (f"   {who} · {models or '?'} · {efforts or '-'} — {agg['loops']} loop(s), "
+    resumes = f"{agg['resumes']} resume(s), " if agg["resumes"] > 0 else ""
+    line = (f"   {who} · {models or '?'} · {efforts or '-'} — {agg['loops']} loop(s), {resumes}"
             f"{agg['ms'] / 1000:.1f} s, tokens in {tok['input_tokens']:,} · out {tok['output_tokens']:,} · "
             f"cache read {tok['cache_read_input_tokens']:,} · cache write {tok['cache_creation_input_tokens']:,}")
     if agg["from_steps"]:
@@ -555,6 +679,7 @@ def delegations(root: Path, warns: list[str]) -> int:
               + (f"{'+'.join(sorted(main_models)) or '?'} [{'+'.join(sorted(main_efforts)) or '-'}]"
                  if mains else "no main loop recorded"))
         rows: dict[tuple, dict] = {}
+        agent_max: dict[str, tuple[int, tuple]] = {}  # agent id -> (max resumes, row key of that loop)
         on_main = same = wf = wf_inherit = 0
         for lp, fields in s["loops"]:
             kind = lp.get("loop") if isinstance(lp.get("loop"), str) else "?"
@@ -566,9 +691,19 @@ def delegations(root: Path, warns: list[str]) -> int:
             # A spawned row with no type and one with a malformed type both print "?": one key.
             rk = (kind, (stype or "?") if kind in SPAWNED else None, mparam if kind in SPAWNED else None,
                   "+".join(models), "+".join(efforts))
-            agg = rows.setdefault(rk, {"loops": 0, "ms": 0, "from_steps": 0,
+            agg = rows.setdefault(rk, {"loops": 0, "ms": 0, "from_steps": 0, "resumes": 0,
                                        "tokens": dict.fromkeys(TOKENS, 0)})
             agg["loops"] += 1
+            # ADR 0147 counts resumes on the spawn row, and a loop carries the row as it stood when the
+            # loop ended: an agent resumed twice leaves loops that read 0, 1 and 2. The count of an agent
+            # is therefore the MAXIMUM over its loops, never the sum, credited once per session. A loop
+            # with no string agent id cannot be matched to another, so it adds its own value (ADR 0171).
+            n_res, aid = _count(spawn.get("resumes")), lp.get("agent_id")
+            if isinstance(aid, str) and aid:
+                if aid not in agent_max or n_res > agent_max[aid][0]:  # a tie keeps the first loop
+                    agent_max[aid] = (n_res, rk)
+            else:
+                agg["resumes"] += n_res
             done = lp.get("complete") if isinstance(lp.get("complete"), dict) else {}
             agg["ms"] += _count(done.get("duration_ms"))
             tok, host = loop_tokens(lp, fields)
@@ -595,6 +730,11 @@ def delegations(root: Path, warns: list[str]) -> int:
                 on_main += 1
                 # Unknown on both sides (Haiku sends no effort) is no evidence of an inherit.
                 same += 1 if main_efforts and set(efforts) == main_efforts else 0
+        # One map per session credits each agent's maximum to ONE row, the row of the loop that holds it.
+        # Per-row maxima would count an agent twice when its loops land in two rows (a model or effort
+        # that changed between runs).
+        for n_res, rk in agent_max.values():
+            rows[rk]["resumes"] += n_res
         # A key part is None for a spawn row without that field: sort it as "" so str and None never meet.
         for rk in sorted(rows, key=lambda k: (KIND_ORDER.get(k[0], 9), tuple(x or "" for x in k))):
             print(_fmt_row(rk, rows[rk]))

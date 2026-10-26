@@ -1,7 +1,7 @@
 # Selftest for harness_retro.py — the slice retro gate (ADR 0017).
 #
 # The gate is advisory and exits 0 (except a git failure, case N), so every case asserts on OUTPUT. Two properties are
-# asserted for each of the seven checks: that it fires when it should, and that it stays SILENT
+# asserted for each of the eight checks: that it fires when it should, and that it stays SILENT
 # when it should not. The silence half is the one that matters — an advisory gate that cries wolf
 # is an advisory gate people stop reading, and there is no exit code to notice the regression.
 #
@@ -602,9 +602,9 @@ $ok = (Assert-True 'DL1 no ledger directory: one line naming where the module wr
 
 $fieldsStd = '["index","model","effort","message_count","stop_reason","input_tokens","output_tokens","cache_read_input_tokens","cache_creation_input_tokens","usage_model"]'
 $fieldsRev = '["usage_model","cache_creation_input_tokens","cache_read_input_tokens","output_tokens","input_tokens","stop_reason","message_count","effort","model","index"]'
-function DlLoop([string]$Kind, [string]$Models, [string]$Efforts, [int]$Evicted, [string]$Usage, [string]$Steps, [string]$Spawn = 'null', [int]$StepsDropped = 0) {
+function DlLoop([string]$Kind, [string]$Models, [string]$Efforts, [int]$Evicted, [string]$Usage, [string]$Steps, [string]$Spawn = 'null', [int]$StepsDropped = 0, [string]$AgentId = 'null') {
     $c = if ($Usage) { "{`"reason`":`"answer`",`"aborted`":false,`"duration_ms`":1500,`"usage`":$Usage}" } else { '{"reason":"answer","aborted":false,"duration_ms":1500,"usage":null}' }
-    return "{`"ts`":`"t`",`"loop`":`"$Kind`",`"agent_id`":null,`"turn_id`":`"u`",`"spawn`":$Spawn,`"spawn_rows_evicted`":$Evicted,`"steps`":$Steps,`"steps_dropped`":$StepsDropped,`"models`":$Models,`"efforts`":$Efforts,`"complete`":$c}"
+    return "{`"ts`":`"t`",`"loop`":`"$Kind`",`"agent_id`":$AgentId,`"turn_id`":`"u`",`"spawn`":$Spawn,`"spawn_rows_evicted`":$Evicted,`"steps`":$Steps,`"steps_dropped`":$StepsDropped,`"models`":$Models,`"efforts`":$Efforts,`"complete`":$c}"
 }
 $u = '{"model":"m","input_tokens":5,"output_tokens":7,"cache_read_input_tokens":100,"cache_creation_input_tokens":3}'
 $mech = '{"subagent_type":"ywr-harness:mech","model_param":null,"model":"claude-haiku-4-5"}'
@@ -733,6 +733,159 @@ $ok = (Assert-True 'DL8 a list, numeric or empty model_param reads as "?" on a w
 $ok = (Assert-True 'DL8 a numeric type, a missing type and a null spawn are one "?" row of three loops' ($o8 -match 'workflow \? \(model_param none\) · claude-sonnet-5-5 · low — 3 loop') $o8) -and $ok
 $ok = (Assert-True 'DL8 only the well-formed unnamed worker with no model counts: 1 of 7' ($o8 -match 'workflow with no model given: 1 of 7' -and $o8 -match 'ADR 0126 D6: 1 of 7 workflow loop\(s\)') $o8) -and $ok
 $ok = (Assert-True 'DL8 a non-string step_fields entry skips its file, named' ($o8 -match 'skipped: slot-01\.json \(not a schema 2 slot\)' -and $o8 -notmatch 'session bad-fields') $o8) -and $ok
+
+# DL9: resumes (ADR 0147 counts them on the spawn row, ADR 0171 reports them). A loop carries the spawn row as
+# it stood when the loop ended, so an agent resumed twice leaves three loops that read 0, 1 and 2: the count of
+# an agent is the MAXIMUM over its loops (2), never the sum (3). Agent a1 (0, 1, 2) and agent a2 (1) give the
+# row `3 resume(s)`. Agent a3 resumes once on sonnet and again on haiku: its loops land in TWO rows (the row
+# key holds the models), and its maximum 2 is credited once, to the row of the loop that holds it, never 1 + 2.
+# Loops with no string agent_id cannot be matched, so each adds its own value. A zero, a
+# missing field, a string, a negative number and a boolean all read 0 through _count(), so those rows print
+# exactly what they printed before.
+$dl9 = Join-Path $fxBase 'delegations-9'
+New-Item -ItemType Directory -Force -Path $dl9 | Out-Null
+Write-F $dl9 '.harness.json' '{}'
+function Dl9Spawn([string]$Type, [string]$Resumes) {
+    $r = if ($Resumes -eq '') { '' } else { ",`"resumes`":$Resumes" }
+    return "{`"subagent_type`":`"$Type`",`"model_param`":null,`"model`":`"claude-sonnet-5-5`"$r}"
+}
+function Dl9Loop([string]$Type, [string]$Resumes, [string]$AgentId = 'null', [string]$Models = '["claude-sonnet-5-5"]') {
+    return (DlLoop 'agent-tool' $Models '["high"]' 0 $u '[]' (Dl9Spawn $Type $Resumes) 0 $AgentId)
+}
+$loops9 = @((DlLoop 'main' '["claude-opus-5-5"]' '["xhigh"]' 0 $u '[]'),
+    (Dl9Loop 'ywr-harness:worker' '0' '"a1"'),
+    (Dl9Loop 'ywr-harness:worker' '1' '"a1"'),
+    (Dl9Loop 'ywr-harness:worker' '2' '"a1"'),
+    (Dl9Loop 'ywr-harness:worker' '1' '"a2"'),
+    (Dl9Loop 'Split' '1' '"a3"'),
+    (Dl9Loop 'Split' '2' '"a3"' '["claude-haiku-4-5"]'),
+    (Dl9Loop 'Loose' '1'),
+    (Dl9Loop 'Loose' '1' '7'),
+    (Dl9Loop 'Zero' '0'),
+    (Dl9Loop 'Absent' ''),
+    (Dl9Loop 'Str' '"3"'),
+    (Dl9Loop 'Neg' '-2'),
+    (Dl9Loop 'Bool' 'true')) -join ','
+Write-F $dl9 '.claude/telemetry/delegations/slot-00.json' "{`"schema`":2,`"session_id`":`"resumed`",`"slot`":0,`"updated`":`"a`",`"step_fields`":$fieldsStd,`"loops_dropped`":0,`"loops`":[$loops9]}"
+$rDL9 = Invoke-Retro $dl9 @('--delegations')
+$o9 = $rDL9.Out
+$ok = (Assert-True 'DL9 a row prints the maximum per agent id, summed over agents (a1 max 2 + a2 1), after the loop count' ($rDL9.Code -eq 0 -and $o9 -match 'agent-tool ywr-harness:worker \(model_param none\) · claude-sonnet-5-5 · high — 4 loop\(s\), 3 resume\(s\), 6\.0 s, tokens') $o9) -and $ok
+$ok = (Assert-True 'DL9 an agent split over two rows by its model is credited once: 2 resumes on the haiku row, none on the sonnet row' ($o9 -match 'agent-tool Split \(model_param none\) · claude-haiku-4-5 · high — 1 loop\(s\), 2 resume\(s\), 1\.5 s' -and $o9 -match 'agent-tool Split \(model_param none\) · claude-sonnet-5-5 · high — 1 loop\(s\), 1\.5 s') $o9) -and $ok
+$ok = (Assert-True 'DL9 loops with no string agent_id (null, a number) cannot be matched: each adds its own value' ($o9 -match 'agent-tool Loose \(model_param none\) · claude-sonnet-5-5 · high — 2 loop\(s\), 2 resume\(s\), 3\.0 s') $o9) -and $ok
+$ok = (Assert-True 'DL9 a zero, an absent, a string, a negative and a boolean count read 0 and print no resume text' ($o9 -match 'agent-tool Zero \(model_param none\) · claude-sonnet-5-5 · high — 1 loop\(s\), 1\.5 s' -and $o9 -match 'agent-tool Absent .* — 1 loop\(s\), 1\.5 s' -and $o9 -match 'agent-tool Str .* — 1 loop\(s\), 1\.5 s' -and $o9 -match 'agent-tool Neg .* — 1 loop\(s\), 1\.5 s' -and $o9 -match 'agent-tool Bool .* — 1 loop\(s\), 1\.5 s' -and ([regex]::Matches($o9, 'resume\(s\)')).Count -eq 3) $o9) -and $ok
+$ok = (Assert-True 'DL2 control: a ledger with no resumes prints no resume text anywhere' ($o -notmatch 'resume') $o) -and $ok
+
+# --- SZ: SIZE — an in-scope file that CROSSES 1,000 lines in the checked range (ADR 0171) ---------
+# Three fixture repos and a dozen runs, on purpose: each retro run costs ~0.5 s of this suite's wall time.
+# SZ1 pins the boundary both ways: 999 -> 1000 reports (post >= limit), 1000 -> 1001 stays silent (the
+# crossing is pre < limit, a file already over never reports again). A `>` for `>=` on the post side
+# turns the 1000 run red, a `<=` for `<` on the pre side turns the 1001 run red.
+function Lines([int]$N) { return ('x = 1' + "`n") * $N }
+function Invoke-RetroTraced([string]$Repo, [string[]]$Extra) {
+    # GIT_TRACE logs every git process the run starts; the speed rule is asserted from it (SZ7).
+    $tr = Join-Path $fxBase 'sz-trace.log'
+    Remove-Item -LiteralPath $tr -Force -ErrorAction SilentlyContinue
+    $prevT = $env:GIT_TRACE
+    $env:GIT_TRACE = $tr
+    try { $r = Invoke-Retro $Repo $Extra }
+    finally { if ($null -eq $prevT) { Remove-Item Env:GIT_TRACE -ErrorAction SilentlyContinue } else { $env:GIT_TRACE = $prevT } }
+    $r.Trace = if (Test-Path -LiteralPath $tr) { [IO.File]::ReadAllText($tr) } else { '' }
+    Remove-Item -LiteralPath $tr -Force -ErrorAction SilentlyContinue
+    return $r
+}
+$sz = New-Repo 'size' $CFG
+Write-F $sz 'src/big.py' (Lines 999)
+Commit $sz 'chore: c0 999 lines'
+$szC0 = (& git -C $sz rev-parse HEAD 2>$null).Trim()
+$rSZ1a = Invoke-RetroTraced $sz @()
+# c1: 1000 lines, plus a binary file of 2000 newlines (a NUL in its first bytes) that must never report.
+$szBin = [Text.Encoding]::ASCII.GetBytes((Lines 2000)); $szBin[3] = 0
+Write-F $sz 'src/big.py' (Lines 1000)
+[IO.File]::WriteAllBytes((Join-Path $sz 'src/blob.py'), $szBin)
+Commit $sz 'chore: c1 1000 lines and a binary file'
+$rSZ1b = Invoke-RetroTraced $sz @()
+& git -C $sz tag szmark 2>$null
+Write-F $sz 'src/big.py' (Lines 1001)
+Commit $sz 'chore: c2 1001 lines'
+$rSZ1c = Invoke-Retro $sz @()
+$ok = (Assert-True 'SZ1 999 lines is SILENT' ($rSZ1a.Out -notmatch 'SIZE:') $rSZ1a.Out) -and $ok
+$ok = (Assert-True 'SZ1 999 -> 1000 lines reports the crossing with the new count' ($rSZ1b.Out -match 'SIZE: src/big\.py crossed 1,000 lines \(now 1,000\)') $rSZ1b.Out) -and $ok
+$ok = (Assert-True 'SZ1 1000 -> 1001 is SILENT: a file already over before the range never reports' ($rSZ1c.Out -notmatch 'SIZE:') $rSZ1c.Out) -and $ok
+$ok = (Assert-True 'SZ1 stays advisory (exit 0)' ($rSZ1b.Code -eq 0) "exit=$($rSZ1b.Code)") -and $ok
+$ok = (Assert-True 'SZ4 a binary file reports no SIZE on the HEAD path (fixture: UNMAPPED saw it)' ($rSZ1b.Out -match 'UNMAPPED: new file src/blob\.py' -and $rSZ1b.Out -notmatch 'SIZE: src/blob') $rSZ1b.Out) -and $ok
+
+# SZ7: the speed rule. The 999-line commit touches no large file: NO git grep and NO numstat. The commit
+# that crosses starts both.
+$ok = (Assert-True 'SZ7 fixture: the trace saw both retro runs' ($rSZ1a.Trace -match 'diff-tree' -and $rSZ1b.Trace -match 'diff-tree') "A: $($rSZ1a.Trace)") -and $ok
+$ok = (Assert-True 'SZ7 a commit with no large file starts no git grep and no numstat' ($rSZ1a.Trace -notmatch '\bgrep\b' -and $rSZ1a.Trace -notmatch 'numstat') $rSZ1a.Trace) -and $ok
+$ok = (Assert-True 'SZ7 a commit with a large file starts both' ($rSZ1b.Trace -match '\bgrep\b' -and $rSZ1b.Trace -match 'numstat') $rSZ1b.Trace) -and $ok
+
+# SZ2: a post rev that is not HEAD asks git for both ends. c2 is HEAD, so the tag `szmark` (= c1) is a
+# non-HEAD post: c0..szmark reports at c1 (binary skipped through git's -I too). c0.. ends at HEAD, where
+# the file holds 1001 lines and 999 before: it crosses within the range, still reported.
+$rSZ2a = Invoke-Retro $sz @("$szC0..szmark")
+$rSZ2b = Invoke-Retro $sz @("$szC0..")
+$ok = (Assert-True 'SZ2 a range ending at a tag reports the crossing at that rev (git prints the tag as the prefix)' ($rSZ2a.Out -match 'SIZE: src/big\.py crossed 1,000 lines \(now 1,000\)') $rSZ2a.Out) -and $ok
+$ok = (Assert-True 'SZ2 the binary file is skipped through git on a non-HEAD post rev' ($rSZ2a.Out -match 'UNMAPPED: new file src/blob\.py' -and $rSZ2a.Out -notmatch 'SIZE: src/blob') $rSZ2a.Out) -and $ok
+$ok = (Assert-True 'SZ2 the open range X.. ends at HEAD and reports the crossing with the count at HEAD' ($rSZ2b.Out -match 'SIZE: src/big\.py crossed 1,000 lines \(now 1,001\)') $rSZ2b.Out) -and $ok
+# The file shrinks again: the same range from c0 now ends under the limit and is silent.
+Write-F $sz 'src/big.py' (Lines 5)
+Commit $sz 'chore: c3 shrinks it'
+$rSZ2c = Invoke-Retro $sz @("$szC0..HEAD")
+$ok = (Assert-True 'SZ2 shrunk again at HEAD, c0..HEAD is silent' ($rSZ2c.Out -notmatch 'SIZE:') $rSZ2c.Out) -and $ok
+# A bare rev has no start to compare (git diffs it against the working tree, and the retro reads that rev as
+# the post side): SIZE skips it. Without the skip this run reports big.py as crossing at the old rev.
+$rSZ2d = Invoke-Retro $sz @('szmark')
+$ok = (Assert-True 'SZ2 a bare rev (no start) skips SIZE' ($rSZ2d.Code -eq 0 -and $rSZ2d.Out -notmatch 'SIZE:') $rSZ2d.Out) -and $ok
+$rSZ8c = Invoke-Retro $sz @('--coverage')
+$ok = (Assert-True 'SZ8 with no in-scope file at or over the limit --coverage prints a none line (the binary file is not listed)' ($rSZ8c.Out -match 'files at or over 1,000 lines: none') $rSZ8c.Out) -and $ok
+
+# SZ3: a file ADDED at 1500 lines counts 0 before; a name with a space is read whole. In the next commit a
+# 1200-line file moves INTO scope (its old path is out of scope, so before = 0: a rename can report, ADR 0171)
+# while the 1500-line file is deleted (a deleted file never reports).
+$sz3 = New-Repo 'size-added' $CFG
+Write-F $sz3 'src/my big file.py' (Lines 1500)
+Write-F $sz3 'src/edge.py' (Lines 1000)
+Write-F $sz3 'src/under.py' (Lines 999)
+Write-F $sz3 'tools/moved.py' (Lines 1200)
+Write-F $sz3 'other/huge.txt' (Lines 3000)
+Commit $sz3 'chore: add files of several sizes'
+$rSZ3 = Invoke-Retro $sz3 @()
+$ok = (Assert-True 'SZ3 an added 1500-line file reports, a name with a space whole' ($rSZ3.Out -match 'SIZE: src/my big file\.py crossed 1,000 lines \(now 1,500\)') $rSZ3.Out) -and $ok
+$ok = (Assert-True 'SZ3 a file at exactly 1000 reports, one at 999 and an out-of-scope one never do' ($rSZ3.Out -match 'SIZE: src/edge\.py crossed 1,000 lines \(now 1,000\)' -and $rSZ3.Out -notmatch 'SIZE: src/under\.py' -and $rSZ3.Out -notmatch 'SIZE: [^\n]*(huge|moved)\.') $rSZ3.Out) -and $ok
+# SZ8: --coverage lists each tracked in-scope file at or over the limit with its count, biggest first.
+$rSZ8 = Invoke-Retro $sz3 @('--coverage')
+$sz8List = $rSZ8.Out.Substring($rSZ8.Out.IndexOf('-- files at or over'))   # the unowned list above names under.py too
+$ok = (Assert-True 'SZ8 --coverage lists the two in-scope files at or over 1,000 lines with their counts' ($sz8List -match 'tracked at HEAD\): 2' -and $sz8List -match 'src/my big file\.py\t1,500' -and $sz8List -match 'src/edge\.py\t1,000') $rSZ8.Out) -and $ok
+$ok = (Assert-True 'SZ8 and lists neither the 999-line file nor the out-of-scope ones; the larger file comes first' ($sz8List -notmatch 'under\.py' -and $sz8List -notmatch 'huge\.txt' -and $sz8List -notmatch 'moved\.py' -and $sz8List.IndexOf('my big file') -lt $sz8List.IndexOf('edge.py')) $rSZ8.Out) -and $ok
+& git -C $sz3 mv 'tools/moved.py' 'src/moved.py' 2>$null
+& git -C $sz3 rm -q 'src/my big file.py' 2>$null
+Commit $sz3 'chore: move one file into scope, delete another'
+$rSZ3b = Invoke-Retro $sz3 @()
+$ok = (Assert-True 'SZ3 a 1200-line file renamed into scope reports (absent before counts 0)' ($rSZ3b.Out -match 'SIZE: src/moved\.py crossed 1,000 lines \(now 1,200\)') $rSZ3b.Out) -and $ok
+$ok = (Assert-True 'SZ3 the deleted file never reports' ($rSZ3b.Out -notmatch 'my big file') $rSZ3b.Out) -and $ok
+
+# SZ5: the HEAD path is a pre-filter, git has the last word. a.py: HEAD's blob holds 999 lines while the
+# working tree holds 1200 (a retro with no exact confirm would print "now 1,200"). b.py names the residual
+# (spec 0007 §3.4): HEAD holds 1000 (a real crossing), an unstaged edit shortened the file, and it stays hidden.
+$sz5 = New-Repo 'size-worktree' $CFG
+Write-F $sz5 'src/a.py' (Lines 5)
+Commit $sz5 'chore: small'
+Write-F $sz5 'src/a.py' (Lines 999)
+Write-F $sz5 'src/b.py' (Lines 1000)
+Commit $sz5 'chore: 999 and 1000 at HEAD'
+Write-F $sz5 'src/a.py' (Lines 1200)
+Write-F $sz5 'src/b.py' (Lines 10)
+$rSZ5 = Invoke-Retro $sz5 @()
+$ok = (Assert-True 'SZ5 fixture: the run saw the commit (UNMAPPED names b.py)' ($rSZ5.Out -match 'UNMAPPED: new file src/b\.py') $rSZ5.Out) -and $ok
+$ok = (Assert-True 'SZ5 a working tree over the limit above a HEAD blob under it is no crossing' ($rSZ5.Out -notmatch 'SIZE: src/a\.py') $rSZ5.Out) -and $ok
+$ok = (Assert-True 'SZ5 residual: an unstaged edit that shortens the file hides its crossing' ($rSZ5.Out -notmatch 'SIZE: src/b\.py') $rSZ5.Out) -and $ok
+
+# SZ6: an empty source_scope disables SIZE with the other scope checks (the K fixture declares none).
+Write-F $k 'src/big.py' (Lines 1500)
+Commit $k 'chore: big, no scope'
+$rSZ6 = Invoke-Retro $k @()
+$ok = (Assert-True 'SZ6 an empty scope disables SIZE' ($rSZ6.Out -notmatch 'SIZE:') $rSZ6.Out) -and $ok
 
 # DL6: SLICE_RETRO=0 skips the per-commit run, never an explicit --delegations request (ADR 0120).
 $prevSR = $env:SLICE_RETRO
