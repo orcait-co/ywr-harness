@@ -12,6 +12,15 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.69.15 — 2026-10-26
+
+- 플러그인 업데이트 전(0.69.11 미만)에 돌린 adversarial review의 digest로도 `/ywr-harness:slice-close`의 fix proof 단계를 통과할 수 있습니다(ADR 0173, dist 이슈 #11).
+  예전 digest에는 `high_ids`가 없으므로 `fix_proof.py check`가 `confirmed N (hX mY lZ)`와 `rejected R` 수를 대신 읽습니다.
+- check가 확정 high 수만큼 키 `H1`, `H2`, …를 직접 만듭니다. `H<n>`은 review 결과 `confirmed` 목록의 n번째 high이며, 각 키는 지금처럼 증명하거나 waive합니다.
+  예전 digest에는 rejected 지적의 심각도가 없으므로 `rejected`가 1 이상이면 check가 exit 3으로 끝나고, owner가 그 지적들을 확인합니다.
+  이때 review 결과의 rejected 지적마다 심각도, 제목, 투표 결과를 질문에 인용합니다. 두 번째 전체 review는 필요 없습니다.
+- `check`가 exit 2로 끝나면(digest·키·git·journal 입력을 읽지 못함) close는 고친 입력으로 exit 0, 1, 3 중 하나가 나올 때까지 멈춘다는 규칙을 SKILL.md에 적었습니다.
+
 ## v0.69.14 — 2026-10-26
 
 - slice 중간에 내린 결정을 한 줄씩 남기는 `scripts/harness/slice_note.py`가 생겼습니다(ADR 0172).

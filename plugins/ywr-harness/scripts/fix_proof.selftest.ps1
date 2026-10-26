@@ -4,7 +4,8 @@
 # moved the tree itself. Each of those must stay MISSING, and the check must exit 1 on it. A run must
 # also record the exit code it saw, and a command that cannot start must leave no record. The keys come
 # from the digest's counted high_ids, so the closer cannot drop one, and a waiver never turns the check
-# green: it exits 3 for the owner.
+# green: it exits 3 for the owner. A digest older than ADR 0169 has no ids (ADR 0173): the script names
+# one H key per confirmed high from the count, and a rejected count above 0 goes to the owner.
 #
 # One throwaway git repo under the system temp root walks the whole sequence; P19 alone uses a
 # directory outside git. Every case reads the script's output and exit code. The test commands check a
@@ -81,11 +82,13 @@ $ok = (Assert-True 'P4 a command that cannot start exits 2 and says nothing was 
 $r = Invoke-Proof $repo @('run', 'F12', '--', $exe, '-c', $gen)
 $ok = (Assert-True 'P21a a command that writes a non-ignored file is named: its run cannot count' ($r.Code -eq 0 -and $r.Out -match 'proof F12: run exit 1' -and $r.Out -match 'proof F12: note — the command changed the tree') "exit=$($r.Code) out=$($r.Out)") -and $ok
 $null = Invoke-Proof $repo @('run', 'F12', '--', $exe, '-c', $gen)
+$null = Invoke-Proof $repo @('run', 'H1', '--', $exe, '-c', $fixed)
 
 Set-Content -LiteralPath (Join-Path $repo 'ok.txt') -Value 'fixed' -NoNewline
 $null = Invoke-Proof $repo @('run', $F1, '--', $exe, '-c', $cargo)
 $null = Invoke-Proof $repo @('run', $F2, '--', $exe, '-c', 'pass')
 $null = Invoke-Proof $repo @('run', 'F12', '--', $exe, '-c', $gen)
+$null = Invoke-Proof $repo @('run', 'H1', '--', $exe, '-c', $fixed)
 # F3 fails and passes at ONE tree: `flag` is ignored, so creating it changes the exit, not the tree.
 $null = Invoke-Proof $repo @('run', $F3, '--', $exe, '-c', $flag)
 Set-Content -LiteralPath (Join-Path $repo 'flag') -Value 'x' -NoNewline
@@ -116,8 +119,29 @@ $r = Invoke-Proof $repo @('check', '--digest', (Get-Digest @($F1, $R1) -Last))
 $ok = (Assert-True 'P15b an R id as the last digest field parses, and a waiver exits 3 for the owner, never green' ($r.Code -eq 3 -and $r.Out -match "fix proof: OWNER — 1 proven; waived $R1 need the owner" -and $r.Out -notmatch 'fix proof: OK') "exit=$($r.Code) out=$($r.Out)") -and $ok
 $r = Invoke-Proof $repo @('check', '--digest', "confirmed 3 (h3 m0 l0) · high_ids 3: $F1,$F2 · coverage full")
 $ok = (Assert-True 'P15c a high_ids list shorter than its count exits 2: a cut paste never drops a key' ($r.Code -eq 2 -and $r.Out -match 'high_ids counts 3 but lists 2') "exit=$($r.Code) out=$($r.Out)") -and $ok
-$r = Invoke-Proof $repo @('check', '--digest', 'confirmed 1 (h1 m0 l0) · rejected 0 · coverage full', $F1)
-$ok = (Assert-True 'P15d a digest without high_ids exits 2 even when keys are passed' ($r.Code -eq 2 -and $r.Out -match 'carries no `high_ids` field') "exit=$($r.Code) out=$($r.Out)") -and $ok
+$r = Invoke-Proof $repo @('check', '--digest', 'confirmed 1 (h1 m0 l0) · multi_lens 0 · coverage full', $F1)
+$ok = (Assert-True 'P15d a digest with neither high_ids nor the old rejected count exits 2 even when keys are passed' ($r.Code -eq 2 -and $r.Out -match 'carries no `high_ids` field and no counts') "exit=$($r.Code) out=$($r.Out)") -and $ok
+$r = Invoke-Proof $repo @('check', '--digest', 'confirmed 1 (h1 m0 l0) · rejected 0 · high_ids 1: bogus · coverage full', $F1)
+$ok = (Assert-True 'P15j a high_ids field that does not parse exits 2, never read as an old digest' ($r.Code -eq 2 -and $r.Out -match '`high_ids` field does not parse') "exit=$($r.Code) out=$($r.Out)") -and $ok
+# A new digest prints `rejected R · high_ids ...`, so a paste cut right after `rejected R` must not read as an old one.
+$cut = 'confirmed 1 (h1 m0 l0) · multi_lens 0 · out_of_scope_confirmed 0 · nits 0 · rejected 0'
+$cutA = Invoke-Proof $repo @('check', '--digest', $cut)
+$cutB = Invoke-Proof $repo @('check', '--digest', "$cut · ")
+$ok = (Assert-True 'P15l a new digest cut short after its rejected count exits 2, never read as an old digest' ($cutA.Code -eq 2 -and $cutB.Code -eq 2 -and $cutA.Out -match 'carries no `high_ids` field' -and $cutA.Out -notmatch 'keys H1') "exit=$($cutA.Code)/$($cutB.Code) out=$($cutA.Out) $($cutB.Out)") -and $ok
+# ADR 0173: a digest from a workflow older than ADR 0169 (dist issue #11's line, verbatim apart from its cut tail).
+$r = Invoke-Proof $repo @('check', '--digest', 'confirmed 10 (h0 m4 l6) · multi_lens 2 · out_of_scope_confirmed 0 · nits 1 · rejected 1 · coverage full · tier full · shards 4 · pins opus-low · canary_ok true · full lists follow (confirmed, out_of_scope_confirmed, nits_unverified, rejected, stats)')
+$ok = (Assert-True 'P15f an old digest with h0 and a rejected finding exits 3 for the owner, never green and never 2' ($r.Code -eq 3 -and $r.Out -match "fix proof: keys none from the pre-ADR 0169 digest's confirmed high count 0 \(rejected 1" -and $r.Out -match "fix proof: OWNER — 0 proven; the pre-ADR 0169 digest's rejected 1 \(") "exit=$($r.Code) out=$($r.Out)") -and $ok
+$r = Invoke-Proof $repo @('check', '--digest', 'confirmed 2 (h0 m2 l0) · multi_lens 0 · rejected 0 · coverage full')
+$ok = (Assert-True 'P15g an old digest with h0 and rejected 0 needs no key and no owner: exit 0' ($r.Code -eq 0 -and $r.Out -match "confirmed high count 0 \(rejected 0, ADR 0173\)" -and $r.Out -match 'fix proof: OK — 0 proven') "exit=$($r.Code) out=$($r.Out)") -and $ok
+$r = Invoke-Proof $repo @('check', '--digest', 'confirmed 2 (h2 m0 l0) · rejected 0 · coverage full', $F1)
+$ok = (Assert-True 'P15h an old digest names its keys from the high count: a passed key only adds, and an unproven H key fails with exit 1' ($r.Code -eq 1 -and $r.Out -match "fix proof: keys H1,H2 from the pre-ADR 0169 digest's confirmed high count 2 \(rejected 0, ADR 0173\) \+ $F1 added" -and $r.Out -match 'proof H1: PROVEN' -and $r.Out -match 'without a proof: H2;') "exit=$($r.Code) out=$($r.Out)") -and $ok
+$r = Invoke-Proof $repo @('check', '--digest', 'confirmed 1 (h1 m0 l0) · rejected 0 · coverage full')
+$ok = (Assert-True 'P15k an old digest whose H keys are all proven and whose rejected count is 0 exits 0 with no owner item' ($r.Code -eq 0 -and $r.Out -match 'fix proof: OK — 1 proven') "exit=$($r.Code) out=$($r.Out)") -and $ok
+$null = Invoke-Proof $repo @('waive', 'H2', '--reason', 'valid, no action: kept as O200')
+$r = Invoke-Proof $repo @('check', '--digest', 'confirmed 2 (h2 m0 l0) · rejected 0 · COVERAGE LOSS: dead_skeptics 1 · tier full')
+$ok = (Assert-True 'P15m a waived H key of an old digest with rejected 0 exits 3 for the owner, never green' ($r.Code -eq 3 -and $r.Out -match 'fix proof: OWNER — 1 proven; waived H2 need the owner' -and $r.Out -notmatch "digest's rejected") "exit=$($r.Code) out=$($r.Out)") -and $ok
+$r = Invoke-Proof $repo @('check', '--digest', 'confirmed 1 (h1 m0 l0) · rejected 1 · coverage full', $R1)
+$ok = (Assert-True 'P15i an old digest names the waivers and its rejected count in one owner line' ($r.Code -eq 3 -and $r.Out -match "fix proof: OWNER — 1 proven; waived $R1 and the pre-ADR 0169 digest's rejected 1 \(") "exit=$($r.Code) out=$($r.Out)") -and $ok
 
 Set-Content -LiteralPath (Join-Path $repo 'later.txt') -Value 'edit after the proof' -NoNewline
 $r = Invoke-Proof $repo @('check', '--digest', (Get-Digest @($F1, $F2)))

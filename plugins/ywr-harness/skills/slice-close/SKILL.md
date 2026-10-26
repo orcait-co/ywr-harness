@@ -169,7 +169,15 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    every key proven. **Exit 1** — a key has no proof or waiver: the close stops. **Exit 3** — only
    waivers remain: the session never accepts its own waiver, so the ready report lists them, and
    in this owner-typed close ask the owner about each waived key with its reason
-   (AskUserQuestion), quote each answer into the close record, and stop on any refusal. A command
+   (AskUserQuestion), quote each answer into the close record, and stop on any refusal. **Exit 2**
+   — `check` could not read its input (the digest, a key, the git snapshot or the journal): it
+   checked nothing, so the close stops until a fixed input reaches exit 0, 1 or 3. **A review older
+   than ADR 0169** prints no `high_ids` (ADR 0173): `check` reads the old line's counts instead and
+   names the keys itself — `H<n>` is the n-th high in the review's `confirmed` list, in its order;
+   the closer never names that set. With `h0` and `rejected 0` there is no key. A `rejected` count
+   above 0 makes `check` exit 3, because the line shows no rejected severity: the owner answers the
+   old digest's rejected findings — quote each one's severity, title and votes from the review's
+   return in that question. A second full review is not needed for this. A command
    that passed before the fix proves nothing; the check reports it MISSING. The skeptic leg above
    still runs: the proof shows the scenario closed, the leg looks for damage beside it.
 

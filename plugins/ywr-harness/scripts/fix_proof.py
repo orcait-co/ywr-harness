@@ -12,11 +12,17 @@ The closer does not choose which keys `check` covers. The review's digest names 
 it exits 3, and the close waits for the owner to accept each waived key in the owner-typed
 /slice-close. Without that, leaving out one key or writing one reason was enough to pass.
 
+A review run on a plugin older than ADR 0169 prints no `high_ids` (ADR 0173). `check` then reads the
+counts that line does print, and names one key per confirmed high itself (`H1`, `H2`, ...): the closer
+never names the key set (ADR 0169 option H). A rejected finding's severity is not on the line, so an old
+digest with `rejected` above 0 exits 3, and the owner answers it.
+
 Usage:
   python fix_proof.py run <key> -- <command> [args...]   # run at the repo root, record the exit code
   python fix_proof.py waive <key> --reason "<text>"      # no command can show this fix; say why
   python fix_proof.py check --digest "<digest>" [<key> ...]
-      # 0 all proven · 1 a key has no proof · 3 only waivers left, each needs the owner
+      # 0 all proven · 1 a key has no proof · 3 only owner items left: waivers, an old digest
+      # · 2 an input the check cannot read (digest, key, git, journal)
   python fix_proof.py --repo <dir> ...
 
 A key is PROVEN when an exit-0 run has the CURRENT tree and an EARLIER run of the same argv exited
@@ -55,6 +61,12 @@ KEY_RX = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,31}")
 # ids of the in-scope confirmed highs and of the rejected highs that not every vote refuted.
 ID = r"[FR][0-9]+-[0-9a-f]{8}"
 HIGH_IDS_RX = re.compile(rf"(?:^| · )high_ids (?:none|([0-9]+): ({ID}(?:,{ID})*))(?= · |$)")
+# The counts a workflow older than ADR 0169 prints (ADR 0173): in-scope confirmed by severity, and every
+# rejected finding at any severity. The line shows no rejected severity, so only `rejected 0` rules a high out.
+# The old line goes on from `rejected R` to its coverage field; a new one goes on to `high_ids`. So a new
+# digest cut short right after `rejected R` never reads as an old one.
+LEGACY_RX = re.compile(r"^confirmed [0-9]+ \(h([0-9]+) m[0-9]+ l[0-9]+\)(?= · )")
+REJECTED_RX = re.compile(r"(?:^| · )rejected ([0-9]+) · (?:coverage full|COVERAGE LOSS: )")
 SHORT = 12
 
 
@@ -150,18 +162,31 @@ def proof_main() -> int:
     p_check.add_argument("keys", nargs="*", help="keys beyond the digest's high_ids, such as a fixed O<n>")
     args = ap.parse_args()
 
+    legacy = None  # (confirmed highs, rejected) of a digest older than ADR 0169
     if args.cmd == "check":
         m = HIGH_IDS_RX.search(args.digest)
-        if not m:
-            hc.say("fix proof: FAILED — the digest carries no `high_ids` field. Pass the review's digest line "
-                   "verbatim; a workflow older than ADR 0169 prints none, so this close cannot be checked.")
-            return 2
-        required = m.group(2).split(",") if m.group(2) else []
-        if m.group(1) and int(m.group(1)) != len(required):
-            # A paste cut short after a comma would still parse; the count is what catches it.
-            hc.say(f"fix proof: FAILED — high_ids counts {m.group(1)} but lists {len(required)}. Pass the "
-                   "digest line whole.")
-            return 2
+        if m:
+            required = m.group(2).split(",") if m.group(2) else []
+            if m.group(1) and int(m.group(1)) != len(required):
+                # A paste cut short after a comma would still parse; the count is what catches it.
+                hc.say(f"fix proof: FAILED — high_ids counts {m.group(1)} but lists {len(required)}. Pass the "
+                       "digest line whole.")
+                return 2
+        else:
+            if "high_ids" in args.digest:
+                # A damaged new digest, never an old one.
+                hc.say("fix proof: FAILED — the digest's `high_ids` field does not parse. Pass the review's digest "
+                       "line verbatim.")
+                return 2
+            lm, rm = LEGACY_RX.match(args.digest), REJECTED_RX.search(args.digest)
+            if not (lm and rm):
+                hc.say("fix proof: FAILED — the digest carries no `high_ids` field and no counts of a workflow "
+                       "older than ADR 0169 (`confirmed N (hN mN lN)` first, then `rejected N` and the coverage "
+                       "field). Pass the review's digest line verbatim.")
+                return 2
+            legacy = (int(lm.group(1)), int(rm.group(1)))
+            # The old line names no ids, so the count names the keys: the closer can add a key, never drop one.
+            required = [f"H{n}" for n in range(1, legacy[0] + 1)]
         keys = list(dict.fromkeys(required + args.keys))
     else:
         keys = [args.key]
@@ -235,7 +260,9 @@ def proof_main() -> int:
         return 0
 
     added = [k for k in keys if k not in required]
-    hc.say(f"fix proof: keys {','.join(required) or 'none'} from the digest's high_ids"
+    source = (f"the pre-ADR 0169 digest's confirmed high count {legacy[0]} (rejected {legacy[1]}, ADR 0173)"
+              if legacy else "the digest's high_ids")
+    hc.say(f"fix proof: keys {','.join(required) or 'none'} from {source}"
            + (f" + {','.join(added)} added" if added else ""))
     recs = [r for r in read_records(path) if r.get("head") == head]
     by_state: dict[str, list[str]] = {"PROVEN": [], "WAIVED": [], "MISSING": []}
@@ -248,9 +275,14 @@ def proof_main() -> int:
         hc.say(f"fix proof: FAILED — {len(by_state['MISSING'])} of {len(keys)} key(s) without a proof: "
                f"{', '.join(by_state['MISSING'])}; the close stops (ADR 0169)")
         return 1
-    if by_state["WAIVED"]:
+    # The line shows no rejected severity, so a rejected finding of an old digest is the owner's call.
+    old = legacy is not None and legacy[1] > 0
+    if by_state["WAIVED"] or old:
         # Never green on a waiver: the session that wrote the reason cannot also accept it.
-        hc.say(f"fix proof: OWNER — {len(by_state['PROVEN'])} proven; waived {', '.join(by_state['WAIVED'])} "
+        items = ([f"waived {', '.join(by_state['WAIVED'])}"] if by_state["WAIVED"] else []) + (
+            [f"the pre-ADR 0169 digest's rejected {legacy[1]} (a severity the line does not show, ADR 0173)"]
+            if old else [])
+        hc.say(f"fix proof: OWNER — {len(by_state['PROVEN'])} proven; {' and '.join(items)} "
                f"need the owner's acceptance in /ywr-harness:slice-close before the close goes on · {where} (ADR 0169)")
         return 3
     hc.say(f"fix proof: OK — {len(by_state['PROVEN'])} proven · {where}")
