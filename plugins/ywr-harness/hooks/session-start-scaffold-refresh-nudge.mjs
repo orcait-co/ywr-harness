@@ -1,6 +1,6 @@
 // SessionStart (registered WITHOUT a matcher, deliberately — the drift condition below is the
 // filter, and re-speaking after `compact` re-injects a fact summaries lose) — scaffold-refresh
-// nudge, suggest-only (ADR 0033).
+// nudge, suggest-only (ADR 0033); also the carrier of the slice-note rule (ADR 0172, see below).
 //
 // The gap this closes is ADR 0014's recorded follow-up: toolchain propagation is pull-based (a
 // plugin improvement reaches a scaffolded repo only on the next /ywr-harness:harness-init run),
@@ -83,9 +83,20 @@
 //
 // Payload and output contract: same as the sibling nudge (verified against the official hooks
 // reference 2026-08-05) — cwd per firing; systemMessage AND hookSpecificOutput.additionalContext
-// both consumed; plain stdout on exit 0 becomes context, so every non-speaking path prints
-// NOTHING. SessionStart cannot block anything; this hook does not try — exit 0 always, fail-open
-// like its siblings. This hook writes nothing, ever.
+// both consumed; plain stdout on exit 0 becomes context, so every path that has nothing to say
+// prints NOTHING. SessionStart cannot block anything; this hook does not try — exit 0 always,
+// fail-open like its siblings. This hook writes nothing, ever.
+//
+// Slice-note rule (ADR 0172 decision 8, option P): when the repo root holds scripts/harness/slice_note.py
+// as a FILE, the hook also states the rule for writing a slice note, as English additionalContext. The hook
+// is matcher-less, so the rule rides every source, a compaction included. It is the one output that is not a
+// drift finding: with NO drift it is the whole output (additionalContext only, no systemMessage), so the
+// "no drift = silent" steady state holds only for a repo WITHOUT the vendored script. On a drift emit (the
+// stale-basis, upstream-ahead and direction branches) the rule is appended to that ctx after a blank line.
+// The SCHEMA-DRIFT, EXTRACTION-DRIFT and not-scaffolded paths carry no rule: the rule is a fact about a
+// scaffold the hook has verified. The only cost is one isFile — no process, no git call. Size: the host
+// caps each hook string at 10,000 characters (hooks reference); the longest drift ctx is about 1,200
+// characters and the rule about 600, so the sum stays far under it.
 //
 // The two JSON FILES it reads (the plugin manifest, the installed-plugins registry) go through hook-lib's
 // parseJsonLoose — the leniency PowerShell 7's ConvertFrom-Json had (comments, trailing commas, ...);
@@ -114,6 +125,10 @@ function isFile(p) {
 
 // git calls go through hook-lib's gitRun (PATH-resolved, absolute spawn, bytes decoded once).
 const git = gitRun
+
+// The slice-note rule (ADR 0172). ASCII only, one paragraph; the vendored path is what a session can name
+// (it cannot expand ${CLAUDE_PLUGIN_ROOT}).
+const SLICE_NOTE_RULE = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `python scripts/harness/slice_note.py add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner\'s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
 
 function firstLine(text) {
   const i = text.indexOf('\n')
@@ -556,6 +571,11 @@ function main(payload) {
   }
   if (!sentinels.some(s => isFile(path.join(root, s)))) return
 
+  // The slice-note rule (ADR 0172): stated only where the vendored script is a file. '' = no rule.
+  const rule = isFile(path.join(root, 'scripts/harness/slice_note.py')) ? SLICE_NOTE_RULE : ''
+  // ctx plus the rule, a blank line between; ctx alone when the repo has no script.
+  const withRule = ctx => (rule ? ctx + '\n\n' + rule : ctx)
+
   // EOL-insensitive comparable text: Latin1 maps bytes 1:1 to chars (byte-faithful both ways), so
   // this is a byte comparison modulo 0x0D, not a decode — a real encoding or BOM change still
   // differs.
@@ -581,7 +601,11 @@ function main(payload) {
     } catch { drifted.push(`${rel} (unreadable)`) }
   }
 
-  if (!drifted.length) return
+  if (!drifted.length) {
+    // No drift: the rule is the whole output, no systemMessage (a person has nothing to act on).
+    if (rule) emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rule } })
+    return
+  }
 
   let ver = 'version unknown'
   try {
@@ -672,7 +696,7 @@ function main(payload) {
   if (staleActive) {
     const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${drifted.length}개의 벤더링된 툴체인 파일이 이 세션의 ywr-harness (${ver}) 템플릿과 다릅니다 — ${fileList} — 하지만 비교 기준이 STALE합니다: 이 세션은 여전히 ${ver}를 실행 중이지만 이 머신에 등록된 설치는 ${staleActive}입니다. 판정이 뒤집혔을 수 있습니다 (저장소가 단순히 더 새로운 설치와 일치할 수 있습니다). /reload-plugins를 실행하거나 (또는 세션을 재시작) 다음 세션 시작 시 다시 확인하세요; 이 세션에서는 /ywr-harness:harness-init을 실행하지 마세요 — ${ver} 템플릿을 배치하게 됩니다 (ADR 0039). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
     const ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), but the verdict basis is STALE: this session's ywr-harness hooks and skills still run ${ver} while the machine's registered install is ${staleActive} — a running session keeps the plugin version it loaded until /reload-plugins or a restart. The drift verdict may therefore be inverted: the repo may already match the newer install's templates. Do NOT run or suggest /ywr-harness:harness-init from this session — the loaded skill would place the ${ver} templates and could REVERT correctly refreshed files (ADR 0039). The remedy is /reload-plugins or a session restart, after which the next session start re-checks against the updated plugin. This surface is suggest-only (ADR 0033).`
-    emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
+    emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
     return
   }
 
@@ -739,7 +763,7 @@ function main(payload) {
     const dateShow = inline(hit.date, 40)
     const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause} — 그리고 ${refShow}에 이 체크아웃에 없고 스캐폴드 스탬프(.harness-version)를 변경하는 커밋이 있습니다 (최신 ${shaShow}, ${dateShow}) — 다른 클론이 이 저장소를 스캐폴딩하거나 리프레시한 뒤 push한 것입니다. 지금 /ywr-harness:harness-init을 실행하지 마세요; 먼저 pull(${refShow}를 merge 또는 rebase)하세요. 다음 세션 시작 시 다시 확인합니다. ref는 마지막 fetch 시점 기준입니다 (ADR 0135). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
     const ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), but ${refShow} has commit(s) not in this checkout that change the scaffold stamp, .harness-version (newest ${shaShow}, ${dateShow}): another clone scaffolded or refreshed this repo and pushed (ADR 0135). The drift is therefore most likely this checkout lagging, not the repo lagging the plugin. Do NOT run or suggest /ywr-harness:harness-init from this session — it would place files that collide with the pushed scaffold at the next pull, or put older templates over a newer refresh. Offer pulling instead (merge or rebase ${refShow}); the next session start re-checks. The refs are remote-tracking refs as of the last fetch; no network was used. This surface is suggest-only (ADR 0033).`
-    emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
+    emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
     return
   }
 
@@ -758,7 +782,7 @@ function main(payload) {
     sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause}. CAVEAT — 이 비교는 direction-blind 상태입니다 (읽을 수 있는 .harness-version 스탬프 없음): 만약 다른 작성자가 이 머신보다 더 새로운 플러그인으로 이 저장소를 리프레시했다면, 여기서 /ywr-harness:harness-init을 재실행하면 그 리프레시를 REVERT하게 됩니다 (ADR 0042). 실행하기 전에 설치된 플러그인이 최신인지 확인하세요 (/ywr-harness:update); 그 외에는 재실행이 안전합니다 (툴체인 갱신, 시드 보존, 삭제 없음 — ADR 0010). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
     ctx = `The repo at ${rootShow} carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates (${ver}): ${fileList}. No readable .harness-version stamp, so the comparison is DIRECTION-BLIND: if this working tree deliberately carries NEWER copies than the installed plugin (the canon mid-slice, or a multi-writer repo refreshed by a newer plugin), a re-run would REVERT them to the older installed templates (ADR 0042). Offer the re-run when the work touches gates, hooks, or CI, after confirming the installed plugin is current; do not run it unasked — this surface is suggest-only (ADR 0033).`
   }
-  emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
+  emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
 }
 
 try {

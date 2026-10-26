@@ -125,6 +125,7 @@ SCAFFOLD_CLAIMS: frozenset = frozenset({
     "scripts/harness/harness_gates.py",
     "scripts/harness/harness_retro.py",
     "scripts/harness/verify_map.py",
+    "scripts/harness/slice_note.py",
     "scripts/harness/resolve-base.sh",
     ".github/workflows/harness-gates.yml",
     "scripts/harness/.gitignore",

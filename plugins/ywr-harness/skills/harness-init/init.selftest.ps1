@@ -115,7 +115,9 @@ $EXPECT = @(
     # K-O, and the hooks' own behaviour is githooks.selftest.ps1.
     '.githooks/pre-commit', '.githooks/pre-push',
     # Slice retro gate (ADR 0017). post-commit is GUARDED rather than TOOLCHAIN — cases Q1/Q2.
-    'scripts/harness/harness_retro.py', '.githooks/post-commit', '.githooks/slice-retro-ignore'
+    'scripts/harness/harness_retro.py', '.githooks/post-commit', '.githooks/slice-retro-ignore',
+    # Session-time decision notes (ADR 0172), named from the seeded CLAUDE.md.
+    'scripts/harness/slice_note.py'
 )
 $EXPECT_N = $EXPECT.Count
 

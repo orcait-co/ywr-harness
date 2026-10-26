@@ -52,6 +52,10 @@
   `python scripts/harness/harness_gates.py --tree` printed after the final edit, and asks the owner
   to type the command. The close reuses the report only while it is verbatim in the same session
   and that line is unchanged; a new session or a compaction summary runs the full close.
+- Record each decision of a slice when you make it, with its reason:
+  `python scripts/harness/slice_note.py add <decision|rejected|owner|fact|risk> "<what and why>"`.
+  The notes live outside the work tree. A compaction re-injects them, and `/ywr-harness:slice-close`
+  reads them into the close as input, never proof (ywr-harness ADR 0172).
 - Close each slice with a commit plus an updated handoff — the resume file the `handoff` key in
   `.harness.json` names. A value ending in `/` is a DIRECTORY holding one resume file per work
   line (multi-writer repos), each named after the work line, never after a person (ywr-harness

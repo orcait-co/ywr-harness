@@ -12,6 +12,12 @@
 # cwd-fallback carries the same verdicts. Only the subdirectory-resolution case needs git and
 # is a reported SKIP without it (the Linux container), never a silent pass.
 #
+# Slice-note rule (ADR 0172): a scaffold that holds scripts/harness/slice_note.py is no longer silent when it
+# has no drift: the hook then states the rule as additionalContext, and only that. The cases that used to assert
+# byte-silence on a clean scaffold assert the rule instead (Assert-RuleOnly, the rule text pinned verbatim);
+# the drift cases also assert the rule follows the drift text (Assert-RuleTail); the SCHEMA-DRIFT, EXTRACTION-DRIFT,
+# foreign-tree and no-scaffold paths assert it is absent.
+#
 # Every match-based case carries MustNotMatch as well as MustMatch (the empty-MustNotMatch
 # class), enforced by the shared assertion core.
 $ErrorActionPreference = 'Stop'
@@ -70,8 +76,44 @@ function Assert-EmptyStdout([string]$Name, [string]$Out) {
     Write-Host "PASS [$Name]" -ForegroundColor Green
     return $true
 }
-function New-Payload([hashtable]$Fields) {
-    $o = @{ hook_event_name = 'SessionStart'; session_id = 'selftest'; source = 'startup' } + $Fields
+# The slice-note rule (ADR 0172), copied VERBATIM as a pin: a reword in the hook must fail here and be a decision.
+$ruleText = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `python scripts/harness/slice_note.py add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner''s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
+$ruleMark = 'Slice notes \(ywr-harness ADR 0172\)'   # a regex for a MustNotMatch: the rule's own first words
+# A repo with the vendored script and NO drift: the rule is the WHOLE output — additionalContext equal to the
+# rule, event SessionStart, and no systemMessage (nothing for a person to act on). Never "silent" any more.
+function Assert-RuleOnly([string]$Name, [string]$Out) {
+    $fails = @()
+    if ($script:HookExit -ne 0) { $fails += "exit $script:HookExit (want 0 — fail-open contract)" }
+    $sys = ''; $ctx = ''; $evName = ''; $keys = ''
+    try {
+        $j = ConvertFrom-Json $Out.Trim()
+        $sys = [string]$j.systemMessage
+        $keys = ($j.PSObject.Properties.Name -join ',')
+        $ctx = [string]$j.hookSpecificOutput.additionalContext; $evName = [string]$j.hookSpecificOutput.hookEventName
+    }
+    catch { $fails += 'stdout is not valid JSON' }
+    if ($sys) { $fails += "unexpected systemMessage: $sys" }
+    if ($keys -ne 'hookSpecificOutput') { $fails += "top-level keys [$keys] (want only hookSpecificOutput)" }
+    if ($evName -ne 'SessionStart') { $fails += "hookEventName '$evName' (want SessionStart)" }
+    if ($ctx -cne $ruleText) { $fails += "additionalContext is not exactly the rule: [$ctx]" }
+    $script:LastFails = [string[]]$fails
+    return (Write-CaseVerdict -Name $Name -Fail $fails -Detail $Out)
+}
+# A drift verdict: additionalContext must END with the rule, set off by ONE blank line, and the drift text
+# must come first. Run next to the Assert-Nudge of the same output.
+function Assert-RuleTail([string]$Name, [string]$Out) {
+    $fails = @()
+    $ctx = ''
+    try { $ctx = [string](ConvertFrom-Json $Out.Trim()).hookSpecificOutput.additionalContext } catch { $fails += 'stdout is not valid JSON' }
+    if (-not $ctx.EndsWith("`n`n$ruleText")) { $fails += 'additionalContext does not end with a blank line and the rule' }
+    if ($ctx.Length -le $ruleText.Length + 2) { $fails += 'no drift text precedes the rule' }
+    $first = $ctx.IndexOf($ruleText)
+    if ($first -ne $ctx.LastIndexOf($ruleText)) { $fails += 'the rule appears more than once' }
+    if ($ctx.Length -gt 3000) { $fails += "context is $($ctx.Length) characters (the host caps a hook string at 10,000; this one should stay far below)" }
+    return (Write-CaseVerdict -Name $Name -Fail $fails -Detail $Out)
+}
+function New-Payload([hashtable]$Fields, [string]$Source = 'startup') {
+    $o = @{ hook_event_name = 'SessionStart'; session_id = 'selftest'; source = $Source } + $Fields
     return ($o | ConvertTo-Json -Compress)
 }
 
@@ -154,6 +196,7 @@ $ok = (Assert-Nudge 'drifted scaffold at the same version reads as a hand-edit' 
         'REVERT', '제안만 합니다') `
         @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more', '기준이 STALE', 'direction-blind',
         '리프레시: 이 저장소에서', 'NEWER합니다', 'OLDER합니다', 'ADR 0135', '다른 클론')) -and $ok
+$ok = (Assert-RuleTail '1 hand-edit branch: the rule follows the drift text' $out) -and $ok
 
 # 1b. REPO-AHEAD (ADR 0042): stamp newer than the running plugin — the multi-writer everyday
 #     state (another writer refreshed this repo with a newer release). The advice must FLIP:
@@ -167,6 +210,7 @@ $ok = (Assert-Nudge 'repo-ahead stamp flips the advice to update-the-plugin' $ou
         '/ywr-harness:update', '리프레시를 REVERT', '제안만 합니다') `
         @('리프레시: 이 저장소에서', '시드는 보존', '기준이 STALE', 'direction-blind', 'SCHEMA DRIFT',
         'EXTRACTION DRIFT')) -and $ok
+$ok = (Assert-RuleTail '1b repo-ahead branch: the rule follows the drift text' $out) -and $ok
 
 # 1c. REPO-BEHIND: stamp older than the running plugin — the one state where the refresh advice
 #     is measured, not guessed. The pre-0042 uncaveated human banner ('re-run is safe:' without
@@ -180,6 +224,7 @@ $ok = (Assert-Nudge 'repo-behind stamp keeps the refresh advice, direction measu
         '리프레시: 이 저장소에서 /ywr-harness:harness-init', '시드는 보존', '제안만 합니다') `
         @('리프레시를 REVERT', 'direction-blind',
         '기준이 STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+$ok = (Assert-RuleTail '1c repo-behind branch: the rule follows the drift text' $out) -and $ok
 
 # 1d. NO STAMP (every pre-0042 repo): direction-blind — and the caveat must now sit on the
 #     HUMAN surface too, not only in additionalContext: the 2026-08-10 audit's asymmetry
@@ -193,6 +238,7 @@ $ok = (Assert-Nudge 'stampless repo gets the direction-blind caveat' $out `
         '/ywr-harness:update', '제안만 합니다') `
         @('EQUALS', 'NEWER합니다', 'OLDER합니다',
         '기준이 STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+$ok = (Assert-RuleTail '1d direction-blind branch: the rule follows the drift text' $out) -and $ok
 $sysOnly = ''
 try { $sysOnly = [string]((ConvertFrom-Json $out.Trim()).systemMessage) } catch { }
 $ok = (Assert-True '1d the caveat is in the HUMAN banner, not only the context half' `
@@ -266,18 +312,51 @@ New-Item -ItemType Directory -Force -Path (Join-Path $sdir '.harness-version') |
 $out = Invoke-Hook (New-Payload @{ cwd = $sdir })
 $ok = (Assert-Nudge '1g a .harness-version directory is no stamp' $out @('direction-blind') @('NEWER합니다', 'OLDER합니다', 'EQUALS', 'SCHEMA DRIFT')) -and $ok
 
-# 2. freshly scaffolded repo -> byte-silent (the permanent steady state must cost nothing)
+# 2. freshly scaffolded repo -> NO drift, but the scaffold holds slice_note.py (the template map places it), so
+#    the slice-note rule (ADR 0172) is the whole output: additionalContext only, exactly the rule, no systemMessage.
 $out = Invoke-Hook (New-Payload @{ cwd = $fresh })
-$ok = (Assert-EmptyStdout 'fresh scaffold silent' $out) -and $ok
+$ok = (Assert-RuleOnly 'fresh scaffold states only the slice-note rule' $out) -and $ok
 
-# 3. SEED-only edits -> silent: seeds are the repo's decisions, never compared (ADR 0033)
+# 2a. SAME repo on every other source: the hook is matcher-less, so a compaction (and a start, resume, clear, fork)
+#     carries the rule too — it is the one fact a compaction summary loses and this hook re-injects.
+foreach ($src in @('compact', 'startup', 'resume', 'clear', 'fork')) {
+    $out = Invoke-Hook (New-Payload @{ cwd = $fresh } $src)
+    $ok = (Assert-RuleOnly "2a source=$src still states the rule" $out) -and $ok
+}
+
+# 2b. the vendored script absent -> the placement map says it is missing -> drift, named `(missing)`, and NO rule:
+#     the rule is a fact about a scaffold that holds the script. The file must also be a FILE: a directory of that
+#     name is no script (isFile), the same drift and the same absence of the rule.
+$noNote = Join-Path $fx 'repo-nonote'
+Copy-Item -LiteralPath $base -Destination $noNote -Recurse -Force
+Remove-Item -LiteralPath (Join-Path $noNote 'scripts/harness/slice_note.py') -Force
+$out = Invoke-Hook (New-Payload @{ cwd = $noNote })
+$ok = (Assert-Nudge '2b identical placements but slice_note.py absent: drift (missing), no rule' $out `
+        @('1개의 벤더링된 툴체인 파일', 'slice_note\.py \(missing\)', '제안만 합니다') `
+        @($ruleMark, 'SCHEMA DRIFT', 'EXTRACTION DRIFT', 'python scripts/harness/slice_note\.py add')) -and $ok
+$noteDir = Join-Path $fx 'repo-notedir'
+Copy-Item -LiteralPath $noNote -Destination $noteDir -Recurse -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $noteDir 'scripts/harness/slice_note.py') | Out-Null
+$out = Invoke-Hook (New-Payload @{ cwd = $noteDir })
+$ok = (Assert-Nudge '2b a directory named slice_note.py is no script: drift (missing), no rule' $out `
+        @('slice_note\.py \(missing\)') @($ruleMark, 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+
+# 2c. a repo that is scaffolded and DRIFTED, with the script present: the drift text first, then the rule
+#     (see the Assert-RuleTail calls beside the drift cases 1, 1b, 1c, 1d, 10b-2 and 13b for each branch).
+$out = Invoke-Hook (New-Payload @{ cwd = $stale } 'compact')
+$ok = (Assert-Nudge '2c drift on a compact start: the nudge is unchanged' $out `
+        @('repo-stale', '2개의 벤더링된 툴체인 파일', 'hand-edit', '제안만 합니다', [regex]::Escape($ruleText)) `
+        @('SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+$ok = (Assert-RuleTail '2c drift on a compact start: the rule follows the drift text' $out) -and $ok
+
+# 3. SEED-only edits -> no drift: seeds are the repo's decisions, never compared (ADR 0033). The rule only.
 $out = Invoke-Hook (New-Payload @{ cwd = $seed })
-$ok = (Assert-EmptyStdout 'seed edits silent' $out) -and $ok
+$ok = (Assert-RuleOnly 'seed edits state only the rule (no drift)' $out) -and $ok
 
 # 4. line-ending-only difference -> silent: the seed .gitattributes makes CRLF/LF checkout
 #    variance legitimate, so raw byte identity would nudge every clone forever
 $out = Invoke-Hook (New-Payload @{ cwd = $crlf })
-$ok = (Assert-EmptyStdout 'CRLF-only difference silent' $out) -and $ok
+$ok = (Assert-RuleOnly 'CRLF-only difference is no drift (the rule only)' $out) -and $ok
 
 # 4b. EXACT bytes modulo CR (ADR 0033): "everything else — content, encoding, BOM — stays exact". The
 #     pwsh original compared with `-ne`, which ignores letter case and the culture-ignorable U+00AD and
@@ -302,17 +381,17 @@ foreach ($bc in $byteCases) {
     $bci++
     $bd = Add-ByteVariant "repo-bytes$bci" $bc.Mutate
     $out = Invoke-Hook (New-Payload @{ cwd = $bd })
-    if ($bc.Silent) { $ok = (Assert-EmptyStdout "4b $($bc.N)" $out) -and $ok }
+    if ($bc.Silent) { $ok = (Assert-RuleOnly "4b $($bc.N)" $out) -and $ok }
     else {
         $ok = (Assert-Nudge "4b $($bc.N)" $out @('1개의 벤더링된 툴체인 파일', 'docs/build\.sh') `
                 @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\(missing\)', '\(unreadable\)')) -and $ok
     }
 }
 
-# 5. marker-less post-commit -> silent: init.ps1 refuses a foreign file, so a re-run would
+# 5. marker-less post-commit -> no drift (the rule only, no nudge): init.ps1 refuses a foreign file, so a re-run would
 #    change nothing — a nudge here would nag forever (the 0029 foreign-value shape)
 $out = Invoke-Hook (New-Payload @{ cwd = $foreignpc })
-$ok = (Assert-EmptyStdout 'foreign post-commit silent' $out) -and $ok
+$ok = (Assert-RuleOnly 'foreign post-commit is no drift (the rule only)' $out) -and $ok
 
 # 6. marker-carrying post-commit drifted -> counted like any toolchain file
 $out = Invoke-Hook (New-Payload @{ cwd = $ourspc })
@@ -399,6 +478,7 @@ if ($gitOk) {
             'Do NOT run or suggest /ywr-harness:harness-init', 'Offer pulling', '제안만 합니다') `
             @('OLDER합니다', '측정된 것입니다', '리프레시: 이 저장소에서', 'genuinely behind', 'NEWER합니다', 'EQUALS',
             'direction-blind', '기준이 STALE', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+    $ok = (Assert-RuleTail '10b-2 upstream-ahead branch: the rule follows the drift text' $out) -and $ok
     $ok = (Assert-True '10b-2 the sha named is the fetched tip' ($uaSha -match '^[0-9a-f]{4,}$') "sha='$uaSha'") -and $ok
 
     # 10b-3. a feature branch with NO upstream and no origin/HEAD: no candidate ref -> no hit (today's advice) ...
@@ -534,7 +614,7 @@ $GUARD_MARKER = 'ywr-harness:post-commit'
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.mjs')
 $ok = (Assert-Nudge 'unreadable placement map reports EXTRACTION DRIFT, not silence' $out `
         @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵') `
-        @('템플릿과 다릅니다', '제안만 합니다', 'SCHEMA DRIFT')) -and $ok
+        @('템플릿과 다릅니다', '제안만 합니다', 'SCHEMA DRIFT', $ruleMark)) -and $ok   # $stale holds slice_note.py, yet no rule here
 
 # 12b. a PARTIAL literal — a hashtable whose value is computed but CONTAINS a string constant
 #      (`'docs/' + $x`) — must fail extraction WHOLE, never contribute the fragment to the map
@@ -742,6 +822,7 @@ $ok = (Assert-Nudge 'superseded cache copy reports STALE basis, reload not refre
         @('비교 기준이 STALE합니다', 'v0\.0\.1', 'v9\.9\.9', '/reload-plugins', '/ywr-harness:harness-init을 실행하지 마세요',
         '2개의 벤더링된 툴체인 파일', 'harness_gates\.py', 'REVERT', '제안만 합니다') `
         @('v8\.8\.8', '리프레시: 이 저장소에서', '시드는 보존', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+$ok = (Assert-RuleTail '13b stale-basis branch: the rule follows the drift text' $out) -and $ok
 # Both versions must survive in the HUMAN banner alone, not only in the English context half:
 # Assert-Nudge matches sys+ctx JOINED, and a Korean particle glued to a variable name silently
 # interpolates an undefined variable as EMPTY (Korean letters are legal in PS variable names —
@@ -882,7 +963,7 @@ $ok = (Assert-EmptyStdout 'unresolvable root silent and clean' $out) -and $ok
 $out = Invoke-Hook (New-Payload @{})
 $ok = (Assert-Nudge 'schema drift is reported, not swallowed' $out `
         @('SCHEMA DRIFT', '수신된 키: hook_event_name, session_id, source') `
-        @('템플릿과 다릅니다', 'EXTRACTION DRIFT')) -and $ok
+        @('템플릿과 다릅니다', 'EXTRACTION DRIFT', $ruleMark)) -and $ok
 
 # 17b. the received-key list sorts case-insensitively (the original's Sort-Object); a null or blank cwd is drift too
 $out = Invoke-Hook '{"hook_event_name":"SessionStart","Zeta":1,"alpha":2,"Beta":3}'

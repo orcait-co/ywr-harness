@@ -179,6 +179,8 @@ $TOOLCHAIN = [ordered]@{
     'scripts/harness/harness_gates.py'       = 'scripts/harness/harness_gates.py'
     'scripts/harness/harness_retro.py'       = 'scripts/harness/harness_retro.py'
     'scripts/harness/verify_map.py'          = 'scripts/harness/verify_map.py'
+    # Not a CI script: the session names this path from CLAUDE.md to record its decisions (ADR 0172).
+    'scripts/harness/slice_note.py'          = 'scripts/harness/slice_note.py'
     # CI 의 PR base 해석 단일 소스(ADR 0043) — 벤더링된 워크플로가 직접 sh 로 부른다.
     'scripts/harness/resolve-base.sh'        = 'scripts/harness/resolve-base.sh'
     '.github/workflows/harness-gates.yml'    = '.github/workflows/harness-gates.yml'
@@ -205,6 +207,7 @@ $TOOLCHAIN = [ordered]@{
 # first-run collision instead of being silently overwritten and reported as "refreshed".
 $INTRODUCED_IN = [ordered]@{
     'docs/check_docs.py' = '0.47.0'
+    'scripts/harness/slice_note.py' = '0.69.14'
 }
 # GUARDED — the third mode, and it exists for exactly one file. `post-commit` is a filename repos
 # commonly already use (this canon's own repo uses it to republish the docs artifact), so blind

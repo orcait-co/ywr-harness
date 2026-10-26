@@ -12,6 +12,16 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.69.14 — 2026-10-26
+
+- slice 중간에 내린 결정을 한 줄씩 남기는 `scripts/harness/slice_note.py`가 생겼습니다(ADR 0172).
+  `python scripts/harness/slice_note.py add <decision|rejected|owner|fact|risk> "<무엇을, 왜>"`로 남기고 `show`로 봅니다.
+  노트는 `.git` 아래에 저장되므로 작업 트리와 commit에는 아무것도 생기지 않습니다. `show`는 handoff를 마지막으로 commit한 시점(이전 slice의 close)
+  이후의 노트를 보여 주므로, slice 도중에 commit하거나 그 commit을 amend·rebase해도 앞선 노트가 유지되고 다음 close commit 뒤에는 자동으로 빠집니다.
+- context가 compaction되면 새 SessionStart 훅이 현재 slice의 노트(최근 17개)를 다시 넣어 줍니다. 노트가 없으면 아무것도 하지 않습니다.
+- `/ywr-harness:slice-close`가 close할 때 노트를 읽어 commit 본문과 handoff에 반영합니다. 노트는 세션 자신의 기록이라 증거로 쓰지 않고, 트리와 대조해 확인합니다.
+- 기존 repo는 scaffold refresh 안내(`(missing)` 표시)를 따라 `harness-init`을 다시 실행하면 됩니다. 그 뒤 세션 시작 때 언제 노트를 남기는지 한 줄 안내가 자동으로 붙으므로 CLAUDE.md를 손으로 고칠 필요는 없습니다.
+
 ## v0.69.13 — 2026-10-26
 
 - slice retro에 새 검사 SIZE가 생겼습니다(ADR 0171). `retro.source_scope` 안의 소스 파일이 이번 commit(또는 범위)에서

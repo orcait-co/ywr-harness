@@ -219,6 +219,14 @@ is written **once**, in that commit's message body (ADR 0090).
   numbering; refer to items by name. Move a superseded current-state section to
   `docs/handoff-archive/<same filename>`, newest first; a decision worth keeping goes to an ADR or
   spec.
+- **Slice notes** (ADR 0172): run
+  `python "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.py" show [--range <a>..<b>]` with the stage-1
+  range. When it also counts notes at other HEADs and a rebase brought in a commit that touched the
+  handoff, or the repo declares no handoff, run `show --all` and read those notes too. Each note is the session's own claim, written during the
+  slice: input, never proof (ADR 0105). Check each one against the tree and the stage outputs. Keep the decisions, rejected
+  options and owner answers that still hold for the record body; put the facts and risks that stay
+  open into the handoff. Correct or drop a note the tree contradicts, and never let a note stand in
+  for a gate run, the digest, a fix proof or the ready report.
 - Regenerate doc surfaces if any ADR/spec source changed (`pwsh docs/build.ps1`), committing
   `index.json` + `INDEX.md` with the change.
 - **Commit**: subject at most 72 characters; the **close record in the body** — the `scope:` line;
@@ -230,7 +238,8 @@ is written **once**, in that commit's message body (ADR 0090).
   whether it did — unknown coverage, never read as full) or the skip reason;
   the fix disposition (each finding's bucket — fixed / valid, no action / false on reading — with
   the count per bucket, gate re-runs, every per-finding verdict, `also_at` sites and split
-  rejections, the `fix_proof.py check` lines and the owner's answer on each waiver, any re-review criterion); `review basis:` after a rebase; the verify verdict; and
+  rejections, the `fix_proof.py check` lines and the owner's answer on each waiver, any re-review criterion);
+  the slice notes kept, as corrected, with the `show` count line; `review basis:` after a rebase; the verify verdict; and
   what went ungated or unverified. **Never paste a CI skip directive into the body** — GitHub skips
   every push- and PR-triggered workflow when the pushed commit's message contains one (the
   bracketed `skip ci` / `ci skip` / `no ci` / `skip actions` / `actions skip` forms, or a
