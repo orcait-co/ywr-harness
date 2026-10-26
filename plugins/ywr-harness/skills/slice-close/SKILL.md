@@ -100,7 +100,7 @@ Put repo-specific angles in `lensExtra`; a redefined lens set never receives can
 
 **Read the result's `digest` first** — its first key, one line: confirmed count by severity,
 `multi_lens` (confirmed findings that two or more lenses raised), out-of-scope / nit / rejected
-counts, any coverage loss (dead lenses, finders or skeptics, unverified findings, capped finds), tier, shards, pin mode and `canary_ok`. A completion notice truncates
+counts, `high_ids` (the highs step 3 below must prove), any coverage loss (dead lenses, finders or skeptics, unverified findings, capped finds), tier, shards, pin mode and `canary_ok`. A completion notice truncates
 around 14k characters, so the digest survives it; open the full lists only for what it names.
 
 **Disposition**: every confirmed finding ends in exactly one of three buckets — and so does each
@@ -142,6 +142,36 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    and answers **per finding** exactly `fixed: true|false` plus a reason. Legs run in parallel.
    Quote every verdict into the close record; `fixed: false` reopens that finding — patch it, then
    re-check it alone. A low closes on the closer's own reading; a nit needs none.
+3. **Fix proof for every high the digest names** (ADR 0169): the script runs the command and
+   records its exit code against the `--tree` snapshots before and after it, so the proof is never
+   the closer's own line. **The review picks the keys, not the closer**: the digest's `high_ids`
+   gives a count and then the `id` of every in-scope confirmed high (`F<n>-<fingerprint>`) and of
+   every rejected high that not every vote refuted (`R<n>-…`: a 1–1 split, or a refute beside a
+   dead leg). A fixed `O<n>-…` high may be added; nothing can be left out. The fingerprint ties an
+   id to its finding, so a re-review's `F1` never inherits an earlier `F1`'s proof. **Before
+   editing a fix**, run a command that shows the finding's scenario, and after the fix run the
+   SAME argv again:
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/fix_proof.py" run <id> -- <command> [args...]
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/fix_proof.py" waive <id> --reason "<bucket>: <why no proof>"
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/fix_proof.py" check --digest "<the digest line, verbatim>" [<O id> ...]
+   ```
+
+   `run` executes at the repo root with no shell — wrap a shell line in `pwsh -NoProfile -Command`
+   or `sh -c`. A run that changes the tree (a snapshot test, codegen, a formatter writing a
+   non-ignored file) cannot count: ignore or remove its output and run again. Any non-zero exit is
+   a failing half, and the PROVEN line prints the code — read a code other than 1 as the test
+   failing, not its invocation (a missing file, a bad flag). A listed high that is not proven
+   takes a waiver whose reason names its bucket: a fix no command can show (prose, a race, a
+   hosted service), **valid, no action** or **false on reading**. `check` runs after the last
+   edit and after every review, and every line it prints goes into the close record. **Exit 0** —
+   every key proven. **Exit 1** — a key has no proof or waiver: the close stops. **Exit 3** — only
+   waivers remain: the session never accepts its own waiver, so the ready report lists them, and
+   in this owner-typed close ask the owner about each waived key with its reason
+   (AskUserQuestion), quote each answer into the close record, and stop on any refusal. A command
+   that passed before the fix proves nothing; the check reports it MISSING. The skeptic leg above
+   still runs: the proof shows the scenario closed, the leg looks for damage beside it.
 
 No second review over the fix diff — except ONCE when a fix is a new mechanism rather than a
 patch (it adds a surface, rewrites control/data flow beyond the finding's lines, or touches a
@@ -200,7 +230,7 @@ is written **once**, in that commit's message body (ADR 0090).
   whether it did — unknown coverage, never read as full) or the skip reason;
   the fix disposition (each finding's bucket — fixed / valid, no action / false on reading — with
   the count per bucket, gate re-runs, every per-finding verdict, `also_at` sites and split
-  rejections, any re-review criterion); `review basis:` after a rebase; the verify verdict; and
+  rejections, the `fix_proof.py check` lines and the owner's answer on each waiver, any re-review criterion); `review basis:` after a rebase; the verify verdict; and
   what went ungated or unverified. **Never paste a CI skip directive into the body** — GitHub skips
   every push- and PR-triggered workflow when the pushed commit's message contains one (the
   bracketed `skip ci` / `ci skip` / `no ci` / `skip actions` / `actions skip` forms, or a

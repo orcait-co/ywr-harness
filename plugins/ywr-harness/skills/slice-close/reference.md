@@ -76,8 +76,9 @@ re-arms the review too. That is the cheaper error.
 The close is owner-typed, but the stages before it are not (ADR 0105). A session may run stages
 1–3 before the owner types `/ywr-harness:slice-close` and end with a ready report: the emitter's
 output and the result of every command it printed, the review's `digest` and every fix verdict,
-the verify verdict, and LAST the line `harness_gates.py --tree` printed after the final edit. It
-writes no handoff and makes no commit. Reuse needs those lines verbatim in THIS session's context.
+the `fix_proof.py check` output (an exit 3 lists the waivers the owner must answer), the verify
+verdict, and LAST the line `harness_gates.py --tree` printed after the final edit.
+It writes no handoff and makes no commit. Reuse needs those lines verbatim in THIS session's context.
 A summary left by compaction, or a report from another session, is no report: run every stage.
 The report is the session's own record, trusted as a close record is. The snapshot proves only
 that the tree did not change after it.

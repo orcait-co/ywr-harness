@@ -43,6 +43,7 @@
     "manifest-gate.selftest.ps1": ["manifest-gate.mjs", "hooks/hook-lib.mjs", ".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/mods.mjs", "hooks/session-start-version-announce.mjs", "workflows/**", "skills/verify/SKILL.md", "skills/update/SKILL.md", "skills/harness-init/init.ps1", "skills/harness-init/templates/githooks/**", "skills/harness-init/templates/scripts/harness/**", "scripts/harness_config.py", "evals/**"],
     "//selftest.selftest.ps1": "It reads selftest.ps1 (a full input). Its F2 case asserts that no suite sits under a templates/ directory.",
     "selftest.selftest.ps1": ["selftest.ps1", "skills/harness-init/templates/**"],
+    "scripts/fix_proof.selftest.ps1": ["scripts/fix_proof.py", "scripts/harness_config.py"],
     "scripts/harness_gates.selftest.ps1": ["scripts/harness_gates.py", "scripts/harness_config.py", "scripts/verify_map.py", "skills/harness-init/init.ps1", "skills/harness-init/templates/.github/workflows/harness-gates.yml", "skills/harness-init/templates/harness.json"],
     "scripts/harness_retro.selftest.ps1": ["scripts/harness_retro.py", "scripts/harness_config.py", "skills/harness-init/templates/docs/spec/0000-template.md", "skills/harness-init/templates/docs/build_docs.py"],
     "scripts/resolve-base.selftest.ps1": ["scripts/resolve-base.sh"],

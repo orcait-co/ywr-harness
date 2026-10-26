@@ -95,6 +95,17 @@ $ok = (Assert-Text 'C11 disposition: three buckets, no-action names its record, 
         @('ends in exactly one of three buckets', '\*\*fixed\*\*', '\*\*valid, no action\*\*', 'names the record that keeps it', 'A true claim with no record is not this bucket', '\*\*false on reading\*\*', 'quotes the line or guard', 'finding''s `lenses`', '`multi_lens`', 'count per bucket') `
         @('every confirmed finding is fixed or gets an explicit reason')) -and $ok
 
+# C12: the fix proof (ADR 0169, pstack candidate 7). What can regress silently is a key set the closer
+# chooses (leaving one high out passed), a waiver the session accepts itself (a reason alone passed),
+# the stop turned advisory, the "before" run taken after the edit, or the skeptic leg dropped as if the
+# proof replaced it.
+$ok = (Assert-Text 'C12 fix proof: the digest picks the keys, check takes it verbatim, exit 1 stops, exit 3 goes to the owner, the leg stays' $skill `
+        @('Fix proof for every high the digest names\*\* \(ADR 0169\)', '\*\*The review picks the keys, not the closer\*\*', '`high_ids`', 'nothing can be left out', [regex]::Escape('scripts/fix_proof.py" run <id> -- <command>'), [regex]::Escape('scripts/fix_proof.py" check --digest "<the digest line, verbatim>"'), '\*\*Before\s+editing a fix\*\*', 'SAME argv', 'names its bucket', '\*\*valid, no action\*\* or \*\*false on\s+reading\*\*', '`R<n>-', 'not every vote refuted', 'fingerprint ties an\s+id to its finding', 'A run that changes the tree', 'cannot count', 'Any non-zero exit is\s+a failing half', '\*\*Exit 1\*\*[^.]*the close stops', '\*\*Exit 3\*\*', 'the session never accepts its own\s+waiver', 'ask the owner about each\s+waived key', 'stop\s+on any refusal', 'never\s+the closer''s own\s+line', 'The skeptic leg above\s+still runs', 'the owner''s answer on each waiver') `
+        @('(?i)check <every fixed high key>', '(?i)a waiver passes', '(?i)check[^.]{0,40}is advisory', '(?i)instead of the skeptic leg', '(?i)after editing the fix, run a command', '(?i)key each high in the fixed bucket', '(?i)false on reading[^.]{0,40}no proof', '(?i)only exit 1 counts', '(?i)split 1.1 \(`R<n>`\)')) -and $ok
+$ok = (Assert-Text 'C12 the prepared report carries the fix-proof output and its waivers for the owner' $ref `
+        @('the `fix_proof.py check` output \(an exit 3 lists the waivers the owner must answer\)') `
+        @('(?i)fix proof[^.]{0,40}re-run on reuse', '(?i)the session accepts')) -and $ok
+
 # --- META: the assertion guard must be able to fail -----------------------------------------------
 $accepted = Assert-Text 'META probe' 'meta probe' @('meta probe') @() 6>$null
 if ($accepted -or $script:LastFails.Count -ne 1 -or ($script:LastFails[0] -notmatch 'no MustNotMatch')) {

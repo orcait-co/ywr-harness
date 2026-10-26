@@ -258,7 +258,8 @@ do not run it.
   selftest. No hook runs on it.
 - `python` 3.9+ (stdlib only) — every gate script under `scripts/` requires it:
   `harness_gates.py` (invoked by the `pre-commit` hook), `harness_retro.py` (by the
-  `post-commit` hook), and `verify_map.py` (by `ywr-harness:verify`).
+  `post-commit` hook), `verify_map.py` (by `ywr-harness:verify`), and `fix_proof.py` (by
+  `/ywr-harness:slice-close`, plugin-only — the scaffold does not vendor it, ADR 0169).
 
 The prerequisite check (`hooks/prerequisites.mjs`, above) names any of the three that is missing
 or too old at each session start, and `/ywr-harness:setup` installs them on your command.

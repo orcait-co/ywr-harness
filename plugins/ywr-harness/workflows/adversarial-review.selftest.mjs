@@ -730,7 +730,7 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   const r = result.rejected?.[0];
   const reason = skeptics(spawns)[0]?.schema?.properties?.reason;
   if (result.rejected_count !== 1 || result.rejected?.length !== 1) fail(name, `rejected_count=${result.rejected_count} rejected=${JSON.stringify(result.rejected)}`);
-  else if (Object.keys(r).join() !== 'severity,title,file,line,also_at,lenses,votes') fail(name, `shape=${Object.keys(r).join()}`);
+  else if (Object.keys(r).join() !== 'id,severity,title,file,line,also_at,lenses,votes') fail(name, `shape=${Object.keys(r).join()}`);
   else if (r.severity !== 'medium' || r.title !== 'm1' || r.file !== 'f.md' || r.line !== 10) fail(name, JSON.stringify(r));
   else if (JSON.stringify(r.votes.map((v) => [v.refuted, v.reason.length])) !== '[[false,4],[true,300]]') fail(name, `votes=${JSON.stringify(r.votes.map((v) => [v.refuted, v.reason.length]))}`);
   else if (result.confirmed[0]?.verify_reasons?.[0]?.length !== 300) fail(name, `confirmed reason length=${result.confirmed[0]?.verify_reasons?.[0]?.length}`);
@@ -855,7 +855,7 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   const d = result.digest;
   if (Object.keys(result)[0] !== 'digest') fail(name, `first key=${Object.keys(result)[0]}`);
   else if (typeof d !== 'string' || /[\r\n]/.test(d) || d.length > 400) fail(name, `digest=${JSON.stringify(d)} (${d?.length})`);
-  else if (!d.startsWith('confirmed 2 (h0 m0 l2) · multi_lens 0 · out_of_scope_confirmed 0 · nits 0 · rejected 0 · coverage full · tier small · shards 1 · pins pinned · canary_ok true · full lists follow')) fail(name, d);
+  else if (!d.startsWith('confirmed 2 (h0 m0 l2) · multi_lens 0 · out_of_scope_confirmed 0 · nits 0 · rejected 0 · high_ids none · coverage full · tier small · shards 1 · pins pinned · canary_ok true · full lists follow')) fail(name, d);
   else if (/LOSS/.test(d)) fail(name, `clean run reported loss: ${d}`);
   else if (spawns.some((x) => /digest/.test(x.label))) fail(name, 'digest spawned an agent');
   else pass(name);
@@ -879,7 +879,7 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
     findings: (k) => (k === 'correctness-pitfalls' ? [F('f.md', 10, 'high', 'h1'), F('g.md', 11, 'low', 'o1')] : [F('f.md', 20, 'low', 'l1')]),
     verdict: (prompt, label) => (label === 'verify:l1' ? { refuted: true, reason: 'no' } : { refuted: false, reason: 'r' }) });
   const d = result.digest ?? '';
-  if (!d.startsWith('confirmed 1 (h1 m0 l0) · multi_lens 0 · out_of_scope_confirmed 1 · nits 0 · rejected 1 · coverage full') || !d.includes('pins opus-low')) fail(name, d);
+  if (!d.startsWith('confirmed 1 (h1 m0 l0) · multi_lens 0 · out_of_scope_confirmed 1 · nits 0 · rejected 1 · high_ids 1: F1-') || !d.includes(' · coverage full') || !d.includes('pins opus-low')) fail(name, d);
   else pass(name);
 }
 {
@@ -933,6 +933,42 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   if (result.stats.deduped !== 13) fail(name, `deduped=${result.stats.deduped} (want 14 → 13 grouped)`);
   else if (JSON.stringify(rep?.lenses) !== '["correctness-pitfalls","boundary-ui-tests"]' || result.stats.multi_lens !== 1) fail(name, `lenses=${JSON.stringify(rep?.lenses)} multi_lens=${result.stats.multi_lens}`);
   else pass(name);
+}
+
+// 14f. fix-proof ids (ywr-harness ADR 0169). Each returned list numbers its findings (F confirmed, O out of scope,
+//      R rejected) and appends a fingerprint of file, line and title, so a re-review's F1 cannot inherit an earlier
+//      F1's proof. The digest's high_ids names the highs a close must prove, with their count first: every in-scope
+//      confirmed high, and every rejected high that not every vote refuted (a 1-1 split, or a refute beside a dead
+//      leg). A unanimous rejection and an out-of-scope high stay out.
+{
+  const name = '14f ids carry position + fingerprint; high_ids = count + in-scope confirmed highs + rejected highs not refuted by every vote';
+  const plan = { args: { tier: 'small', scope: { files: ['f.md'], context: 'c' } },
+    findings: (k) => (k === 'correctness-pitfalls'
+      ? [F('f.md', 1, 'high', 'keep-h'), F('f.md', 2, 'high', 'split-h'), F('f.md', 3, 'high', 'gone-h')]
+      : [F('f.md', 4, 'medium', 'keep-m'), F('g.md', 5, 'high', 'out-h'), F('f.md', 6, 'high', 'split-dead')]),
+    verdict: (prompt, label) => {
+      const two = prompt.startsWith('너는 회의적 검증자 #2');
+      if (label === 'verify:split-h') return { refuted: two, reason: 'r' };
+      if (label === 'verify:gone-h') return { refuted: true, reason: 'r' };
+      if (label === 'verify:split-dead') return two ? null : { refuted: true, reason: 'r' };
+      return { refuted: false, reason: 'r' };
+    } };
+  const { result } = await run(plan);
+  const ids = (xs) => xs.map((f) => `${f.id.replace(/-[0-9a-f]{8}$/, '')}=${f.title}`).join(',');
+  const idOf = (title) => [...result.confirmed, ...result.rejected].find((f) => f.title === title)?.id;
+  const shaped = [...result.confirmed, ...result.out_of_scope_confirmed, ...result.rejected].every((f) => /^[FOR][0-9]+-[0-9a-f]{8}$/.test(f.id));
+  const again = (await run(plan)).result.confirmed[0]?.id;
+  if (!shaped) fail(name, `id shape: ${[...result.confirmed, ...result.rejected].map((f) => f.id).join(',')}`);
+  else if (ids(result.confirmed) !== 'F1=keep-h,F2=keep-m') fail(name, `confirmed=${ids(result.confirmed)}`);
+  else if (ids(result.out_of_scope_confirmed) !== 'O1=out-h') fail(name, `out_of_scope=${ids(result.out_of_scope_confirmed)}`);
+  else if (result.rejected.map((f) => f.id.slice(0, 2)).join() !== 'R1,R2,R3') fail(name, `rejected=${ids(result.rejected)}`);
+  else if (again !== result.confirmed[0].id || idOf('keep-h').slice(3) === idOf('keep-m').slice(3)) fail(name, `fingerprint not stable or not distinct: ${again} ${idOf('keep-h')} ${idOf('keep-m')}`);
+  else {
+    const rIds = result.rejected.filter((f) => f.title !== 'gone-h').map((f) => f.id);
+    const want = ` · high_ids 3: ${[idOf('keep-h'), ...rIds].join(',')} · `;
+    if (!result.digest.includes(want)) fail(name, `${result.digest} — want ${want}`);
+    else pass(name);
+  }
 }
 
 console.log(ok ? 'adversarial-review selftest: all cases green' : 'adversarial-review selftest: FAILURES');

@@ -557,17 +557,35 @@ const loss = [
   findOmitted && `find_omitted ${findOmitted}`, unreportedCap.length && `cap_unreported ${unreportedCap.length}`,
 ].filter(Boolean)
 const PIN_MODE = OPUS_LOW ? 'opus-low' : 'pinned'
-const digest = `confirmed ${confirmedIn.length} (${bySev(confirmedIn)}) · multi_lens ${multiLens} · out_of_scope_confirmed ${outOfScope.length} · nits ${nits.length} · rejected ${rejected} · ` +
+// 지적 id(ywr-harness ADR 0169): /slice-close 가 fix_proof.py 의 키로 쓴다. high_ids 는 증명이 필요한 high 의 목록 — 스코프 안
+// 확정(F)과, 모든 표가 반증하지는 않은 반증 high(R: 1-1 분할, 또는 죽은 표가 남은 것). 닫는 쪽이 키를 고르면 high 하나를 빼는
+// 것만으로 check 가 통과하므로, 목록은 워크플로가 정하고 닫는 쪽은 digest 원문을 check 에 넘긴다. 스코프 밖 확정(O)은 슬라이스
+// 게이트 밖이라 목록에 없다. id 는 `<접두><위치>-<지문>`: 위치만 쓰면 재리뷰의 F1 이 다른 지적이어도 앞 리뷰 F1 의 증명을
+// 물려받았다(리뷰 slice 166, medium). 지문은 file·line·title 의 FNV-1a 32 — 같은 지적은 같은 id, 다른 지적은 다른 id.
+// high_ids 는 개수를 앞에 적는다: 잘린 붙여넣기가 키를 줄인 채 통과하지 못하게, check 가 개수와 목록 길이를 맞춰 본다.
+const fingerprint = (f) => {
+  let h = 0x811c9dc5
+  for (const c of `${f.file}\u0000${f.line ?? ''}\u0000${f.title}`) { h ^= c.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0 }
+  return h.toString(16).padStart(8, '0')
+}
+const withId = (xs, p) => xs.map((f, i) => ({ id: `${p}${i + 1}-${fingerprint(f)}`, ...f }))
+const confirmedOut = withId(confirmedIn, 'F')
+const outOfScopeOut = withId(outOfScope, 'O')
+const rejectedOut = withId(rejectedAll, 'R')
+// 죽은 표는 refuted:false 라, 만장일치 반증이 아닌 것 = 1-1 분할 또는 반증 하나 + 죽은 표 하나.
+const highIds = [...confirmedOut.filter(f => f.severity === 'high'),
+  ...rejectedOut.filter(f => f.severity === 'high' && !f.votes.every(v => v.refuted))].map(f => f.id)
+const digest = `confirmed ${confirmedIn.length} (${bySev(confirmedIn)}) · multi_lens ${multiLens} · out_of_scope_confirmed ${outOfScope.length} · nits ${nits.length} · rejected ${rejected} · high_ids ${highIds.length ? `${highIds.length}: ${highIds.join(',')}` : 'none'} · ` +
   (loss.length ? `COVERAGE LOSS: ${loss.join(', ')}` : 'coverage full') +
   ` · tier ${TIER} · shards ${SHARDED ? SHARDS.length : 1} · pins ${PIN_MODE} · canary_ok ${CANARY_OK} · full lists follow (confirmed, out_of_scope_confirmed, nits_unverified, rejected, stats)`
 
 return {
   digest,
-  confirmed: confirmedIn,
-  out_of_scope_confirmed: outOfScope,
+  confirmed: confirmedOut,
+  out_of_scope_confirmed: outOfScopeOut,
   nits_unverified: nits, // skeptic 생략 — 오케스트레이터가 직접 판정
   rejected_count: rejected,
-  rejected: rejectedAll, // [{severity, title, file, line, also_at, lenses, votes: [{refuted, reason, dead?}]}] — ywr-harness ADR 0089 · 0163
+  rejected: rejectedOut, // [{id, severity, title, file, line, also_at, lenses, votes: [{refuted, reason, dead?}]}] — ywr-harness ADR 0089 · 0163 · 0169
   // lenses/dead_lenses 는 반환값 노출이 목적이다: 오케스트레이터가 log 를 못 봐도
   // 커버리지 축소를 알 수 있어야 한다. dead_lenses 가 비어있지 않으면 게이트는 부분 커버리지다.
   // output_tokens 라는 이름이 exact 로 읽히던 것이 결함이었다 — 이름과 basis 로
