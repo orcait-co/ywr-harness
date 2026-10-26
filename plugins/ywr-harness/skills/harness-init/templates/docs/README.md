@@ -78,8 +78,9 @@ readers. ADR 0125 of the ywr-harness canon records the reasons.
 | R5. Write 25 words or fewer in a descriptive sentence and 20 or fewer in a procedure step | No | No | Yes |
 | R6. Use the active voice | No | No | Yes |
 | R7. Use one word for one meaning | No | No | Yes |
+| R8. Use no em dash, no semicolon that joins two clauses, no `(s)` and no `and/or` | No | No | Yes |
 
-STE-lite is R1 to R7. It takes the writing rules of ASD-STE100 and leaves out its dictionary.
+STE-lite is R1 to R8. It takes the writing rules of ASD-STE100 and leaves out its dictionary.
 ASD-STE100 is Simplified Technical English, a controlled language for aerospace maintenance
 documents.
 
@@ -96,3 +97,11 @@ does not check it. The line `<!-- ste-lite: records -->` marks any
 other section as records. The line `<!-- ste-lite: verbatim -->` exempts the next paragraph, list
 or table, for text that a script reads. The gate blocks a commit only when `.harness.json`
 declares `"docs": {"ste_lite": true}`. Otherwise it prints its findings as advice.
+
+The same gate checks R8, as ADR 0170 of the ywr-harness canon records. A semicolon inside
+parentheses and a table cell that holds only an em dash pass. `.harness.json` `docs.ste_words`
+can map a word to the one word this repo uses for that meaning, such as
+`{"via": "through"}`. The gate then flags each listed word outside code spans and URLs. The gate also
+counts the options of each new ADR. It reads the first level-2 heading that holds the word
+"option", "alternative", "선택지" or "대안". It flags fewer than two entries, or no such heading. These checks block a commit only
+when `.harness.json` declares `"docs": {"ste_marks": true}`. Otherwise they print as advice.

@@ -18,8 +18,12 @@ the index is assembled from every source — so the paths never narrow what runs
 
 With path arguments the STE-lite gate runs too (ADR 0128, docs/README.md §Writing
 style). It reads each passed spec and NEW ADR against HEAD (`git diff HEAD`, the
-working tree the pre-commit hook gates) and checks R5 (sentence length) and R3
-(no claim in parentheses) over every changed spec section, whole. A records
+working tree the pre-commit hook gates) and checks R5 (sentence length), R3
+(no claim in parentheses) and R8 (no em dash, joining semicolon, "(s)" or
+"and/or") over every changed spec section, whole, plus R7 for the words that
+`.harness.json` `docs.ste_words` maps to a replacement (ADR 0170). A new ADR must
+also record at least two options in its options section. These ADR 0170 checks
+block only under their own key, `docs.ste_marks: true`. A records
 section — a heading naming change notes or a ledger, or one carrying
 `<!-- ste-lite: records -->` — is not checked: nobody rewrites a ledger row.
 `<!-- ste-lite: verbatim -->` on its own line exempts the next block (a paragraph,
@@ -50,6 +54,13 @@ ITEM_RX = re.compile(r"^(\s*)([-*+]|[0-9]+[.)])\s+(.*)$")
 MARK_RX = re.compile(r"^\s*<!--\s*ste-lite:\s*(records|verbatim)\s*-->\s*$")
 HUNK_RX = re.compile(r"^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,([0-9]+))? @@")
 SEP_ROW_RX = re.compile(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
+OPTIONS_RX = re.compile(r"(?<!\w)(?:options?|alternatives?)(?!\w)|선택지|대안", re.I)
+MIN_OPTIONS = 2   # a new ADR records the option it took and at least one it rejected (ADR 0170)
+# R8: marks a translator reads more than one way (docs/README.md §Writing style, ADR 0170).
+R8_MARKS = (("em dash", re.compile(r"\u2014|&mdash;|&#8212;|&#x2014;", re.I)),
+            ("\"(s)\"", re.compile(r"\w\(e?s\)")),
+            ("\"and/or\"", re.compile(r"(?<!\w)and/or(?!\w)", re.I)))
+ENTITY_RX = re.compile(r"&(?:#[0-9]+|#x[0-9a-f]+|[a-z]+);", re.I)
 ABBREV = {"e.g.", "i.e.", "etc.", "vs.", "cf.", "approx.", "incl.", "no.", "fig."}
 # R3: words a short reference may use besides id-like tokens (docs/README.md §Writing style).
 REF_WORDS = {"adr", "adrs", "spec", "specs", "fact", "facts", "issue", "issues", "slice",
@@ -69,6 +80,7 @@ def _plain(text: str) -> str:
     text = re.sub(r"(`+)(.+?)\1", " CODE ", text)
     text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"<https?://[^>]*>", " URL ", text)
+    text = re.sub(r"https?://[^\s)>]+", " URL ", text)   # a bare URL: no R8 or R7 match inside it
     return re.sub(r"<[^>]+>", " ", text)
 
 
@@ -112,6 +124,47 @@ def _claims(text: str) -> list[str]:
                         _ref_token(w) for part in re.split(r"[,;/·]", inner) for w in part.split()):
                     found.append(inner)
     return found
+
+
+def _joining_semicolons(text: str) -> int:
+    """R8: semicolons outside parentheses. A reference list such as "(ADR 1; spec 2)" may use one,
+    and an HTML entity ends in one."""
+    text, depth, n = ENTITY_RX.sub(" ", text), 0, 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")" and depth:
+            depth -= 1
+        elif ch == ";" and not depth:
+            n += 1
+    return n
+
+
+def _marks(text: str, words: dict[str, str]) -> list[tuple[str, str]]:
+    """R8 and the declared R7 words in one cell or unit of plain text: (rule, label) per kind found.
+    A table cell that holds only an em dash is the empty-cell mark, not a dash in a sentence."""
+    found = []
+    if text.strip() != "\u2014":
+        found += [("R8", label) for label, rx in R8_MARKS if rx.search(text)]
+    if _joining_semicolons(text):
+        found.append(("R8", "joining semicolon"))
+    for word, use in words.items():
+        if re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", text, re.I):
+            found.append(("R7", f"\"{word}\" -> \"{use}\""))
+    return found
+
+
+def _option_count(heads: list[dict], units: list[dict]) -> tuple[int, int] | None:
+    """A new ADR's options: (heading line, count) for its first level-2 options heading, or None
+    without one. Each table body row, list item and sub-heading in that section counts once, so a
+    nested list or a non-option row counts too: the count errs toward a pass (ADR 0170)."""
+    head = next((h for h in heads if h["level"] == 2 and OPTIONS_RX.search(h["text"])), None)
+    if head is None:
+        return None
+    end = next((h["line"] for h in heads if h["line"] > head["line"] and h["level"] <= 2), 10 ** 9)
+    count = sum(1 for u in units if head["line"] < u["start"] < end and u["kind"] != "para")
+    count += sum(1 for h in heads if head["line"] < h["line"] < end)
+    return head["line"], count
 
 
 def _units(lines: list[str]) -> tuple[list[dict], list[dict], list[int]]:
@@ -244,8 +297,12 @@ def _changed_lines(root: Path, rel: str, hc) -> tuple[set[int], set[int]] | None
 
 
 def _check_file(path: Path, rel: str, diff: tuple[set[int], set[int]] | None,
-                out: list[str]) -> tuple[int, int]:
-    """Check one file; append report lines to `out`. Returns (sections checked, findings)."""
+                out: list[str], words: dict[str, str] | None = None,
+                adr: bool = False) -> tuple[int, int, int]:
+    """Check one file; append report lines to `out`. Returns (sections checked, R3 and R5
+    findings, ADR 0170 findings). `words` maps each declared R7 word to its replacement; `adr`
+    marks a new ADR, whose options section is counted too."""
+    words = words or {}
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     heads, units, marks = _units(lines)
     names = {h["line"]: h["text"] for h in heads}
@@ -263,7 +320,7 @@ def _check_file(path: Path, rel: str, diff: tuple[set[int], set[int]] | None,
     # ledger row, so a finding there is noise (owner decision 2026-10-09, ADR 0128).
     records = {sec for sec in touched if RECORDS_RX.search(names.get(sec, ""))}
     records |= {_section_of(heads, m) for m in marks}
-    findings = 0
+    findings = marked = 0
     for sec in sorted(touched):
         mode = "records, not checked" if sec in records else "whole"
         out.append(f"[ste-lite]   {rel} {_ascii(names.get(sec, '?'))} ({mode})")
@@ -276,6 +333,10 @@ def _check_file(path: Path, rel: str, diff: tuple[set[int], set[int]] | None,
         limit = STEP_LIMIT if u["kind"] == "step" else LIMIT
         for t in texts:
             plain = _plain(t)
+            for rule, label in _marks(plain, words):
+                marked += 1
+                out.append(f"[ste-lite]   {rule} {rel}:{u['start']} {_ascii(label)}: "
+                           f"\"{_ascii(' '.join(plain.split()[:8]))} ...\"")
             for s in _sentences(plain):
                 w = _words(s)
                 if w > limit:
@@ -287,7 +348,15 @@ def _check_file(path: Path, rel: str, diff: tuple[set[int], set[int]] | None,
                 findings += 1
                 out.append(f"[ste-lite]   R3 {rel}:{u['start']} claim in parentheses: "
                            f"\"({_ascii(c[:60])})\"")
-    return len(touched - records), findings
+    if adr:
+        opts = _option_count(heads, units)
+        if opts is None or opts[1] < MIN_OPTIONS:
+            marked += 1
+            out.append(f"[ste-lite]   OPT {rel}:{opts[0] if opts else 1} "
+                       + (f"{opts[1]} option, fewer than {MIN_OPTIONS}" if opts
+                          else "no options section")
+                       + ": record the option taken and at least one rejected option")
+    return len(touched - records), findings, marked
 
 
 def ste_lite(here: Path, paths: list[str]) -> int:
@@ -310,10 +379,13 @@ def ste_lite(here: Path, paths: list[str]) -> int:
     root = hc.find_repo_root(here)
     cfg, warns = hc.load(root)
     for w in warns:
-        if w.startswith("docs.ste_lite"):
+        if w.startswith(("docs.ste_lite", "docs.ste_marks", "docs.ste_words")):
             print(f"[ste-lite] WARN {_ascii(w)}")
-    blocking = cfg.get("ste_lite") is True
-    out, findings, sections, files = [], 0, 0, 0
+    # Two keys (ADR 0170): R3 and R5 block under docs.ste_lite, which the scaffold seed declares.
+    # R8, the R7 words and the option count block only under docs.ste_marks, which it does not.
+    core_blocks, marks_block = cfg.get("ste_lite") is True, cfg.get("ste_marks") is True
+    blocking = core_blocks or marks_block
+    out, findings, marked, sections, files, adrs = [], 0, 0, 0, 0, 0
     for p in picked:
         arg = str(p)
         try:
@@ -327,25 +399,34 @@ def ste_lite(here: Path, paths: list[str]) -> int:
             return 1 if blocking else 0
         if p.parent == here / "adr" and changed is not None:
             continue                         # an accepted ADR is append-only: never rewritten
-        n, f = _check_file(p, rel, changed, out)
-        files += 1 if n or f else 0
+        adr = p.parent == here / "adr"
+        n, f, m = _check_file(p, rel, changed, out, cfg.get("ste_words") or {}, adr)
+        adrs += adr
+        files += 1 if n or f or m else 0
         sections += n
         findings += f
+        marked += m
     for line in out:
         print(line)
     if not files:
         print("[ste-lite] OK - no checked section: nothing changed outside records sections")
         return 0
-    if not findings:
-        print(f"[ste-lite] OK - {sections} section(s) in {files} file(s) pass R3 and R5")
+    if not findings and not marked:
+        print(f"[ste-lite] OK - {sections} section(s) in {files} file(s) pass R3, R5, R8"
+              + (", R7 words" if cfg.get("ste_words") else "")
+              + (" and the ADR option count" if adrs else ""))
         return 0
-    verdict = "FAIL" if blocking else "ADVISORY"
-    print(f"[ste-lite] {verdict} - {findings} finding(s). Rewrite each listed section in STE-lite "
-          f"(docs/README.md §Writing style).")
-    if not blocking:
+    fails = (core_blocks and findings > 0) or (marks_block and marked > 0)
+    verdict = "FAIL" if fails else "ADVISORY"
+    print(f"[ste-lite] {verdict} - {findings + marked} finding(s). Rewrite each listed section in "
+          f"STE-lite (docs/README.md §Writing style).")
+    if findings and not core_blocks:
         print("[ste-lite]   advisory: declare \"docs\": {\"ste_lite\": true} in .harness.json "
-              "to make this gate block (ADR 0128).")
-    return 1 if blocking else 0
+              "to make R3 and R5 block (ADR 0128).")
+    if marked and not marks_block:
+        print("[ste-lite]   advisory: declare \"docs\": {\"ste_marks\": true} in .harness.json "
+              "to make R8, the R7 words and the ADR option count block (ADR 0170).")
+    return 1 if fails else 0
 
 
 if __name__ == "__main__":

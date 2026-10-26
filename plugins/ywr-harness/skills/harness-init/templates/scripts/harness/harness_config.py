@@ -890,6 +890,12 @@ def load(root: Path) -> tuple[dict, list[str]]:
     # STE-lite gate mode (ADR 0128): True only for a literal JSON `true` — the docs check then
     # fails on a finding; absent, null or false keeps it advisory (findings print, exit 0).
     cfg["ste_lite"] = False
+    # ADR 0170 check mode: True only for a literal JSON `true` — R8, the R7 words and the ADR
+    # option count then fail the docs check. The scaffold seed leaves it out, so consumers get advice.
+    cfg["ste_marks"] = False
+    # Declared R7 words (ADR 0170): word → replacement. The STE-lite gate flags each listed word
+    # in a checked section. Display text, never a command (ADR 0012); one bad entry drops the map.
+    cfg["ste_words"] = {}
 
     path = root / ".harness.json"
     if not path.exists():
@@ -917,6 +923,20 @@ def load(root: Path) -> tuple[dict, list[str]]:
     elif ste is not None and ste is not False:
         warns.append(f"docs.ste_lite: expected true or false, got {type(ste).__name__} — "
                      f"the STE-lite gate stays advisory")
+    marks = docs.get("ste_marks")
+    if marks is True:
+        cfg["ste_marks"] = True
+    elif marks is not None and marks is not False:
+        warns.append(f"docs.ste_marks: expected true or false, got {type(marks).__name__} — "
+                     f"the ADR 0170 checks stay advisory")
+    words = docs.get("ste_words")
+    if isinstance(words, dict) and all(isinstance(k, str) and k.strip() and isinstance(v, str)
+                                       and v.strip() for k, v in words.items()):
+        cfg["ste_words"] = {k.strip(): v.strip() for k, v in words.items()}
+    elif words is not None:
+        got = "an empty or non-string entry" if isinstance(words, dict) else type(words).__name__
+        warns.append("docs.ste_words: expected an object of non-empty word-to-replacement strings, "
+                     f"got {got} — the R7 word check is off")
 
     ver = _section(raw, "verify", warns)
     runner = str(ver.get("runner") or DEFAULTS["runner"])

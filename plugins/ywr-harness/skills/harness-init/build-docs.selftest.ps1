@@ -964,7 +964,7 @@ $ok = (Assert-True 'SL5 a verbatim block is exempt from the whole-section check'
 Reset-SL
 
 # SL6: a new ADR is checked whole; a changed accepted ADR is skipped (append-only).
-Write-SL 'docs/adr/0002-b.md' "---`nid: `"0002`"`ntype: adr`ntitle: `"b`"`nstatus: accepted`n---`n# 0002. B`n`n$long`n"
+Write-SL 'docs/adr/0002-b.md' "---`nid: `"0002`"`ntype: adr`ntitle: `"b`"`nstatus: accepted`n---`n# 0002. B`n`n$long`n`n## Options considered`n`n| Option | Verdict |`n|---|---|`n| A | Adopted |`n| B | Rejected |`n"
 Add-Content -LiteralPath (Join-Path $docsSL 'adr/0001-a.md') -Value "`n$long" -NoNewline
 $rSL6 = Invoke-SLCheck 'docs/adr/0001-a.md' 'docs/adr/0002-b.md'
 $ok = (Assert-True 'SL6 a new ADR is checked whole and a changed ADR is skipped' `
@@ -1035,6 +1035,68 @@ Write-SL '.harness.json' '{"docs": {"ste_lite": "true"}}'
 $rSL12b = Invoke-SLCheck 'docs/spec/0001-s.md'
 $ok = (Assert-True 'SL12b a string docs.ste_lite: WARN line, advisory, exit 0' `
     ($rSL12b.Code -eq 0 -and $rSL12b.Out -match '\[ste-lite\] WARN docs\.ste_lite' -and $rSL12b.Out -match 'ADVISORY') $rSL12b.Out) -and $ok
+Reset-SL
+
+# SL13 (ADR 0170): R8 flags an em dash, a joining semicolon, "(s)" and "and/or" in a changed
+# section, one line per kind. A semicolon inside parentheses (an R3 reference list), an entity's
+# semicolon, an em dash in a code span, a table cell that holds only an em dash and a bare URL pass;
+# the em dash entity is flagged. The forms sit in table rows of their own, because a unit reports
+# each kind once: in the paragraph a miscount would hide. Mutation anchors: a gate that counts any
+# passing form, or misses the entity, turns the count of 5 red (proven by injected faults, slice 167).
+$em = [string][char]0x2014
+Edit-SL 'A short sentence stands here.' "A short sentence $em with a dash. One clause; another clause. Each file(s) and/or dir passes."
+Edit-SL '| d1 | 0.1.0 | an old row |' "| d1 | 0.1.0 | an old row |`n| d4 | $em | a ``code $em span`` row (ADR 1; spec 2) &amp; more |`n| d5 | https://h/a;b/and/or | y &mdash; z |"
+$rSL13 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL13 R8 reports each mark kind once; the reference list, code span and lone em dash cell pass' `
+    ($rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ em dash' -and $rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ joining semicolon' -and $rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ "\(s\)"' -and $rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ "and/or"' -and $rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ em dash: "y &mdash; z' -and $rSL13.Out -match '5\. Table \(whole\)' -and $rSL13.Out -match 'ADVISORY - 5 finding') $rSL13.Out) -and $ok
+Reset-SL
+
+# SL14 (ADR 0170): a declared word is an R7 finding with its replacement, in any case; inside a code
+# span and inside a longer word it passes (the second paragraph would add a finding). SL14b: a bad
+# map warns and drops the whole map, a string docs.ste_marks warns, and both stay advisory.
+Edit-SL 'A short sentence stands here.' "A short sentence stands here VIA a path. The ``via`` span passes.`n`nA viable trivia line."
+Write-SL '.harness.json' '{"docs": {"ste_words": {"via": "through"}}}'
+$rSL14 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL14 a declared word is flagged with its replacement; a code span passes' `
+    ($rSL14.Out -match 'R7 docs/spec/0001-s\.md:\d+ "via" -> "through"' -and $rSL14.Out -match 'ADVISORY - 1 finding') $rSL14.Out) -and $ok
+Write-SL '.harness.json' '{"docs": {"ste_marks": "true", "ste_words": {"via": "through", "e.g.": 3}}}'
+$rSL14b = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL14b a bad word map and a string docs.ste_marks: two WARN lines, no R7 finding, exit 0' `
+    ($rSL14b.Code -eq 0 -and $rSL14b.Out -match '\[ste-lite\] WARN docs\.ste_words' -and $rSL14b.Out -match '\[ste-lite\] WARN docs\.ste_marks' -and $rSL14b.Out -notmatch 'R7 docs/' -and $rSL14b.Out -match 'OK - 1 section') $rSL14b.Out) -and $ok
+Reset-SL
+
+# SL15 (ADR 0170): a new ADR with one option, and one with no options heading, are each a finding.
+# SL6 above holds the passing control: its ADR records two options and reports only its R5 line.
+# The two-item "Adoption plan" section above the options must not count: the heading match takes
+# whole words, so a substring match would pass ADR 0003 here.
+Write-SL 'docs/adr/0003-c.md' "---`nid: `"0003`"`ntype: adr`ntitle: `"c`"`nstatus: accepted`n---`n# 0003. C`n`nShort.`n`n## Adoption plan`n`n- Step one.`n- Step two.`n`n## Options`n`n| Option | Verdict |`n|---|---|`n| A | Adopted |`n"
+Write-SL 'docs/adr/0004-d.md' "---`nid: `"0004`"`ntype: adr`ntitle: `"d`"`nstatus: accepted`n---`n# 0004. D`n`nShort.`n"
+$rSL15 = Invoke-SLCheck 'docs/adr/0003-c.md' 'docs/adr/0004-d.md'
+$ok = (Assert-True 'SL15 one option and no options heading are each an OPT finding' `
+    ($rSL15.Out -match 'OPT docs/adr/0003-c\.md:\d+ 1 option, fewer than 2' -and $rSL15.Out -match 'OPT docs/adr/0004-d\.md:1 no options section' -and $rSL15.Out -match 'ADVISORY - 2 finding') $rSL15.Out) -and $ok
+Reset-SL
+
+# SL16 (ADR 0170): two keys. The scaffold seed declares docs.ste_lite only, so an R8 finding stays
+# advice there (exit 0, the ste_marks line printed) and an R5 finding still blocks; docs.ste_marks
+# alone blocks R8 and leaves R5 as advice. Mutation anchor: one shared switch turns SL16 red.
+Edit-SL 'A short sentence stands here.' "A short sentence $em with a dash."
+Write-SL '.harness.json' '{"docs": {"ste_lite": true}}'
+$rSL16 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL16 docs.ste_lite alone: an R8 finding is advice (exit 0) and names docs.ste_marks' `
+    ($rSL16.Code -eq 0 -and $rSL16.Out -match 'ADVISORY - 1 finding' -and $rSL16.Out -match 'ste_marks.: true' -and $rSL16.Out -notmatch 'ste_lite.: true') $rSL16.Out) -and $ok
+Write-SL '.harness.json' '{"docs": {"ste_marks": true}}'
+$rSL16b = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL16b docs.ste_marks: true: the R8 finding blocks (FAIL, exit 1)' `
+    ($rSL16b.Code -eq 1 -and $rSL16b.Out -match '\[ste-lite\] FAIL - 1 finding') $rSL16b.Out) -and $ok
+Edit-SL "A short sentence $em with a dash." "A short sentence stands here.`n`n$long"
+$rSL16c = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL16c docs.ste_marks alone: an R5 finding is advice (exit 0) and names docs.ste_lite' `
+    ($rSL16c.Code -eq 0 -and $rSL16c.Out -match 'ADVISORY - 1 finding' -and $rSL16c.Out -match 'ste_lite.: true') $rSL16c.Out) -and $ok
+Edit-SL 'A short sentence stands here.' "A short sentence $em with a dash."
+Write-SL '.harness.json' '{"docs": {"ste_lite": true, "ste_marks": true}}'
+$rSL16d = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL16d both keys: an R5 and an R8 finding fail together (FAIL - 2, exit 1, no advisory line)' `
+    ($rSL16d.Code -eq 1 -and $rSL16d.Out -match '\[ste-lite\] FAIL - 2 finding' -and $rSL16d.Out -notmatch 'advisory:') $rSL16d.Out) -and $ok
 Reset-SL
 
 # --- FL: every YAML list shape a spec is written in indexes as the SAME list (dist issue #6) ----
