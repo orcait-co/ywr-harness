@@ -23,7 +23,7 @@
   ],
   "//real_tree": "ADR 0157 decision 7, ADR 0159, spec 0008 §3.4. Per suite, the plugin files it reads only for a property that the real-tree gates check first in every run: the top CHANGELOG entry and its link, README.md as an append target, vendored-copy identity, dogfood-placement identity, the disabled-skills guard scope. The runner does not read this key, so these files select nothing for the suite. scripts/readset-audit.ps1 leaves them intact in that suite's broken copy and checks each entry. Measured 2026-10-18: with exactly these files restored in a broken copy, manifest-gate.selftest went green (83 of 83 cases, green control). Weak evidence: most of its cases expect a red run, which a hidden read cannot flip (ADR 0159).",
   "real_tree": {
-    "manifest-gate.selftest.ps1": ["CHANGELOG.md", "README.md", "scripts/harness_gates.py", "scripts/harness_retro.py", "scripts/verify_map.py", "skills/harness-init/templates/docs/**", "skills/harness-init/templates/.github/**", "skills/*/SKILL.md"]
+    "manifest-gate.selftest.ps1": ["CHANGELOG.md", "README.md", "scripts/harness_gates.py", "scripts/harness_retro.py", "scripts/verify_map.py", "scripts/slice_note.py", "skills/harness-init/templates/docs/**", "skills/harness-init/templates/.github/**", "skills/*/SKILL.md"]
   },
   "suites": {
     "agents/agents.selftest.ps1": ["agents/*.md"],

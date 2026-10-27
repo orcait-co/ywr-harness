@@ -12,6 +12,11 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.69.16 — 2026-10-27
+
+- 멤버 쪽 동작 변화는 없습니다. canon의 read-set audit이 읽는 선언(`selftest-reads.json`의 `real_tree`)에 `manifest-gate.selftest`가 읽는 `scripts/slice_note.py`를 추가했습니다.
+  0.69.14에서 템플릿에 vendored된 이 파일이 선언에서 빠져 있어 audit이 이 suite를 FAIL로 판정했습니다. suite 선택(`-Changed`)과 vendored 사본 검사는 바뀌지 않습니다.
+
 ## v0.69.15 — 2026-10-26
 
 - 플러그인 업데이트 전(0.69.11 미만)에 돌린 adversarial review의 digest로도 `/ywr-harness:slice-close`의 fix proof 단계를 통과할 수 있습니다(ADR 0173, dist 이슈 #11).
