@@ -12,6 +12,27 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.70.0 — 2026-10-29
+
+- 새 명령 **`/ywr-harness:auto`** (`on` · `off` · `status`) 가 생겼습니다. 이 checkout 에서만 자율 모드를 켭니다.
+  상태는 git 디렉터리에 저장되므로 커밋되지 않고, 다른 clone 은 꺼진 채로 남습니다. 명령은 모델 호출 없이 바로 답합니다.
+- 켜져 있고 `.harness.json` 에 `decision_prompts` 가 선언되어 있으면, 세 시점에 저장소의 prompt 파일을 Claude 의 입력에 덧붙입니다.
+  세 시점은 adversarial review 호출, 그 digest 알림, `harness_gates.py --tree` 실행입니다(ADR 0174, ADR 0175).
+- 항목에 `"check": true` 를 두면 그 시점의 데이터를 `sonnet` 모델에 한 번 물어 답도 함께 덧붙입니다. 그 시점은 답을 기다립니다(측정 약 1초, 최대 30초).
+- 켜져 있는 동안 Claude 와 서브에이전트는 편집 도구로 `.harness.json` 과 선언된 prompt 파일을 고칠 수 없습니다. 스위치 파일은 켜짐·꺼짐과 관계없이 편집 도구로 쓸 수 없습니다. 꺼져 있으면 그 외에는 아무 일도 하지 않습니다.
+- `/ywr-harness:auto on` 은 세션마다 다시 입력해야 합니다(ADR 0176). 입력할 때 `.harness.json` 과 선언된 prompt 파일의 해시를 그 세션의 메모리에 기록하고, 시점마다 다시 비교합니다.
+  셸 명령 등으로 입력이 바뀌었거나 이 세션에서 명령을 입력하지 않았으면(새 세션, `--resume`, 플러그인 다시 불러오기) 그 시점의 prompt 와 확인 답을 넣지 않고 알림(toast)과 한 줄 안내만 남깁니다.
+  바뀐 내용을 확인한 뒤 `on` 을 다시 입력하면 새 기준값을 쓰고, 응답에 이전 기준값과 달라진 파일을 적습니다.
+- 이 보호는 한 세션 안에서만 유효합니다. `on` 은 입력한 순간 디스크에 있는 파일을 그대로 믿으므로, 루프의 launch 명령이 새 세션마다 `on` 을 보내면 이전 세션이 셸로 고친 내용도 아무 확인 없이 기준값이 됩니다.
+  루프에 쓰려면 `on` 을 보내기 전에 입력 파일을 따로 확인하세요. 세션을 넘는 보호는 루프 host 를 정할 때 다룹니다.
+- 선언이 없는 저장소와 스위치를 켜지 않은 멤버에게는 동작 변화가 없습니다.
+- 이 기능은 플러그인의 hooks module 이 처리하므로 Claude Code 2.1.287 이상에서 mod 가 허용될 때만 동작합니다. `disableAllHooks`, `--safe-mode`, managed `allowManagedModsOnly` 에서는 명령이 아무것도 바꾸지 않았다고 안내만 합니다.
+- 배치된 CI(`harness-gates.yml`)가 `npx` 게이트를 돌리기 전에 저장소가 선언한 Node 를 설치합니다(ADR 0177, dist issue #12).
+  게이트 디렉터리의 `.nvmrc` → `.node-version` → `package.json` 의 `volta.node` 순으로 읽고, 하위 디렉터리에 선언이 없으면 루트의 `.nvmrc`·`.node-version` 을 봅니다.
+  `engines.node`·`devEngines.runtime` 은 버전을 고르는 값이 아니라 범위라서 Node 를 설치하지 않고, 로그 줄에 범위를 적고 `.nvmrc` 커밋을 권합니다(ADR 0178). `>=18` 같은 범위만 둔 저장소는 지금처럼 러너 이미지의 Node 를 씁니다.
+  지금까지는 러너 이미지의 Node(ubuntu-latest 는 22.x)로 `npm ci` 를 돌려서, Node 24 를 `engines` 와 `engine-strict` 로 요구하는 저장소는 게이트가 하나도 돌지 않고 실패했습니다.
+- Node 를 선언하지 않은 저장소는 지금처럼 러너 이미지의 Node 를 씁니다. 게이트 디렉터리들이 서로 다른 버전을 선언하면 경고를 남기고 러너 이미지의 Node 를 씁니다. 반영하려면 업데이트 후 `/ywr-harness:harness-init` 을 다시 실행하세요.
+
 ## v0.69.16 — 2026-10-27
 
 - 멤버 쪽 동작 변화는 없습니다. canon의 read-set audit이 읽는 선언(`selftest-reads.json`의 `real_tree`)에 `manifest-gate.selftest`가 읽는 `scripts/slice_note.py`를 추가했습니다.

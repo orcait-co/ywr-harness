@@ -24,7 +24,7 @@ Claude Code.
 Plugin components resolve as `ywr-harness:<name>`. A bare name does not resolve:
 
 ```
-/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:report-issue   /ywr-harness:artifact-publish   /ywr-harness:setup
+/ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:report-issue   /ywr-harness:artifact-publish   /ywr-harness:setup   /ywr-harness:auto
 Workflow({name: 'ywr-harness:adversarial-review', args: {...}})
 ```
 
@@ -79,6 +79,37 @@ next session's check is the proof, and a band that comes back means installed-bu
 `python`, possibly the Windows Store app execution alias; unmeasured). Off Windows, or without `winget`, it
 prints the commands and runs nothing. Where a host drops the module, `/ywr-harness:setup` runs
 as an ordinary skill and Claude does the same steps.
+
+`hooks/decision-prompts.mjs` is the autonomy switch (ADR 0174, ADR 0175, ADR 0176). `/ywr-harness:auto on`
+turns it on for this checkout only: the state lives under the git directory, so nothing is committed
+and other clones stay off. `/ywr-harness:auto off` and `status` do the rest; no command runs a model
+turn. While it is on, and `.harness.json` declares `decision_prompts`, the module adds the declared
+`.md` prompt to Claude's input at three stages: the adversarial-review call (`review-start`), its
+digest notification (`review-digest`) and the `harness_gates.py --tree` run (`ready-report`). An
+entry with `"check": true` also asks one `sonnet` model call about that stage's data and adds the
+answer beside the prompt; the stage waits for it (about 1 s measured, 30 s at most). While the switch
+is on, Claude and its subagents cannot edit `.harness.json` or a declared prompt file with the edit
+tools, and the switch file is never theirs to write, on or off. A shell command can still write
+them, so the typed `on` also hashes `.harness.json` and every declared prompt file into the session's
+memory: a stage whose inputs changed since then, or a session where nobody typed `on` (a new session,
+`--resume`, a plugin reload), gets no prompt and no side check, only a one-line notice and a toast.
+Type `on` again after checking the change; its reply names the inputs that differ from the baseline it
+replaces. The check holds inside one session only: each `on` trusts the files as they are on disk, so a
+loop launcher that sends `on` at every new session accepts whatever an earlier session wrote through a
+shell. Check the inputs before a scripted `on`. Off, the module adds nothing and calls no model. The
+module needs Claude Code 2.1.287+ with mods allowed:
+
+```json
+{ "decision_prompts": {
+    "review-digest": { "prompt": "docs/prompts/review-digest.md", "check": true },
+    "ready-report":  { "prompt": "docs/prompts/ready-report.md" } } }
+```
+
+Start with `check` off: the side check's answers were measured on three gate runs only, and a wrong
+answer lands at the decision point. Turn it on per stage once you have read its answers on real slices.
+
+`slice-close` is not a stage: Claude Code's built-in mods guard skips the `skill.prompt` hook of a
+member-installed plugin, which that stage would need (fact 177).
 
 `hooks/slice-status.mjs` held the slice status line of 0.67.0 (ADR 0138). Since 0.67.1 the entry
 does not register it, so no line shows (ADR 0140): its "run again" after every test or script run

@@ -787,10 +787,10 @@ const child = (pieces, code, { throwFirst = false } = {}) => (arg, done) => {
 {
   const C = capture(ENTRY.register)
   const evs = C.hooks.map(x => x.ev).sort()
-  eq('E1 mods.mjs: registers the ledger (agent.spawn, turn.step, turn.complete) and the prerequisites hooks (session.start, ui.render, command.run), each once',
-    evs, ['agent.spawn', 'command.run', 'session.start', 'turn.complete', 'turn.step', 'ui.render'])
+  eq('E1 mods.mjs: registers the ledger (agent.spawn, turn.step, turn.complete), the prerequisites hooks (session.start, ui.render, command.run) and the decision-prompts hooks (turn.start, tool.call, session.append, command.run), each once',
+    evs, ['agent.spawn', 'command.run', 'command.run', 'session.append', 'session.start', 'tool.call', 'turn.complete', 'turn.start', 'turn.step', 'ui.render'])
   eq('E2 mods.mjs: the prerequisites hooks keep their matchers through the entry',
-    ['command.run', 'ui.render', 'session.start'].map(ev => C.byEv(ev)[0]?.matcher ?? 'absent'), [{ command: 'ywr-harness:setup' }, { component: 'AbovePrompt' }, 'absent'])
+    [C.byEv('command.run').find(x => x.matcher && x.matcher.command === 'ywr-harness:setup')?.matcher ?? 'absent', C.byEv('ui.render')[0]?.matcher ?? 'absent', C.byEv('session.start')[0]?.matcher ?? 'absent'], [{ command: 'ywr-harness:setup' }, { component: 'AbovePrompt' }, 'absent'])
   eq('E3 mods.mjs: no prompt.compose', C.byEv('prompt.compose').length, 0)
 }
 

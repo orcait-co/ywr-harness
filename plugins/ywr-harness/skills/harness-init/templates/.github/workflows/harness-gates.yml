@@ -341,8 +341,129 @@ jobs:
             fi
           done
 
-      # npx 게이트(eslint · prettier · tsc · vitest): node 는 러너 이미지에 있지만 프로젝트의 도구는
-      # node_modules 에 있어야 한다 — 디렉터리마다 lockfile 이 있을 때만 `npm ci`, 없으면 보고하고
+      # ADR 0177 (dist issue #12). 러너 이미지의 Node(ubuntu-latest 는 22.x)는 레포가 선언한 Node 가 아닐 수
+      # 있다 — engines 가 그 버전을 배제하고 .npmrc 가 engine-strict 면 아래 `npm ci` 가 EBADENGINE 으로 죽고
+      # 게이트는 하나도 돌지 않는다. 그래서 npx 게이트 디렉터리마다 레포가 고른 Node 를 찾는다: .nvmrc →
+      # .node-version → package.json 의 volta.node. engines.node 와 devEngines.runtime 은 고른 버전이 아니라
+      # 호환 범위라 세지 않는다(ADR 0178) — `>=18` 같은 범위로 setup-node 를 돌리면 레포가 아무것도 바꾸지
+      # 않았는데 더 새 Node 로 옮겨진다. 범위만 있는 디렉터리는 로그 줄이 .nvmrc 를 권한다. 그 디렉터리가 아무것도 고르지 않으면 레포 루트의 .nvmrc → .node-version 을
+      # 본다 — 루트에 버전 파일을 두고 하위 디렉터리에서 게이트를 돌리는 모노레포 형태다. 루트의 package.json
+      # 은 보지 않는다: 루트의 volta.node 는 그 루트 패키지의 고정이지 하위 디렉터리의 선택이 아니다. 선언이 한 값으로 모이면 그 파일을 setup-node 에 넘긴다. 선언이 없으면 이미지의 Node 를
+      # 그대로 쓴다(이전 동작). 디렉터리마다 값이 다르면 한 잡에는 Node 가 하나뿐이라 맞출 수 없으므로
+      # ::warning:: 으로 이름을 대고 이미지의 Node 를 쓴다 — 지금 초록인 레포를 빨갛게 만들지 않는다.
+      # 값은 로그 줄에 실리므로 버전 문자만 남긴다(':' 이 없으면 `::` 어노테이션을 위조할 수 없다). 경로는 그대로
+      # 찍는다: 디렉터리는 emitter 의 token_ok 가 [A-Za-z0-9._/-] 로 제한한 cwd 이고 파일 이름은 닫힌 목록이다.
+      - name: Resolve the Node version the npx gate directories declare
+        id: node
+        if: contains(steps.cmds.outputs.runners, ' npx ')
+        env:
+          NPX_DIRS: ${{ steps.cmds.outputs.npx_dirs }}
+        run: |
+          python - <<'PY'
+          import json, os, re
+
+          UNSAFE = re.compile(r"[^0-9A-Za-z.+*/<>=^~| -]")
+
+          def clean(value):
+              return UNSAFE.sub("", value).strip()[:80]
+
+          def key(value):
+              v = value.strip()
+              return v[1:] if v[:1] in "vV" and v[1:2].isdigit() else v
+
+          def from_text(path):
+              with open(path, encoding="utf-8", errors="replace") as fh:
+                  for line in fh:
+                      line = line.split("#", 1)[0].strip()
+                      if line:
+                          return line
+              return ""
+
+          def from_package(data):
+              # 고르는 선언(volta.node)과 범위(devEngines.runtime · engines.node)를 따로 돌려준다(ADR 0178).
+              if not isinstance(data, dict):
+                  return "", ""
+              volta = data.get("volta")
+              if isinstance(volta, dict) and isinstance(volta.get("node"), str) and volta["node"].strip():
+                  return volta["node"], ""
+              dev = data.get("devEngines")
+              runtime = dev.get("runtime") if isinstance(dev, dict) else None
+              for entry in runtime if isinstance(runtime, list) else [runtime]:
+                  if isinstance(entry, dict) and entry.get("name") == "node" and isinstance(entry.get("version"), str) and entry["version"].strip():
+                      return "", f"devEngines.runtime {entry['version']}"
+              engines = data.get("engines")
+              if isinstance(engines, dict) and isinstance(engines.get("node"), str) and engines["node"].strip():
+                  return "", f"engines.node {engines['node']}"
+              return "", ""
+
+          declared, undeclared, ranges = [], [], {}
+          for d in os.environ.get("NPX_DIRS", "").split():
+              found = None
+              paths = [name if d == "." else f"{d}/{name}" for name in (".nvmrc", ".node-version", "package.json")]
+              if d != ".":
+                  paths += [".nvmrc", ".node-version"]
+              for path in paths:
+                  name = os.path.basename(path)
+                  if not os.path.isfile(path):
+                      continue
+                  try:
+                      if name == "package.json":
+                          with open(path, encoding="utf-8") as fh:
+                              value, span = from_package(json.load(fh))
+                          if span:
+                              ranges[d] = span
+                      else:
+                          value = from_text(path)
+                  except (OSError, ValueError) as exc:
+                      # 읽지 못한 선언은 선언 없음이 아니다 — 보고하고 다음 파일로 간다(무음 아님).
+                      print(f"::warning::{path} 를 읽지 못해 Node 선언을 확인하지 못했습니다({type(exc).__name__}) — 다음 파일을 봅니다(ywr-harness ADR 0177).")
+                      continue
+                  if value.strip():
+                      found = (path, value)
+                      break
+              if found:
+                  declared.append(found)
+                  # 루트 파일로 폴백한 디렉터리의 범위도 같은 줄에 남긴다 — 고른 Node 가 그 범위 밖이면 npm 이 거부한다(리뷰 2026-10-29, low).
+                  span = f"; {d} 의 {clean(ranges[d])} 는 범위라 고르지 않았습니다" if d in ranges else ""
+                  print(f"node version ({d}): {clean(found[1])} — {found[0]}{span}")
+              else:
+                  undeclared.append(d)
+
+          # 선언 없는 디렉터리의 줄은 결정 뒤에 찍는다 — 한 잡에 Node 는 하나라, 다른 디렉터리의 선언이 setup-node 를
+          # 돌리면 그 디렉터리도 그 Node 로 돈다(리뷰 2026-10-29, low).
+          keys = {key(v) for _, v in declared}
+          chosen = declared[0][0] if len(keys) == 1 else ""
+          for d in undeclared:
+              runs_on = f"{chosen} 의 Node(setup-node — 다른 디렉터리의 선언)" if chosen else "러너 이미지의 Node"
+              span = f"; {clean(ranges[d])} 는 범위라 Node 를 고르지 않습니다 — 고르려면 .nvmrc 를 커밋하세요" if d in ranges else ""
+              print(f"node version ({d}): 선언 없음(.nvmrc · .node-version · package.json 의 volta.node){span} — {runs_on}")
+          if chosen:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                  out.write(f"file={chosen}\n")
+              print(f"setup-node: {chosen} 의 선언으로 Node 를 설치합니다.")
+          elif len(keys) > 1:
+              # 비교는 텍스트다 — 버전 범위를 풀지 않으므로 `24` 와 `>=24.22.0 <25` 처럼 같은 Node 를 뜻하는 선언도
+              # 다르게 센다(ADR 0177 잔여 위험). 해결은 각 디렉터리가 먼저 읽히는 파일에 같은 텍스트를 두는 것이다.
+              listed = ", ".join(f"{p}={clean(v)}" for p, v in declared)
+              print(f"::warning::npx 게이트 디렉터리들의 Node 선언이 텍스트로 일치하지 않습니다: {listed} — 한 잡에는 Node 가 하나뿐이라 setup-node 를 생략하고 러너 이미지의 Node 로 돕니다. 이 비교는 버전 범위를 풀지 않습니다. 각 디렉터리에 같은 텍스트의 .nvmrc 를 두면(.nvmrc 가 package.json 보다 먼저 읽힘) 한 값으로 모입니다(ywr-harness ADR 0177).")
+          PY
+
+      # 자동 npm 캐시는 끈다(package-manager-cache: false): 이 워크플로는 지금까지 캐시 없이 돌았고, setup-node
+      # 문서는 캐시가 필요 없으면 끄라고 권한다. 끄지 않으면 package.json 에 packageManager: npm 을 둔 레포에서만
+      # 동작이 달라진다.
+      # check-latest: true — 기본값(false)이면 setup-node 는 러너 tool cache 에서 semver 가 맞는 버전을 먼저 쓴다.
+      # .nvmrc 의 `24` 가 이미지에 미리 깔린 오래된 24.x 로 풀리면 engines 의 `>=24.22.0` 을 만족하지 못해 같은
+      # EBADENGINE 이 다시 난다(owner 2026-10-29). true 면 범위 안의 최신판을 확인하고, 캐시가 낡았으면 내려받는다.
+      - name: Setup Node (the version the npx gate directories declare)
+        if: steps.node.outputs.file != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ${{ steps.node.outputs.file }}
+          check-latest: true
+          package-manager-cache: false
+
+      # npx 게이트(eslint · prettier · tsc · vitest): node 는 러너 이미지의 것이거나 위 스텝이 레포의 선언대로
+      # 설치한 것이지만(ADR 0177) 프로젝트의 도구는 node_modules 에 있어야 한다 — 디렉터리마다 lockfile 이 있을 때만 `npm ci`, 없으면 보고하고
       # 넘어간다(무음 아님). 그 생략이 "도구를 못 찾고 실패한다"는 뜻은 아니다: npm exec 문서대로 stdin 이
       # TTY 가 아니거나 CI 가 감지되면 npx 는 `--yes` 를 가정하고(아래 실행 스텝은 CI=true · </dev/null),
       # node_modules 에 없는 도구는 — lockfile 이 없거나 lock 에 그 도구가 없으면 — 그 런 시점의 레지스트리

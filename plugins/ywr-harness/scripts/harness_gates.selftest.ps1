@@ -2375,6 +2375,124 @@ bash '$ahW/install.sh'
             ($h9.Code -eq 0 -and $h9.Out -match '(?m)^::warning::uv sync \(\.\) .*CPython 3\.15\.0 ' -and $h9.Out -notmatch '(?m)^::error::' -and $h9.Out -notmatch 'forged') "exit=$($h9.Code)`n$($h9.Out)") -and $ok
 }
 
+# --- AN: the Node resolver hands setup-node the repo's own declaration (ADR 0177, dist issue #12) --
+# The step is extracted BY NAME and run under bash, as AH runs its neighbour; a `python` shim first
+# on PATH stands for setup-python's interpreter. Each case anchors one mutation: AN2 a file output
+# with no declaration, AN3/AN5/AN9 a range counted as a choice (ADR 0178), AN4/AN5 a lookup order
+# other than setup-node's, AN6 a disagreement that still
+# picks a file, AN7 a value echoed unsanitized, AN8 a parse failure that stops the step, AN10 an
+# undeclared directory that claims the image Node while another declaration sets up Node. AN0 fails a
+# renamed step, so the cases never run nothing. Asserts match ASCII only, as AH's do.
+if ($bashExe -and $py) {
+    $anStep = Get-RunBlock $ciLines 'Resolve the Node version the npx gate directories declare'
+    $ok = (Assert-True 'AN0 the Node resolver step script is found in the template' ($anStep -and $anStep -match 'GITHUB_OUTPUT' -and $anStep -match 'devEngines') "step=[$anStep]") -and $ok
+    # AN11 (owner 2026-10-29): without check-latest, `24` resolves to the image's cached 24.x, which can
+    # fail an engines floor such as >=24.22.0 — the issue #12 failure again. Read from the setup-node
+    # step's own `with:` block, so the key elsewhere in the file does not count.
+    $snAt = [Array]::FindIndex($ciLines, [Predicate[string]]{ param($l) $l -match '^\s*- name: Setup Node \(' })
+    $snBlock = if ($snAt -ge 0) { ($ciLines[($snAt + 1)..([Math]::Min($snAt + 8, $ciLines.Count - 1))] | Where-Object { $_ -notmatch '^\s*#' }) -join "`n" } else { '' }
+    $ok = (Assert-True 'AN11 the Setup Node step passes node-version-file from the resolver, check-latest: true and package-manager-cache: false' `
+            ($snBlock -match 'uses: actions/setup-node@' -and $snBlock -match '(?m)^\s+check-latest: true$' -and $snBlock -match '(?m)^\s+package-manager-cache: false$' -and $snBlock -match 'node-version-file: \$\{\{ steps\.node\.outputs\.file \}\}') "block=[$snBlock]") -and $ok
+    $anWork = Join-Path $fxBase 'an-work'
+    New-Item -ItemType Directory -Force -Path (Join-Path $anWork 'stub') | Out-Null
+    $anPy = [IO.Path]::GetFullPath($py.Source) -replace '\\', '/'
+    [IO.File]::WriteAllText((Join-Path $anWork 'stub/python'), "#!/bin/sh`nexec '$anPy' `"`$@`"`n")
+    [IO.File]::WriteAllText((Join-Path $anWork 'resolve.sh'), $anStep)
+    $anW = [IO.Path]::GetFullPath($anWork) -replace '\\', '/'
+    [IO.File]::WriteAllText((Join-Path $anWork 'driver.sh'), (@"
+cd "`$1"
+chmod +x '$anW/stub/python' 2>/dev/null || true
+PATH="`$(cd '$anW/stub' && pwd):/usr/bin:/bin:`$PATH"
+NPX_DIRS="`$2"; GITHUB_OUTPUT="`$1/.gho"; PYTHONIOENCODING=utf-8
+: > "`$GITHUB_OUTPUT"
+export PATH NPX_DIRS GITHUB_OUTPUT PYTHONIOENCODING
+bash '$anW/resolve.sh'
+"@ -replace "`r", ''))
+    function Invoke-AnCase([string]$Name, [hashtable]$Files, [string]$Dirs) {
+        $t = Join-Path $anWork $Name
+        New-Item -ItemType Directory -Force -Path $t | Out-Null
+        foreach ($d in ($Dirs -split ' ')) { New-Item -ItemType Directory -Force -Path (Join-Path $t $d) | Out-Null }
+        foreach ($f in $Files.Keys) {
+            $p = Join-Path $t $f
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $p) | Out-Null
+            [IO.File]::WriteAllText($p, $Files[$f])
+        }
+        $out = (& $bashExe "$anW/driver.sh" ([IO.Path]::GetFullPath($t) -replace '\\', '/') $Dirs 2>&1 | Out-String) -replace "`r", ''
+        $code = $LASTEXITCODE
+        $gho = Join-Path $t '.gho'
+        $m = if (Test-Path -LiteralPath $gho) { [regex]::Match(([IO.File]::ReadAllText($gho) -replace "`r", ''), '(?m)^file=(.*)$') } else { $null }
+        return [pscustomobject]@{ Out = $out; Code = $code; File = $(if ($m -and $m.Success) { $m.Groups[1].Value } else { '' }) }
+    }
+    $n1 = Invoke-AnCase 'nvmrc' @{ '.nvmrc' = "24`n" } '.'
+    $ok = (Assert-True 'AN1 a .nvmrc in the gate directory becomes the setup-node file, with one version line' `
+            ($n1.Code -eq 0 -and $n1.File -eq '.nvmrc' -and $n1.Out -match '(?m)^node version \(\.\): 24 .*\.nvmrc$' -and $n1.Out -notmatch '::warning::') "exit=$($n1.Code) file=[$($n1.File)]`n$($n1.Out)") -and $ok
+    $n2 = Invoke-AnCase 'none' @{ 'package.json' = '{"name":"x","devDependencies":{"eslint":"9"}}' } '.'
+    $ok = (Assert-True 'AN2 no declaration writes no file, so setup-node is skipped and the image Node stays' `
+            ($n2.Code -eq 0 -and $n2.File -eq '' -and $n2.Out -match '(?m)^node version \(\.\): ' -and $n2.Out -notmatch '::warning::') "exit=$($n2.Code) file=[$($n2.File)]`n$($n2.Out)") -and $ok
+    # AN3 (ADR 0178): engines.node is a compatibility range, never a choice. A loose `>=18` must not move a
+    # repo off the image Node with no repo change; the line names the range and asks for an .nvmrc.
+    $n3 = Invoke-AnCase 'engines' @{ 'package.json' = '{"engines":{"node":">=24.22.0 <25"}}' } '.'
+    $n3b = Invoke-AnCase 'engines-loose' @{ 'package.json' = '{"engines":{"node":">=18"}}' } '.'
+    $ok = (Assert-True 'AN3 package.json engines.node alone chooses no Node: no file, a line naming the range and .nvmrc' `
+            ($n3.Code -eq 0 -and $n3.File -eq '' -and $n3.Out -match '(?m)^node version \(\.\): .*engines\.node >=24\.22\.0 <25 .*\.nvmrc' -and $n3.Out -notmatch '::warning::' -and
+             $n3b.Code -eq 0 -and $n3b.File -eq '' -and $n3b.Out -match '(?m)^node version \(\.\): .*engines\.node >=18 .*\.nvmrc' -and $n3b.Out -notmatch '::warning::') "strict:`n$($n3.Out)`nloose:`n$($n3b.Out)") -and $ok
+    # AN3b (review 2026-10-29, low): a blank volta.node chooses nothing, so the range behind it is named;
+    # blank range values name nothing.
+    $n3c = Invoke-AnCase 'volta-blank' @{ 'package.json' = '{"volta":{"node":"  "},"engines":{"node":">=18"}}' } '.'
+    $n3d = Invoke-AnCase 'range-blank' @{ 'package.json' = '{"devEngines":{"runtime":{"name":"node","version":" "}},"engines":{"node":""}}' } '.'
+    $ok = (Assert-True 'AN3b a blank volta.node chooses no Node and the range behind it is named; blank ranges name nothing' `
+            ($n3c.Code -eq 0 -and $n3c.File -eq '' -and $n3c.Out -match '(?m)^node version \(\.\): .*engines\.node >=18 ' -and
+             $n3d.Code -eq 0 -and $n3d.File -eq '' -and $n3d.Out -notmatch 'engines\.node' -and $n3d.Out -notmatch 'devEngines\.runtime ') "volta-blank:`n$($n3c.Out)`nrange-blank:`n$($n3d.Out)") -and $ok
+    $n4 = Invoke-AnCase 'order-files' @{ 'web/.node-version' = "22`n"; 'web/.nvmrc' = "# pinned`n24`n"; 'web/package.json' = '{"engines":{"node":"20"}}' } 'web'
+    $ok = (Assert-True 'AN4 .nvmrc wins over .node-version and package.json; a comment line is skipped' `
+            ($n4.Code -eq 0 -and $n4.File -eq 'web/.nvmrc' -and $n4.Out -match '(?m)^node version \(web\): 24 ') "exit=$($n4.Code) file=[$($n4.File)]`n$($n4.Out)") -and $ok
+    $n5 = Invoke-AnCase 'order-package' @{ 'package.json' = '{"engines":{"node":"20"},"devEngines":{"runtime":[{"name":"bun","version":"1"},{"name":"node","version":"22"}]},"volta":{"node":"24.1.0"}}' } '.'
+    $n5b = Invoke-AnCase 'order-devengines' @{ 'package.json' = '{"engines":{"node":"20"},"devEngines":{"runtime":[{"name":"bun","version":"1"},{"name":"node","version":"22"}]}}' } '.'
+    $ok = (Assert-True 'AN5 inside package.json only volta.node chooses a Node; devEngines.runtime is a range, named before engines.node' `
+            ($n5.Code -eq 0 -and $n5.File -eq 'package.json' -and $n5.Out -match '(?m)^node version \(\.\): 24\.1\.0 ' -and
+             $n5b.Code -eq 0 -and $n5b.File -eq '' -and $n5b.Out -match '(?m)^node version \(\.\): .*devEngines\.runtime 22 ' -and $n5b.Out -notmatch 'engines\.node 20') "volta:`n$($n5.Out)`ndevEngines:`n$($n5b.Out)") -and $ok
+    $n6 = Invoke-AnCase 'dirs-agree' @{ 'api/.node-version' = "v24`n"; 'web/.nvmrc' = "24`n" } 'api web'
+    $n6b = Invoke-AnCase 'dirs-differ' @{ 'api/.nvmrc' = "22`n"; 'web/.nvmrc' = "24`n" } 'api web'
+    $ok = (Assert-True 'AN6 two directories that agree (v24 = 24) pick the first file; two that differ get a warning and no file' `
+            ($n6.Code -eq 0 -and $n6.File -eq 'api/.node-version' -and $n6.Out -notmatch '::warning::' -and
+             $n6b.Code -eq 0 -and $n6b.File -eq '' -and $n6b.Out -match '(?m)^::warning::.*api/\.nvmrc=22, web/\.nvmrc=24 .*ADR 0177') "agree file=[$($n6.File)]`n$($n6.Out)`ndiffer file=[$($n6b.File)]`n$($n6b.Out)") -and $ok
+    # AN7: the value reaches a log line and, on a disagreement, a ::warning:: line — a ':' kept in it
+    # would let a repo file forge a workflow command.
+    $n7 = Invoke-AnCase 'forge' @{ 'api/.nvmrc' = "24::error::forged`n"; 'web/.nvmrc' = "22`n" } 'api web'
+    $ok = (Assert-True 'AN7 a declared value reaches the log with version characters only' `
+            ($n7.Code -eq 0 -and $n7.Out -notmatch '(?m)^::error::' -and $n7.Out -notmatch '::error' -and $n7.Out -match '24errorforged' -and
+             ([regex]::Matches($n7.Out, '(?m)^::')).Count -eq 1) "exit=$($n7.Code)`n$($n7.Out)") -and $ok
+    # AN10 (review 2026-10-29, low): one job holds one Node, so a directory that declares nothing runs
+    # on another directory's declaration — its line must say so, never "the runner image's Node".
+    $n10 = Invoke-AnCase 'undeclared-inherits' @{ 'api/.nvmrc' = "24`n"; 'legacy/package.json' = '{"name":"legacy"}' } 'api legacy'
+    $n10b = Invoke-AnCase 'undeclared-image' @{ 'api/.nvmrc' = "22`n"; 'web/.nvmrc' = "24`n"; 'legacy/package.json' = '{"name":"legacy"}' } 'api legacy web'
+    # The undeclared directory FIRST (re-review 2026-10-29, low): a label taken from the declarations
+    # seen so far passes the 'api legacy' order and fails this one.
+    $n10c = Invoke-AnCase 'undeclared-first' @{ 'api/.nvmrc' = "24`n"; 'legacy/package.json' = '{"name":"legacy"}' } 'legacy api'
+    $lines = { param($o, $d) ([regex]::Matches($o, "(?m)^node version \($d\): ")).Count }
+    $ok = (Assert-True 'AN10 an undeclared directory names the declared file it inherits in either order, or the image Node when nothing is set up; one line per directory' `
+            ($n10.File -eq 'api/.nvmrc' -and $n10.Out -match '(?m)^node version \(legacy\): .*api/\.nvmrc' -and
+             $n10c.File -eq 'api/.nvmrc' -and $n10c.Out -match '(?m)^node version \(legacy\): .*api/\.nvmrc' -and
+             $n10b.File -eq '' -and $n10b.Out -match '(?m)^node version \(legacy\): ' -and $n10b.Out -notmatch '(?m)^node version \(legacy\): .*(api|web)/\.nvmrc' -and
+             (& $lines $n10.Out 'api') -eq 1 -and (& $lines $n10.Out 'legacy') -eq 1 -and (& $lines $n10c.Out 'api') -eq 1 -and (& $lines $n10c.Out 'legacy') -eq 1 -and
+             (& $lines $n10b.Out 'api') -eq 1 -and (& $lines $n10b.Out 'legacy') -eq 1 -and (& $lines $n10b.Out 'web') -eq 1) "inherit file=[$($n10.File)]`n$($n10.Out)`nfirst file=[$($n10c.File)]`n$($n10c.Out)`nimage file=[$($n10b.File)]`n$($n10b.Out)") -and $ok
+    $n8 = Invoke-AnCase 'bad-json' @{ 'package.json' = '{"engines": ' } '.'
+    $ok = (Assert-True 'AN8 an unparseable package.json is a named warning, never a crash or a file' `
+            ($n8.Code -eq 0 -and $n8.File -eq '' -and $n8.Out -match '(?m)^::warning::package\.json .*JSONDecodeError') "exit=$($n8.Code) file=[$($n8.File)]`n$($n8.Out)") -and $ok
+    # AN9: a sub-directory that chooses nothing falls back to the root version file, never to the root
+    # package.json. Its own engines range chooses nothing either (ADR 0178), so the root file still
+    # wins over it, and its one line still names that range (review 2026-10-29, low); its own
+    # volta.node is a choice and wins over the root file.
+    $n9 = Invoke-AnCase 'root-fallback' @{ '.nvmrc' = "24`n"; 'package.json' = '{"engines":{"node":"20"}}'; 'web/package.json' = '{"name":"web"}' } 'web'
+    $n9b = Invoke-AnCase 'own-range-root-file' @{ '.nvmrc' = "24`n"; 'web/package.json' = '{"engines":{"node":"22"}}' } 'web'
+    $n9c = Invoke-AnCase 'root-package-only' @{ 'package.json' = '{"volta":{"node":"20.1.0"}}'; 'web/package.json' = '{"name":"web"}' } 'web'
+    $n9d = Invoke-AnCase 'own-volta-beats-root' @{ '.nvmrc' = "24`n"; 'web/package.json' = '{"volta":{"node":"22.3.0"}}' } 'web'
+    $ok = (Assert-True 'AN9 a sub-directory uses the root .nvmrc over its own range; its own volta.node wins; a root package.json never counts' `
+            ($n9.File -eq '.nvmrc' -and $n9.Out -match '(?m)^node version \(web\): 24 ' -and $n9b.File -eq '.nvmrc' -and
+             $n9b.Out -match '(?m)^node version \(web\): 24 .*\.nvmrc.*web .*engines\.node 22 ' -and ([regex]::Matches($n9b.Out, '(?m)^node version \(web\): ')).Count -eq 1 -and
+             $n9c.File -eq '' -and $n9d.File -eq 'web/package.json' -and $n9d.Out -match '(?m)^node version \(web\): 22\.3\.0 ') "fallback file=[$($n9.File)]`n$($n9.Out)`nrange file=[$($n9b.File)]`n$($n9b.Out)`nroot-pkg file=[$($n9c.File)]`n$($n9c.Out)`nvolta file=[$($n9d.File)]`n$($n9d.Out)") -and $ok
+}
+
 # --- RUN: the in-process runner prints what a child prints (ADR 0160) ----------------------------
 # Last on purpose: a state leak from any earlier driver run would show here. Each repo runs as a real
 # child and through the driver, and the two must match byte for byte with the same exit code. The four
