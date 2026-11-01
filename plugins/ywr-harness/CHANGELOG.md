@@ -12,6 +12,14 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.72.0 — 2026-11-01
+
+- **기존 저장소가 할 일(선택)**: 저장소 `CLAUDE.md` 의 `## Working principles` 에서 harness 절차 bullet 을 지우세요. 지울 bullet 은 Artifact 제목, adversarial review 호출, 슬라이스당 1회 리뷰, owner-typed close, slice 노트, handoff bullet 입니다. 일반 규칙 bullet(ADR 먼저, secrets, `docs/adr` append-only, 결정적 게이트 먼저)은 org guide 에 이미 있습니다. `## Deliverable length` 섹션도 org guide v1.20 으로 옮겨집니다(ADR 0183).
+  지우지 않아도 slice 규칙은 두 번 로드되지 않습니다. 하지만 그 저장소는 예전 문구를 계속 쓰고 이후 규칙 변경을 받지 못합니다. 일반 규칙 bullet 과 `## Deliverable length` 섹션은 org guide 와 겹치므로, 지울 때까지 두 번 로드됩니다.
+- harness 저장소(`.harness.json` 이 있는 scaffold 저장소)에서 세션이 시작되면 플러그인이 slice 규칙을 모델에게 알려 줍니다. 규칙은 review 호출, 슬라이스당 1회 리뷰, owner-typed close, handoff 키, Artifact 규칙입니다. 이전에는 `CLAUDE.md` seed 가 이 규칙을 담았습니다. 이제 규칙 변경이 플러그인 업데이트로 모든 저장소에 전달됩니다.
+  저장소 `CLAUDE.md`(또는 `.claude/CLAUDE.md`)에 예전 seed 사본이 있으면 플러그인은 그 규칙을 반복하지 않고, 규칙마다 따로 판단해 한 줄 안내만 붙입니다. 워크플로 이름이나 명령을 언급만 한 것은 사본으로 보지 않습니다. 지금까지 두 번 로드되던 slice 노트 규칙도 이제 한 번만 로드됩니다.
+- 새 저장소의 `CLAUDE.md` seed 가 4,880 B 에서 1,152 B 로 줄었습니다. `## Working principles` 에는 규칙의 출처를 알리는 bullet 하나만 남습니다.
+
 ## v0.71.1 — 2026-11-01
 
 - `/ywr-harness:harness-init` 이 저장소에 놓는 스크립트·git hook·CI 워크플로의 주석을 다시 썼습니다. 각 주석이 정본 문서 없이도 이유를 설명하고, 정본 기록은 `ywr-harness ADR NNNN` 형식으로만 가리킵니다(ADR 0182).

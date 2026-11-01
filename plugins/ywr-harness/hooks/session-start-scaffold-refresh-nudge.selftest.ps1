@@ -62,6 +62,8 @@ function Assert-Nudge([string]$Name, [string]$Out, [string[]]$MustMatch, [string
     catch { $pre += 'stdout is not valid JSON' }
     if (-not $sys) { $pre += 'no systemMessage' }
     if ($ctx -and $evName -ne 'SessionStart') { $pre += "hookSpecificOutput.hookEventName is '$evName' (want SessionStart — the runtime drops the context otherwise)" }
+    # The slice rules name harness_gates.py; a placeholder keeps the file-list patterns about the file list.
+    $ctx = $ctx.Replace($sliceRules, '<SLICE_RULES>')
     $script:LastFails = Get-AssertionFailure -Text "$sys`n$ctx" -MustMatch $MustMatch -MustNotMatch $MustNotMatch `
         -NoNegative $NoNegative -PreFail $pre -Label 'output'
     return (Write-CaseVerdict -Name $Name -Fail $script:LastFails -Detail $Out)
@@ -77,11 +79,27 @@ function Assert-EmptyStdout([string]$Name, [string]$Out) {
     return $true
 }
 # The slice-note rule (ADR 0172), copied VERBATIM as a pin: a reword in the hook must fail here and be a decision.
-$ruleText = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `python scripts/harness/slice_note.py add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner''s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
+$noteRule = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `python scripts/harness/slice_note.py add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner''s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
 $ruleMark = 'Slice notes \(ywr-harness ADR 0172\)'   # a regex for a MustNotMatch: the rule's own first words
+# The slice rules (ADR 0183), copied VERBATIM as a pin: the head line, then one line per rule, joined by LF.
+$sliceHead = 'ywr-harness slice rules for this repo (ywr-harness ADR 0183). The org guide states the general rules; this repo''s CLAUDE.md states its own facts.'
+$sliceRuleLines = @(
+    '- Review: before a slice closes, run `Workflow({name: ''ywr-harness:adversarial-review'', args: {scope: {files, context, invariants, gates_passed}}})`. `/ywr-harness:slice-close` builds the call. `scope` is an object; a string scope loses sharding, the out-of-scope bucket and the gate check of skeptic #2. Put house review angles in `args.lensExtra`, never a redefined lens set. The review invariants are in `REVIEW.md` at the repo root; replace the harness-init starter there with this repo''s own invariants (ywr-harness ADR 0054).'
+    '- The review runs once per slice. A fix diff for its confirmed findings closes with re-run gates and one fix check per finding. Only a fix that is a new mechanism gets one bounded re-review, and the close names the criterion. A rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072).'
+    '- The close is owner-typed: `/ywr-harness:slice-close` writes the handoff and the one commit, and it never runs on the model''s own call. The session prepares it: it runs every command that `python scripts/harness/harness_gates.py` printed, the review with its fix checks, and verify. It writes no handoff and makes no commit. Its ready report ends with the line that `python scripts/harness/harness_gates.py --tree` printed after the final edit, and it asks the owner to type the command. The close reuses the report only while it is verbatim in the same session and that line is unchanged; a new session or a compaction summary runs the full close (ywr-harness ADR 0105).'
+    '- Handoff: the `handoff` key in `.harness.json` names the resume file. A value that ends in `/` names a directory with one resume file per work line, named after the work line, never after a person. The close that supersedes a `## Current state` section moves it to `docs/handoff-archive/<same filename>`, newest first (ywr-harness ADR 0040).'
+    '- Artifacts: a claude.ai Artifact that this repo publishes has the title `<repo-name> · <purpose>` and is declared under `artifacts` in `.harness.json`; CI then fails when the README lacks its link. A generated Artifact also declares its committed `source` file and a `check` drift gate, and `/ywr-harness:artifact-publish` republishes it with one confirmation, never headless (ywr-harness ADR 0032, ywr-harness ADR 0068).'
+)
+$sliceRules = (@($sliceHead) + $sliceRuleLines) -join "`n"
+# The slice rules without the review rule: what a repo whose CLAUDE.md copies only that rule gets.
+$sliceRulesNoReview = (@($sliceHead) + $sliceRuleLines[1..4]) -join "`n"
+# The copy note (ADR 0183): the whole text where the repo CLAUDE.md copies every part.
+$copyNote = 'This repo''s CLAUDE.md or .claude/CLAUDE.md holds its own copy of part of the ywr-harness slice rules, so the plugin does not repeat that part here. After that copy is deleted, the plugin states the current rules at each session start (ywr-harness ADR 0183).'
+# A fresh scaffold holds `.harness.json`, `slice_note.py` and a seed CLAUDE.md with no copy: both parts, a blank line between.
+$ruleText = $sliceRules + "`n`n" + $noteRule
 # A repo with the vendored script and NO drift: the rule is the WHOLE output — additionalContext equal to the
 # rule, event SessionStart, and no systemMessage (nothing for a person to act on). Never "silent" any more.
-function Assert-RuleOnly([string]$Name, [string]$Out) {
+function Assert-RuleOnly([string]$Name, [string]$Out, [string]$Expected = $ruleText) {
     $fails = @()
     if ($script:HookExit -ne 0) { $fails += "exit $script:HookExit (want 0 — fail-open contract)" }
     $sys = ''; $ctx = ''; $evName = ''; $keys = ''
@@ -95,7 +113,7 @@ function Assert-RuleOnly([string]$Name, [string]$Out) {
     if ($sys) { $fails += "unexpected systemMessage: $sys" }
     if ($keys -ne 'hookSpecificOutput') { $fails += "top-level keys [$keys] (want only hookSpecificOutput)" }
     if ($evName -ne 'SessionStart') { $fails += "hookEventName '$evName' (want SessionStart)" }
-    if ($ctx -cne $ruleText) { $fails += "additionalContext is not exactly the rule: [$ctx]" }
+    if ($ctx -cne $Expected) { $fails += "additionalContext is not exactly the rule: [$ctx]" }
     $script:LastFails = [string[]]$fails
     return (Write-CaseVerdict -Name $Name -Fail $fails -Detail $Out)
 }
@@ -109,7 +127,7 @@ function Assert-RuleTail([string]$Name, [string]$Out) {
     if ($ctx.Length -le $ruleText.Length + 2) { $fails += 'no drift text precedes the rule' }
     $first = $ctx.IndexOf($ruleText)
     if ($first -ne $ctx.LastIndexOf($ruleText)) { $fails += 'the rule appears more than once' }
-    if ($ctx.Length -gt 3000) { $fails += "context is $($ctx.Length) characters (the host caps a hook string at 10,000; this one should stay far below)" }
+    if ($ctx.Length -gt 6000) { $fails += "context is $($ctx.Length) characters (the host caps a hook string at 10,000; this one should stay far below)" }
     return (Write-CaseVerdict -Name $Name -Fail $fails -Detail $Out)
 }
 function New-Payload([hashtable]$Fields, [string]$Source = 'startup') {
@@ -345,13 +363,68 @@ $ok = (Assert-Nudge '2b a directory named slice_note.py is no script: drift (mis
 #     (see the Assert-RuleTail calls beside the drift cases 1, 1b, 1c, 1d, 10b-2 and 13b for each branch).
 $out = Invoke-Hook (New-Payload @{ cwd = $stale } 'compact')
 $ok = (Assert-Nudge '2c drift on a compact start: the nudge is unchanged' $out `
-        @('repo-stale', '2개의 벤더링된 툴체인 파일', 'hand-edit', '제안만 합니다', [regex]::Escape($ruleText)) `
+        @('repo-stale', '2개의 벤더링된 툴체인 파일', 'hand-edit', '제안만 합니다', [regex]::Escape("<SLICE_RULES>`n`n$noteRule")) `
         @('SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 $ok = (Assert-RuleTail '2c drift on a compact start: the rule follows the drift text' $out) -and $ok
 
 # 3. SEED-only edits -> no drift: seeds are the repo's decisions, never compared (ADR 0033). The rule only.
 $out = Invoke-Hook (New-Payload @{ cwd = $seed })
 $ok = (Assert-RuleOnly 'seed edits state only the rule (no drift)' $out) -and $ok
+
+# 3a. A repo CLAUDE.md that still holds the pre-0.72.0 seed copy (ADR 0183) never gets a rule twice. Each rule has
+#     its own markers: phrases only its old seed bullet held, in CLAUDE.md or .claude/CLAUDE.md. A left-out rule is
+#     replaced by the copy note. A bare mention of the workflow, the command or an ADR citation is no copy. An
+#     unreadable CLAUDE.md is no copy. No .harness.json: the slice-note rule alone.
+$oldSeed = @'
+- Adversarial code review before closing a slice (`/ywr-harness:slice-close` builds the call):
+  Put house-specific review angles in `args.lensExtra` rather than redefining the lens set.
+- The review runs once per slice ... recorded in the close as `review basis:` (ywr-harness ADR 0072).
+- The close is owner-typed: `/ywr-harness:slice-close` writes the handoff (ywr-harness ADR 0105).
+- A claude.ai Artifact this repo publishes is titled **`<repo-name> · <purpose>`** (ywr-harness ADR 0032).
+- Record each decision: `python scripts/harness/slice_note.py add <decision|rejected|owner|fact|risk> "<what and why>"`.
+- the close moves it to `docs/handoff-archive/<same filename>`, newest first (ywr-harness ADR 0040).
+'@
+# One copy serves every 3a case (a full copy per case cost about 0.3 s each); each case rewrites only the files
+# it is about, and the last case removes .harness.json.
+$cp = Join-Path $fx 'repo-copy3a'
+Copy-Item -LiteralPath $fresh -Destination $cp -Recurse -Force
+$cpClaude = Join-Path $cp 'CLAUDE.md'
+$seedText = [IO.File]::ReadAllText($cpClaude)
+function Set-CopyClaude([string]$Extra) { [IO.File]::WriteAllText($cpClaude, $seedText + "`n" + $Extra + "`n") }
+
+Set-CopyClaude $oldSeed
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3a the old seed copies every rule: the copy note alone' $out $copyNote) -and $ok
+
+Set-CopyClaude '- Notes: `python scripts/harness/slice_note.py add <decision|rejected|owner|fact|risk> "x"`'
+$out = Invoke-Hook (New-Payload @{ cwd = $cp } 'compact')
+$ok = (Assert-RuleOnly '3a slice-note copy only: the slice rules and the copy note' $out ($sliceRules + "`n`n" + $copyNote)) -and $ok
+
+Set-CopyClaude ''
+New-Item -ItemType Directory -Force -Path (Join-Path $cp '.claude') | Out-Null
+Set-Content -LiteralPath (Join-Path $cp '.claude/CLAUDE.md') -Value 'House review angles go in args.lensExtra.'
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3a review-rule copy in .claude/CLAUDE.md: the other rules, the slice-note rule, the copy note' $out ($sliceRulesNoReview + "`n`n" + $noteRule + "`n`n" + $copyNote)) -and $ok
+Remove-Item -LiteralPath (Join-Path $cp '.claude') -Recurse -Force
+
+Set-CopyClaude 'Run ywr-harness:adversarial-review on PRs. We call slice_note.py add by hand.'
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3a a bare mention of the workflow and the command is no copy: the full text' $out) -and $ok
+
+Set-CopyClaude 'Our REVIEW.md follows ywr-harness ADR 0054; see also ywr-harness ADR 0028, 0040, 0072, 0105, 0032, 0068 and ywr-harness ADR 0172.'
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3a ADR citations alone are no copy: the full text' $out) -and $ok
+
+Remove-Item -LiteralPath $cpClaude -Force
+New-Item -ItemType Directory -Force -Path $cpClaude | Out-Null
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3a a CLAUDE.md that is no file is no copy: the full text, exit 0' $out) -and $ok
+Remove-Item -LiteralPath $cpClaude -Recurse -Force
+Set-CopyClaude ''
+
+Remove-Item -LiteralPath (Join-Path $cp '.harness.json') -Force
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3a no .harness.json: the slice-note rule alone' $out $noteRule) -and $ok
 
 # 4. line-ending-only difference -> silent: the seed .gitattributes makes CRLF/LF checkout
 #    variance legitimate, so raw byte identity would nudge every clone forever

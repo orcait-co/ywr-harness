@@ -1,6 +1,7 @@
 // SessionStart (registered WITHOUT a matcher, deliberately — the drift condition below is the
 // filter, and re-speaking after `compact` re-injects a fact summaries lose) — scaffold-refresh
-// nudge, suggest-only (ADR 0033); also the carrier of the slice-note rule (ADR 0172, see below).
+// nudge, suggest-only (ADR 0033); also the carrier of the slice rules (ADR 0183) and the slice-note rule
+// (ADR 0172), see below.
 //
 // The gap this closes is ADR 0014's recorded follow-up: toolchain propagation is pull-based (a
 // plugin improvement reaches a scaffolded repo only on the next /ywr-harness:harness-init run),
@@ -129,6 +130,57 @@ const git = gitRun
 // The slice-note rule (ADR 0172). ASCII only, one paragraph; the vendored path is what a session can name
 // (it cannot expand ${CLAUDE_PLUGIN_ROOT}).
 const SLICE_NOTE_RULE = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `python scripts/harness/slice_note.py add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner\'s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
+
+// The slice rules (ADR 0183): the harness procedure that the CLAUDE.md seed carried until 0.72.0. ASCII
+// only except the title's middle dot. Each rule carries its own copy markers: phrases that only the
+// pre-0.72.0 seed bullet of that rule held. A repo CLAUDE.md holding any marker of a rule already loads
+// that rule, so the hook leaves out that rule alone. A bare mention of the review workflow, a command or
+// an ADR citation is no marker, because a repo can name those for its own reasons.
+const SLICE_RULES_HEAD = 'ywr-harness slice rules for this repo (ywr-harness ADR 0183). The org guide states the general rules; this repo\'s CLAUDE.md states its own facts.'
+const SLICE_RULES = [
+  {
+    copy: ['args.lensExtra'],
+    text: '- Review: before a slice closes, run `Workflow({name: \'ywr-harness:adversarial-review\', args: {scope: {files, context, invariants, gates_passed}}})`. `/ywr-harness:slice-close` builds the call. `scope` is an object; a string scope loses sharding, the out-of-scope bucket and the gate check of skeptic #2. Put house review angles in `args.lensExtra`, never a redefined lens set. The review invariants are in `REVIEW.md` at the repo root; replace the harness-init starter there with this repo\'s own invariants (ywr-harness ADR 0054).',
+  },
+  {
+    copy: ['review basis:', 'bounded re-review'],
+    text: '- The review runs once per slice. A fix diff for its confirmed findings closes with re-run gates and one fix check per finding. Only a fix that is a new mechanism gets one bounded re-review, and the close names the criterion. A rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072).',
+  },
+  {
+    copy: ['owner-typed'],
+    text: '- The close is owner-typed: `/ywr-harness:slice-close` writes the handoff and the one commit, and it never runs on the model\'s own call. The session prepares it: it runs every command that `python scripts/harness/harness_gates.py` printed, the review with its fix checks, and verify. It writes no handoff and makes no commit. Its ready report ends with the line that `python scripts/harness/harness_gates.py --tree` printed after the final edit, and it asks the owner to type the command. The close reuses the report only while it is verbatim in the same session and that line is unchanged; a new session or a compaction summary runs the full close (ywr-harness ADR 0105).',
+  },
+  {
+    copy: ['handoff-archive'],
+    text: '- Handoff: the `handoff` key in `.harness.json` names the resume file. A value that ends in `/` names a directory with one resume file per work line, named after the work line, never after a person. The close that supersedes a `## Current state` section moves it to `docs/handoff-archive/<same filename>`, newest first (ywr-harness ADR 0040).',
+  },
+  {
+    copy: ['<repo-name> '],
+    text: '- Artifacts: a claude.ai Artifact that this repo publishes has the title `<repo-name> · <purpose>` and is declared under `artifacts` in `.harness.json`; CI then fails when the README lacks its link. A generated Artifact also declares its committed `source` file and a `check` drift gate, and `/ywr-harness:artifact-publish` republishes it with one confirmation, never headless (ywr-harness ADR 0032, ywr-harness ADR 0068).',
+  },
+]
+
+// The slice-note rule's copy marker: the kinds list of the pre-0.72.0 seed bullet.
+const SLICE_NOTE_COPY = ['decision|rejected|owner|fact|risk']
+const COPY_NOTE = 'This repo\'s CLAUDE.md or .claude/CLAUDE.md holds its own copy of part of the ywr-harness slice rules, so the plugin does not repeat that part here. After that copy is deleted, the plugin states the current rules at each session start (ywr-harness ADR 0183).'
+
+// The rule text from three facts about the repo.
+function ruleText({ harnessJson, sliceNote, claudeMd }) {
+  const has = markers => markers.some(m => claudeMd.includes(m))
+  const parts = []
+  let copied = false
+  if (harnessJson) {
+    const left = SLICE_RULES.filter(r => !has(r.copy))
+    if (left.length < SLICE_RULES.length) copied = true
+    if (left.length) parts.push([SLICE_RULES_HEAD, ...left.map(r => r.text)].join('\n'))
+  }
+  if (sliceNote) {
+    if (has(SLICE_NOTE_COPY)) copied = true
+    else parts.push(SLICE_NOTE_RULE)
+  }
+  if (copied) parts.push(COPY_NOTE)
+  return parts.join('\n\n')
+}
 
 function firstLine(text) {
   const i = text.indexOf('\n')
@@ -571,9 +623,17 @@ function main(payload) {
   }
   if (!sentinels.some(s => isFile(path.join(root, s)))) return
 
-  // The slice-note rule (ADR 0172): stated only where the vendored script is a file. '' = no rule.
-  const rule = isFile(path.join(root, 'scripts/harness/slice_note.py')) ? SLICE_NOTE_RULE : ''
-  // ctx plus the rule, a blank line between; ctx alone when the repo has no script.
+  // The rule text (ADR 0183): the slice rules where `.harness.json` is a file, the slice-note rule (ADR 0172)
+  // where the vendored script is a file. A part the repo's own CLAUDE.md already copies is left out, and the
+  // copy note says so: a session never loads one rule twice. '' = no rule text.
+  const rule = ruleText({
+    harnessJson: isFile(path.join(root, '.harness.json')),
+    sliceNote: isFile(path.join(root, 'scripts/harness/slice_note.py')),
+    claudeMd: ['CLAUDE.md', '.claude/CLAUDE.md'].map(rel => {
+      try { return isFile(path.join(root, rel)) ? readText(path.join(root, rel)) : '' } catch { return '' }
+    }).join('\n'),
+  })
+  // ctx plus the rule text, a blank line between; ctx alone when the rule text is empty.
   const withRule = ctx => (rule ? ctx + '\n\n' + rule : ctx)
 
   // EOL-insensitive comparable text: Latin1 maps bytes 1:1 to chars (byte-faithful both ways), so
