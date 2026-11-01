@@ -338,6 +338,25 @@ if ($caught) { Write-Host 'PASS [vendored-copy-reordered] gate exited 1 and name
 else { Write-Host "FAIL [vendored-copy-reordered] exit=$($g.Code) aborted=$($g.Aborted) diverged-named=$([bool]($g.Out -match 'vendored copy DIVERGED: harness_config\.py'))" -ForegroundColor Red }
 $results += [pscustomobject]@{ case = 'vendored-copy-reordered'; exit = $(if ($caught) { 1 } else { 0 }) }
 
+# ADR 0182: a bare canon reference in a template fails, in a dot-directory too (the walk must not
+# use the hidden-name rule, which drops `.github` off Windows). The same bare text in a markdown
+# template and in a `__pycache__` file is out of scope, and a prefixed reference passes, so the
+# case also asserts that the output names exactly the two bare sites, the hyphenated form included.
+$dir = Reset-Fixture $pluginFx
+$tpl = Join-Path $dir 'skills/harness-init/templates'
+$yml = Join-Path $tpl '.github/workflows/harness-gates.yml'
+[IO.File]::AppendAllText($yml, "# bare ADR 0062 here; prefixed ywr-harness ADR 0062 there; hyphenated ADR-0063`n")
+[IO.File]::AppendAllText((Join-Path $tpl 'docs/README.md'), "`nSee ADR 0062.`n")
+$pyc = Join-Path $tpl 'scripts/harness/__pycache__'
+New-Item -ItemType Directory -Force -Path $pyc | Out-Null
+[IO.File]::WriteAllText((Join-Path $pyc 'x.cpython-312.pyc'), 'compiled spec 0012 text')
+$g = Invoke-Gate (Join-Path $dir 'manifest-gate.mjs')
+$hits = @(($g.Out -split "`n") | Where-Object { $_ -match 'canon reference: templates/' })
+$caught = ($g.Code -eq 1) -and ($hits.Count -eq 2) -and ($hits[0] -match "templates/\.github/workflows/harness-gates\.yml:\d+ 'ADR 0062'") -and ($hits[1] -match "harness-gates\.yml:\d+ 'ADR-0063'")
+if ($caught) { Write-Host 'PASS [template-canon-ref-bare] gate exited 1 and named only the two bare yml references' -ForegroundColor Green }
+else { Write-Host "FAIL [template-canon-ref-bare] exit=$($g.Code) aborted=$($g.Aborted) hits=$($hits.Count): $($hits -join ' | ')" -ForegroundColor Red }
+$results += [pscustomobject]@{ case = 'template-canon-ref-bare'; exit = $(if ($caught) { 1 } else { 0 }) }
+
 Try-Case 'vendored-copy-orphaned' {
     param($d)
     Remove-Item -LiteralPath (Join-Path $d 'scripts/harness_config.py') -Force

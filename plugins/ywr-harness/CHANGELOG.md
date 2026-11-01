@@ -12,6 +12,12 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.71.1 — 2026-11-01
+
+- `/ywr-harness:harness-init` 이 저장소에 놓는 스크립트·git hook·CI 워크플로의 주석을 다시 썼습니다. 각 주석이 정본 문서 없이도 이유를 설명하고, 정본 기록은 `ywr-harness ADR NNNN` 형식으로만 가리킵니다(ADR 0182).
+  번호만 있던 `ADR 0062` 같은 참조는 저장소 자신의 ADR 과 번호가 겹쳐 엉뚱한 문서를 가리켰습니다. 출력 메시지의 참조도 같은 형식으로 바꿨습니다. 동작은 바뀌지 않습니다.
+  스크립트·git hook·CI 워크플로·`docs/README.md` 는 다음 `/ywr-harness:harness-init` 실행 때 반영됩니다. `.harness.json`·`CLAUDE.md`·`REVIEW.md`·`.gitignore` seed 의 같은 수정은 새 저장소에만 들어갑니다. 기존 저장소는 할 일이 없습니다.
+
 ## v0.71.0 — 2026-11-01
 
 - **기존 저장소가 할 일**: `/ywr-harness:auto` 를 쓰려면 `/ywr-harness:harness-init` 을 다시 실행하세요. stage prompt 파일 두 개를 받고, 선언이 빠졌다는 안내(drift note)를 봅니다.

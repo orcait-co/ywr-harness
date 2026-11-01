@@ -1,7 +1,7 @@
 """Shared reader for `.harness.json` — the ONE place repo-specific harness values are parsed.
 
 Imported by `verify_map.py` and `harness_gates.py`. There is deliberately one reader for one
-schema: two readers of the same file is the divergence this plugin exists to prevent (ADR 0010),
+schema: two readers of the same file is the divergence this plugin exists to prevent (ywr-harness ADR 0010),
 and a validator that only some consumers apply is not a validator.
 
 ## Why selectors instead of command strings
@@ -12,7 +12,7 @@ Claude Code closed the same hole in its own surface: project-scope `pluginConfig
 ignored because those values "would flow into plugin hook commands" (plugins-reference). So:
 
 - `runner` is a SELECTOR from the closed set below. A `gates` entry is either a selector from the
-  closed `GATES` set, or a script gate `{runner, script, files}` (ADR 0024) whose runner is a
+  closed `GATES` set, or a script gate `{runner, script, files}` (ywr-harness ADR 0024) whose runner is a
   selector from `RUNNERS` and whose script is a validated repo-relative path — the repo points at
   code it already carries; it never authors argv. A value outside a set is refused, the set is
   named in the warning, and the entry is dropped (for `verify.runner`, the default substituted).
@@ -20,8 +20,8 @@ ignored because those values "would flow into plugin hook commands" (plugins-ref
   a command position — script paths from here AND from the docs index, plus the changed-file
   arguments of a file-scoped gate — additionally passes `token_ok()` in the form it will actually
   be composed (post `strip_prefix`), and `as_arg()` neutralizes a leading dash. A changed-file
-  argument alone passes the wider `file_arg_ok()` (`( ) [ ]` too, always single-quoted — ADR
-  0112), and a changed file absent from the working tree is never one.
+  argument alone passes the wider `file_arg_ok()` (`( ) [ ]` too, always single-quoted;
+  ywr-harness ADR 0112), and a changed file absent from the working tree is never one.
 - A refused value IS echoed in the warning — the reader has to see what was refused — but never
   reaches a printed command. Those are separate properties, asserted separately.
 - A file that cannot be an argument is EXCLUDED from the gate's arguments and reported as ungated:
@@ -31,7 +31,7 @@ ignored because those values "would flow into plugin hook commands" (plugins-ref
 Adding a stack means adding a template HERE, reviewed once, available to every consuming repo.
 That is the whole mechanism by which this harness is stack-agnostic and still able to grow. A
 repo-specific entry point — a path no repo-independent selector could ever name — is a script
-gate instead (ADR 0024).
+gate instead (ywr-harness ADR 0024).
 """
 
 from __future__ import annotations
@@ -46,9 +46,9 @@ from pathlib import Path
 # ---------------------------------------------------------------------------------------------
 # Encoding pin. Both consumers print `·` and `—`, and Python on Windows encodes stdout with the
 # console codepage — so a caller decoding as UTF-8 (every harness selftest does) receives mojibake
-# and any assertion or grep against the text silently stops matching. Measured on GitHub's
-# windows-latest runner. Fixed here rather than at each call site because an agent reading the
-# output is a caller too, and it cannot set an environment variable retroactively.
+# and any assertion or grep against the text silently stops matching. Fixed here rather than at
+# each call site because an agent reading the output is a caller too, and it cannot set an
+# environment variable retroactively.
 # ---------------------------------------------------------------------------------------------
 def pin_utf8() -> None:
     for stream in (sys.stdout, sys.stderr):
@@ -86,29 +86,29 @@ GATES: dict[str, dict] = {
     "go-vet":       {"cmd": ["go", "vet", "./..."],                            "files": False},
     "go-test":      {"cmd": ["go", "test", "./..."],                           "files": False},
     "actionlint":   {"cmd": ["actionlint"],                                    "files": True},
-    # issue #57: without a shell selector the org rule "deterministic gates before LLM review"
-    # was unsatisfiable for `*.sh` surfaces — a word-list expansion blind spot shellcheck flags
-    # mechanically (SC2044/SC2013) reached an adversarial review as a HIGH. The runner rides the
-    # ubuntu-latest image (no install step in the vendored CI); the preflight names it if absent.
+    # shellcheck: the selector for `*.sh` surfaces. It flags mechanically what a review would
+    # otherwise find late (word-list expansion, SC2044/SC2013). The runner rides the ubuntu-latest
+    # image (no install step in the vendored CI); the preflight names it if absent.
     "shellcheck":   {"cmd": ["shellcheck"],                                    "files": True},
 }
 
 # ---------------------------------------------------------------------------------------------
-# Built-in claims (ADR 0044): the EXACT destination paths `init.ps1` places or writes — every
-# $TOOLCHAIN/$GUARDED/$SEED/$SEED_CORPUS destination plus the generated `.harness-version` stamp.
-# A changed file no declared group matched is claimed from this set by the emitter (reported
-# under a visible `scaffold-claimed` block, never silently), so a consuming repo never authors a
-# groups entry for a file the scaffold itself placed — and the claim ships in the same refresh
-# as the file it claims, which is what closes the refresh→CI failure window ADR 0042/0043 kept
-# re-accepting. Exact paths, never prefixes or globs: a genuinely new kind of file still
-# surfaces as ungrouped. Declared groups always win; this set only consumes leftovers.
+# Built-in claims (ywr-harness ADR 0044): the EXACT destination paths `init.ps1` places or writes
+# — every $TOOLCHAIN/$GUARDED/$SEED/$SEED_CORPUS destination plus the generated `.harness-version`
+# stamp. A changed file that no declared group matched is claimed from this set by the emitter
+# (reported under a visible `scaffold-claimed` block, never silently), so a consuming repo never
+# authors a groups entry for a file the scaffold itself placed. The claim ships in the same
+# refresh as the file it claims, so a refreshed file never fails CI for want of its claim. Exact
+# paths, never prefixes or globs: a genuinely new kind of file still surfaces as ungrouped.
+# Declared groups always win; this set only consumes leftovers.
 #
-# SECOND COPY, BY DESIGN: init.ps1's placement maps are the first. The consuming repo's emitter
-# cannot read the plugin's init.ps1 (no plugin exists in CI — ADR 0014), so the pairing selftest
-# in `harness_gates.selftest.ps1` (case Z) is the drift gate: it AST-extracts the init.ps1
-# literals and fails the canon build when either side changes alone. Edit BOTH together.
+# SECOND COPY, BY DESIGN: the ywr-harness plugin's `init.ps1` placement maps are the first. The
+# consuming repo's emitter cannot read the plugin's init.ps1 (no plugin exists in CI —
+# ywr-harness ADR 0014), so the ywr-harness canon's pairing selftest in
+# `harness_gates.selftest.ps1` (case Z) is the drift gate: it AST-extracts the init.ps1 literals
+# and fails the canon build when either side changes alone. Edit BOTH together.
 # `scripts/harness/__pycache__/` is deliberately absent: the vendored `.gitignore` owns it, and
-# claiming bytecode would hide a broken ignore (fact 6).
+# claiming bytecode would hide a broken ignore (ywr-harness fact 6).
 # ---------------------------------------------------------------------------------------------
 SCAFFOLD_CLAIMS: frozenset = frozenset({
     # $TOOLCHAIN destinations
@@ -134,7 +134,7 @@ SCAFFOLD_CLAIMS: frozenset = frozenset({
     # $GUARDED destination
     ".githooks/post-commit",
     # $SEED destinations (content is repo-owned; the PATH is scaffold-decided, which is what a
-    # claim asserts — a byte contract was never part of a claim)
+    # claim asserts — never the bytes)
     "CLAUDE.md",
     ".gitattributes",
     ".gitignore",
@@ -145,7 +145,7 @@ SCAFFOLD_CLAIMS: frozenset = frozenset({
     "docs/prompts/ready-report.md",
     # $SEED_CORPUS destination
     "docs/adr/0001-adopt-docs-as-code.md",
-    # generated by init.ps1 on every successful run (ADR 0042), never a template
+    # generated by init.ps1 on every successful run (ywr-harness ADR 0042), never a template
     ".harness-version",
 })
 
@@ -170,13 +170,12 @@ def norm(path: str) -> str:
 
 
 def owns(entry: str, path: str) -> bool:
-    """Whether one `implements_in` entry owns a repo-relative path (ADR 0104): a file entry owns
-    that file, a directory entry every path below it. A prefix match on `entry + "/"`, so
-    `app/mod` owns `app/mod/x.py` but not `app/module.py`; a trailing slash and a leading `./`
-    read the same (git never prints `./`, so a `./` entry owned nothing). An empty entry, or `/`,
-    owns nothing — never the whole repo. No disk lookup: the mapper reads an index and a
-    changed-file list, and a deleted directory must still own the deletions under it. Until 0.57.4 both readers compared exact strings, so a
-    directory entry owned nothing and every file under it read as unmapped (dist issue #7)."""
+    """Whether one `implements_in` entry owns a repo-relative path (ywr-harness ADR 0104): a file
+    entry owns that file, a directory entry every path below it. A prefix match on `entry + "/"`,
+    so `app/mod` owns `app/mod/x.py` but not `app/module.py`; a trailing slash and a leading `./`
+    read the same (git never prints `./`, so a `./` entry would otherwise own nothing). An empty
+    entry, or `/`, owns nothing — never the whole repo. No disk lookup: the mapper reads an index
+    and a changed-file list, and a deleted directory must still own the deletions under it."""
     e = entry
     while e.startswith("./"):
         e = e[2:]
@@ -190,11 +189,12 @@ def owned(entries, path: str) -> bool:
 
 def fm_block(text: str) -> str | None:
     """The frontmatter block of a docs source, or None — the docs builder's `split_frontmatter`
-    rule exactly (ADR 0043): CRLF fold, a leading HTML comment skipped, an opening `---` line, a
-    closing line whose strip() is `---`. The ONE reader-side copy: `verify_map` (staleness
-    digest) and `harness_retro` (spec map, frontmatter delta) both call it — the retro kept its
-    own looser parse until 0.60.1 and missed a spec whose frontmatter follows a comment (canon
-    #59). build_docs.py stays standalone (spec 0001); build-docs.selftest.ps1 pairs the two."""
+    rule exactly (ywr-harness ADR 0043): CRLF fold, a leading HTML comment skipped, an opening
+    `---` line, a closing line whose strip() is `---`. The ONE reader-side copy: `verify_map`
+    (staleness digest) and `harness_retro` (spec map, frontmatter delta) both call it, so neither
+    can use a looser parse that misses a spec whose frontmatter follows a comment.
+    `build_docs.py` stays standalone (ywr-harness spec 0001); the canon's build-docs selftest
+    pairs the two."""
     text = text.replace("\r\n", "\n")
     lead = re.match(r"\s*<!--.*?-->\s*", text, re.DOTALL)
     if lead and text[lead.end():].startswith("---\n"):
@@ -227,20 +227,18 @@ def safe_path(value: str, field: str, warns: list[str]) -> str:
 # `set -f`), ':' (drive-absolute), and every shell metacharacter — including the ones nobody
 # thought to list.
 #
-# WHERE the check happens is the load-bearing part, and getting it wrong is a measured defect,
-# not a hypothetical: validating the DECLARED string while composing the STRIPPED one let
+# WHERE the check happens is load-bearing: every token is validated in the form that ACTUALLY
+# reaches argv. Validating the DECLARED string while composing the STRIPPED one would let
 # `{"strip_prefix": "src/", "script": "src/-c"}` pass validation and reach argv as the bare flag
 # `-c` — with `files: true`, the next token is a changed FILENAME, so `python -c <name>` executes
-# that name as source. Found by adversarial review 2026-07-29, three independent lenses, before
-# release. So: every token is validated in the form that ACTUALLY reaches argv, and `as_arg()`
-# neutralizes a leading dash on top of that (the case-I2 lesson — a value in command position
-# whose FIRST character is hostile).
+# that name as source. `as_arg()` neutralizes a leading dash on top of that, because a value in
+# command position whose FIRST character is hostile is dangerous even when the rest is clean.
 #
 # `\Z`, not `$`: Python's `$` ALSO matches just before a trailing newline, so a `$`-anchored
 # full-match would accept `"a.py\n"` — the one character that can split an output line.
-# Unreachable today (every call path strips first: `norm()`, `safe_path` under `safe_cwd`), but
-# the choke point's guarantee must not depend on callers pre-stripping — fact 36's rule applied
-# to the validator itself (queued 2026-07-29, pre-merge re-review of PR #15).
+# Every call path strips first (`norm()`, `safe_path` under `safe_cwd`), but the choke point's
+# guarantee must not depend on callers pre-stripping: validate the string that becomes the
+# output, not the value it was built from (ywr-harness fact 36).
 # ---------------------------------------------------------------------------------------------
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._/-]+\Z")
 
@@ -249,19 +247,20 @@ def token_ok(tok: str) -> bool:
     """True when `tok` can be spliced into a printed command as one inert argument.
 
     `..` is refused as a path SEGMENT, which is what traversal is — not as a substring, so a file
-    honestly named `a..b.py` stays gated. (`safe_path`'s coarser substring rule is left as it is:
-    it guards declaration-time path values and predates this gate.)"""
+    honestly named `a..b.py` stays gated. (`safe_path`'s coarser substring rule stays as it is:
+    it guards declaration-time path values.)"""
     return (bool(tok) and bool(SAFE_TOKEN.match(tok))
             and ".." not in tok.split("/") and not tok.startswith("/"))
 
 
-# A changed-file ARGUMENT is held to a wider set than every other command-position value (ADR
-# 0112): `( ) [ ]` too — Next.js route groups and dynamic segments. They are shlex-unsafe, so
-# compose() always single-quotes them, a literal in sh and in pwsh 7. A file argument always sits
-# after the runner, where no consumer reads a word; cwd, script paths and runner elements do not
-# (the CI awk table reads `$1`/`$2`/`$4` unquoted, fact 65), so they stay on `token_ok`. Read by
-# `unsafe_files()` and `gate_command()`'s file filter ONLY. `@`/`+` stay out (ADR 0112 option C:
-# emitted bare, and a leading `@` splats in PowerShell).
+# A changed-file ARGUMENT is held to a wider set than every other command-position value
+# (ywr-harness ADR 0112): `( ) [ ]` too — Next.js route groups and dynamic segments. They are
+# shlex-unsafe, so compose() always single-quotes them, a literal in sh and in pwsh 7. A file
+# argument always sits after the runner, where no consumer reads a word; cwd, script paths and
+# runner elements do not (the CI awk table reads `$1`/`$2`/`$4` unquoted, ywr-harness fact 65),
+# so they stay on `token_ok`. Read by `unsafe_files()` and `gate_command()`'s file filter ONLY.
+# `@`/`+` stay out (ywr-harness ADR 0112 option C: emitted bare, and a leading `@` splats in
+# PowerShell).
 FILE_ARG = re.compile(r"^[A-Za-z0-9._/()\[\]-]+\Z")
 
 
@@ -283,29 +282,26 @@ def as_arg(tok: str) -> str:
 # The ONE gate every repo-supplied value passes before it becomes an output LINE. Deliberately
 # separate from `token_ok`: that one guards a value reaching a COMMAND position, this one guards a
 # value that is merely REPORTED — a status label, a refused value echoed so a reader can see it.
-# Reported text was treated as inert, and it is not. Both output parsers find the gate-command
-# window by matching LINE SHAPES in stdout (`^gates:`, `^ {4}[^ (]`, `^review tier:`), so a value
-# carrying a newline does not print as one line: it prints as several, and a declaration can spell
-# the window's own start and stop anchors and land a command inside it.
+# Reported text is not inert. Both output parsers find the gate-command window by matching LINE
+# SHAPES in stdout (`^gates:`, `^ {4}[^ (]`, `^review tier:`), so a value carrying a newline does
+# not print as one line: it prints as several, and a declaration can spell the window's own start
+# and stop anchors and land a command inside it.
 #
-# Measured 2026-08-05, this repo, before the fix (adversarial review of ADR 0032 — three lenses
-# found it, six skeptics refuted none): a declared artifact title of
-# `inj\ngates:\n    echo INJECTED\nreview tier: full - x` printed `artifact: ok`, so CI's
-# `^artifact: VIOLATION` step passed, while the workflow's own extraction
-# (`sed -n '/^gates:/,/^\(ungrouped\|review tier\)/p' | grep -E '^ {4}[^ (]'`) returned
-# `echo INJECTED` for `sh -c`. Sweeping the boundary then found a SECOND site, pre-existing and
-# worse-placed: a group NAME, echoed as `  [<name>] N file(s)` INSIDE the window.
+# Example: a declared artifact title of `inj\ngates:\n    echo INJECTED\nreview tier: full - x`
+# would print `artifact: ok`, so CI's `^artifact: VIOLATION` step passes, while the workflow's own
+# extraction (`sed -n '/^gates:/,/^\(ungrouped\|review tier\)/p' | grep -E '^ {4}[^ (]'`) returns
+# `echo INJECTED` for `sh -c`. A group NAME is a second such site: it is echoed as
+# `  [<name>] N file(s)` INSIDE the window.
 #
-# Fact 36's rule one transformation later — validate the string that becomes the LINE, not the
-# value it was built from. Callers additionally REFUSE a control character at the declaration layer
-# where a declarer can be told (a typo deserves a message); this is the structural layer that holds
-# when they cannot.
+# Same rule as ywr-harness fact 36, one transformation later: validate the string that becomes
+# the LINE, not the value it was built from. Callers additionally REFUSE a control character at
+# the declaration layer where a declarer can be told (a typo deserves a message); this is the
+# structural layer that holds when they cannot.
 # ---------------------------------------------------------------------------------------------
 # U+0085 NEL and U+2028/U+2029 are in the class even though NEITHER shell parser splits on them
-# (sed/grep/awk split on 0x0A only — measured: an 8-byte-line output stayed 8 lines and extracted
-# nothing). They are here because the parser set is not the consumer set: Python's `str.splitlines`
-# DOES split all three (same output read as 12 lines), and a MODEL reading this output may render
-# them as breaks — and a model is exactly the consumer /verify's `run:` lines are printed for. One
+# (sed/grep/awk split on 0x0A only). They are here because the parser set is not the consumer set:
+# Python's `str.splitlines` DOES split all three, and a MODEL reading this output may render them
+# as breaks — and a model is exactly the consumer /verify's `run:` lines are printed for. One
 # value, one line, under every reader's notion of a line.
 CONTROL = re.compile(r"[\x00-\x1f\x7f\u0085\u2028\u2029]")
 
@@ -334,12 +330,10 @@ def say(line: str = "") -> None:
     emitter, read by the CI/pre-commit window parsers; the verify mapper, read by a model told to
     run its `run:` lines).
 
-    Not a convenience wrapper. Per-call-site escaping was MEASURED to fail here: the first sweep of
-    this boundary wrapped the sites it could see, and the bounded re-review then found two more —
-    one of which (critical-surface filenames in the review-tier line) reproduced the injection end
-    to end, because a forged `gates:` line RE-ARMS `sed`'s range even after the real window closed.
-    A single exit makes forgetting a call site impossible instead of unlikely, which is the whole
-    difference between a rule and a habit.
+    Not a convenience wrapper. Per-call-site escaping misses sites: a forged `gates:` line in the
+    review-tier line (critical-surface filenames) reproduces the injection end to end, because it
+    RE-ARMS `sed`'s range even after the real window closed. A single exit makes forgetting a call
+    site impossible instead of unlikely, which is the whole difference between a rule and a habit.
 
     Our own multi-line literals must call `print` directly and sanitize the repo-supplied part
     themselves — deliberately the awkward path, so multi-line output is a decision, never a
@@ -377,19 +371,18 @@ def safe_cwd(value: str, field: str, warns: list[str]) -> str:
 
 def script_gate(raw: dict, group: str, strip_prefix: str, root: Path,
                 warns: list[str]) -> dict | None:
-    """Validate a script gate `{runner, script, files}` (ADR 0024). The runner stays a closed-set
+    """Validate a script gate `{runner, script, files}` (ywr-harness ADR 0024). The runner stays a closed-set
     choice; the script is a repo-relative path. BOTH forms are validated — as declared, and as it
     will actually be composed after the group's `strip_prefix` — because the second is the one
     that becomes argv. Returns None (and warns) when it cannot be composed safely; a refused
     value is echoed in the warning and never composed."""
     field = f"groups[{group}].gates"
     # An unknown key is warned about, never silently dropped — a member declaring `"args":
-    # "--fast"` must get a signal that no argument field exists (that silence was the exact shape
-    # ADR 0024's follow-up trigger named; queued 2026-07-29). `//`-prefixed keys stay the comment
-    # convention, as everywhere else in the schema. The sweep runs BEFORE the runner/script
-    # checks on purpose: a gate dropped for a bad runner still reports its unknown keys, and the
-    # two warnings TOGETHER are what diagnose a typo'd key name (`"runer"` → unknown key 'runer'
-    # + runner '' not in the closed set).
+    # "--fast"` must get a signal that no argument field exists. `//`-prefixed keys stay the
+    # comment convention, as everywhere else in the schema. The sweep runs BEFORE the
+    # runner/script checks on purpose: a gate dropped for a bad runner still reports its unknown
+    # keys, and the two warnings TOGETHER are what diagnose a typo'd key name (`"runer"` →
+    # unknown key 'runer' + runner '' not in the closed set).
     for key in raw:
         if key not in ("runner", "script", "files") and not str(key).startswith("//"):
             warns.append(f"{field}: unknown script-gate key '{key}' ignored "
@@ -435,10 +428,10 @@ def script_gate(raw: dict, group: str, strip_prefix: str, root: Path,
 
 def artifact_check(raw: dict, field: str, problems: list[str], warns: list[str],
                    root: Path) -> str:
-    """Validate an `artifacts.items[].check` drift check (ADR 0068) and compose the ONE command
+    """Validate an `artifacts.items[].check` drift check (ywr-harness ADR 0068) and compose the ONE command
     it emits into the gates window.
 
-    The script-gate shape (ADR 0024) minus `files`: a check is ALWAYS whole-program — its
+    The script-gate shape (ywr-harness ADR 0024) minus `files`: a check is ALWAYS whole-program — its
     contract is `build_onboarding.py`'s (default mode = drift check, exit 1 on drift, writes
     nothing). No strip_prefix and no cwd: artifact sources are declared repo-root-relative and
     the check runs from the root, so the declared path IS the composed path.
@@ -488,8 +481,8 @@ def load_ignore(root: Path, rel: str, warns: list[str]) -> list[re.Pattern]:
     """Compiled patterns from the ignore register (`retro.ignore_file`). Comments and blanks are
     skipped; the file doubles as the visible spec-debt list, so its comments carry meaning for the
     reader. The ONE reader: the retro's UNMAPPED/--coverage and the mapper's unmapped list both
-    call it (ADR 0115) — until 0.60.5 the mapper read no register and listed a file the register
-    exempts as "a slice-retro UNMAPPED finding in the making", which the retro never fires."""
+    call it (ywr-harness ADR 0115), so the mapper never lists, as "a slice-retro UNMAPPED finding
+    in the making", a file the register exempts and the retro never fires on."""
     pats: list[re.Pattern] = []
     p = root / rel
     if not p.is_file():
@@ -512,13 +505,12 @@ def any_match(pats: list[re.Pattern], path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------------------------
-# Customer-corpus surface declaration (ADR 0060). `docs.customer` turns on the docs builder's
-# optional program-corpus surface: `<dir>/<Program>/{spec,user-guide,release-notes}.md` → one
-# `docs/customer.artifact.html` (+ `docs/PROJECTS.md` when `projects_md`). Parsed and VALIDATED
-# here; the builder imports this reader instead of re-reading the file, because two validators of
-# one schema diverge — the client-pjems fork this schema upstreams WAS that: the same rules as
-# constants in a second copy of the builder, unreachable by any canon fix (ADR 0010 local-patch
-# state, and the SessionStart drift nudge fired there every session).
+# Customer-corpus surface declaration (ywr-harness ADR 0060). `docs.customer` turns on the docs
+# builder's optional program-corpus surface: `<dir>/<Program>/{spec,user-guide,release-notes}.md`
+# → one `docs/customer.artifact.html` (+ `docs/PROJECTS.md` when `projects_md`). Parsed and
+# VALIDATED here; the builder imports this reader instead of re-reading the file, because two
+# validators of one schema diverge: a second copy of the rules inside a consumer's own builder is
+# unreachable by any canon fix (ywr-harness ADR 0010).
 #
 # Nothing here reaches a command position: `dir` selects files the builder READS and renders into
 # HTML; every other value is display text or a frontmatter key name. `dir` is still held to the
@@ -547,14 +539,16 @@ CUSTOMER_KEYS = ("dir", "title", "eyebrow", "description", "contact", "required_
 # Display defaults are deliberately EMPTY here: the builder owns its UI language and fills them.
 # `release_stages` is a parsing contract (which `[TAG]` tokens a release entry may carry, in
 # stage order — the LAST is the final stage), so its default lives with the validation.
-# `panels` (ADR 0060's extension point): repo-relative Python modules, each contributing one
-# top-level tab — the builder imports the module and calls `render_panel(repo_root) -> str`.
-# The module path is a script-gate-class value (ADR 0024): a path to code the repo already
-# carries, never a command string, held to the same allowlist; a module the builder EXECUTES is
-# exactly why the allowlist matters here even though no shell is involved.
-# ADR 0061 adds the per-panel `id` (the `#top-<id>` deep link; derived here for EVERY kept entry
-# so `default_tab` can be validated against the final set) and `position`, plus the block-level
-# `default_tab` and `footer_date_label` — the keys that let a panel stop editing the canon DOM.
+# `panels` is the extension point (ywr-harness ADR 0060): repo-relative Python modules, each
+# contributing one top-level tab — the builder imports the module and calls
+# `render_panel(repo_root) -> str`. The module path is a script-gate-class value
+# (ywr-harness ADR 0024): a path to code the repo already carries, never a command string, held
+# to the same allowlist; a module the builder EXECUTES is exactly why the allowlist matters here
+# even though no shell is involved.
+# Each panel has an `id` (the `#top-<id>` deep link; derived here for EVERY kept entry so
+# `default_tab` can be validated against the final set) and a `position`. The block-level
+# `default_tab` and `footer_date_label` let a panel stop editing the canon DOM
+# (ywr-harness ADR 0061).
 CUSTOMER_DEFAULTS: dict = {
     "dir": "docs/customer",
     "title": "", "eyebrow": "", "description": "", "contact": "",
@@ -590,9 +584,8 @@ def _display(value, field: str, warns: list[str]) -> str:
 
 def _fm_key(value, field: str, warns: list[str], default: str = "") -> str:
     """A declared frontmatter key name. An EMPTY value is reported, never read as absent: `""`
-    is something a declarer (or their templating) wrote, and a silent default here was the
-    review's high finding (2026-08-27) — the only path in this block that degraded without a
-    warning."""
+    is something a declarer (or their templating) wrote, and a silent default here would be the
+    only path in this block that degrades without a warning."""
     s = str(value if value is not None else "").strip()
     how = f"using the default '{default}'" if default else "ignored"
     if not s:
@@ -621,15 +614,13 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
         return {"malformed": "expected an object or null"}
     # Defaults are copied one level DEEPER than the list: `release_stages` holds dicts, and a
     # shallow `list(v)` would hand every load the module constant's own dict objects — one
-    # in-place edit by a consumer (or a selftest) would poison every later load in the process
-    # (review 2026-08-27, medium).
+    # in-place edit by a consumer (or a selftest) would poison every later load in the process.
     out: dict = {k: ([dict(s) if isinstance(s, dict) else s for s in v] if isinstance(v, list) else v)
                  for k, v in CUSTOMER_DEFAULTS.items()}
     out["malformed"] = ""
     # Which known keys the declarer actually wrote (non-null). The builder fills its own UI
     # default ONLY for keys absent here, so `"title": ""` is an intentional blank and an absent
-    # `title` is "use yours" — without this list the two are the same empty string (review
-    # 2026-08-27, low: a contract gap slice 2 could not have resolved from the values alone).
+    # `title` is "use yours" — without this list the two are the same empty string.
     out["declared"] = [k for k in CUSTOMER_KEYS if raw.get(k) is not None]
     for key in raw:
         if key not in CUSTOMER_KEYS and not str(key).startswith("//"):
@@ -637,8 +628,7 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
                          f"(known: {', '.join(CUSTOMER_KEYS)})")
 
     # `dir`: the one path. Refused → malformed, never defaulted: a default would build the surface
-    # from a directory the declarer did not name. Declared EMPTY → the default, reported — the
-    # silent branch here was the review's high finding (2026-08-27).
+    # from a directory the declarer did not name. Declared EMPTY → the default, reported.
     if raw.get("dir") is not None:
         d = norm(str(raw["dir"])).rstrip("/")
         if not d:
@@ -663,7 +653,7 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
             continue
         if not isinstance(raw[key], str):
             # "ignored" must mean the builder's default applies: leaving the key in `declared`
-            # would make the untouched "" read as an intentional blank (review 2026-08-27, medium).
+            # would make the untouched "" read as an intentional blank.
             warns.append(f"{field}.{key}: must be a string — ignored")
             out["declared"] = [k for k in out["declared"] if k != key]
             continue
@@ -723,7 +713,7 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
     if isinstance(rs, list):
         if not rs:
             # An empty list is a declaration too (the `""` rule above, list form): reported as
-            # what it is, not as "every entry was rejected" (review 2026-08-27, low).
+            # what it is, not as "every entry was rejected".
             warns.append(f"{field}.release_stages: declared empty — using the default "
                          "vocabulary (FUT, UAT, PROD)")
         stages: list = []
@@ -783,11 +773,11 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
             if not label:
                 warns.append(f"{pf}: needs a non-empty 'label' (the tab text) — entry ignored")
                 continue
-            # `id` (ADR 0061): the tab's `#top-<id>` deep link — a PUBLISHED value, so a refused or
-            # duplicate declared id drops the entry rather than silently renaming the link the
-            # declarer asked for. Absent → the pre-0061 derivation (label slug, else `panel-<n>`
-            # over the KEPT entries) so existing pages keep their ids; an auto slug that collides
-            # falls back to `panel-<n>` with a warning.
+            # `id` (ywr-harness ADR 0061): the tab's `#top-<id>` deep link — a PUBLISHED value, so
+            # a refused or duplicate declared id drops the entry rather than silently renaming the
+            # link the declarer asked for. Absent → derived (label slug, else `panel-<n>` over the
+            # KEPT entries) so existing pages keep their ids; an auto slug that collides falls
+            # back to `panel-<n>` with a warning.
             pid_raw = p.get("id")
             if pid_raw is not None:
                 pid = str(pid_raw)
@@ -801,7 +791,7 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
                 pid = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
                 # The first FREE `panel-<n>` from the kept-entry index: the index alone can land on
                 # an id an earlier entry declared (`id: "panel-1"` then a Korean label) and two tabs
-                # would share one `data-top` / scope class (review 2026-08-27, high).
+                # would share one `data-top` / scope class.
                 n = len(panels)
                 while "panel-%d" % n in used_ids:
                     n += 1
@@ -827,7 +817,7 @@ def customer_decl(raw, root: Path, warns: list[str]) -> dict | None:
     elif pn is not None:
         warns.append(f"{field}.panels: expected a list of {{module, label}} objects — ignored")
 
-    # `default_tab` (ADR 0061): validated against the FINAL ids above, so it may name a derived
+    # `default_tab` (ywr-harness ADR 0061): validated against the FINAL ids above, so it may name a derived
     # one. The builder's own default is the first tab in rendered order, which is why "" here
     # means "unset", never "the docs tab".
     dt = raw.get("default_tab")
@@ -846,11 +836,10 @@ def find_repo_root(start: Path) -> Path:
     .git — whichever comes first. Falls back to `start`: every consumer is advisory, so a repo
     with neither marker still works on defaults rather than failing.
 
-    One walk, not two: the two-pass form searched every ancestor for .harness.json before looking
-    for .git at all, so a nested repository without a declaration of its own (a submodule, a
-    scratch clone inside a scaffolded repo) attached to the OUTER repo's declaration and gated
-    its files against the wrong tree (ADR 0081 measurement arm, A low). A .git boundary now ends
-    the walk; a .harness.json below the git root still wins, as before."""
+    One walk, not two: a two-pass form (every ancestor for .harness.json, then .git) would attach
+    a nested repository without a declaration of its own (a submodule, a scratch clone inside a
+    scaffolded repo) to the OUTER repo's declaration and gate its files against the wrong tree.
+    A .git boundary ends the walk; a .harness.json below the git root still wins."""
     cur = start.resolve()
     for candidate in (cur, *cur.parents):
         if (candidate / ".harness.json").exists() or (candidate / ".git").exists():
@@ -881,23 +870,23 @@ def load(root: Path) -> tuple[dict, list[str]]:
     # Retro surfaces. Free-string regexes like `review`: they select and report, and cannot name
     # an executable, so the closed-set rule that governs `gates` does not apply here.
     cfg["retro"] = {"source_scope": [], "dep_manifests": [], "migrations": []}
-    # Declared claude.ai Artifacts (ADR 0032). Parsed here, CHECKED by the gate emitter: the
+    # Declared claude.ai Artifacts (ywr-harness ADR 0032). Parsed here, CHECKED by the gate emitter: the
     # README must carry each declared url, each declared title must start with the repo name.
     # Items are kept raw — per-item validation happens at check time so a malformed entry can
     # fail the check loudly instead of being dropped into silence at load time. `malformed`
     # carries a section-level shape error for the same reason: a declaration that cannot be
     # checked must never read as enforcement.
     cfg["artifacts"] = {"readme": "README.md", "items": [], "malformed": ""}
-    # Customer-corpus surface (ADR 0060): None = off. Validated by `customer_decl` below.
+    # Customer-corpus surface (ywr-harness ADR 0060): None = off. Validated by `customer_decl` below.
     cfg["customer"] = None
-    # STE-lite gate mode (ADR 0128): True only for a literal JSON `true` — the docs check then
+    # STE-lite gate mode (ywr-harness ADR 0128): True only for a literal JSON `true` — the docs check then
     # fails on a finding; absent, null or false keeps it advisory (findings print, exit 0).
     cfg["ste_lite"] = False
-    # ADR 0170 check mode: True only for a literal JSON `true` — R8, the R7 words and the ADR
+    # ywr-harness ADR 0170 check mode: True only for a literal JSON `true` — R8, the R7 words and the ADR
     # option count then fail the docs check. The scaffold seed leaves it out, so consumers get advice.
     cfg["ste_marks"] = False
-    # Declared R7 words (ADR 0170): word → replacement. The STE-lite gate flags each listed word
-    # in a checked section. Display text, never a command (ADR 0012); one bad entry drops the map.
+    # Declared R7 words (ywr-harness ADR 0170): word → replacement. The STE-lite gate flags each listed word
+    # in a checked section. Display text, never a command (ywr-harness ADR 0012); one bad entry drops the map.
     cfg["ste_words"] = {}
 
     path = root / ".harness.json"
@@ -909,8 +898,8 @@ def load(root: Path) -> tuple[dict, list[str]]:
     except (OSError, json.JSONDecodeError) as e:
         warns.append(f".harness.json unreadable ({type(e).__name__}) — using defaults")
         return cfg, warns
-    # Every section below is read with .get(), so a non-object top level or section raised a
-    # traceback instead of reaching the warn-and-default path `docs` always had (canon #59).
+    # Every section below is read with .get(), so a non-object top level or section is checked
+    # first: unchecked, it would raise a traceback instead of reaching the warn-and-default path.
     if not isinstance(raw, dict):
         warns.append(f".harness.json: expected an object at the top level, got "
                      f"{type(raw).__name__} — using defaults")
@@ -931,7 +920,7 @@ def load(root: Path) -> tuple[dict, list[str]]:
         cfg["ste_marks"] = True
     elif marks is not None and marks is not False:
         warns.append(f"docs.ste_marks: expected true or false, got {type(marks).__name__} — "
-                     f"the ADR 0170 checks stay advisory")
+                     f"the ywr-harness ADR 0170 checks stay advisory")
     words = docs.get("ste_words")
     if isinstance(words, dict) and all(isinstance(k, str) and k.strip() and isinstance(v, str)
                                        and v.strip() for k, v in words.items()):
@@ -972,7 +961,7 @@ def load(root: Path) -> tuple[dict, list[str]]:
         elif val:
             warns.append(f"review.{key}: expected a list of regexes — ignored")
 
-    # Derived-copy mappings (ADR 0037). PATH PREFIXES, not regexes: the copy→source mapping is
+    # Derived-copy mappings (ywr-harness ADR 0037). PATH PREFIXES, not regexes: the copy→source mapping is
     # computed by prefix swap, so each prefix must end with '/' (a bare prefix could match a
     # sibling directory mid-segment) and pass the same token allowlist as any path value. These
     # never reach a command position — the emitter only reads bytes at the mapped paths — but a
@@ -1084,38 +1073,37 @@ def load(root: Path) -> tuple[dict, list[str]]:
 # let a slice pass one gate on a different file set than the other saw.
 # ---------------------------------------------------------------------------------------------
 def git_run(root: Path, *args: str, stdin: str | None = None, env: dict | None = None) -> str:
-    """Run one git command and return its stdout as str. THE git subprocess boundary for every
-    parsed call (CLAUDE.md, issue #40): the quotepath and encoding pins below live here and
-    nowhere else — `git_lines` is the line-shaped reading of this, `git_paths` the -z path-list
-    one. `stdin` feeds a `--stdin`-shaped command (check-ignore, ADR 0077); `env` adds variables
-    to the inherited environment (`GIT_INDEX_FILE` for the worktree snapshot, ADR 0105).
+    """Run one git command and return its stdout as str. THE git subprocess boundary for every call
+    whose output is parsed: the quotepath and encoding pins below live here and nowhere else —
+    `git_lines` is the line-shaped reading of this, `git_paths` the -z path-list one. `stdin`
+    feeds a `--stdin`-shaped command (check-ignore, ywr-harness ADR 0077); `env` adds variables to
+    the inherited environment (`GIT_INDEX_FILE` for the worktree snapshot, ywr-harness ADR 0105).
 
     The pipes are BYTES, decoded here explicitly, never subprocess's text mode: text mode wraps
-    both directions in universal-newline translation — `\\n` written becomes `\\r\\n` on Windows
-    (measured 2026-09-14: a newline-separated `--stdin` list made git look up `docs/docs.html\\r`,
-    no exact-name .gitignore rule matched while every directory rule still matched its prefix,
-    and the report silently lost exactly the files it existed to find) and any `\\r` READ back
-    becomes `\\n` before the caller sees it (review 2026-09-14, medium: a literal CR inside a
-    `-z` record would be rewritten, not framed). Bytes in, bytes out, one decode; `-z` stays the
-    shape for any path LIST in either direction because it also carries paths verbatim. The
-    failure path re-raises `CalledProcessError` with `stderr`/`stdout` as str, so the ADR 0041
-    fail-loud diagnostic prints legible git text, not a bytes repr."""
+    both directions in universal-newline translation. `\\n` written becomes `\\r\\n` on Windows, so
+    a newline-separated `--stdin` list makes git look up `docs/docs.html\\r`: no exact-name
+    .gitignore rule matches while every directory rule still matches its prefix, and the report
+    silently loses exactly the files it exists to find. Any `\\r` READ back becomes `\\n` before
+    the caller sees it, so a literal CR inside a `-z` record would be rewritten, not framed. Bytes
+    in, bytes out, one decode; `-z` stays the shape for any path LIST in either direction because
+    it also carries paths verbatim. The failure path re-raises `CalledProcessError` with
+    `stderr`/`stdout` as str, so the fail-loud diagnostic (ywr-harness ADR 0041) prints legible
+    git text, not a bytes repr."""
     import subprocess
     # `-c core.quotepath=false`: git's default octal-escapes non-ASCII paths
-    # (`"docs/AWS \354..."`), which no anchored group pattern matches — every such file reads as
-    # ungrouped exactly where it matters most, CI's fresh checkout with no local override
-    # (issue #40). The raw bytes are UTF-8, so the decode is pinned as well: text=True alone
-    # decodes with the console codepage on Windows, where cp949 pairs a hangul trail byte with
-    # the following ASCII byte and raises — the decl_changed_keys constraint, applied here.
+    # (`"docs/AWS \354..."`), which no anchored group pattern matches — every such file would read
+    # as ungrouped exactly where it matters most, CI's fresh checkout with no local override. The
+    # raw bytes are UTF-8, so the decode is pinned as well: text=True alone decodes with the
+    # console codepage on Windows, where cp949 pairs a hangul trail byte with the following ASCII
+    # byte and raises.
     # Both streams are decoded with the SAME pin before the exit-code check, and the failure path
-    # re-raises with the decoded str: the 2026-08-12 defect (review, medium) was a success-path
-    # decode that left `e.stderr` as bytes on the one path that exists to be read — the ADR 0041
-    # fail-loud diagnostic printed a bytes repr. Text mode was the fix then; it is replaced by an
-    # explicit decode now because its newline translation corrupted `-z` payloads (ADR 0077).
+    # re-raises with the decoded str, so `e.stderr` is never bytes on the one path that exists to
+    # be read. The decode is explicit rather than text mode because text mode's newline
+    # translation would corrupt `-z` payloads (ywr-harness ADR 0077).
     # errors="backslashreplace", not "replace": a path that is not UTF-8 must surface visibly
     # mangled (likely ungrouped), never kill the run — and DISTINCT byte sequences must stay
     # distinct, because U+FFFD-merged paths collapse into one set entry and silently shrink the
-    # audit scope (review 2026-08-12, medium).
+    # audit scope.
     proc = subprocess.run(
         ["git", "-c", "core.quotepath=false", *args],  # harness:git-boundary git_run is the boundary
         cwd=root, capture_output=True,
@@ -1134,14 +1122,14 @@ def git_lines(root: Path, *args: str) -> list[str]:
 
     Split on \\n ONLY, never `str.splitlines()`: that also breaks on U+2028/U+2029, NEL, \\x0b,
     \\x0c and \\x1c-\\x1e, which git prints raw inside a path under core.quotepath=false, so one
-    path became two records (O41(c)). A path LIST does not come through here at all: it goes
-    through `git_paths` (-z, ADR 0077)."""
+    path would split into two records. A path LIST does not come through here at all: it goes
+    through `git_paths` (-z, ywr-harness ADR 0077)."""
     return [norm(line) for line in git_run(root, *args).split("\n") if line.strip()]
 
 
 def git_paths(root: Path, *args: str) -> list[str]:
     """A path-LIST git command (`ls-files`, `diff --name-only`) run with `-z` and split on NUL —
-    ADR 0077: paths travel verbatim, no C-quoting of tab/newline/quote, no line-separator
+    ywr-harness ADR 0077: paths travel verbatim, no C-quoting of tab/newline/quote, no line-separator
     ambiguity. Only for commands whose -z output is one path per record: `--name-status -z`
     interleaves status and path fields and needs its own parse."""
     return [norm(p) for p in git_run(root, args[0], "-z", *args[1:]).split("\0") if p.strip()]
@@ -1153,7 +1141,7 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
     that matches nothing while the working tree supplies the files is a vacuous pass — the run
     looks like it covered the range and did not.
 
-    `all_files` is the full-tree audit scope (ADR 0041): git ls-files + untracked. It exists for
+    `all_files` is the full-tree audit scope (ywr-harness ADR 0041): git ls-files + untracked. It exists for
     CI's push runs, where the worktree is a fresh checkout and every diff-shaped scope is empty
     by construction — partition and gate coverage are TREE properties there, not diff properties."""
     import subprocess
@@ -1178,8 +1166,8 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
         worktree = git_paths(root, "diff", "--name-only", "HEAD")
     except subprocess.CalledProcessError:
         # An unborn HEAD (no commit yet — a freshly scaffolded repo before its first commit) is a
-        # NORMAL state, not the ADR 0041 fail-loud class (force-pushed base, stale fetch): letting
-        # it escalate fired `scope: FAILED` on `git init && git add` (review 2026-08-10, high).
+        # NORMAL state, not the fail-loud class (ywr-harness ADR 0041: force-pushed base, stale
+        # fetch): letting it escalate would fire `scope: FAILED` on `git init && git add`.
         # Verify which failure this is: with HEAD genuinely absent, the honest worktree scope is
         # staged (index vs the empty tree) plus unstaged (index vs worktree), both of which git
         # answers without HEAD. Any other diff failure re-raises and stays loud.
@@ -1195,7 +1183,7 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
     prov["worktree_files"] = len(worktree)
     prov["untracked_files"] = len(untracked)
     # The list itself too: the emitter's line measure reads these files, and `git diff --numstat`
-    # never lists them (handoff O100) — handed over here so the measure starts no second ls-files.
+    # never lists them — handed over here so the measure starts no second ls-files.
     prov["untracked"] = untracked
     files.update(worktree)
     files.update(untracked)
@@ -1204,7 +1192,7 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
 
 def worktree_snapshot(root: Path) -> tuple[str, str]:
     """Return (tree, head): the working tree as one git tree id, and HEAD's commit id ("none" when
-    HEAD is unborn). The prepared-close identity (ADR 0105): a session that ran the gates, the
+    HEAD is unborn). The prepared-close identity (ywr-harness ADR 0105): a session that ran the gates, the
     review and verify reports this pair, and the owner-typed `/slice-close` reuses those results
     only while a fresh snapshot prints the same pair; when it differs, `git diff --name-only
     <old-tree> <new-tree>` names exactly what changed since.
@@ -1281,7 +1269,7 @@ def print_scope(files: list[str], prov: dict) -> None:
     say(f"scope: {' · '.join(parts)} = {len(files)} unique file(s)")
     if prov.get("unborn_head"):
         warn("no commit yet (unborn HEAD) — the worktree scope is staged+unstaged vs the "
-             "empty tree; this is a report, not a failure (ADR 0041's loud exit is for a "
+             "empty tree; this is a report, not a failure (ywr-harness ADR 0041's loud exit is for a "
              "scope git could not answer at all)")
     if prov.get("range") and prov.get("range_files") == 0:
         warn(f"range {prov['range']} matched 0 file(s) — everything below rests on the "
@@ -1296,15 +1284,15 @@ def compose(parts: list[str], cwd: str, warns: list[str] | None = None) -> str:
 
     `warns` is threaded for the same reason `gate_command` threads one: this second-layer refusal
     is unreachable through `load()` today (`safe_cwd` already scrubbed the value), and a drop
-    with no warns channel is a silent drop waiting for a refactor (queued 2026-07-29).
+    with no warns channel is a silent drop waiting for a refactor.
 
     Every argv element is shell-quoted (`shlex.quote`), so ONE element reaches `sh -c` as ONE
     argument. The closed set carries an element with a space — `pytest-nondb`'s `-m "not db"` —
-    and a plain space-join delivered it as `-m not db`: pytest took `db` as a path and exited 4
-    (dist issue #6). An element made only of SAFE_TOKEN characters is shlex-safe and comes out
+    and a plain space-join delivered it as `-m not db`: pytest took `db` as a path and exited 4.
+    An element made only of SAFE_TOKEN characters is shlex-safe and comes out
     unquoted, so every other command's bytes are unchanged; the round-trip property
     (`shlex.split(compose(cmd, cwd))` gives back the argv) is pinned over every GATES and RUNNERS
-    entry by harness_gates.selftest.ps1 case AD."""
+    entry by the ywr-harness canon's harness_gates.selftest.ps1 (case AD)."""
     cmd = " ".join(shlex.quote(p) for p in parts)
     if cwd and token_ok(cwd):
         return f"cd {as_arg(cwd)} && {cmd}"
@@ -1321,7 +1309,7 @@ def verify_command(cfg: dict, script: str, warns: list[str] | None = None) -> st
     repo-supplied text in the working tree, exactly like a `.harness.json` value. It therefore
     passes the same token gate, checked on the POST-strip_prefix form that actually becomes argv.
     A refused path yields a parenthetical that is not a command and does NOT repeat the value:
-    the value belongs in the warning, never in a command position (ADR 0012)."""
+    the value belongs in the warning, never in a command position (ywr-harness ADR 0012)."""
     rel = strip_group_prefix(norm(script), cfg["strip_prefix"])
     if not token_ok(rel):
         if warns is not None:
@@ -1342,13 +1330,13 @@ def unsafe_files(group: dict, files: list[str]) -> list[str]:
     """Changed files that cannot be passed to a gate command as arguments, in their post-strip
     form. Reported by the caller so the coverage loss is stated rather than silent: a filename is
     repo-supplied text too — `sh -c` would re-split one containing a space, and both output
-    parsers truncate one containing '#'. `( ) [ ]` are admitted (ADR 0112, `file_arg_ok`)."""
+    parsers truncate one containing '#'. `( ) [ ]` are admitted (ywr-harness ADR 0112, `file_arg_ok`)."""
     return sorted(f for f in files if not file_arg_ok(strip_group_prefix(f, group["strip_prefix"])))
 
 
 def absent_files(root: Path, files: list[str]) -> list[str]:
     """Changed files no longer in the working tree — a deletion in a range or worktree scope. A
-    file-scoped gate is never handed one (ADR 0112): a deleted plain path fails eslint, prettier
+    file-scoped gate is never handed one (ywr-harness ADR 0112): a deleted plain path fails eslint, prettier
     and ruff for nothing to check, and a deleted `[id]` path is read by eslint and prettier as a
     GLOB that checks a sibling (`i/`, `d/`) and passes. `lexists`, so a symlink or a submodule
     path is still passed as before."""

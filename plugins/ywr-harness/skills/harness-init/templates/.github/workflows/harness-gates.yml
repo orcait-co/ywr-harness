@@ -6,7 +6,7 @@
 #   정본 레포는 private 이고 조직 간 Actions 접근이 access_level=none 이다. reusable workflow 로
 #   가려면 그 설정을 조직 전체로 넓혀야 하는데, 그건 이 레포의 워크플로와 액션을 조직 내 어느
 #   레포에서나 호출할 수 있게 만드는 권한 확대다. 빌더에 대해 이미 "복사 + 갱신 경로"를 택했으므로
-#   (ADR 0011) 같은 방식으로 통일한다. 전파는 harness-init 재실행이고, 정본 사본과의 바이트
+#   (ywr-harness ADR 0011) 같은 방식으로 통일한다. 전파는 harness-init 재실행이고, 정본 사본과의 바이트
 #   동일성은 플러그인의 manifest-gate 가 강제한다.
 #
 # 이 워크플로가 하는 일은 결정론 게이트를 **출력**하고 그중 실행 가능한 것을 돌리는 것이다.
@@ -18,12 +18,12 @@ name: harness-gates
 on:
   pull_request:
   push:
-    # ADR 0062 (issue #55). 기본 브랜치가 이 목록 밖이면(예: develop) push 런은 영원히 없고, GitHub 은
-    # 매치되는 이벤트가 한 번도 없는 워크플로를 등록조차 하지 않는다 — `[main]` 만 있던 동안 master
-    # 레포의 결정론 게이트는 CI 에서 한 번도 돌지 않았다. `on:` 은 표현식을 받지 않고 `$default-branch`
-    # 는 스타터 템플릿 전용이며, 이 파일은 정본 사본과 바이트 동일해야 하므로(ADR 0014) harness-init 이
-    # 레포별로 치환할 수도 없다 — 열거가 유일한 길이고, 목록 밖 기본 브랜치는 harness-init 이 `ci trigger:`
-    # 줄로 경고한다. PR 과 dispatch 는 필터가 없다.
+    # 기본 브랜치가 이 목록 밖이면(예: develop) push 런은 영원히 없고, GitHub 은 매치되는 이벤트가 한 번도
+    # 없는 워크플로를 등록조차 하지 않는다 — 그 레포의 결정론 게이트는 CI 에서 한 번도 돌지 않는다
+    # (ywr-harness ADR 0062). `on:` 은 표현식을 받지 않고 `$default-branch` 는 스타터 템플릿 전용이며,
+    # 이 파일은 정본 사본과 바이트 동일해야 하므로(ywr-harness ADR 0014) harness-init 이 레포별로 치환할
+    # 수도 없다 — 열거가 유일한 길이고, 목록 밖 기본 브랜치는 harness-init 이 `ci trigger:` 줄로 경고한다.
+    # PR 과 dispatch 는 필터가 없다.
     branches: [main, master]
   workflow_dispatch:
 
@@ -37,35 +37,36 @@ concurrency:
 jobs:
   gates:
     runs-on: ubuntu-latest
-    # ADR 0123(ADR 0098 옵션 E). 없으면 GitHub 기본값 360분이 걸려, 멈춘 게이트 하나가 런마다 6시간을 청구한다.
+    # 없으면 GitHub 기본값 360분이 걸려, 멈춘 게이트 하나가 런마다 6시간을 청구한다(ywr-harness ADR 0123).
     # 60분은 정본 런(4–8분 실측)의 7배 이상이라 소비 레포의 테스트 게이트에도 여유가 있다 — 넘으면 GitHub 이
-    # "exceeded the maximum execution time" 으로 이름 붙여 실패시키고, 늘리는 것은 정본에서 한다(ADR 0010).
+    # "exceeded the maximum execution time" 으로 이름 붙여 실패시키고, 늘리는 것은 정본에서 한다(ywr-harness ADR 0010).
     timeout-minutes: 60
     steps:
-      # ADR 0087 (dist issue #6). 모든 uses: 는 40-hex 커밋 SHA 고정 + `# vX.Y.Z` 주석이다 — 떠다니는
-      # 메이저 태그는 이 파일을 리뷰한 적 없는 코드로 옮겨갈 수 있다. 갱신은 정본이 손으로 한다
-      # (spec 0012 스윕·릴리스 준비), 소비 레포는 harness-init 재실행으로 받는다.
+      # 모든 uses: 는 40-hex 커밋 SHA 고정 + `# vX.Y.Z` 주석이다 — 떠다니는 메이저 태그는 이 파일을
+      # 리뷰한 적 없는 코드로 옮겨갈 수 있다(ywr-harness ADR 0087). 갱신은 정본이 손으로 한다
+      # (ywr-harness spec 0012 스윕·릴리스 준비), 소비 레포는 harness-init 재실행으로 받는다.
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # 0 = 전체 히스토리. emitter 가 --range 로 슬라이스 범위를 계산할 수 있어야 한다.
           fetch-depth: 0
 
-      # id 는 ADR 0154 의 비교가 읽는 출력(python-version — 실제로 설치된 3.12.x)을 위한 것이다.
+      # id 는 아래 uv 설치 스텝의 인터프리터 비교가 읽는 출력(python-version — 실제로 설치된 3.12.x)을
+      # 위한 것이다(ywr-harness ADR 0154).
       - name: Setup Python
         id: python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
-      # ADR 0043. 범위 해석의 단일 소스 — 스텝마다 인라인으로 조립하던 범위 문자열(감사 H1 의
-      # 트리거 표면)을 벤더링된 resolve-base.sh 로 교체한다. PR 이벤트만 diff 범위를 가진다:
-      # push/dispatch 는 ADR 0041 이후 전체 트리 감사(--all / --coverage)라 범위 자체가 없다.
+      # 범위 해석의 단일 소스(ywr-harness ADR 0043): 벤더링된 resolve-base.sh 가 범위를 만든다 — 스텝마다
+      # 범위 문자열을 인라인으로 조립하면 서로 어긋나고 트리거 표면이 된다. PR 이벤트만 diff 범위를 가진다:
+      # push/dispatch 는 전체 트리 감사(--all / --coverage)라 범위 자체가 없다(ywr-harness ADR 0041).
       # blocking 모드: base 를 해석 못 한 PR 런은 이 스텝에서 실패다 — 검사가 돌지 않은 머지는
-      # 통과가 아니다(ADR 0041 과 같은 원칙). 값은 env 로만 전달한다 — 워크플로 표현식을 run:
+      # 통과가 아니다(ywr-harness ADR 0041 과 같은 원칙). 값은 env 로만 전달한다 — 워크플로 표현식을 run:
       # 텍스트에 전개하지 않는다(셸 주입 표면). 출력 base 는 검증된 40-hex SHA 이므로 아래
       # 스텝들이 범위 문자열로 안전하게 조립한다.
-      - name: Resolve the PR diff base (single resolver — ADR 0043)
+      - name: Resolve the PR diff base (single resolver — ywr-harness ADR 0043)
         id: base
         if: github.event_name == 'pull_request'
         env:
@@ -74,23 +75,23 @@ jobs:
           MODE: blocking
         run: |
           if [ ! -f scripts/harness/resolve-base.sh ]; then
-            echo "::error::scripts/harness/resolve-base.sh 없음 — /ywr-harness:harness-init 재실행으로 배치하세요(ADR 0043)."
+            echo "::error::scripts/harness/resolve-base.sh 없음 — /ywr-harness:harness-init 재실행으로 배치하세요(ywr-harness ADR 0043)."
             exit 1
           fi
           sh scripts/harness/resolve-base.sh
 
-      # ADR 0041. 시크릿 스캔의 CI 백스톱. .githooks/pre-push 가 패턴의 단일 소유자이므로 CI 는
+      # 시크릿 스캔의 CI 백스톱(ywr-harness ADR 0041). .githooks/pre-push 가 패턴의 단일 소유자이므로 CI 는
       # 같은 스크립트를 이 런의 범위로 구동한다 — 패턴을 복제하지 않는다(두 사본은 어긋나는 길이다).
-      # 이 스텝은 의도적으로 resolve-base.sh 를 쓰지 않는다(ADR 0043 옵션 C 기각): 스캔 범위는
+      # 이 스텝은 의도적으로 resolve-base.sh 를 쓰지 않는다(ywr-harness ADR 0043 옵션 C 기각): 스캔 범위는
       # rev-list 집합 차이라 비조상 base 도 유효하고, push 의 ZERO 폴백은 resolve-base 의 HEAD~1
       # 강등보다 더 많이 스캔한다 — 통일이 강한 쪽을 약화시키는 방향이다.
-      # core.hooksPath 는 클론별 수동 배선이라(ADR 0015) 배선 안 된 클론의 푸시는 로컬 스캔이 0회다;
+      # core.hooksPath 는 클론별 수동 배선이라(ywr-harness ADR 0015) 배선 안 된 클론의 푸시는 로컬 스캔이 0회다;
       # 여기가 커버리지의 바닥이다. PR: base 를 해석 못 하면 이 스텝은 실패다 — 스캔이 돌지 않은
       # 머지는 통과가 아니다. push: before 가 0(브랜치 생성)이거나 도달 불가(force push)면 훅의
       # new-branch 분기로 떨어져 리모트에 없는 커밋을 스캔한다. 훅은 스캔한 커밋 수를 출력하고,
       # 범위에 커밋이 0개면 조용히 exit 0 하므로 아래서 빈 출력을 보고로 바꾼다(무음 아님).
       # 값은 env 로만 받는다 — 이 파일의 규칙(표현식을 run: 텍스트에 전개하지 않는다)이 이 스텝에도
-      # 적용된다(dist issue #6: semgrep run-shell-injection). 변수 이름은 resolve-base.sh 의 env 계약
+      # 적용된다(semgrep 의 run-shell-injection 규칙이 그 패턴을 잡는다). 변수 이름은 resolve-base.sh 의 env 계약
       # (EVENT_NAME · BASE_REF · EVENT_BEFORE)과 같다 — 한 값에 한 이름.
       - name: Secret scan over this run's commits (backstop)
         env:
@@ -105,7 +106,7 @@ jobs:
           ZERO=0000000000000000000000000000000000000000
           if [ "$EVENT_NAME" = "pull_request" ]; then
             BASE=$(git rev-parse "origin/$BASE_REF") || {
-              echo "::error::secret scan: origin/$BASE_REF 를 해석할 수 없습니다 — 스캔이 돌지 않은 머지는 통과가 아닙니다(ADR 0041)."
+              echo "::error::secret scan: origin/$BASE_REF 를 해석할 수 없습니다 — 스캔이 돌지 않은 머지는 통과가 아닙니다(ywr-harness ADR 0041)."
               exit 1
             }
           else
@@ -116,10 +117,10 @@ jobs:
             esac
           fi
           # HEAD 를 먼저, 실패는 실패로: 인라인 $(git rev-parse HEAD) 가 실패하면 빈 문자열이
-          # 끼어들어 stdin 이 3토큰이 되고, 훅은 4필드 계약이 깨진 채 조용히 0커밋을 스캔한다
-          # (리뷰 2026-08-10, low — 재현됨). 스캔이 돌지 않은 런은 통과가 아니다.
+          # 끼어들어 stdin 이 3토큰이 되고, 훅은 4필드 계약이 깨진 채 조용히 0커밋을 스캔한다.
+          # 스캔이 돌지 않은 런은 통과가 아니다.
           HEAD_SHA=$(git rev-parse HEAD) || {
-            echo "::error::secret scan: HEAD 를 해석할 수 없습니다 — 스캔이 돌지 않은 런은 통과가 아닙니다(ADR 0041)."
+            echo "::error::secret scan: HEAD 를 해석할 수 없습니다 — 스캔이 돌지 않은 런은 통과가 아닙니다(ywr-harness ADR 0041)."
             exit 1
           }
           RC=0
@@ -129,15 +130,15 @@ jobs:
           exit $RC
 
       # emitter 는 스코프 해석에 실패하면 exit 0 이 아니라 stdout 의 `scope: FAILED` 마커와 함께
-      # 비영으로 종료한다(ADR 0041) — pipefail 이 그 종료 코드를 이 스텝의 실패로 만든다. 침묵한
-      # 빈 출력은 아래 grep 스텝 전부를 초록으로 통과시키는, 가장 나쁜 형태의 공회전이었다.
+      # 비영으로 종료한다(ywr-harness ADR 0041) — pipefail 이 그 종료 코드를 이 스텝의 실패로 만든다. 침묵한
+      # 빈 출력은 아래 grep 스텝 전부를 초록으로 통과시키는, 가장 나쁜 형태의 공회전이다.
       #
       # push/dispatch 는 --all(전체 트리 감사)로 돈다: 파티션(ungrouped)과 아티팩트 규칙은 diff 가
       # 아니라 트리의 속성이고, 각각 green 인 두 PR 이 병합으로 만든 main 상태는 어떤 PR 런도 본
-      # 적이 없다(ADR 0041). 리뷰 티어 줄은 감사 모드 문구로 바뀌지만 `review tier:` 접두는
+      # 적이 없다(ywr-harness ADR 0041). 리뷰 티어 줄은 감사 모드 문구로 바뀌지만 `review tier:` 접두는
       # 유지된다 — 아래 sed 의 윈도 종결 문장이다.
       # base 는 env 로만 받는다 — 이 파일의 resolver 스텝이 스스로 세운 규칙(표현식을 run: 텍스트에
-      # 전개하지 않는다)은 그 스텝의 출력에도 적용된다(리뷰 2026-08-10 med). 값은 resolver 가
+      # 전개하지 않는다)은 그 스텝의 출력에도 적용된다. 값은 resolver 가
       # 정규화한 40-hex SHA 또는 빈 문자열이지만, 패턴 자체를 남기지 않는 쪽이 규칙이다.
       - name: Emit deterministic gates and the review tier
         id: emit
@@ -154,8 +155,7 @@ jobs:
       # gates.txt lives in RUNNER_TEMP, NOT the working tree. The emitter's scope includes
       # untracked files, and `tee` creates its output file before the emitter enumerates them —
       # so an in-tree gates.txt makes this job report its OWN output as an ungrouped file and
-      # fail. Every scaffolded repo would hit it on the first CI run. Measured 2026-07-27 on
-      # this workflow's first execution.
+      # fail. Every scaffolded repo would hit it on the first CI run.
       - name: Fail on ungrouped files
         run: |
           # 그룹이 청구하지 않은 파일은 어떤 결정론 게이트도 덮지 않는다. 조용히 넘기면 커버리지가
@@ -167,9 +167,9 @@ jobs:
           fi
           echo "OK — 모든 변경 파일이 선언된 그룹에 속합니다."
 
-      # ADR 0032. .harness.json 이 아티팩트를 선언하면 README 는 그 링크를 실어야 하고, 선언된
-      # 제목은 레포 이름으로 시작해야 한다(<repo> · <purpose>). emitter 는 보고만 하므로 여기가
-      # 시행 지점이다. 미선언이면 emitter 가 "none declared" 로 보고하고 이 스텝은 통과한다.
+      # .harness.json 이 아티팩트를 선언하면 README 는 그 링크를 실어야 하고, 선언된
+      # 제목은 레포 이름으로 시작해야 한다(<repo> · <purpose>; ywr-harness ADR 0032). emitter 는
+      # 보고만 하므로 여기가 시행 지점이다. 미선언이면 emitter 가 "none declared" 로 보고하고 이 스텝은 통과한다.
       - name: Fail on a declared-artifact violation
         run: |
           if grep -q '^artifact: VIOLATION' "$RUNNER_TEMP/gates.txt"; then
@@ -179,15 +179,15 @@ jobs:
           fi
           echo "OK — 아티팩트 위반 없음(선언 여부는 emitter 의 artifact: 라인이 보고)."
 
-      # ADR 0022(0021 대체). enabledPlugins 가 커밋되면 이 레포를 클론하는 전원에게 플러그인이 강제
-      # 활성화된다 — 관리 설정 페이로드에서 끝까지 쓰지 않은 바로 그 키다(ADR 0010/0012). 트리에
-      # 쓰는 스코프는 둘 다 막는다: --scope project 는 .claude/settings.json, --scope local 은
-      # .claude/settings.local.json 에 쓴다(측정값. 0021 은 전자만 막고 후자를 해법으로 안내했다).
+      # enabledPlugins 가 커밋되면 이 레포를 클론하는 전원에게 플러그인이 강제 활성화된다 — 관리 설정
+      # 페이로드에서 끝까지 쓰지 않은 바로 그 키다(ywr-harness ADR 0010/0012/0022). 트리에 쓰는 스코프는
+      # 둘 다 막는다: --scope project 는 .claude/settings.json, --scope local 은 .claude/settings.local.json
+      # 에 쓴다. 전자만 막으면 `--scope local` 재설치가 같은 키를 트리에 그대로 넣는다.
       # 파일 자체는 공유 설정의 정당한 자리이므로 금지하지 않고, 키만 값과 무관하게 막는다 —
       # 언인스톨이 `{"enabledPlugins": {}}` 를 남기므로 빈 값도 커밋 대상이 아니다.
       #
       # 훅과 달리 여기서는 JSON 으로 파싱한다. `"enabledPlugins"` 는 RFC 8259 상 동일한 키이고
-      # 호스트도 그렇게 읽지만 리터럴 grep 은 놓친다. 훅은 인터프리터 없이 도는 바닥이고(ADR 0015)
+      # 호스트도 그렇게 읽지만 리터럴 grep 은 놓친다. 훅은 인터프리터 없이 도는 바닥이고(ywr-harness ADR 0015)
       # 실효 백스톱은 core.hooksPath 에 의존하지 않는 이 스텝이다.
       - name: Fail on a committed enabledPlugins
         run: |
@@ -195,8 +195,8 @@ jobs:
           import json, subprocess, sys
 
           TARGETS = [".claude/settings.json", ".claude/settings.local.json"]
-          # git 경계는 인코딩을 고정한다(ywr-harness issue #40 의 규약). 이 목록은 닫힌 ASCII 집합이라 오늘은
-          # 무해하지만, 목록이 넓어지는 날 경로 파싱이 러너의 로케일에 걸리지 않도록 여기서 고정해 둔다.
+          # git 경계는 인코딩을 고정한다. 이 목록은 닫힌 ASCII 집합이라 지금은 무해하지만, 목록이 넓어지는 날
+          # 경로 파싱이 러너의 로케일에 걸리지 않도록 여기서 고정해 둔다.
           tracked = [p for p in subprocess.run(
               ["git", "ls-files", "-z", "--"] + TARGETS,
               capture_output=True, text=True, encoding="utf-8", errors="backslashreplace",
@@ -210,7 +210,7 @@ jobs:
               except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                   # 파싱 실패를 통과로 처리하지 않는다 — 검사하지 못한 것과 위반이 없는 것은 다르다. 첫 실패에서
                   # 멈추지도 않는다 — 다른 파일에서 이미 찾은 위반까지 한 번에 모두 이름을 대야 한 번의
-                  # 실행으로 고칠 수 있다(리뷰 2026-09-07).
+                  # 실행으로 고칠 수 있다.
                   unparseable.append((path, str(exc)))
                   continue
               if isinstance(data, dict) and "enabledPlugins" in data:
@@ -219,7 +219,7 @@ jobs:
           for path, why in unparseable:
               print(f"::error::{path} 를 파싱할 수 없어 enabledPlugins 여부를 확인하지 못했습니다: {why}")
           for path in bad:
-              print(f"::error::{path} 이 enabledPlugins 를 선언합니다 — 클론하는 전원에게 플러그인이 강제됩니다(ADR 0010/0022).")
+              print(f"::error::{path} 이 enabledPlugins 를 선언합니다 — 클론하는 전원에게 플러그인이 강제됩니다(ywr-harness ADR 0010/0022).")
           if bad:
               print("고치는 법: git rm --cached <파일> 후 git 에서 제외하거나, 플러그인을 언인스톨하고 설치를 각 구성원의 선택으로 두세요.")
               print("--scope project 와 --scope local 모두 이 키를 트리에 쓰므로 다른 스코프로 재설치하는 것은 해결이 아닙니다.")
@@ -229,11 +229,11 @@ jobs:
           print(f"OK — 커밋된 enabledPlugins 없음(추적 중인 대상 {len(tracked)}개 검사).")
           PY
 
-      # ADR 0062. 게이트 명령 추출은 여기 한 번이다 — 아래의 툴체인 준비 스텝과 실행 스텝이 같은 목록을
-      # 읽는다(추출 파서가 둘이면 어긋나는 길이다). 각 명령의 러너와 실행 디렉터리를 표로 뽑는다:
+      # 게이트 명령 추출은 여기 한 번이다(ywr-harness ADR 0062) — 아래의 툴체인 준비 스텝과 실행 스텝이 같은
+      # 목록을 읽는다(추출 파서가 둘이면 어긋나는 길이다). 각 명령의 러너와 실행 디렉터리를 표로 뽑는다:
       # `groups[].cwd` 가 선언된 그룹의 명령은 emitter 의 compose() 가 `cd <cwd> && <cmd>` 로 합성하므로
       # 첫 토큰이 러너가 아니라 `cd` 다 — 그 접두를 벗기지 않으면 uv 설치도 preflight 도 우회된다(`cd` 는
-      # 내장 명령이라 `command -v cd` 가 성공한다; 리뷰 2026-08-28 high). `runners` 는 러너 집합(닫힌
+      # 내장 명령이라 `command -v cd` 가 성공한다). `runners` 는 러너 집합(닫힌
       # GATES 집합: uv · npx · cargo · go · actionlint · shellcheck, 스크립트 게이트의 python 등)을 공백으로 감싼
       # 문자열이라 `contains()` 가 토큰 단위로 맞고(` uv ` 는 `uvx` 에 맞지 않는다), `uv_dirs`/`npx_dirs`
       # 는 그 러너의 게이트가 실행되는 디렉터리 집합이다(cwd 없는 그룹은 `.`). cwd 값은 emitter 의
@@ -252,8 +252,8 @@ jobs:
             > "$RUNNER_TEMP/cmds.txt" || true
           # `|| true` is load-bearing under `set -euo pipefail`. When no group declares a gate — or
           # no changed file matches a gate-bearing group — grep matches nothing and exits 1,
-          # pipefail propagates it, and `set -e` would kill this step with an EMPTY report. Measured
-          # 2026-07-27: this canon declares `gates: []` everywhere and CI failed on it.
+          # pipefail propagates it, and `set -e` would kill this step with an EMPTY report. A repo whose
+          # groups all declare `gates: []` hits this on every run.
           # 러너/디렉터리 표: `cd <dir> && <runner> …` 는 (runner, dir), 그 외는 (첫 토큰, .).
           awk '$1 == "cd" && $3 == "&&" { print $4, $2; next } NF { print $1, "." }' "$RUNNER_TEMP/cmds.txt" \
             | sort -u > "$RUNNER_TEMP/runners.txt"
@@ -267,32 +267,32 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "gate commands: $(grep -c . "$RUNNER_TEMP/cmds.txt" || true) · runners:$runners· uv dirs:$uv_dirs· npx dirs:$npx_dirs"
 
-      # ADR 0062 (issue #55). 닫힌 GATES 집합의 Python 셀렉터는 `uv run …` 을 출력하지만 ubuntu-latest 에
-      # uv 는 없다 — 첫 실행이 `sh: 1: uv: not found`(exit 127)로 죽었고, 그 전까지는 위 트리거 결함으로
-      # 한 번도 돌지 않았다. 조건부인 이유: `uv sync` 는 pyproject 가 없는 레포에서 실패하므로 무조건
-      # 설치는 Python 이 아닌 모든 레포를 빨갛게 만든다. 러너는 선언한 셀렉터에서 따라오는 것이고 레포가
-      # 고르는 문자열이 아니다(ADR 0012) — 그래서 .harness.json 에 러너 접두를 선언하게 하지 않는다.
+      # 닫힌 GATES 집합의 Python 셀렉터는 `uv run …` 을 출력하지만 ubuntu-latest 에 uv 는 없다 — 설치하지
+      # 않으면 `sh: 1: uv: not found`(exit 127)로 죽는다(ywr-harness ADR 0062). 조건부인 이유: `uv sync` 는
+      # pyproject 가 없는 레포에서 실패하므로 무조건 설치는 Python 이 아닌 모든 레포를 빨갛게 만든다. 러너는
+      # 선언한 셀렉터에서 따라오는 것이고 레포가 고르는 문자열이 아니다(ywr-harness ADR 0012) — 그래서
+      # .harness.json 에 러너 접두를 선언하게 하지 않는다.
       - name: Setup uv (the emitted gates use it)
         if: contains(steps.cmds.outputs.runners, ' uv ')
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       # 설치는 게이트가 실행되는 디렉터리마다 한 번이다 — 레포 루트에서 한 번만 돌리면 `groups[].cwd` 로
-      # 분리된 서브프로젝트(`backend/pyproject.toml`)는 설치되지 않은 채 게이트가 돈다(리뷰 2026-08-28
-      # medium). 값은 env 로만 받는다(표현식을 run: 텍스트에 전개하지 않는 이 파일의 규칙).
-      # lock 이 커밋된 디렉터리는 `--locked` 로 단언한다(issue #58): plain `uv sync` 는 pyproject 와
+      # 분리된 서브프로젝트(`backend/pyproject.toml`)는 설치되지 않은 채 게이트가 돈다.
+      # 값은 env 로만 받는다(표현식을 run: 텍스트에 전개하지 않는 이 파일의 규칙).
+      # lock 이 커밋된 디렉터리는 `--locked` 로 단언한다: plain `uv sync` 는 pyproject 와
       # lock 이 어긋날 때 실패가 아니라 조용히 lock 을 재생성하고, 일회용 체크아웃에서 그 갱신본은
       # 버려진다 — 그 런의 게이트는 레포가 갖고 있지 않은 해석본을 테스트한 뒤 초록이 된다. lock 이
-      # 없는 디렉터리(현행 기본)는 동작 불변이다.
+      # 없는 디렉터리(기본)는 plain `uv sync` 를 쓴다.
       #
-      # ADR 0154 (dist issue #10). 이 스텝은 uv 에 인터프리터를 넘기지 않는다. uv 는 프로젝트의
+      # 이 스텝은 uv 에 인터프리터를 넘기지 않는다(ywr-harness ADR 0154). uv 는 프로젝트의
       # .python-version → requires-python 을 만족하는 첫 설치본 → 최신 CPython 다운로드 순으로 고른다.
       # requires-python 이 러너의 3.12 를 배제하고 핀이 없으면, 새 CPython 마이너 출시가 레포 변경 없이
-      # 인터프리터를 바꾼다 — 3.15.0 출시일에 wheel 없는 의존성 하나로 설치가 실패했고 게이트는 하나도
-      # 돌지 않았다. 그래서 핀 없는 디렉터리가 러너와 다른 마이너로 sync 되면 ::warning:: 을, sync 가
-      # 실패하면 해결법을 담은 ::error:: 를 낸다. 다운로드 차단(--no-python-downloads)은 기각했다
-      # (ADR 0154 옵션 D — 녹색이던 소비 레포를 갱신 직후 빨갛게 만든다). 핀은 $d 에서만 찾는다: uv 는
+      # 인터프리터를 바꾼다 — wheel 이 아직 없는 의존성 하나로 설치가 실패하면 게이트는 하나도
+      # 돌지 않는다. 그래서 핀 없는 디렉터리가 러너와 다른 마이너로 sync 되면 ::warning:: 을, sync 가
+      # 실패하면 해결법을 담은 ::error:: 를 낸다. 다운로드 차단(--no-python-downloads)은 쓰지 않는다
+      # (ywr-harness ADR 0154 옵션 D — 녹색이던 소비 레포를 갱신 직후 빨갛게 만든다). 핀은 $d 에서만 찾는다: uv 는
       # 프로젝트·워크스페이스 루트 위의 핀을 읽지 않는다(실측). 위로 올라가며 찾으면 uv 가 무시하는 루트 핀이
-      # 하위 프로젝트의 경고와 오류를 끈다(리뷰 2026-10-17, medium). 루트 핀을 uv 가 읽는 워크스페이스 멤버는
+      # 하위 프로젝트의 경고와 오류를 끈다. 루트 핀을 uv 가 읽는 워크스페이스 멤버는
       # venv 도 워크스페이스 루트에 있어 아래 비교가 '읽지 못함' 으로 끝나므로 거짓 경고가 없다.
       # 비교는 uv·python 프로세스를 띄우지 않는다 — venv 의 pyvenv.cfg 한 줄과 setup-python 의 출력만 읽는다.
       - name: Install the project with uv (once per directory the uv gates run in)
@@ -314,7 +314,7 @@ jobs:
             echo "::endgroup::"
             fix="uv 가 .venv 를 두는 디렉터리(프로젝트나 워크스페이스의 루트 — 보통 $d)에서 'uv python pin <버전>' 으로 .python-version 을 커밋하고, 파일 인자를 받는 게이트(ruff 등)가 없는 .harness.json 그룹에 그 파일을 claim 하세요(ywr-harness ADR 0154)."
             # venv 가 $d 에 있을 때만 $d 가 uv 의 프로젝트·워크스페이스 루트이고, 그때만 uv 가 $d 의 핀을 읽었다.
-            # 워크스페이스 멤버 자신의 .python-version 은 uv 가 읽지 않는다(실측, 2026-10-17 수정 확인 leg). 그래서 venv 가
+            # 워크스페이스 멤버 자신의 .python-version 은 uv 가 읽지 않는다(실측). 그래서 venv 가
             # 없는 디렉터리의 핀은 '고정'으로 보고하지 않고, 그 디렉터리의 sync 가 실패하면 오류 안내를 낸다.
             used=""
             if [ -f "$d/.venv/pyvenv.cfg" ]; then
@@ -341,15 +341,15 @@ jobs:
             fi
           done
 
-      # ADR 0177 (dist issue #12). 러너 이미지의 Node(ubuntu-latest 는 22.x)는 레포가 선언한 Node 가 아닐 수
+      # 러너 이미지의 Node(ubuntu-latest 는 22.x)는 레포가 선언한 Node 가 아닐 수
       # 있다 — engines 가 그 버전을 배제하고 .npmrc 가 engine-strict 면 아래 `npm ci` 가 EBADENGINE 으로 죽고
-      # 게이트는 하나도 돌지 않는다. 그래서 npx 게이트 디렉터리마다 레포가 고른 Node 를 찾는다: .nvmrc →
+      # 게이트는 하나도 돌지 않는다(ywr-harness ADR 0177). 그래서 npx 게이트 디렉터리마다 레포가 고른 Node 를 찾는다: .nvmrc →
       # .node-version → package.json 의 volta.node. engines.node 와 devEngines.runtime 은 고른 버전이 아니라
-      # 호환 범위라 세지 않는다(ADR 0178) — `>=18` 같은 범위로 setup-node 를 돌리면 레포가 아무것도 바꾸지
+      # 호환 범위라 세지 않는다(ywr-harness ADR 0178) — `>=18` 같은 범위로 setup-node 를 돌리면 레포가 아무것도 바꾸지
       # 않았는데 더 새 Node 로 옮겨진다. 범위만 있는 디렉터리는 로그 줄이 .nvmrc 를 권한다. 그 디렉터리가 아무것도 고르지 않으면 레포 루트의 .nvmrc → .node-version 을
       # 본다 — 루트에 버전 파일을 두고 하위 디렉터리에서 게이트를 돌리는 모노레포 형태다. 루트의 package.json
       # 은 보지 않는다: 루트의 volta.node 는 그 루트 패키지의 고정이지 하위 디렉터리의 선택이 아니다. 선언이 한 값으로 모이면 그 파일을 setup-node 에 넘긴다. 선언이 없으면 이미지의 Node 를
-      # 그대로 쓴다(이전 동작). 디렉터리마다 값이 다르면 한 잡에는 Node 가 하나뿐이라 맞출 수 없으므로
+      # 그대로 쓴다. 디렉터리마다 값이 다르면 한 잡에는 Node 가 하나뿐이라 맞출 수 없으므로
       # ::warning:: 으로 이름을 대고 이미지의 Node 를 쓴다 — 지금 초록인 레포를 빨갛게 만들지 않는다.
       # 값은 로그 줄에 실리므로 버전 문자만 남긴다(':' 이 없으면 `::` 어노테이션을 위조할 수 없다). 경로는 그대로
       # 찍는다: 디렉터리는 emitter 의 token_ok 가 [A-Za-z0-9._/-] 로 제한한 cwd 이고 파일 이름은 닫힌 목록이다.
@@ -380,7 +380,7 @@ jobs:
               return ""
 
           def from_package(data):
-              # 고르는 선언(volta.node)과 범위(devEngines.runtime · engines.node)를 따로 돌려준다(ADR 0178).
+              # 고르는 선언(volta.node)과 범위(devEngines.runtime · engines.node)를 따로 돌려준다(ywr-harness ADR 0178).
               if not isinstance(data, dict):
                   return "", ""
               volta = data.get("volta")
@@ -423,14 +423,14 @@ jobs:
                       break
               if found:
                   declared.append(found)
-                  # 루트 파일로 폴백한 디렉터리의 범위도 같은 줄에 남긴다 — 고른 Node 가 그 범위 밖이면 npm 이 거부한다(리뷰 2026-10-29, low).
+                  # 루트 파일로 폴백한 디렉터리의 범위도 같은 줄에 남긴다 — 고른 Node 가 그 범위 밖이면 npm 이 거부한다.
                   span = f"; {d} 의 {clean(ranges[d])} 는 범위라 고르지 않았습니다" if d in ranges else ""
                   print(f"node version ({d}): {clean(found[1])} — {found[0]}{span}")
               else:
                   undeclared.append(d)
 
           # 선언 없는 디렉터리의 줄은 결정 뒤에 찍는다 — 한 잡에 Node 는 하나라, 다른 디렉터리의 선언이 setup-node 를
-          # 돌리면 그 디렉터리도 그 Node 로 돈다(리뷰 2026-10-29, low).
+          # 돌리면 그 디렉터리도 그 Node 로 돈다.
           keys = {key(v) for _, v in declared}
           chosen = declared[0][0] if len(keys) == 1 else ""
           for d in undeclared:
@@ -443,17 +443,17 @@ jobs:
               print(f"setup-node: {chosen} 의 선언으로 Node 를 설치합니다.")
           elif len(keys) > 1:
               # 비교는 텍스트다 — 버전 범위를 풀지 않으므로 `24` 와 `>=24.22.0 <25` 처럼 같은 Node 를 뜻하는 선언도
-              # 다르게 센다(ADR 0177 잔여 위험). 해결은 각 디렉터리가 먼저 읽히는 파일에 같은 텍스트를 두는 것이다.
+              # 다르게 센다(ywr-harness ADR 0177 잔여 위험). 해결은 각 디렉터리가 먼저 읽히는 파일에 같은 텍스트를 두는 것이다.
               listed = ", ".join(f"{p}={clean(v)}" for p, v in declared)
               print(f"::warning::npx 게이트 디렉터리들의 Node 선언이 텍스트로 일치하지 않습니다: {listed} — 한 잡에는 Node 가 하나뿐이라 setup-node 를 생략하고 러너 이미지의 Node 로 돕니다. 이 비교는 버전 범위를 풀지 않습니다. 각 디렉터리에 같은 텍스트의 .nvmrc 를 두면(.nvmrc 가 package.json 보다 먼저 읽힘) 한 값으로 모입니다(ywr-harness ADR 0177).")
           PY
 
-      # 자동 npm 캐시는 끈다(package-manager-cache: false): 이 워크플로는 지금까지 캐시 없이 돌았고, setup-node
+      # 자동 npm 캐시는 끈다(package-manager-cache: false): 이 워크플로는 캐시를 쓰지 않고, setup-node
       # 문서는 캐시가 필요 없으면 끄라고 권한다. 끄지 않으면 package.json 에 packageManager: npm 을 둔 레포에서만
       # 동작이 달라진다.
       # check-latest: true — 기본값(false)이면 setup-node 는 러너 tool cache 에서 semver 가 맞는 버전을 먼저 쓴다.
       # .nvmrc 의 `24` 가 이미지에 미리 깔린 오래된 24.x 로 풀리면 engines 의 `>=24.22.0` 을 만족하지 못해 같은
-      # EBADENGINE 이 다시 난다(owner 2026-10-29). true 면 범위 안의 최신판을 확인하고, 캐시가 낡았으면 내려받는다.
+      # EBADENGINE 이 다시 난다. true 면 범위 안의 최신판을 확인하고, 캐시가 낡았으면 내려받는다.
       - name: Setup Node (the version the npx gate directories declare)
         if: steps.node.outputs.file != ''
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -463,13 +463,13 @@ jobs:
           package-manager-cache: false
 
       # npx 게이트(eslint · prettier · tsc · vitest): node 는 러너 이미지의 것이거나 위 스텝이 레포의 선언대로
-      # 설치한 것이지만(ADR 0177) 프로젝트의 도구는 node_modules 에 있어야 한다 — 디렉터리마다 lockfile 이 있을 때만 `npm ci`, 없으면 보고하고
+      # 설치한 것이지만(ywr-harness ADR 0177) 프로젝트의 도구는 node_modules 에 있어야 한다 — 디렉터리마다 lockfile 이 있을 때만 `npm ci`, 없으면 보고하고
       # 넘어간다(무음 아님). 그 생략이 "도구를 못 찾고 실패한다"는 뜻은 아니다: npm exec 문서대로 stdin 이
       # TTY 가 아니거나 CI 가 감지되면 npx 는 `--yes` 를 가정하고(아래 실행 스텝은 CI=true · </dev/null),
       # node_modules 에 없는 도구는 — lockfile 이 없거나 lock 에 그 도구가 없으면 — 그 런 시점의 레지스트리
-      # 최신판을 내려받아 실행한다. ADR 0087 이 uses: 에서 막은 것과 같은 부류(리뷰한 적 없는 코드)이고,
-      # 막을지(`NPM_CONFIG_YES=false` 등)는 열린 항목이다(spec 0007 §3.6). 아직 npx 게이트를 선언한 소비
-      # 레포가 없어 실측되지 않은 경로다(ADR 0062 잔여 위험).
+      # 최신판을 내려받아 실행한다. ywr-harness ADR 0087 이 uses: 에서 막은 것과 같은 부류(리뷰한 적 없는 코드)이고,
+      # 막을지(`NPM_CONFIG_YES=false` 등)는 열린 항목이다(ywr-harness spec 0007 §3.6). 이 경로는
+      # 실측되지 않았다(ywr-harness ADR 0062 잔여 위험).
       - name: Install node dependencies (once per directory the npx gates run in)
         if: contains(steps.cmds.outputs.runners, ' npx ')
         env:
@@ -497,17 +497,17 @@ jobs:
             echo "실행할 결정론 게이트가 없습니다(선언된 그룹이 매치되지 않았거나 gates 가 비어 있음)."
             exit 0
           fi
-          # ADR 0062. 러너 preflight — 없는 러너는 `sh: 1: uv: not found` 가 아니라 이름 붙은 실패다.
+          # 러너 preflight(ywr-harness ADR 0062) — 없는 러너는 `sh: 1: uv: not found` 가 아니라 이름 붙은 실패다.
           # 이 워크플로가 설치하는 러너는 uv(+ npx 의 npm ci)뿐이고, 다른 러너(cargo · go · actionlint)는
           # 소비 레포가 선언하는 시점에 정본에 설치 스텝을 더한다 — 여기서 조용히 127 로 죽지 않게만 한다
-          # (shellcheck 는 ubuntu-latest 이미지에 이미 있어 설치 스텝 없이 preflight 를 통과한다 — issue #57).
+          # (shellcheck 는 ubuntu-latest 이미지에 이미 있어 설치 스텝 없이 preflight 를 통과한다).
           # $RUNNERS 는 env 로만 받는다(표현식을 run: 텍스트에 전개하지 않는 이 파일의 규칙).
           missing=""
           for r in $RUNNERS; do
             command -v "$r" >/dev/null 2>&1 || missing="$missing $r"
           done
           if [ -n "$missing" ]; then
-            echo "::error::게이트 러너가 이 러너 이미지에 없습니다:$missing — 이 워크플로는 uv 만 설치합니다(ADR 0062). 정본(ywr-harness)에 설치 스텝을 요청하세요."
+            echo "::error::게이트 러너가 이 러너 이미지에 없습니다:$missing — 이 워크플로는 uv 만 설치합니다(ywr-harness ADR 0062). 정본(ywr-harness)에 설치 스텝을 요청하세요."
             exit 1
           fi
           # stdin 은 /dev/null 로 — 게이트가 stdin 을 읽으면 아래 read 루프의 남은 명령 줄을 삼킨다.
@@ -522,9 +522,9 @@ jobs:
         env:
           BASE: ${{ steps.base.outputs.base }}
         run: |
-          # ADR 0017. 로컬 post-commit 훅과 같은 스크립트를 PR 범위 전체에 돌린다 — 범위 모드는
+          # 로컬 post-commit 훅과 같은 스크립트를 PR 범위 전체에 돌린다 — 범위 모드는
           # "코드 커밋 먼저, 문서 커밋 나중" 같은 슬라이스 중간 오탐을 흡수하므로 여기서 남는
-          # 발견은 실제로 슬라이스가 닫히지 않았다는 뜻이다. 리포트 전용: 실패시키지 않는다.
+          # 발견은 실제로 슬라이스가 닫히지 않았다는 뜻이다(ywr-harness ADR 0017). 리포트 전용: 실패시키지 않는다.
           if [ -f scripts/harness/harness_retro.py ]; then
             if [ -n "$BASE" ]; then
               python scripts/harness/harness_retro.py "$BASE..HEAD" || true
@@ -545,12 +545,11 @@ jobs:
             python scripts/harness/verify_map.py
           fi
 
-      # ADR 0043. 이전 형태는 두 가지가 약했다: ① `git diff ... | grep -q .` 는 git 실패를
-      # "docs 변경 없음"으로 읽어 드리프트 검사를 조용히 생략했고(H1 급), ② push 는
-      # HEAD~1..HEAD 만 봐서 여러 커밋 push 의 앞 커밋 docs 변경을 놓쳤다. 지금: PR 은 검증된
-      # base 범위로 스킵 판정(diff 실패는 실패), push/dispatch 는 무조건 재빌드 — 트리 감사와
-      # 같은 원칙(ADR 0041)이고, 각각 green 인 두 PR 이 병합으로 만든 중복 id 는 빌더의
-      # 결정론적 거부(ADR 0043)가 바로 여기서 main 을 빨갛게 만든다.
+      # PR 은 검증된 base 범위로 스킵을 판정한다(diff 실패는 실패 — `git diff ... | grep -q .` 는 git 실패를
+      # "docs 변경 없음"으로 읽어 드리프트 검사를 조용히 생략한다). push/dispatch 는 무조건 재빌드한다 —
+      # HEAD~1..HEAD 만 보면 여러 커밋 push 의 앞 커밋 docs 변경을 놓친다. 트리 감사와
+      # 같은 원칙(ywr-harness ADR 0041)이고, 각각 green 인 두 PR 이 병합으로 만든 중복 id 는 빌더의
+      # 결정론적 거부(ywr-harness ADR 0043)가 바로 여기서 main 을 빨갛게 만든다.
       - name: Docs index drift (PR — when docs sources changed · push/dispatch — always)
         env:
           BASE: ${{ steps.base.outputs.base }}
@@ -561,7 +560,7 @@ jobs:
           fi
           if [ -n "$BASE" ]; then
             CHANGED=$(git diff --name-only "$BASE..HEAD" -- docs/) || {
-              echo "::error::docs 드리프트: 변경 파일 해석에 git 이 실패했습니다 — 검사가 돌지 않은 런은 통과가 아닙니다(ADR 0041)."
+              echo "::error::docs 드리프트: 변경 파일 해석에 git 이 실패했습니다 — 검사가 돌지 않은 런은 통과가 아닙니다(ywr-harness ADR 0041)."
               exit 1
             }
             if [ -z "$CHANGED" ]; then
@@ -571,7 +570,7 @@ jobs:
           fi
           # stdout 만 버린다 — 빌더의 결정론적 거부(중복 id 등)는 stderr 로 나오고 그대로 보인다.
           python docs/build_docs.py >/dev/null || {
-            echo "::error::docs 빌드 실패 — 빌더의 결정론적 거부(중복 id 등, ADR 0043)거나 소스 오류입니다. 위 stderr 를 보세요."
+            echo "::error::docs 빌드 실패 — 빌더의 결정론적 거부(중복 id 등, ywr-harness ADR 0043)거나 소스 오류입니다. 위 stderr 를 보세요."
             exit 1
           }
           if [ -n "$(git status --porcelain docs/index.json docs/INDEX.md)" ]; then

@@ -195,6 +195,21 @@ function Invoke-GatesChild([string]$Repo, [string[]]$Extra) {
     $out = & $py.Source @a 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
+# The RUN cases compare each stream on its own. `2>&1` joins stdout and stderr in the order the two
+# pipes arrive, and Python flushes a piped stdout only at exit, so a line on each stream can arrive
+# in either order. The order inside one stream is fixed, so a per-stream compare is exact.
+function Split-ChildStreams([object[]]$Records) {
+    $err = @($Records | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() })
+    $out = @($Records | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ })
+    return @{ StdOut = ($out | Out-String); Err = ($err | Out-String) }
+}
+function Invoke-GatesChildSplit([string]$Repo, [string[]]$Extra) {
+    $a = @($gates, '--repo', $Repo) + $Extra
+    $all = @(& $py.Source @a 2>&1)
+    $code = $LASTEXITCODE
+    $s = Split-ChildStreams $all
+    return @{ StdOut = $s.StdOut; Err = $s.Err; Code = $code }
+}
 function Invoke-GatesDriver([string]$Repo, [string[]]$Extra) {
     if ($null -eq $script:gatesDriver) { Start-GatesDriver }
     $envNow = @{}
@@ -214,7 +229,7 @@ function Invoke-GatesDriver([string]$Repo, [string[]]$Extra) {
     $r = $line | ConvertFrom-Json
     if ([string]$r.stray) { throw "the emitter wrote past sys.stdout/sys.stderr: $([string]$r.stray)" }
     if (@($r.leaked).Count) { throw "the call changed module state that the next call would see: $(@($r.leaked) -join ', ')" }
-    return @{ Out = (ConvertTo-ChildText ([string]$r.err + [string]$r.out)); Code = [int]$r.code; Unordered = [bool]$r.unordered }
+    return @{ Out = (ConvertTo-ChildText ([string]$r.err + [string]$r.out)); StdOut = (ConvertTo-ChildText ([string]$r.out)); Err = (ConvertTo-ChildText ([string]$r.err)); Code = [int]$r.code; Unordered = [bool]$r.unordered }
 }
 $script:childRerun = 0
 function Invoke-Gates([string]$Repo, [string[]]$Extra, [switch]$Child) {
@@ -228,8 +243,9 @@ function Invoke-Gates([string]$Repo, [string[]]$Extra, [switch]$Child) {
     }
     if ($d.Unordered) { $script:childRerun++; return (Invoke-GatesChild $Repo $Extra) }
     if ($script:runnerMode -eq 'both') {
-        $c = Invoke-GatesChild $Repo $Extra
-        $script:ok = (Assert-True "RUN both: driver = child for --repo $Repo $($Extra -join ' ')" ($c.Out -ceq $d.Out -and $c.Code -eq $d.Code) "child exit=$($c.Code)`n$($c.Out)`n--- driver exit=$($d.Code)`n$($d.Out)") -and $script:ok
+        # Per stream, as in RUN1-RUN4: a joined compare races on the pipe arrival order.
+        $c = Invoke-GatesChildSplit $Repo $Extra
+        $script:ok = (Assert-True "RUN both: driver = child for --repo $Repo $($Extra -join ' ')" ($c.StdOut -ceq $d.StdOut -and $c.Err -ceq $d.Err -and $c.Code -eq $d.Code) "child exit=$($c.Code)`nstdout:`n$($c.StdOut)stderr:`n$($c.Err)--- driver exit=$($d.Code)`nstdout:`n$($d.StdOut)stderr:`n$($d.Err)") -and $script:ok
     }
     return $d
 }
@@ -1805,8 +1821,8 @@ $rAB1 = Invoke-Gates $ab1 @()
 $ok = (Assert-True 'AB1 ok line reports source committed and check declared' ($rAB1.Out -match 'artifact: ok — .*· source docs/page\.html committed · check declared — emitted under gates: as whole-program') $rAB1.Out) -and $ok
 # No trailing $ anchors: Out-String yields CRLF lines and .NET multiline $ matches before \n,
 # not before \r — the first run of these two cases failed on exactly that.
-$ok = (Assert-True 'AB1 the [artifacts] header sits inside the gates window in group-header shape' ($rAB1.Out -match '(?m)^  \[artifacts\] 1 declared drift check\(s\) — run on every slice \(ADR 0068\)') $rAB1.Out) -and $ok
-$ok = (Assert-True 'AB1 the check is a 4-space command line marked # whole-program (CI runs it, pre-commit defers it)' ($rAB1.Out -match '(?m)^    python scripts/check_drift\.py   # whole-program: declared-artifact drift check \(ADR 0068\)') $rAB1.Out) -and $ok
+$ok = (Assert-True 'AB1 the [artifacts] header sits inside the gates window in group-header shape' ($rAB1.Out -match '(?m)^  \[artifacts\] 1 declared drift check\(s\) — run on every slice \(ywr-harness ADR 0068\)') $rAB1.Out) -and $ok
+$ok = (Assert-True 'AB1 the check is a 4-space command line marked # whole-program (CI runs it, pre-commit defers it)' ($rAB1.Out -match '(?m)^    python scripts/check_drift\.py   # whole-program: declared-artifact drift check \(ywr-harness ADR 0068\)') $rAB1.Out) -and $ok
 
 # AB2: a group already declares the identical whole-program gate — `seen` dedupes VISIBLY, the
 # command is emitted exactly once (the canon's own dogfood state: onboarding group + item check).
@@ -1859,7 +1875,7 @@ $ok = (Assert-True 'AB8 source without check reports the unenforced drift gap on
 # outcome for a source-less item).
 $ab9 = New-Ab 'ab9-handpub' ('{ "url": "' + $SURL + '", "title": "ab9-handpub · docs" }')
 $rAB9 = Invoke-Gates $ab9 @()
-$ok = (Assert-True 'AB9 a source-less item names the hand-published shape on the ok line' ($rAB9.Out -match 'artifact: ok — .*· no source declared — hand-published page \(ADR 0032 shape\); not publishable via /ywr-harness:artifact-publish') $rAB9.Out) -and $ok
+$ok = (Assert-True 'AB9 a source-less item names the hand-published shape on the ok line' ($rAB9.Out -match 'artifact: ok — .*· no source declared — hand-published page \(ywr-harness ADR 0032 shape\); not publishable via /ywr-harness:artifact-publish') $rAB9.Out) -and $ok
 $ok = (Assert-True 'AB9 a source-less item emits no check and stays ok, never a VIOLATION' ($rAB9.Out -notmatch '\[artifacts\]' -and $rAB9.Out -notmatch 'artifact: VIOLATION') $rAB9.Out) -and $ok
 
 # --- AC: ignored-tree claims (ADR 0077) — a group whose match also claims gitignored paths ------
@@ -2495,9 +2511,14 @@ bash '$anW/resolve.sh'
 
 # --- RUN: the in-process runner prints what a child prints (ADR 0160) ----------------------------
 # Last on purpose: a state leak from any earlier driver run would show here. Each repo runs as a real
-# child and through the driver, and the two must match byte for byte with the same exit code. The four
-# shapes are a clean run, a stderr warn beside stdout, the one non-zero scope exit, and an argparse
-# refusal, which leaves through SystemExit.
+# child and through the driver. Each stream must match byte for byte, with the same exit code. The
+# compare never joins the two streams: their arrival order differs from run to run (Split-ChildStreams).
+# The four shapes are a clean run, a stderr warn beside stdout, the one non-zero scope exit, and an
+# argparse refusal, which leaves through SystemExit.
+# RUN0 holds the split itself to a fixed input: each stream keeps its order, and no line crosses over.
+$run0Err = [System.Management.Automation.ErrorRecord]::new([Exception]::new('err one'), 'run0', 'NotSpecified', $null)
+$run0 = Split-ChildStreams @('out one', $run0Err, 'out two')
+$ok = (Assert-True 'RUN0 Split-ChildStreams keeps each stream in order and moves no line across' ($run0.StdOut -ceq (@('out one', 'out two') | Out-String) -and $run0.Err -ceq (@('err one') | Out-String)) "stdout:`n$($run0.StdOut)stderr:`n$($run0.Err)") -and $ok
 if ($runnerMode -eq 'child' -and $env:HARNESS_GATES_SELFTEST_RUNNER -eq 'child') {
     Write-Host 'SKIP [RUN] every run was a child, so the driver has nothing to match (reported, not silent)' -ForegroundColor Yellow
 } elseif ($runnerMode -eq 'child') {
@@ -2508,10 +2529,10 @@ if ($runnerMode -eq 'child' -and $env:HARNESS_GATES_SELFTEST_RUNNER -eq 'child')
             @{ Name = 'RUN2 a stderr warn beside stdout (case S2''s repo): driver = child'; Repo = $s2; Extra = @(); Want = { param($x) $x -eq 0 } },
             @{ Name = 'RUN3 an unresolvable range (case Y1): driver = child, non-zero'; Repo = $y1; Extra = @('--range', 'no-such-ref..HEAD'); Want = { param($x) $x -ne 0 } },
             @{ Name = 'RUN4 an unknown option (argparse, SystemExit): driver = child, exit 2'; Repo = $a; Extra = @('--no-such-option'); Want = { param($x) $x -eq 2 } })) {
-        $c = Invoke-Gates $rc.Repo $rc.Extra -Child
+        $c = Invoke-GatesChildSplit $rc.Repo $rc.Extra
         try { $d = Invoke-GatesDriver $rc.Repo $rc.Extra }
-        catch { $d = @{ Out = "driver fault: $($_.Exception.Message.Trim())"; Code = -1 } }
-        $ok = (Assert-True $rc.Name ($c.Out -ceq $d.Out -and $c.Code -eq $d.Code -and (& $rc.Want $c.Code)) "child exit=$($c.Code)`n$($c.Out)`n--- driver exit=$($d.Code)`n$($d.Out)") -and $ok
+        catch { $d = @{ StdOut = "driver fault: $($_.Exception.Message.Trim())"; Err = ''; Code = -1 } }
+        $ok = (Assert-True $rc.Name ($c.StdOut -ceq $d.StdOut -and $c.Err -ceq $d.Err -and $c.Code -eq $d.Code -and (& $rc.Want $c.Code)) "child exit=$($c.Code)`nstdout:`n$($c.StdOut)stderr:`n$($c.Err)--- driver exit=$($d.Code)`nstdout:`n$($d.StdOut)stderr:`n$($d.Err)") -and $ok
     }
 }
 Write-Host "note [harness_gates] runner at the end: $runnerMode · $childRerun driver repl(ies) re-run as a child for stream order (ADR 0160)"

@@ -1,9 +1,8 @@
 #!/bin/sh
-# Single source for CI diff-range base resolution (ADR 0043) — replaces the inline per-step
-# range computation whose failure modes read as "nothing changed" (the 2026-08-10 audit's H1
-# trigger surface). Ported from ywr-platform scripts/ci/resolve-base.sh, logic unchanged;
-# vendored into consuming repos as scripts/harness/resolve-base.sh, with byte
-# identity to this copy enforced by manifest-gate.mjs (ADR 0014).
+# Single source for CI diff-range base resolution (ywr-harness ADR 0043). One script replaces
+# per-step inline range computations, whose failure modes read as "nothing changed".
+# Vendored into consuming repos as scripts/harness/resolve-base.sh; the canon's manifest-gate.mjs
+# enforces byte identity with the plugin's copy (ywr-harness ADR 0014).
 # The CI step invokes it directly with everything env-mapped — never template-expand workflow
 # expressions into run: text (shell-injection surface):
 #   EVENT_NAME     github.event_name
@@ -24,7 +23,7 @@ case "$MODE" in
 blocking | advisory) ;;
 *)
   # unknown MODE = config error, loud in EVERY mode — a typo'd `mode:` in the workflow
-  # would otherwise silently flip advisory back to blocking, the exact divergence class
+  # would otherwise silently flip advisory back to blocking, the divergence between jobs
   # this script exists to prevent
   echo "::error::MODE must be 'blocking' or 'advisory' (got '$MODE')"
   exit 1
@@ -51,8 +50,8 @@ if [ "${EVENT_NAME:-}" = "pull_request" ]; then
   fi
 elif [ "${EVENT_NAME:-}" = "workflow_dispatch" ] && [ -n "${DISPATCH_BASE:-}" ]; then
   # explicit operator range — the ONE branch whose input is free operator text
-  # (github.event.inputs.base), so it is CANONICALIZED before anything else consumes it
-  # (review 2026-08-10, med x2): rev-parse with --end-of-options peels it to a 40-hex commit
+  # (github.event.inputs.base), so it is CANONICALIZED before anything else consumes it:
+  # rev-parse with --end-of-options peels it to a 40-hex commit
   # id or fails cleanly, so a leading '-' can never be parsed as a git option here, and the
   # value written to $GITHUB_OUTPUT — which downstream steps splice into range strings — is
   # provably an object id, never operator-supplied text. Ancestry is still required on top:

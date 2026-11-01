@@ -384,6 +384,48 @@ async function main() {
     }
   }
 
+  // --- canon references in the scaffold templates (ADR 0182) --------------------------------------
+  // harness-init copies every template into a consumer repo, which numbers its own ADRs and cannot
+  // read this canon. A bare "ADR 0062" there names an unrelated consumer record, so each canon ADR,
+  // spec or fact reference carries the `ywr-harness ` prefix. The whole text counts: printed messages
+  // reach the consumer too. Markdown templates are skipped: they are the consumer's own docs. The walk
+  // reads dot-names on every platform (`hidden()` would drop `.github` off Windows) and skips the
+  // gitignored `__pycache__`, whose compiled docstrings would repeat the source.
+  const tplRoot = join(root, 'skills/harness-init/templates')
+  if (isDir(tplRoot)) {
+    const tplFiles = []
+    const walkAll = (dir) => {
+      let ents
+      try { ents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of ents) {
+        const k = entryKind(dir, e)
+        if (k === 'file') tplFiles.push(path.join(dir, e.name))
+        else if (k === 'dir' && e.name !== '__pycache__') walkAll(path.join(dir, e.name))
+      }
+    }
+    walkAll(tplRoot)
+    // The forms: `ADR 0062`, `ADR-0062`, `ADR #62`, `spec 0003`, `specs 0003`, `fact 12`. An ADR
+    // needs two digits at least, so a placeholder such as "(ADR 1; spec 2)" in a usage example
+    // passes. Known limit: only the first number after the word is read, so `ywr-harness ADR
+    // 0032/0068` passes whole.
+    const refRx = /(?<!ywr-harness )\b(?:ADRs?[- #]?\d{2,4}|specs? #?\d{3,4}|facts? #?\d{1,3})\b/giu
+    let refBad = 0, refFiles = 0
+    for (const f of tplFiles.sort(compare)) {
+      if (inCi(ext(path.basename(f)), ['.md', '.pyc'])) continue
+      refFiles++
+      const lines = readLines(f)
+      for (let i = 0; i < lines.length; i++) {
+        for (const m of lines[i].matchAll(refRx)) {
+          bad(`canon reference: templates/${path.relative(tplRoot, f).replace(/\\/g, '/')}:${i + 1} '${m[0]}' has no 'ywr-harness ' prefix — a consumer repo reads it as its own record (ADR 0182)`)
+          refBad++
+        }
+      }
+    }
+    if (refBad === 0) {
+      good(`canon references: every ADR, spec and fact reference in ${refFiles} non-markdown template file(s) carries the 'ywr-harness ' prefix`)
+    }
+  }
+
   // --- dogfood placement identity (ADR 0037 follow-up) ------------------------------------------
   // In the canon dogfood shape (<repo>/plugins/ywr-harness, ADR 0018) every scaffold placement the
   // repo carries is compared against its template. The pair list is PARSED from init.ps1's own

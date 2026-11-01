@@ -1,9 +1,9 @@
-"""In-slice decision notes (ADR 0172). The session appends; a compaction and /slice-close read.
+"""In-slice decision notes (ywr-harness ADR 0172). The session appends; a compaction and /slice-close read.
 
-A slice's reasons used to reach paper only at the close: stage 5 writes the handoff and the commit
-body, and ADR 0105 keeps the handoff out of the session's hands before that. A compaction between a
-decision and the close could drop the reason with the summary. This script keeps one line per
-decision, as the session wrote it, where neither the summary nor the work tree can touch it.
+A slice's reasons reach paper only at the close, which writes the handoff and the commit body; the
+session never writes the handoff before that. A compaction between a decision and the close could
+drop the reason with the summary. This script keeps one line per decision, as the session wrote
+it, where neither the summary nor the work tree can touch it.
 
 Usage:
   python slice_note.py add <decision|rejected|owner|fact|risk> <text...>
@@ -17,13 +17,11 @@ the `--tree` snapshot a ready report ends with. Each record carries the HEAD it 
 and at every commit after it, so a commit inside the slice keeps the earlier notes, and the next close
 retires them with no delete step. Each note also records the base it was written under, and `show` keeps a
 note whose base is the current one: an amend or a rebase of the slice's own commits keeps the base, so
-their notes stay (ADR 0172 lists the cases that move it). Without a declared or committed handoff the
-base is HEAD itself. The
-journal is append-only.
+their notes stay (ywr-harness ADR 0172 lists the cases that move it). Without a declared or committed
+handoff the base is HEAD itself. The journal is append-only.
 
 A note is the session's own claim. The SessionStart `compact` hook re-injects `show`'s output marked
-as such, and /slice-close checks each note against the tree before it keeps one: input, never proof
-(ADR 0105).
+as such, and /slice-close checks each note against the tree before it keeps one: input, never proof.
 """
 
 from __future__ import annotations
@@ -57,7 +55,7 @@ TS_RX = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 HEAD_RX = re.compile(r"none|[0-9a-f]{40}|[0-9a-f]{64}")
 BASE_RX = re.compile(r"|[0-9a-f]{40}|[0-9a-f]{64}")
 SHORT = 12
-TAIL = "input, never proof (ADR 0172)"
+TAIL = "input, never proof (ywr-harness ADR 0172)"
 
 
 def journal_path(root: Path) -> Path:
@@ -161,12 +159,12 @@ def main() -> int:
     try:
         return note_main()
     except OSError as e:
-        hc.say(f"slice notes: FAILED — journal I/O: {e} (ADR 0172)")
+        hc.say(f"slice notes: FAILED — journal I/O: {e} (ywr-harness ADR 0172)")
         return 2
 
 
 def note_main() -> int:
-    ap = argparse.ArgumentParser(description="Append and show the session's in-slice decision notes (ADR 0172).")
+    ap = argparse.ArgumentParser(description="Append and show the session's in-slice decision notes (ywr-harness ADR 0172).")
     ap.add_argument("--repo", dest="repo", default=None)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p_add = sub.add_parser("add", help="append one note at the current HEAD")
@@ -183,7 +181,7 @@ def note_main() -> int:
         text = " ".join(args.text).strip()
         problem = text_problem(text)
         if problem:
-            hc.say(f"slice note: REFUSED — {problem}; nothing was written (ADR 0172)")
+            hc.say(f"slice note: REFUSED — {problem}; nothing was written (ywr-harness ADR 0172)")
             return 2
     elif args.max is not None and args.max < 1:
         hc.say("slice notes: FAILED — --max needs a number of 1 or more")
@@ -206,7 +204,7 @@ def note_main() -> int:
         return 2
     except subprocess.CalledProcessError as e:
         print(f"git failed: {(e.stderr or '').strip()}", file=sys.stderr)
-        hc.say("slice notes: FAILED — git could not resolve the repository, HEAD or the range (ADR 0172)")
+        hc.say("slice notes: FAILED — git could not resolve the repository, HEAD or the range (ywr-harness ADR 0172)")
         return 2
 
     notes = read_notes(path)

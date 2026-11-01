@@ -1,38 +1,33 @@
 """Slice retro gate — a zero-token deterministic retrospective, run from `post-commit`.
 
-Ported from `ywr-platform` ADR 0072, which established seven checks and their rationale over
-several slices. An eighth, SIZE, reports an in-scope file that crosses 1,000 lines in the checked
-range (ADR 0171). This is the portable version: everything that repo hardcoded now comes from
-`.harness.json`.
+Seven checks, plus an eighth, SIZE, which reports an in-scope file that crosses 1,000 lines in the
+checked range (ywr-harness ADR 0171). Everything repo-specific comes from `.harness.json`.
 
-## Why Python and not the original POSIX sh
+## Why Python and not POSIX sh
 
-The original's virtue was "no dependencies" — but its scope was a literal in the script
-(`^apps/(api/app/.*\\.py|web/app/.*\\.(ts|tsx)|web/lib/[^/]*\\.ts)$`). A portable gate has to read
-its scope from the declaration, sh cannot parse JSON, and this harness already requires Python for
-`harness_gates.py` and `verify_map.py`, so Python costs nothing new. It also drops the
-Git-Bash-on-Windows dependency the sh version carried, which cost this project three separate
-false-green selftests in the hooks slice.
+A portable gate has to read its scope from the declaration, sh cannot parse JSON, and this harness
+already requires Python for `harness_gates.py` and `verify_map.py`, so Python costs nothing new. It
+also avoids a Git-Bash-on-Windows dependency, which produced false-green selftests.
 
 ## Contract
 
 ADVISORY. Exits 0, prints nothing when clean, and never blocks a commit — post-commit rather
 than pre-commit precisely so a finding prompts a follow-up docs commit instead of standing between
 the author and their own history. The one exception: a git failure prints a
-`[slice-retro] FAILED` line and exits 1 — silence there would be a false clean retro (ADR 0041's
-principle; the hook's `|| true` keeps the commit untouched).
+`[slice-retro] FAILED` line and exits 1 — silence there would be a false clean retro
+(ywr-harness ADR 0041; the hook's `|| true` keeps the commit untouched).
 
   python harness_retro.py                  # the commit just made (HEAD); a merge commit
-                                           # resolves as HEAD^1..HEAD (first-parent, ADR 0043)
+                                           # resolves as HEAD^1..HEAD (first-parent, ywr-harness ADR 0043)
   python harness_retro.py main~3..HEAD     # a whole slice — absorbs mid-slice false positives
   python harness_retro.py --coverage       # full unowned / dead-mapping / large-file audit
-  python harness_retro.py --delegations    # the delegation ledger's report (ADR 0120, 0171)
+  python harness_retro.py --delegations    # the delegation ledger's report (ywr-harness ADR 0120/0171)
   SLICE_RETRO=0 git commit ...             # skip once
 
 A check whose declaration is empty is DISABLED, and the disablement is reported under --coverage.
 Per-commit silence therefore means "no finding among the ENABLED checks" — it cannot distinguish
 a clean commit from a disabled check, and it does not try: repeating a deliberate disablement
-(this canon declares no dependency manifest, truthfully) on every commit is the noise that gets a
+(a repo with no dependency manifest declares none, truthfully) on every commit is the noise that gets a
 hook turned off. The distinction lives where the audit runs: `--coverage` names every disabled
 check, and the slice close runs it (the spec-debt ledger), so an unconfigured repo is visible
 once per slice rather than never.
@@ -58,13 +53,16 @@ DOCS_RX = re.compile(r"^docs/(adr|spec)/[0-9].*\.md$")
 
 
 def git(root: Path, *args: str, ok_exits: tuple[int, ...] = ()) -> str:
-    """One git call through `hc.git_run` — THE boundary (bytes pipes, one UTF-8/backslashreplace
-    decode, quotepath off; CLAUDE.md, issue #40). A non-zero exit RAISES, except the exits a
-    caller names in `ok_exits` as a semantic answer (`rev-parse -q --verify` exit 1 = absent),
-    which read as empty output. Never 128: git exits 128 for EVERY fatal error (a missing object,
-    a bad rev, a corrupt pack), so no caller can read it as an answer. Before 0.57.1 every failure read as empty output, so a failing `git diff` was
+    """One git call through `hc.git_run` — THE boundary. Bytes pipes and one UTF-8/backslashreplace
+    decode: text mode on Windows translates newlines and decodes with the console codepage.
+    quotepath off: git would otherwise C-quote non-ASCII paths as octal escapes, which no
+    anchored pattern matches.
+    A non-zero exit RAISES, except the exits a caller names in `ok_exits` as a semantic answer
+    (`rev-parse -q --verify` exit 1 = absent), which read as empty output. Never 128: git exits 128
+    for EVERY fatal error (a missing object, a bad rev, a corrupt pack), so no caller can read it
+    as an answer. Reading every failure as empty output would make a failing `git diff`
     indistinguishable from a commit that changed nothing — a false clean retro. `main` turns the
-    raise into the ADR 0041 `FAILED` marker."""
+    raise into the ywr-harness ADR 0041 `FAILED` marker."""
     try:
         return hc.git_run(root, *args)
     except subprocess.CalledProcessError as e:
@@ -75,7 +73,7 @@ def git(root: Path, *args: str, ok_exits: tuple[int, ...] = ()) -> str:
 
 def name_status_z(raw: str) -> list[tuple[str, list[str]]]:
     """Parse `diff --name-status -z`: a status field, then ONE path — two for R/C (old, new).
-    NUL-framed (ADR 0077): a path carrying U+2028, NEL or a tab stays one path."""
+    NUL-framed (ywr-harness ADR 0077): a path carrying U+2028, NEL or a tab stays one path."""
     tok = raw.split("\0")
     out: list[tuple[str, list[str]]] = []
     i = 0
@@ -92,12 +90,12 @@ def name_status_z(raw: str) -> list[tuple[str, list[str]]]:
     return out
 
 
-# The docs builder's frontmatter list grammar (docs/build_docs.py parse_frontmatter, spec 0001 §3),
-# mirrored for the one key this gate reads. A SECOND parser by necessity — the retro runs on the
-# committed sources, not on an index that may not be rebuilt yet — so it is held to the builder by
-# a pairing case (harness_retro.selftest.ps1 G4) instead of by hope: until 0.54.0 the two disagreed
-# on the same field (dist issue #6 — the builder read block lists as null, this one truncated an
-# item containing ']', and neither read a multi-line flow list the same way).
+# The docs builder's frontmatter list grammar (docs/build_docs.py parse_frontmatter,
+# ywr-harness spec 0001 §3), mirrored for the one key this gate reads. A SECOND parser by
+# necessity — the retro runs on the committed sources, not on an index that may not be rebuilt
+# yet — so it is held to the builder by a pairing case (the ywr-harness canon's harness_retro.selftest.ps1 G4) instead of
+# by hope: two parsers of one field that disagree (a block list, an item containing ']', a
+# multi-line flow list) give two different ownership maps.
 _FM_KEY_RE = re.compile(r"^([A-Za-z0-9_]+)\s*:\s*(.*)$")
 _FM_ITEM_RE = re.compile(r"^[ \t]*-(?:[ \t]+(.*))?$")
 
@@ -219,7 +217,7 @@ def spec_map(root: Path) -> list[tuple[str, str]]:
         except OSError:
             continue
         # The builder's block rule (`hc.fm_block`): a leading HTML comment is skipped, as the
-        # index does — the looser parse here missed such a spec until 0.60.1 (canon #59).
+        # index does — a looser parse here would miss such a spec.
         block = (hc.fm_block(text) or "").split("\n")
         for p in implements_in(block):
             if isinstance(p, str) and p:
@@ -261,18 +259,18 @@ def frontmatter_at(root: Path, rev: str, path: str) -> str:
 def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, list[str]]], list[str], str, str]:
     """(changes, subjects, pre, post). `changes` is [(status, [paths])] — rename lines carry two.
 
-    A merge commit is a RANGE in disguise (ADR 0043): `diff-tree` without `-m` prints NOTHING
-    for one, so the pre-0043 shape ran all seven checks over an empty change set — a merge
-    concluded with `git commit` fired post-commit and passed silently having checked nothing.
-    First-parent semantics (`HEAD^1..HEAD`): everything this merge landed on the line of
+    A merge commit is a RANGE in disguise (ywr-harness ADR 0043): `diff-tree` without `-m` prints
+    NOTHING for one, so treating it as a plain commit would run every check over an empty change
+    set — a merge concluded with `git commit` would fire post-commit and pass silently having
+    checked nothing. First-parent semantics (`HEAD^1..HEAD`): everything this merge landed on the line of
     history, subjects included. Root and ordinary commits keep the diff-tree path unchanged.
 
     The scope is DELIBERATELY relative to the first parent — "what arrived on the line the
     committer stood on". An octopus merge is fully covered by that range (the tree diff and the
-    subject log both include every non-first leg — selftest case L3 measures it). A foxtrot
+    subject log both include every non-first leg — the ywr-harness canon's selftest case L3 measures it). A foxtrot
     merge (first parent = the topic side) therefore reports the OTHER line's changes; that is
-    the stated semantics of an advisory gate, named rather than special-cased (review
-    2026-08-10, low): parent order is what the committer's own `git merge` produced.
+    the stated semantics of an advisory gate, named rather than special-cased: parent order is
+    what the committer's own `git merge` produced.
     """
     if not rev_range and git(root, "rev-parse", "-q", "--verify", "HEAD^2", ok_exits=(1,)).strip():
         rev_range = "HEAD^1..HEAD"
@@ -361,10 +359,10 @@ def counts_at(root: Path, rev: str, paths: list[str], min_lines: int = 1) -> dic
 
 def size_crossings(root: Path, cand: list[str], pre: str, post: str) -> list[tuple[str, int]]:
     """[(path, lines after)] for each candidate with fewer than SIZE_LIMIT lines before the range and
-    SIZE_LIMIT or more after it (ADR 0171). A file absent before counts 0.
+    SIZE_LIMIT or more after it (ywr-harness ADR 0171). A file absent before counts 0.
 
     Speed rule: a commit that touches no large file pays NO git call. With `post` = HEAD the
-    working-tree line count picks the candidates first (a residual, named in spec 0007 §3.4:
+    working-tree line count picks the candidates first (a residual, named in ywr-harness spec 0007 §3.4:
     unstaged edits that shorten a file can hide a crossing); only those go to git, for the exact
     HEAD count. Any other post rev asks git directly. The count before the range is derived from
     `diff --numstat`: before = after - added + deleted, 0 for a root commit or a binary side."""
@@ -406,9 +404,8 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
     # A rename can TRIGGER a check but never SATISFY one. `added` (triggers: MIGRATION, UNMAPPED)
     # keeps renames — a file moved into a scope is new to it, the conservative reading for an
     # advisory gate. The suppressors take the strict sets: a renamed ADR is not a new decision,
-    # and a spec moved without an edit — or deleted — updated nothing. Until 0.55.0 both sides
-    # used the loose sets, so renaming an old ADR silenced DEP and deleting a spec silenced
-    # MIGRATION (ADR 0081 measurement arm, B low; review 2026-09-26). BUILD below already applied
+    # and a spec moved without an edit — or deleted — updated nothing. Loose sets would let a
+    # renamed old ADR silence DEP and a deleted spec silence MIGRATION. BUILD below applies
     # the same "never suppress on what was not checked" rule. Only A counts as new: git reports
     # C only under -C, which neither diff here passes.
     added = [c[1][-1] for c in changes if c[0][:1] in ("A", "R")]
@@ -438,7 +435,7 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
                      "the schema")
 
     # 3) SPEC — a changed file is some spec's implements_in, but that spec was not updated.
-    #    A directory entry counts for every changed file below it (ADR 0104).
+    #    A directory entry counts for every changed file below it (ywr-harness ADR 0104).
     for sp in sorted({s for s, p in pairs if s not in fileset and any(hc.owns(p, x) for x in fileset)}):
         f.append(f"SPEC: changed files are implements_in of {sp} — spec not updated in scope; "
                  "verify it still matches")
@@ -483,7 +480,7 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
     for sp, p in sorted({(s, p) for s, p in pairs if not (root / p).exists()}):
         f.append(f"DEADMAP: {sp} maps {p} which does not exist — renamed or deleted; fix implements_in")
 
-    # 8) SIZE — an in-scope file that CROSSES the limit in this range (ADR 0171). Crossing-only is
+    # 8) SIZE — an in-scope file that CROSSES the limit in this range (ywr-harness ADR 0171). Crossing-only is
     #    the UNMAPPED adoption strategy again: new growth reports once, the baseline stays out of
     #    each commit and lives under --coverage. A deleted file never reports. A range with no
     #    start (a bare rev, `..X`) has no before count to compare, so it skips the check.
@@ -527,7 +524,7 @@ def coverage(root: Path, cfg: dict, warns: list[str]) -> int:
                 print(f"   {x}")
         else:
             print(f"-- unowned files: none ({len(in_scope)} in scope, all owned or ignored)")
-        # SIZE's baseline (ADR 0171): the files the per-commit check will never report again. One
+        # SIZE's baseline (ywr-harness ADR 0171): the files the per-commit check will never report again. One
         # git call over HEAD; the scope filter runs here, so the argv stays short.
         if git(root, "rev-parse", "-q", "--verify", "HEAD", ok_exits=(1,)).strip():
             big = {x: n for x, n in counts_at(root, "HEAD", [], SIZE_LIMIT).items() if hc.any_match(scope, x)}
@@ -546,18 +543,21 @@ def coverage(root: Path, cfg: dict, warns: list[str]) -> int:
     return 0
 
 
-# The delegation ledger (ADR 0117/0118) — the slot files the plugin's hooks module writes. Read only,
-# on request (ADR 0120): the ledger is session-scoped, the per-commit run is commit-scoped.
+# The delegation ledger (ywr-harness ADR 0117/0118) — the slot files the plugin's hooks module writes.
+# Read only, on request (ywr-harness ADR 0120): the ledger is session-scoped, the per-commit run is
+# commit-scoped.
 LEDGER_DIR = (".claude", "telemetry", "delegations")
 SLOT_RX = re.compile(r"^slot-[0-9]{2}\.json$")
 LEDGER_SCHEMA = 2
 TOKENS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 # `teammate` is read, not written: an `agent-tool` loop whose spawn row says `teammate: true` (an
 # agent-team teammate raises `agent.spawn` from Claude Code 2.1.289). `workflow` is a Workflow `agent()`
-# worker's loop from Claude Code 2.1.292 (ADR 0126); `unspawned` is the same worker on 2.1.287-2.1.291.
+# worker's loop from Claude Code 2.1.292 (ywr-harness ADR 0126); `unspawned` is the same worker on
+# 2.1.287-2.1.291.
 KIND_ORDER = {"main": 0, "agent-tool": 1, "teammate": 2, "workflow": 3, "unspawned": 4}
 SPAWNED = ("agent-tool", "teammate", "workflow")
-# The spawn type of a workflow `agent()` call that names no agent type (fact 99, Claude Code 2.1.292).
+# The spawn type of a workflow `agent()` call that names no agent type (ywr-harness fact 99, Claude
+# Code 2.1.292).
 WF_TYPE = "workflow-subagent"
 
 
@@ -572,14 +572,14 @@ def _names(v: object) -> list[str]:
 def _text(v: object) -> str | None:
     """A spawn row's string field: the string, None when absent or null, "?" for an empty string or
     any other JSON type. A row key must be hashable and the row sort compares strings only, so a list
-    or a number there was a traceback; "?" names the row and is truthy, so a malformed field never
-    counts as an inherit (an empty `model_param` read as "no model given" before)."""
+    or a number there would raise a traceback; "?" names the row and is truthy, so a malformed field
+    never counts as an inherit (an empty `model_param` must not read as "no model given")."""
     return v if v is None or (isinstance(v, str) and v) else "?"
 
 
 def read_slots(d: Path) -> tuple[list[tuple[str, dict]], list[str]]:
     """(name, document) for every readable schema-2 slot, and one `name (reason)` per skipped one.
-    A write is a non-atomic whole-file rewrite (ADR 0118), so a partial file is an expected skip."""
+    A write is a non-atomic whole-file rewrite (ywr-harness ADR 0118), so a partial file is an expected skip."""
     docs: list[tuple[str, dict]] = []
     skipped: list[str] = []
     try:
@@ -612,7 +612,7 @@ def read_slots(d: Path) -> tuple[list[tuple[str, dict]], list[str]]:
 def loop_tokens(loop: dict, fields: list) -> tuple[dict[str, int], bool]:
     """A loop's token sums and whether they are the host's own (`complete.usage`, summed over every
     request, dropped steps included). Without it the kept steps are summed, read by `step_fields`
-    NAME (ADR 0118: a step is a tuple; a field the file lacks reads as absent)."""
+    NAME (ywr-harness ADR 0118: a step is a tuple; a field the file lacks reads as absent)."""
     done = loop.get("complete")
     usage = done.get("usage") if isinstance(done, dict) else None
     if isinstance(usage, dict):
@@ -642,16 +642,16 @@ def _fmt_row(key: tuple, agg: dict) -> str:
 def delegations(root: Path, warns: list[str]) -> int:
     d = root.joinpath(*LEDGER_DIR)
     rel = "/".join(LEDGER_DIR)
-    print("[slice-retro] delegation ledger (ADR 0120)")
+    print("[slice-retro] delegation ledger (ywr-harness ADR 0120)")
     if not d.is_dir():
         print(f"-- no ledger at {rel} — the hooks module writes it on Claude Code 2.1.287+, only in a "
-              "root holding .harness.json (ADR 0117)")
+              "root holding .harness.json (ywr-harness ADR 0117)")
         for w in warns:
             hc.warn(w)
         return 0
     docs, skipped = read_slots(d)
 
-    # Sessions across files: ADR 0118's LRU residual can split one session over two slots. A null id
+    # Sessions across files: ywr-harness ADR 0118's LRU residual can split one session over two slots. A null id
     # is grouped per file — every id-less session writes the same header, so the id joins nothing.
     sessions: dict[str, dict] = {}
     for name, doc in docs:
@@ -694,10 +694,10 @@ def delegations(root: Path, warns: list[str]) -> int:
             agg = rows.setdefault(rk, {"loops": 0, "ms": 0, "from_steps": 0, "resumes": 0,
                                        "tokens": dict.fromkeys(TOKENS, 0)})
             agg["loops"] += 1
-            # ADR 0147 counts resumes on the spawn row, and a loop carries the row as it stood when the
-            # loop ended: an agent resumed twice leaves loops that read 0, 1 and 2. The count of an agent
-            # is therefore the MAXIMUM over its loops, never the sum, credited once per session. A loop
-            # with no string agent id cannot be matched to another, so it adds its own value (ADR 0171).
+            # ywr-harness ADR 0147 counts resumes on the spawn row, and a loop carries the row as it stood
+            # when the loop ended: an agent resumed twice leaves loops that read 0, 1 and 2. The count of
+            # an agent is therefore the MAXIMUM over its loops, never the sum, credited once per session.
+            # A loop with no string agent id cannot be matched to another, so it adds its own value.
             n_res, aid = _count(spawn.get("resumes")), lp.get("agent_id")
             if isinstance(aid, str) and aid:
                 if aid not in agent_max or n_res > agent_max[aid][0]:  # a tie keeps the first loop
@@ -712,7 +712,7 @@ def delegations(root: Path, warns: list[str]) -> int:
             agg["from_steps"] += 0 if host else 1
             dropped["steps"] += _count(lp.get("steps_dropped"))
             if kind == "workflow":
-                # ADR 0126: no `model_param` on a workflow spawn row means the `agent()` call gave no
+                # ywr-harness ADR 0126: no `model_param` on a workflow spawn row means the `agent()` call gave no
                 # model. With no agent type named (`workflow-subagent`, measured) the worker ran on the
                 # session's model — a fact, not a heuristic. A named type may pin its own model, so it
                 # is never counted.
@@ -721,7 +721,7 @@ def delegations(root: Path, warns: list[str]) -> int:
                 continue
             if kind != "unspawned":
                 continue
-            # ADR 0117: `unspawned` is a workflow worker only while no spawn row was evicted.
+            # ywr-harness ADR 0117: `unspawned` is a workflow worker only while no spawn row was evicted.
             if _count(lp.get("spawn_rows_evicted")):
                 d6["evicted"] += 1
             elif not mains:
@@ -750,11 +750,11 @@ def delegations(root: Path, warns: list[str]) -> int:
         d6["same_effort"] += same
         dropped["loops"] += s["loops_dropped"]
 
-    print(f"-- ADR 0117 D6: {d6['on_main']} unspawned loop(s) on their session's main model in "
+    print(f"-- ywr-harness ADR 0117 D6: {d6['on_main']} unspawned loop(s) on their session's main model in "
           f"{d6['sessions']} session(s); {d6['same_effort']} also at the main loop's effort (the inherit "
           "signature — a heuristic for hosts before 2.1.292: a pin equal to the session's effort reads "
           "the same)")
-    print(f"-- ADR 0126 D6: {d6['wf_inherit']} of {d6['wf']} workflow loop(s) with no model given in "
+    print(f"-- ywr-harness ADR 0126 D6: {d6['wf_inherit']} of {d6['wf']} workflow loop(s) with no model given in "
           f"{d6['wf_sessions']} session(s) (a direct inherit, Claude Code 2.1.292+, no heuristic)")
     if d6["evicted"] or d6["no_main"]:
         print(f"   not attributed: {d6['evicted']} with spawn rows evicted (may be Agent-tool loops), "
@@ -775,7 +775,7 @@ def main() -> int:
     ap.add_argument("--delegations", action="store_true")
     ap.add_argument("range", nargs="?", default=None)
     args = ap.parse_args()
-    # The skip hatch belongs to the per-commit run (ADR 0120): an explicit --delegations request is
+    # The skip hatch belongs to the per-commit run (ywr-harness ADR 0120): an explicit --delegations request is
     # never silenced by it. Read after parsing, so an abbreviated flag (`--deleg`) is the same request.
     if os.environ.get("SLICE_RETRO") == "0" and not args.delegations:
         return 0
@@ -792,19 +792,19 @@ def main() -> int:
             return coverage(root, cfg, warns)
         findings = build_findings(root, cfg, warns, args.range)
     except subprocess.CalledProcessError as e:
-        # The one non-zero exit (ADR 0041's principle, the gate emitter's scope path): an empty
-        # retro reads as "clean", so a git failure must print a marker, never silence. The
+        # The one non-zero exit (ywr-harness ADR 0041; the gate emitter's scope path works the same
+        # way): an empty retro reads as "clean", so a git failure must print a marker, never silence. The
         # post-commit hook calls this with `|| true`, so the commit is untouched either way.
         print(f"git failed: {(e.stderr or '').strip()}", file=sys.stderr)
         print(f"[slice-retro] FAILED — git {' '.join(str(a) for a in e.cmd[3:])} exited "
-              f"{e.returncode}; NO retro check ran. This is not a clean retro (ADR 0041).")
+              f"{e.returncode}; NO retro check ran. This is not a clean retro (ywr-harness ADR 0041).")
         return 1
     except OSError as e:
         # git itself could not start (not on PATH — a hook environment with a stripped PATH):
         # the same marker, never a raw traceback.
         print(f"git failed to start: {e}", file=sys.stderr)
         print("[slice-retro] FAILED — git could not be run; NO retro check ran. This is not a clean "
-              "retro (ADR 0041).")
+              "retro (ywr-harness ADR 0041).")
         return 1
     if findings:
         print("[slice-retro] retro gate (zero-token advisory) — findings:")

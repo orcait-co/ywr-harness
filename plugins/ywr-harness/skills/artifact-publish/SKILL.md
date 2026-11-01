@@ -31,8 +31,11 @@ python scripts/harness/harness_gates.py --all
   (first publish happens by hand, THEN the declaration — ADR 0032's contract).
 - An ok line ending `no check declared — drift … is unenforced` may still be published, but say
   so in the confirmation: nothing proved the committed page matches its generator.
-- An ok line ending `no source declared — hand-published page (ADR 0032 shape); not publishable
-  via /ywr-harness:artifact-publish` — a url+title-only declaration: the page was published by
+- An ok line ending `no source declared — hand-published page (ywr-harness ADR 0032 shape); not publishable
+  via /ywr-harness:artifact-publish` — a url+title-only declaration. The repo's vendored emitter
+  decides the form. Plugins 0.42.0 to 0.71.0 print `(ADR 0032 shape)`, and older ones print no
+  tail. Treat every form the same. When an ok line names no source, read the item in
+  `.harness.json`: an item with only `url` and `title` is this shape. The page was published by
   hand and no committed source exists to republish from. OUT of this skill's scope; republishing
   it is a hand act from the owning account. When EVERY declared item has this shape, report
   exactly that and stop — nothing publishable is this skill's intended terminal state, not a

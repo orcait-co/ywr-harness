@@ -15,7 +15,7 @@
 #     (.github/workflows/harness-gates.yml) already runs them on the committed content.
 #   * It gates the staged file LIST but runs the commands against the WORKING TREE. Gating staged
 #     *content* would mean stashing unstaged changes, and a hook that stashes is a hook that can
-#     lose work (ADR 0015). If those differ for you, the CI run is the authority.
+#     lose work (ywr-harness ADR 0015). If those differ for you, the CI run is the authority.
 #
 # Failure is a blocked commit. `git commit --no-verify` is the documented escape hatch; a missing
 # interpreter is a REPORTED skip, never a silent pass.
@@ -24,11 +24,12 @@
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 
-# ADR 0022 (supersedes 0021) — a committed `enabledPlugins` enables the plugin for everyone who
-# clones this repo, and that forcing is exactly what ADR 0010/0012 kept out of the managed-settings
-# payload. BOTH scopes that write into the tree are covered: `--scope project` writes
-# .claude/settings.json and `--scope local` writes .claude/settings.local.json. ADR 0021 gated only
-# the first and its refusal message recommended the second — measured, not assumed.
+# Refuse a staged `enabledPlugins` key (ywr-harness ADR 0022). A committed `enabledPlugins` enables
+# the plugin for everyone who clones this repo. That forcing is exactly what ywr-harness ADR 0010/0012
+# kept out of the managed-settings payload. BOTH scopes that write into the tree are
+# covered: `--scope project` writes .claude/settings.json and `--scope local` writes
+# .claude/settings.local.json. Gating only the first would let a reinstall with `--scope local`
+# put the same key into the tree.
 #
 # The KEY is refused regardless of its value. `enabledPlugins` is host install state and does not
 # belong in a shared settings file even when empty: an uninstall leaves `{ "enabledPlugins": {} }`
@@ -40,10 +41,10 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 #     no python on PATH is still protected. This gate must not be skippable by environment.
 #   * That is also its limit: a literal match cannot see a `\uXXXX`-escaped spelling of the key,
 #     which is valid JSON the host still honors. CI parses the file and catches that; this hook is
-#     the floor, not the authority (same split as ADR 0015).
+#     the floor, not the authority (same split as ywr-harness ADR 0015).
 #
 # `grep -Fqx -e` : -F literal (the paths carry regex metacharacters), -x whole line, -e because a
-# value in command position must never be read as an option (the leading-dash defect, case I2).
+# value in command position must never be read as an option (a path starting with a dash).
 # --diff-filter=AM only: without -M/-C git reports no R or C, so listing them read as rename
 # handling this check does not do.
 for _cfg in .claude/settings.json .claude/settings.local.json; do
@@ -51,7 +52,7 @@ for _cfg in .claude/settings.json .claude/settings.local.json; do
     if git show ":$_cfg" 2>/dev/null | grep -q '"enabledPlugins"'; then
         echo "[harness] pre-commit REFUSED: $_cfg declares enabledPlugins."
         echo "[harness]   Committing it forces the plugin on everyone who clones this repo, with no"
-        echo "[harness]   choice and no 'plugin disable' that survives the next pull (ADR 0010/0022)."
+        echo "[harness]   choice and no 'plugin disable' that survives the next pull (ywr-harness ADR 0010/0022)."
         echo "[harness]   Both --scope project and --scope local write this key INTO the tree, so"
         echo "[harness]   reinstalling at another scope is not a fix."
         echo "[harness]   Fix: git restore --staged $_cfg and keep it out of git, or uninstall the"
@@ -73,8 +74,8 @@ fi
 # verbatim. Unpinned, a clone with core.quotepath=true (Git for Windows' default) lists a non-ASCII
 # path as `"docs/\355\225\234...md"` — quoted and octal-escaped — so it matched no group and this
 # hook printed a FALSE "matched NO declared group — CI's harness-gates run FAILS" line for a file
-# CI (--all/--range, whose git reads carry the pin) groups correctly (dist issue #6; the issue #40
-# pin, ADR 0077). The pin fixes GROUP MATCHING only: a non-ASCII name still fails the emitter's
+# CI (--all/--range, whose git reads carry the pin) groups correctly (ywr-harness ADR 0077). The pin
+# fixes GROUP MATCHING only: a non-ASCII name still fails the emitter's
 # SAFE_TOKEN gate, so here exactly as in CI it is reported as excluded from file-scoped gate
 # arguments — no file-scoped gate (a linter) ever receives it. Git still C-quotes a path holding
 # `"`, `\` or a control character under this pin; only a NUL-separated list would carry those, and
@@ -129,10 +130,9 @@ DEFERRED=$(printf '%s\n' "$OUT" | grep -c '# whole-program')
 STAGED_N=$(printf '%s\n' "$STAGED" | wc -l | tr -d ' ')
 
 # Group headers are `  [name] N file(s)` (2-space indent) inside the same window CMDS reads.
-# Collected so the no-commands report below can tell DECLARED coverage from a coverage HOLE —
-# one message for both conflated them (issue #45): files that matched groups declaring
-# `gates: []` were reported in the same words as files no group claims, and the harness's own
-# principle is that coverage is declared, never inferred from silence. The scaffold-claimed
+# Collected so the no-commands report below can tell DECLARED coverage from a coverage HOLE: files
+# that matched groups declaring `gates: []` must not be reported in the same words as files no
+# group claims. Coverage is declared, never inferred from silence. The scaffold-claimed
 # section's 2-space file lines cannot match: its paths are closed-set constants, none starting
 # with `[`, and its column-0 header closes the window first anyway.
 MATCHED_GROUPS=$(printf '%s\n' "$OUT" | awk '
@@ -140,24 +140,25 @@ MATCHED_GROUPS=$(printf '%s\n' "$OUT" | awk '
     /^scaffold-claimed \(/ { g = 0 }
     /^ungrouped \(/        { g = 0 }
     /^review tier:/        { g = 0 }
-    # The declared-artifact drift-check header (ADR 0068) shares the 2-space "[label]" shape but
-    # is NOT a group that matched staged files — splicing it in garbled this report (its trailer
-    # is not "] N file(s)", so the strip below would keep the raw tail; review 2026-08-31, high).
+    # The declared-artifact drift-check header (ywr-harness ADR 0068) shares the 2-space "[label]"
+    # shape but is NOT a group that matched staged files. Its trailer is not "] N file(s)", so the
+    # strip below would keep the raw tail and garble this report.
     g && /^  \[artifacts\] [0-9]+ declared drift check/ { next }
     g && /^  \[/ {
         line = $0
         # Strip the fixed trailer, not everything after the FIRST "]" — a group name may itself
-        # carry "]" and truncating it misnames the group in the report (review 2026-08-12, nit).
+        # carry "]" and truncating it misnames the group in the report.
         sub(/^  \[/, "", line); sub(/\] [0-9]+ file\(s\)$/, "", line)
         out = out (out == "" ? "" : ", ") line
     }
     END { print out }
 ')
 
-# ADR 0062 (issue #55). Files no group claims are reported by the emitter but blocked ONLY in CI
-# ("Fail on ungrouped files"), so a local run read as passing right up to the first CI run. Said
+# Files no group claims are reported by the emitter but blocked ONLY in CI ("Fail on ungrouped
+# files"), so a local run reads as passing right up to the first CI run (ywr-harness ADR 0062). Said
 # here, at the earliest local point, and never blocking: a mid-slice commit legitimately adds a
-# file before the declaration catches up, and the emitter's exit contract stays advisory (ADR 0041).
+# file before the declaration catches up, and the emitter's exit contract stays advisory
+# (ywr-harness ADR 0041).
 UNGROUPED_N=$(printf '%s\n' "$OUT" | sed -n 's/^ungrouped (\([0-9][0-9]*\) file.*/\1/p' | head -n 1)
 if [ -n "$UNGROUPED_N" ]; then
     echo "[harness] pre-commit: $UNGROUPED_N staged file(s) matched NO declared group — CI's harness-gates run FAILS on ungrouped files (not blocked here; add a groups entry to .harness.json)."
@@ -180,13 +181,13 @@ echo "[harness] pre-commit gates on $STAGED_N staged file(s):"
 # Newline-delimited iteration. `set -f` disables globbing for the loop: a gate command carrying a
 # `*` would otherwise be expanded against the hook's working directory before it ever runs.
 #
-# Runner preflight (ADR 0015: "a missing interpreter is a reported skip, never a silent pass").
+# Runner preflight (ywr-harness ADR 0015: "a missing interpreter is a reported skip, never a silent pass").
 # The runner is derived the way CI's extraction does it (harness-gates.yml `cmds` step): the first
 # token, or the 4th when compose() prefixed a `groups[].cwd` as `cd <dir> && …` — `cd` is a builtin
 # `command -v` accepts, so reading the first token there would wave every cwd gate through to a
-# 127. A runner missing HERE is a counted SKIP, never FAILED: a member without `uv` on PATH was
-# blocked on every commit, with --no-verify (which also skips the enabledPlugins refusal above) as
-# the only way out (dist issue #6). CI preflights the same runners and fails by name, so it stays
+# 127. A runner missing HERE is a counted SKIP, never FAILED: a hard failure would block every
+# commit of a member without `uv` on PATH, leaving --no-verify (which also skips the enabledPlugins
+# refusal above) as the only way out. CI preflights the same runners and fails by name, so it stays
 # the authority. A runner that exists and fails still blocks.
 FAILED=0
 RAN=0

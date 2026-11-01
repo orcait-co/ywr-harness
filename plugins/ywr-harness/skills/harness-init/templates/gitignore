@@ -1,9 +1,9 @@
-# Root ignore seed, placed once by /ywr-harness:harness-init (ADR 0053) — edit freely; this
+# Root ignore seed, placed once by /ywr-harness:harness-init (ywr-harness ADR 0053) — edit freely; this
 # file is a SEED and is never overwritten. Template-only lines are reported on re-runs
-# (ADR 0051), never merged.
+# (ywr-harness ADR 0051), never merged.
 
 # Regenerable docs surfaces — index.json/INDEX.md are COMMITTED (queryable without a build);
-# the html renders are rebuilt from them and go stale if committed (spec 0005 shape).
+# the html renders are rebuilt from them and go stale if committed (ywr-harness spec 0005 shape).
 docs/docs.html
 docs/docs.artifact.html
 docs/customer.html

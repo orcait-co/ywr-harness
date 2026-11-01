@@ -1,37 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""docs-as-code drift check (ywr-harness ADR 0074) and STE-lite gate (ADR 0128).
+"""docs-as-code drift check (ywr-harness ADR 0074) and STE-lite gate (ywr-harness ADR 0128).
 
-The ready-made ADR 0068 Artifact `check` for this repo's generated docs surfaces
-(index.json, INDEX.md, docs.html, docs.artifact.html, and the ADR 0060 customer
-surfaces when declared) — declare it as
+The ready-made Artifact `check` (ywr-harness ADR 0068) for this repo's generated docs surfaces
+(index.json, INDEX.md, docs.html, docs.artifact.html, and the customer surfaces
+(ywr-harness ADR 0060) when declared) — declare it as
 `check: {runner: python, script: docs/check_docs.py}` with no consumer-side
 mirror of the builder. Default mode IS the drift check: exit 0 on a match,
 exit 1 on drift, writes nothing. A flag (any argument starting with `-`) is misuse
 and exits 2 — there is deliberately no `--write` here; regeneration is
 `pwsh docs/build.ps1` (or `bash docs/build.sh`).
 
-Path arguments are TRIGGERS, not a scope (ADR 0094): a `.harness.json` group may
+Path arguments are TRIGGERS, not a scope (ywr-harness ADR 0094): a `.harness.json` group may
 declare this script with `files: true` so the pre-commit hook runs it on a staged
 ADR/spec instead of deferring it to CI. The drift check is corpus-wide either way —
 the index is assembled from every source — so the paths never narrow what runs.
 
-With path arguments the STE-lite gate runs too (ADR 0128, docs/README.md §Writing
+With path arguments the STE-lite gate runs too (ywr-harness ADR 0128, docs/README.md §Writing
 style). It reads each passed spec and NEW ADR against HEAD (`git diff HEAD`, the
 working tree the pre-commit hook gates) and checks R5 (sentence length), R3
 (no claim in parentheses) and R8 (no em dash, joining semicolon, "(s)" or
 "and/or") over every changed spec section, whole, plus R7 for the words that
-`.harness.json` `docs.ste_words` maps to a replacement (ADR 0170). A new ADR must
-also record at least two options in its options section. These ADR 0170 checks
-block only under their own key, `docs.ste_marks: true`. A records
+`.harness.json` `docs.ste_words` maps to a replacement (ywr-harness ADR 0170). A new ADR must
+also record at least two options in its options section. These checks (R8, R7 and the
+option count) block only under their own key, `docs.ste_marks: true`. A records
 section — a heading naming change notes or a ledger, or one carrying
 `<!-- ste-lite: records -->` — is not checked: nobody rewrites a ledger row.
 `<!-- ste-lite: verbatim -->` on its own line exempts the next block (a paragraph,
 list or table): text a script reads stays byte-identical. Findings fail the run
 only when `.harness.json` declares `docs.ste_lite: true`; otherwise they print as
 advice and the exit code is the drift check's. A clean tree (CI) has no change
-against HEAD, so the gate finds nothing there. No arguments: drift check only, so
-the ADR 0068 `check` contract is unchanged.
+against HEAD, so the gate finds nothing there. No arguments: drift check only, which is
+what the Artifact `check` contract (ywr-harness ADR 0068) requires.
 
 TOOLCHAIN placement (ywr-harness ADR 0010): scaffold-owned, re-placed verbatim
 by `/ywr-harness:harness-init` on every run — edit the template upstream,
@@ -55,8 +55,8 @@ MARK_RX = re.compile(r"^\s*<!--\s*ste-lite:\s*(records|verbatim)\s*-->\s*$")
 HUNK_RX = re.compile(r"^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,([0-9]+))? @@")
 SEP_ROW_RX = re.compile(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
 OPTIONS_RX = re.compile(r"(?<!\w)(?:options?|alternatives?)(?!\w)|선택지|대안", re.I)
-MIN_OPTIONS = 2   # a new ADR records the option it took and at least one it rejected (ADR 0170)
-# R8: marks a translator reads more than one way (docs/README.md §Writing style, ADR 0170).
+MIN_OPTIONS = 2   # a new ADR records the option it took and at least one it rejected (ywr-harness ADR 0170)
+# R8: marks a translator reads more than one way (docs/README.md §Writing style, ywr-harness ADR 0170).
 R8_MARKS = (("em dash", re.compile(r"\u2014|&mdash;|&#8212;|&#x2014;", re.I)),
             ("\"(s)\"", re.compile(r"\w\(e?s\)")),
             ("\"and/or\"", re.compile(r"(?<!\w)and/or(?!\w)", re.I)))
@@ -157,7 +157,7 @@ def _marks(text: str, words: dict[str, str]) -> list[tuple[str, str]]:
 def _option_count(heads: list[dict], units: list[dict]) -> tuple[int, int] | None:
     """A new ADR's options: (heading line, count) for its first level-2 options heading, or None
     without one. Each table body row, list item and sub-heading in that section counts once, so a
-    nested list or a non-option row counts too: the count errs toward a pass (ADR 0170)."""
+    nested list or a non-option row counts too: the count errs toward a pass (ywr-harness ADR 0170)."""
     head = next((h for h in heads if h["level"] == 2 and OPTIONS_RX.search(h["text"])), None)
     if head is None:
         return None
@@ -300,7 +300,8 @@ def _check_file(path: Path, rel: str, diff: tuple[set[int], set[int]] | None,
                 out: list[str], words: dict[str, str] | None = None,
                 adr: bool = False) -> tuple[int, int, int]:
     """Check one file; append report lines to `out`. Returns (sections checked, R3 and R5
-    findings, ADR 0170 findings). `words` maps each declared R7 word to its replacement; `adr`
+    findings, R8, R7 and option-count findings). `words` maps each declared R7 word to its
+    replacement; `adr`
     marks a new ADR, whose options section is counted too."""
     words = words or {}
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -317,7 +318,7 @@ def _check_file(path: Path, rel: str, diff: tuple[set[int], set[int]] | None,
         changed = {ln for ln in diff[0] if ln > fm_end and ln <= len(lines) and lines[ln - 1].strip()}
         touched = {_section_of(heads, ln) for ln in changed | diff[1] if ln > fm_end}
     # A records section (change notes, a ledger) is not checked at all: nobody rewrites a
-    # ledger row, so a finding there is noise (owner decision 2026-10-09, ADR 0128).
+    # ledger row, so a finding there is noise (ywr-harness ADR 0128).
     records = {sec for sec in touched if RECORDS_RX.search(names.get(sec, ""))}
     records |= {_section_of(heads, m) for m in marks}
     findings = marked = 0
@@ -381,7 +382,7 @@ def ste_lite(here: Path, paths: list[str]) -> int:
     for w in warns:
         if w.startswith(("docs.ste_lite", "docs.ste_marks", "docs.ste_words")):
             print(f"[ste-lite] WARN {_ascii(w)}")
-    # Two keys (ADR 0170): R3 and R5 block under docs.ste_lite, which the scaffold seed declares.
+    # Two keys (ywr-harness ADR 0170): R3 and R5 block under docs.ste_lite, which the scaffold seed declares.
     # R8, the R7 words and the option count block only under docs.ste_marks, which it does not.
     core_blocks, marks_block = cfg.get("ste_lite") is True, cfg.get("ste_marks") is True
     blocking = core_blocks or marks_block
@@ -422,10 +423,10 @@ def ste_lite(here: Path, paths: list[str]) -> int:
           f"STE-lite (docs/README.md §Writing style).")
     if findings and not core_blocks:
         print("[ste-lite]   advisory: declare \"docs\": {\"ste_lite\": true} in .harness.json "
-              "to make R3 and R5 block (ADR 0128).")
+              "to make R3 and R5 block (ywr-harness ADR 0128).")
     if marked and not marks_block:
         print("[ste-lite]   advisory: declare \"docs\": {\"ste_marks\": true} in .harness.json "
-              "to make R8, the R7 words and the ADR option count block (ADR 0170).")
+              "to make R8, the R7 words and the ADR option count block (ywr-harness ADR 0170).")
     return 1 if fails else 0
 
 

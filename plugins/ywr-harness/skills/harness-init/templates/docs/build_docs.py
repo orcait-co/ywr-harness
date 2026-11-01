@@ -18,7 +18,7 @@ docs-as-code 생성기 — docs/adr/*.md + docs/spec/*.md (YAML frontmatter + �
 사용:
   python docs/build_docs.py [YYYY-MM-DD]   (또는 pwsh docs/build.ps1 / bash docs/build.sh)
   python docs/build_docs.py --customer [--version <라벨>]   (고객 배포용 표면만 생성)
-  python docs/build_docs.py --check   (ADR 0074 — 아무 것도 쓰지 않고 생성 표면의 drift만 확인;
+  python docs/build_docs.py --check   (아무 것도 쓰지 않고 생성 표면의 drift만 확인;
                                         docs/check_docs.py 래퍼가 이 모드를 감싼다. --customer 와는
                                         병용 불가 — customer.html 은 date.today() 를 품어 바이트
                                         비교가 원천 불가능하다. exit 코드: 0=존재하는 표면 전부
@@ -27,24 +27,24 @@ docs-as-code 생성기 — docs/adr/*.md + docs/spec/*.md (YAML frontmatter + �
                                         재빌드로 고쳐지지 않는 결함이라 drift 와 구분한다))
 
 브랜딩(선택):
-  상단 제목의 정식 소스는 .harness.json 의 docs.site_title 선언이다(ADR 0050) — 레포별 값은
-  선언 파일에 산다(ADR 0010). 환경변수 DOCS_SITE_TITLE 은 1회성 오버라이드로만 남는다:
-  env 전용이던 시절 harness-init 재실행·CI 재빌드가 커밋된 타이틀을 기본값으로 되돌렸다(이슈
-  #43). 둘 다 없으면 "Docs · ADR & Spec".
+  상단 제목의 정식 소스는 .harness.json 의 docs.site_title 선언이다 — 레포별 값은 선언 파일에
+  산다. 환경변수 DOCS_SITE_TITLE 은 1회성 오버라이드로만 남는다: env 가 유일한 소스면 레포별
+  값을 모르는 호출자(harness-init 재실행·CI 재빌드)가 커밋된 타이틀을 기본값으로 되돌린다.
+  둘 다 없으면 "Docs · ADR & Spec".
 
-고객 배포 표면 (ADR 0005):
+고객 배포 표면:
   frontmatter `audience: customer` 인 문서만(화이트리스트) 골라 단일 자기완결
   docs/customer.html 을 만든다(이메일 첨부용). 기본값은 internal — 내부 문서는
   절대 이 표면에 섞이지 않는다. 제목은 DOCS_CUSTOMER_TITLE(미설정 시
   DOCS_SITE_TITLE + " — 고객 배포판"). --version 은 헤더 버전 스탬프에만 쓰인다.
 
-고객 코퍼스 표면 (ADR 0060):
+고객 코퍼스 표면:
   `.harness.json` 의 `docs.customer` 가 선언되면(null이 아니면), `docs/customer/<Program>/
   {spec.md, user-guide.md, release-notes.md}` 프로그램 단위 코퍼스에서 repo 전체를 아우르는
   단일 `docs/customer.artifact.html`(+ 선택 `docs/PROJECTS.md`)을 함께 생성한다. 선언은
   `scripts/harness/harness_config.py` (벤더 사본)의 `customer_decl()` 만이 검증한다 — 이
   빌더는 그 리더를 import 하며, 선언은 있는데 리더를 import 할 수 없으면 조용히 4-표면
-  빌드로 돌아가지 않고 즉시 실패한다(ADR 0060 — "고객 표면이 조용히 stale해지는" 결함군).
+  빌드로 돌아가지 않고 즉시 실패한다 — 고객 표면이 조용히 stale해지는 것을 막기 위해서다.
   위 audience 화이트리스트 표면(docs/customer.html)과는 완전히 별개다.
 
 요구사항: Python 3.9+ (표준 라이브러리만, 외부 의존성 0). CI 러너는 3.12 로 고정한다.
@@ -81,10 +81,9 @@ SCHEMA_VERSION = "docs-as-code/1"
 def _find_declaration():
     """`.harness.json` 을 ROOT 에서 위로 걸어 올라가며 찾는다 — (repo_root, raw_dict_or_None).
 
-    _resolve_site_title (ADR 0050) 과 _load_customer_decl (ADR 0060) 이 공유하는 단일 워크다:
-    두 개의 워크 구현은 pjems 포크가 겪은 바로 그 발산 실패 모드다. 레포 경계(디렉토리에
-    .git)에서 멈춘다 — 계속 오르면 무관한 상위 트리의 선언을 조용히 입는다(리뷰 2026-08-12,
-    medium). 읽기 실패·비-object 값은 stderr 로 보고하고 (root, None) 을 돌려준다 — 조용한
+    _resolve_site_title 과 _load_customer_decl 이 공유하는 단일 워크다: 워크 구현이 둘이면
+    서로 발산한다. 레포 경계(디렉토리에 .git)에서 멈춘다 — 계속 오르면 무관한 상위 트리의
+    선언을 조용히 입는다. 읽기 실패·비-object 값은 stderr 로 보고하고 (root, None) 을 돌려준다 — 조용한
     리버트가 이 함수가 없애려는 결함이므로, 보고는 하되 호출자의 판단(빌드 진행 여부)은
     막지 않는다. 프로세스 안에서 한 번만 걷도록 캐시한다(같은 경고가 사이트 타이틀 해석과
     고객 선언 로드 양쪽에서 중복 출력되는 것도 막는다) — 파일시스템 상태는 한 프로세스
@@ -114,12 +113,12 @@ def _find_declaration():
 
 
 def _resolve_site_title():
-    """사이트 타이틀 해석 (ADR 0050): env 오버라이드 → .harness.json docs.site_title → 기본값.
+    """사이트 타이틀 해석: env 오버라이드 → .harness.json docs.site_title → 기본값.
 
-    선언이 정식 소스다 — env 전용이던 시절, 레포별 값을 알 수 없는 호출자(harness-init 재실행,
-    CI)가 커밋된 docs.html/<title> 을 기본값으로 되돌렸다(이슈 #43). DOCS_SITE_TITLE 은 1회성
+    선언이 정식 소스다 — env 가 유일한 소스면 레포별 값을 알 수 없는 호출자(harness-init
+    재실행, CI)가 커밋된 docs.html/<title> 을 기본값으로 되돌린다. DOCS_SITE_TITLE 은 1회성
     오버라이드로만 남는다. 검증은 게이트 계층의 일이고, 여기서 읽는 값은 이스케이프를 거쳐 HTML
-    로만 가는 표시용 문자열이다(ADR 0012의 free-string 기준)."""
+    로만 가는 표시용 free string 이다(명령으로 실행되는 값이 아니다)."""
     env = os.environ.get("DOCS_SITE_TITLE")
     if env:
         return env
@@ -153,8 +152,8 @@ def split_frontmatter(text):
     """frontmatter 블록 추출 — (block | None, rest) 반환.
 
     규칙(CRLF 정규화 · 선두 HTML 주석 스킵 · 여는 '---' 줄 · 닫는 줄은 strip() == '---')은
-    fm_digest() 와 scripts/harness/verify_map.py 의 재계산 사본이 공유하는 계약이다(ADR 0043):
-    여기를 바꾸면 그쪽도 함께 바꾸고, 페어링 셀프테스트(build-docs.selftest.ps1)로 고정할 것.
+    fm_digest() 와 scripts/harness/verify_map.py 의 재계산 사본이 공유하는 계약이다:
+    여기를 바꾸면 그쪽도 함께 바꾸고, ywr-harness canon 의 페어링 셀프테스트(build-docs.selftest.ps1)로 고정할 것.
     """
     text = text.replace("\r\n", "\n")
     # 선두 HTML 주석 + 그 뒤 frontmatter → 주석 스킵(흔한 온보딩 함정 방지)
@@ -183,8 +182,8 @@ def parse_frontmatter(text):
     템플릿 복사본이 frontmatter 앞에 설명용 <!-- ... --> 주석을 남겨도 동작하도록,
     블록 추출 규칙은 split_frontmatter 가 단독 소유한다.
 
-    리스트는 세 모양 모두 같은 리스트가 된다(dist issue #6 — 한 줄 형태만 읽던 시절 블록
-    리스트는 null, 여러 줄 flow 리스트는 문자열 '[' 로 index 에 들어가 verify_map 이 죽었다):
+    리스트는 세 모양 모두 같은 리스트가 된다(한 줄 형태만 읽으면 블록 리스트는 null,
+    여러 줄 flow 리스트는 문자열 '[' 로 index 에 들어가 verify_map 이 죽는다):
       key: [a, b]            한 줄 flow
       key:                   블록 — 값이 비었거나 주석뿐이고 다음 줄들이 `- 항목`
         - a
@@ -194,10 +193,9 @@ def parse_frontmatter(text):
         app/[slug]           닫는다. 따옴표 없는 `app/[slug]` 항목은 스스로 균형이라 리스트를
       ]                      열지도 닫지도 않는다.
     블록 항목이 뒤따르지 않는 빈 값, 다음 0열 키나 블록 끝 전에 닫히지 않는(또는 닫는 ']'
-    뒤에 글자가 남는) '[' 는 예전 규칙(_parse_value) 그대로다 — 이 문법이 넓어져도 기존 한 줄
-    코퍼스의 파싱 결과는 바뀌지 않는다. 유일한 예외는 주석뿐인 값(`key:   # 메모`)으로, 문법
-    (spec 0001 §3: 공백 + '#' 부터 주석, 빈 값은 null)대로 null 이 된다 — 예전엔 주석 텍스트
-    '# 메모' 가 값이 됐다.
+    뒤에 글자가 남는) '[' 는 한 줄 규칙(_parse_value) 그대로다 — 한 줄 형태 값의 파싱
+    결과는 리스트 확장과 무관하다. 주석뿐인 값(`key:   # 메모`)은 문법
+    (ywr-harness spec 0001 §3: 공백 + '#' 부터 주석, 빈 값은 null)대로 null 이다.
     """
     block, rest = split_frontmatter(text)
     if block is None:
@@ -241,7 +239,7 @@ def _flow_depth(text):
     """flow 리스트의 괄호 균형 — '[' 는 +1, ']' 는 -1. 인용 항목(항목 머리의 따옴표부터 같은
     따옴표까지 — _parse_item 이 인용으로 보는 모양) 안의 괄호는 세지 않는다. 항목 중간의
     따옴표(`it's.md`)는 인용이 아니다. scripts/harness/harness_retro.py 의 _flow_depth 와 한 글자
-    다르지 않게 유지할 것 — 페어링 셀프테스트(harness_retro.selftest.ps1 G4)가 고정한다."""
+    다르지 않게 유지할 것 — ywr-harness canon 의 페어링 셀프테스트(harness_retro.selftest.ps1)가 고정한다."""
     depth, quote, at_item = 0, None, True
     for ch in text:
         if quote:
@@ -286,7 +284,7 @@ def _block_items(lines, i):
 def _flow_lines(lines, i, head):
     """균형이 맞지 않는 '[' 로 열린 값(head)을 괄호 균형이 0 이 되는 줄까지 이어 붙인다 →
     (한 줄 문자열, 다음 인덱스). 닫는 줄의 끝이 ']' 가 아니거나, 닫히기 전에 0열 `key:` 줄이나
-    블록 끝을 만나면 (None, i) — 다음 키를 삼키지 않고 예전 규칙으로 돌아간다."""
+    블록 끝을 만나면 (None, i) — 다음 키를 삼키지 않고 한 줄 규칙으로 돌아간다."""
     parts, j = [head], i
     while j < len(lines):
         s = lines[j]
@@ -371,7 +369,7 @@ def inline(text):
 
 def _diff_line(line):
     """```diff 펜스 한 줄 → 클래스 부착 (+추가 / -삭제 / @@헝크; +++/--- 헤더 제외). 릴리즈
-    노트의 소스 변경 표시(client-pjems 포크에서 상향, ADR 0060)."""
+    노트의 소스 변경 표시."""
     e = esc(line)
     if line.startswith("+") and not line.startswith("+++"):
         return '<span class="d-add">%s</span>' % e
@@ -384,8 +382,8 @@ def _diff_line(line):
 
 def _is_list_continuation(line):
     """목록 항목의 하드랩 계속줄: 들여쓰기로 시작하고 새 구조(마커·펜스·표·헤딩·
-    인용·수평선)를 열지 않는 줄. 마커 없는 계속줄이 목록을 닫고 별도 <p>로 떨어져
-    문장이 잘려 보이던 사고의 방지책(client-pjems 포크에서 상향, ADR 0060)."""
+    인용·수평선)를 열지 않는 줄. 마커 없는 계속줄이 목록을 닫고 별도 <p>로 떨어지면
+    문장이 잘려 보이므로 목록 항목에 이어 붙인다."""
     if not re.match(r"^[ \t]+\S", line):
         return False
     s = line.strip()
@@ -454,8 +452,7 @@ def convert_body(lines):
                 rows.append(split_row(lines[i]))
                 i += 1
             # 표는 스크롤 래퍼로 감싼다: <table display:block> 방식은 테두리 박스만
-            # 100% 폭이 되고 행은 콘텐츠 폭에서 끝나 우측이 잘려 보인다(client-pjems
-            # 포크에서 상향, ADR 0060).
+            # 100% 폭이 되고 행은 콘텐츠 폭에서 끝나 우측이 잘려 보인다.
             t = ['<div class="tblwrap"><table>',
                  "<thead><tr>%s</tr></thead>" % "".join("<th>%s</th>" % inline(c) for c in header), "<tbody>"]
             for row in rows:
@@ -511,7 +508,7 @@ def convert_body(lines):
             i += 1
         # inline()은 하드랩 병합 후에 적용한다 — 줄을 각각 inline()하면 줄 경계를
         # 가로지르는 **굵게**/`코드` 스팬이 매칭되지 않아 마크다운 문자가 리터럴로
-        # 노출된다. 두 칸 공백 하드브레이크는 유지(client-pjems 포크에서 상향, ADR 0060).
+        # 노출된다. 두 칸 공백 하드브레이크는 유지한다.
         chunks, curch = [], []
         for text, hard_break in buf:
             curch.append(text)
@@ -549,7 +546,7 @@ def collect(directory):
             continue
         path = os.path.join(directory, fn)
         # 읽기 실패(권한·디렉토리가 문서명 형상·비 UTF-8)는 트레이스백이 아니라 결정론적 명명
-        # 거부다 — 중복 id 거부와 같은 원칙(리뷰 2026-08-10 low). 빌더는 깨진 코퍼스를 조용히
+        # 거부다 — 중복 id 거부와 같은 원칙. 빌더는 깨진 코퍼스를 조용히
         # 우회하지 않는다; fm_digest 쪽의 관용(replace·None)은 자문 재계산용이라 역할이 다르다.
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -566,17 +563,17 @@ def collect(directory):
         if not meta.get("id"):
             print("  [경고] frontmatter id 없음, 건너뜀: %s" % fn)
             continue
-        # 중복 id 는 결정론적 빌드 실패다(ADR 0043). 병렬 브랜치가 각자 '다음 번호'를 잡으면
+        # 중복 id 는 결정론적 빌드 실패다. 병렬 브랜치가 각자 '다음 번호'를 잡으면
         # 양쪽 PR 은 각자의 드리프트 게이트를 통과하고, 병합된 코퍼스에서만 충돌이 드러난다 —
         # 조용히 진행하면 graph 딕셔너리가 한쪽 링크를 덮어쓴 index 가 커밋된다.
         if meta["id"] in seen:
             sys.exit("[오류] id 중복: %s 와 %s 가 같은 id '%s' 를 선언합니다 — 병렬 브랜치가 "
-                     "각자 '다음 번호'를 잡은 병합의 전형입니다(ADR 0043). 한쪽을 다음 빈 번호로 "
+                     "각자 '다음 번호'를 잡은 병합의 전형입니다(ywr-harness ADR 0043). 한쪽을 다음 빈 번호로 "
                      "옮기고 참조(related_*, based_on_adr, supersedes)를 갱신한 뒤 재빌드하세요."
                      % (seen[meta["id"]], fn, meta["id"]))
         seen[meta["id"]] = fn
         # audience 없으면 internal(기본, 안전한 쪽). customer 표면은 이 값이
-        # 정확히 "customer" 인 문서만 화이트리스트로 골라간다(ADR 0005).
+        # 정확히 "customer" 인 문서만 화이트리스트로 골라간다.
         if meta.get("audience") != "customer":
             meta["audience"] = "internal"
         meta["_file"] = fn
@@ -589,16 +586,15 @@ def collect(directory):
 
 # --------------------------------------------------------------- json + index
 def fm_digest():
-    """코퍼스 frontmatter 의 결정론적 다이제스트 — index.json 의 `fm_digest` 스탬프(ADR 0043).
+    """코퍼스 frontmatter 의 결정론적 다이제스트 — index.json 의 `fm_digest` 스탬프.
 
     파일 규칙은 collect() 와 동일(NNNN-*.md, 0000- 제외, 정렬 순회)하고 블록 규칙은
     split_frontmatter 와 동일하다. 본문만의 수정은 다이제스트를 바꾸지 않는다 — append-only
-    ADR 부록이 index 재빌드를 요구하면 안 된다는, 리트로 BUILD 체크와 같은 원칙.
+    ADR 부록이 index 재빌드를 요구하면 안 된다는, harness_retro.py 의 BUILD 체크와 같은 원칙.
     scripts/harness/verify_map.py 가 같은 규칙으로 재계산해 스테일 신호를 만든다: 두 구현은
     페어링 셀프테스트(build-docs.selftest.ps1)로 고정된다 — 한쪽만 바꾸면 그 테스트가 깨진다.
     위치 계약: adr/·spec/ 은 이 파일(그리고 이 파일이 쓰는 index.json)의 형제 디렉토리다 —
-    verify_map 은 선언된 index 경로의 부모에서 코퍼스를 유도한다(docs/ 하드코딩 금지,
-    리뷰 2026-08-10 high).
+    verify_map 은 선언된 index 경로의 부모에서 코퍼스를 유도한다(docs/ 하드코딩 금지).
     """
     h = hashlib.sha256()
     for kind, directory in (("adr", ADR_DIR), ("spec", SPEC_DIR)):
@@ -637,7 +633,7 @@ def build_json(adrs, specs, digest=None):
         "spec": [strip(e) for e in specs],
         "graph": graph,
     }
-    # 스키마는 docs-as-code/1 그대로 — 추가 키이고 모든 소비자가 .get 으로 읽는다(ADR 0043).
+    # 스키마는 docs-as-code/1 그대로 — 추가 키이고 모든 소비자가 .get 으로 읽는다.
     if digest:
         out["fm_digest"] = digest
     return out
@@ -800,7 +796,7 @@ def meta_panel(e, adr_ids, spec_ids, customer=False):
         rows.append("<b>갱신</b> %s" % esc(str(e["updated"])))
     # 고객 표면(customer=True)에는 deciders(내부 인사 정보)와 내부 문서를 가리키는
     # 상호참조 메타데이터 행 전부(관련/근거 ADR·스펙, supersede, 구현 경로)를 렌더링하지
-    # 않는다 — 내부 참조 번호는 고객에게 무의미하고 내부 구조를 노출한다(ADR 0005).
+    # 않는다 — 내부 참조 번호는 고객에게 무의미하고 내부 구조를 노출한다.
     if not customer:
         if e.get("deciders"):
             rows.append("<b>결정자</b> %s" % ", ".join(esc(str(x)) for x in e["deciders"]))
@@ -999,7 +995,7 @@ def build_html(adrs, specs):
 
 
 def build_customer(adrs, specs, version):
-    """고객 배포용 단일 자기완결 HTML(docs/customer.html) — 이메일 첨부 배포 (ADR 0005).
+    """고객 배포용 단일 자기완결 HTML(docs/customer.html) — 이메일 첨부 배포.
 
     화이트리스트(audience: customer 인 문서만)로 골라, 내부 문서가 섞여 들어올
     가능성을 원천 차단한다(기본값이 internal이므로 누락이면 자동 제외되는 방향).
@@ -1043,35 +1039,35 @@ def build_artifact(adrs, specs):
 
 
 # ============================================================================
-# 고객 코퍼스 표면 (ADR 0060) — client-pjems build_docs.py 포크의 상향.
+# 고객 코퍼스 표면
 #
 # `.harness.json` 의 `docs.customer` 가 선언되면(null이 아니면) `docs/customer/<Program>/
 # {spec.md, user-guide.md, release-notes.md}` 프로그램 단위 코퍼스에서 repo 전체를 아우르는
 # 단일 `docs/customer.artifact.html`(+ 선택 `docs/PROJECTS.md`)을 생성한다. 선언은
 # `scripts/harness/harness_config.py`(벤더 사본)의 `customer_decl()` 만이 검증한다 — 두 번째
-# 검증기를 이 파일 안에 두지 않는다(ADR 0060 옵션 F 거부 — 그것이 정확히 포크가 겪은
-# 발산이다). 위 audience 화이트리스트 표면(build_customer, docs/customer.html)과는 완전히
+# 검증기를 이 파일 안에 두지 않는다: 검증기가 둘이면 서로 발산해 고객 표면이 조용히
+# stale해진다. 위 audience 화이트리스트 표면(build_customer, docs/customer.html)과는 완전히
 # 별개다.
 # ============================================================================
 
 CUSTOMER_FILES = ("spec.md", "user-guide.md", "release-notes.md")
 RECENT_GROUP_LABEL = "최근 업데이트"
-# 기본 배지 어휘(FUT/UAT/PROD)의 css 클래스는 'rs-' + tag.lower() 로 그대로 나온다 — 포크의
-# rs-fut/rs-uat/rs-prod 와 바이트 동일. 커스텀(비-기본) 태그에만 rs-mid/rs-fin 보조 클래스를
-# 덧붙여 최종 단계와 중간 단계를 구분한다(CSS 쪽 참고).
+# 기본 배지 어휘(FUT/UAT/PROD)의 css 클래스는 'rs-' + tag.lower() 로 그대로 나온다 — 이
+# 어휘를 먼저 쓰던 소비자 레포의 rs-fut/rs-uat/rs-prod 와 바이트 동일하다. 커스텀(비-기본)
+# 태그에만 rs-mid/rs-fin 보조 클래스를 덧붙여 최종 단계와 중간 단계를 구분한다(CSS 쪽 참고).
 _KNOWN_STAGE_CLASSES = {"rs-fut", "rs-uat", "rs-prod"}
 
 
 def _declared(cfg, key, fallback):
     """UI 표시 기본값은 declarer가 그 키를 아예 쓰지 않은 경우에만 채운다 — 명시적 ""는
-    의도된 공백으로 남는다(ADR 0060; harness_config.customer_decl 의 `declared` 계약)."""
+    의도된 공백으로 남는다(harness_config.customer_decl 의 `declared` 계약)."""
     return cfg[key] if key in cfg["declared"] else fallback
 
 
 def _load_customer_decl():
     """`docs.customer` 를 로드·검증한다. 선언이 없으면(부재/null) None — 4-표면 빌드는 그대로
     진행한다. 선언은 있는데 벤더 리더를 import 할 수 없거나 선언이 malformed 면 즉시 exit 1 —
-    고객 표면이 조용히 stale해지는 것이 이 리더가 막으려는 결함이다(ADR 0060)."""
+    고객 표면이 조용히 stale해지는 것이 이 리더가 막으려는 결함이다."""
     root, raw = _find_declaration()
     docs = raw.get("docs") if isinstance(raw, dict) else None
     if not isinstance(docs, dict) or docs.get("customer") is None:
@@ -1086,10 +1082,10 @@ def _load_customer_decl():
             "[오류] .harness.json 의 docs.customer 가 선언됐지만 scripts/harness/harness_config.py "
             "를 import 할 수 없습니다 (%s) — 고객 표면은 이 리더 없이 빌드하지 않습니다. "
             "/ywr-harness:harness-init 로 툴체인을 다시 배치하세요." % reader_path)
-    # import 성공 ≠ 맞는 리더. ADR 0060 이전에 배치된 벤더 사본은 존재하지만 `customer_decl` 도
-    # `cfg["customer"]` 도 모른다 — pjems 가 선언을 먼저 채우고 init 을 나중에 돌리는 순서가
-    # 정확히 이 상태이고, 여기서 KeyError 트레이스백으로 죽는 것은 "파일·경로를 지목한 exit"
-    # 불변식 위반이다(리뷰 2026-08-27 high, 구버전 리더로 재현). 리더 자체의 예외도 같은 급.
+    # import 성공 ≠ 맞는 리더. docs.customer 지원 이전에 배치된 벤더 사본은 존재하지만
+    # `customer_decl` 도 `cfg["customer"]` 도 모른다 — 선언을 먼저 채우고 init 을 나중에 돌리는
+    # 순서가 정확히 이 상태이고, 여기서 KeyError 트레이스백으로 죽는 것은 "파일·경로를 지목한
+    # exit" 불변식 위반이다. 리더 자체의 예외도 같은 급.
     stale = ("[오류] scripts/harness/harness_config.py 가 구버전입니다(docs.customer 를 모르는 "
              "리더: %s) — 고객 표면은 이 리더로 빌드하지 않습니다. /ywr-harness:harness-init 을 "
              "먼저 재실행해 빌더와 리더를 함께 갱신한 뒤 다시 빌드하세요." % reader_path)
@@ -1117,7 +1113,7 @@ def _load_customer_decl():
 def collect_customer_docs(cfg, root):
     """docs.customer.dir 아래 프로그램 디렉터리를 스캔 → 프로그램별 dict 리스트.
 
-    코퍼스 계약(ADR 0060, 고정): 각 서브디렉터리가 프로그램이고, spec.md·user-guide.md·
+    코퍼스 계약(고정): 각 서브디렉터리가 프로그램이고, spec.md·user-guide.md·
     release-notes.md 셋 다 있어야 한다(누락은 세 이름을 모두 나열하는 즉시 실패). 각
     frontmatter의 program 은 디렉터리명과 일치해야 하고, title·updated 는 필수. spec.md 는
     프로그램 레코드(정본)이며 declared chip_field(비어있지 않을 때)와 required_frontmatter
@@ -1189,8 +1185,8 @@ def collect_customer_docs(cfg, root):
 
 def _mark_release_status(html_text, stages):
     """릴리즈 노트 H2 말미의 `[TAG]` 토큰을 declared release_stages 배지로 치환한다.
-    기본 어휘(FUT/UAT/PROD)는 css 클래스가 'rs-'+tag.lower() 그대로 나와 client-pjems 포크와
-    바이트 동일; 커스텀 태그만 rs-mid/rs-fin 보조 클래스가 덧붙는다."""
+    기본 어휘(FUT/UAT/PROD)는 css 클래스가 'rs-'+tag.lower() 그대로 나와 이 어휘를 먼저 쓰던
+    소비자 레포와 바이트 동일; 커스텀 태그만 rs-mid/rs-fin 보조 클래스가 덧붙는다."""
     if not stages:
         return html_text
     by_tag = {s["tag"]: s["label"] for s in stages}
@@ -1305,9 +1301,9 @@ def customer_sidebar_groups(programs, cfg):
 
 
 def _chip_text(cfg, p, file_form=False):
-    """칩 텍스트. HTML 칩은 frontmatter 값 그대로(포크와 바이트 동일); `chip_suffix` 는
-    PROJECTS.md 의 파일형 표기(예: `xgglbsrp.p`)에만 붙는다 — 포크가 그렇게 했고, 접미사가
-    화면 칩까지 번지면 pjems 350개 칩이 전부 달라진다(e2e 측정 2026-08-27)."""
+    """칩 텍스트. HTML 칩은 frontmatter 값 그대로; `chip_suffix` 는
+    PROJECTS.md 의 파일형 표기(예: `xgglbsrp.p`)에만 붙는다 — 접미사가
+    화면 칩까지 번지면 기존 소비자의 모든 칩 출력이 달라진다."""
     if not p["chip"]:
         return ""
     return p["chip"] + (cfg["chip_suffix"] if file_form else "")
@@ -1351,7 +1347,7 @@ def build_projects_md(programs, cfg):
     return "\n".join(lines)
 
 
-# ----------------------------------------------------- customer artifact theme (ADR 0060)
+# ----------------------------------------------------- customer artifact theme
 CUSTOMER_CSS = """
 :root{
   --bg:#f5f7f5;--surface:#ffffff;--surface-2:#f0f4f1;--ink:#1b2420;--ink-soft:#57635c;--ink-dim:#65706a;
@@ -1755,9 +1751,9 @@ def customer_program_article(cfg, p, first=False):
 
 def _load_panels(cfg, root):
     """docs.customer.panels[] 를 로드한다 — 각 항목은 저장소-상대 파이썬 모듈 경로 +
-    탭 라벨(ADR 0060 슬라이스 4). 모듈은 render_panel(repo_root) -> str 을 노출해야 하고,
+    탭 라벨. 모듈은 render_panel(repo_root) -> str 을 노출해야 하고,
     선택적으로 <style> 안에 이어붙일 모듈 속성 CSS(str)를 가질 수 있다. 경로 검증은
-    harness_config.py 의 panels 검증(오케스트레이터가 병행 작업)에 위임한다 — 이 함수는
+    harness_config.py 의 panels 검증에 위임한다 — 이 함수는
     이미 검증된 값만 받는다는 전제 위에서, 파일 부재/로드 실패만 여기서 명명한다."""
     panels = []
     used_ids = {"docs"}
@@ -1778,8 +1774,8 @@ def _load_panels(cfg, root):
         if not hasattr(mod, "render_panel"):
             sys.exit("[오류] 패널 모듈에 render_panel(repo_root) 함수가 없습니다: %s" % mod_path)
         # 렌더 호출도 import 와 같은 보호 아래 — 고객사가 직접 쓰는 확장 코드의 흔한 실수(파일
-        # 부재·타입 오류)가 트레이스백이 아니라 모듈을 지목한 exit 로 끝나야 한다(리뷰
-        # 2026-08-27 medium). 반환 타입도 계약의 일부다: str 이 아니면 fragment 로 붙일 수 없다.
+        # 부재·타입 오류)가 트레이스백이 아니라 모듈을 지목한 exit 로 끝나야 한다. 반환 타입도
+        # 계약의 일부다: str 이 아니면 fragment 로 붙일 수 없다.
         try:
             html_frag = mod.render_panel(root)
         except Exception as e:
@@ -1792,13 +1788,14 @@ def _load_panels(cfg, root):
         if not isinstance(css, str):
             sys.exit("[오류] 패널 모듈의 CSS 는 문자열이어야 합니다: %s (타입 %s)"
                      % (mod_path, type(css).__name__))
-        # 탭 id 는 리더가 확정한다(ADR 0061 — 선언 `id`, 없으면 라벨 슬러그/`panel-N`; default_tab
-        # 검증이 같은 집합을 봐야 하므로 한 곳에서). 0061 이전 리더(id 미산출)와 짝지어진
-        # 빌더만 예전 유도식으로 스스로 채운다 — 빌드는 멈추지 않고 새 키만 미지 키 경고로 남는다.
+        # 탭 id 는 리더가 확정한다(선언 `id`, 없으면 라벨 슬러그/`panel-N`; default_tab
+        # 검증이 같은 집합을 봐야 하므로 한 곳에서). id 를 산출하지 않는 구버전 리더와 짝지어진
+        # 빌더만 라벨 슬러그/`panel-N` 유도식으로 스스로 채운다 — 빌드는 멈추지 않고 새 키만
+        # 미지 키 경고로 남는다.
         pid = decl.get("id") if isinstance(decl, dict) else None
         if not pid:
             # 구버전 리더 폴백도 중복은 막는다 — 같은 data-top 이 둘이면 showTop 이 두 패널을
-            # 동시에 켠다(리뷰 2026-08-27 medium). 라벨 슬러그, 겹치면 첫 빈 panel-N.
+            # 동시에 켠다. 라벨 슬러그, 겹치면 첫 빈 panel-N.
             pid = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
             if not pid or pid in used_ids:
                 n = i
@@ -1806,7 +1803,7 @@ def _load_panels(cfg, root):
                     n += 1
                 pid = "panel-%d" % n
         used_ids.add(pid)
-        # 모듈 선택 속성(ADR 0061): UPDATED — 모듈 콘텐츠의 ISO 날짜, 푸터 날짜의 max 에 합산
+        # 모듈 선택 속성: UPDATED — 모듈 콘텐츠의 ISO 날짜, 푸터 날짜의 max 에 합산
         # (시계 없음 규칙은 그대로 — 모듈이 자기 콘텐츠에 대해 말하는 값이지 date.today() 가
         # 아니다); TAB_CHIPS — 탭 버튼 안의 칩 문자열 목록(문서 탭의 건수 칩과 같은 자리).
         # 형이 어긋나면 CSS 와 같이 모듈을 지목하는 exit — 조용히 버리면 계약이 있는 줄 모른다.
@@ -1822,7 +1819,7 @@ def _load_panels(cfg, root):
         panels.append({"id": pid, "label": label, "html": html_frag, "css": css, "module": str(mod_rel),
                        "position": (decl.get("position") if isinstance(decl, dict) else None) or "after-docs",
                        "updated": updated or "", "chips": list(chips)})
-    # 격리는 스코프 클래스 + 저자 규율이다(CSS 재작성은 ADR 0061 에서 기각). 캐논이나 다른 패널이
+    # 격리는 스코프 클래스 + 저자 규율이다 — CSS 재작성은 하지 않는다. 캐논이나 다른 패널이
     # 쓰는 클래스명을 `.panel-<id>` 밖에서 건드리는 선택자만 경고한다 — 거부가 아니라 stderr 한 줄.
     # 고유한 이름(`.pm-card`)은 조용하다: 누출은 이름이 겹칠 때만 일어난다.
     for pl in panels:
@@ -1838,7 +1835,7 @@ def _load_panels(cfg, root):
 
 def _selector_classes(sel):
     """선택자 텍스트에서 클래스명만 뽑는다 — 속성 선택자(`[href$=".mono"]`)와 따옴표 문자열 안의
-    `.` 은 클래스가 아니므로 먼저 걷어낸다(리뷰 2026-08-27 medium: 오경보 원인)."""
+    `.` 은 클래스가 아니므로 먼저 걷어낸다(오경보 원인)."""
     sel = re.sub(r"\[[^\]]*\]", "", sel)
     sel = re.sub(r"\"[^\"]*\"|'[^']*'", "", sel)
     return re.findall(r"\.([A-Za-z_-][\w-]*)", sel)
@@ -1853,8 +1850,8 @@ def _css_classes(css):
 
 def _leaking_selectors(css, pid, other_classes):
     """패널 CSS 에서 `other_classes`(캐논 + 다른 패널의 클래스명)를 건드리면서 패널 소유 클래스는
-    하나도 없는 선택자를 찾는다 — 같은 특이도로 뒤에 붙어 문서 탭을 덮어쓰는 누출(pjems 리뷰
-    2026-08-27: `.mono`/`.clip`). 선택자 어디에든 패널 고유 클래스가 있으면(`.envpanel .mono`,
+    하나도 없는 선택자를 찾는다 — 같은 특이도로 뒤에 붙어 문서 탭을 덮어쓰는 누출(예: 패널의
+    `.mono`/`.clip` 규칙). 선택자 어디에든 패널 고유 클래스가 있으면(`.envpanel .mono`,
     `.pm-dom.on`) 그 요소·자손에만 걸리므로 스코프된 것으로 본다. 휴리스틱이다: 주석·@규칙
     머리를 걷어낸 뒤 각 규칙의 선택자 목록만 본다. (selector, 겹친 클래스) 쌍의 목록."""
     text = re.sub(r"/\*.*?\*/", "", css or "", flags=re.S)
@@ -1878,8 +1875,8 @@ def _leaking_selectors(css, pid, other_classes):
 def build_customer_artifact(programs, cfg, panels):
     """docs/customer.artifact.html — claude.ai Artifact fragment(호스트가 <!doctype>/<html>/
     <head>/<body>를 감싼다; build_artifact 와 같은 계약). 내부 문서(ADR/spec)·리포지토리
-    경로·내부 상호참조는 이 표면에 절대 렌더링하지 않는다(고객 표면, ADR 0005와 동일 원칙).
-    시계 없음(ADR 0060): 빌드 시각 대신 코퍼스의 최신 updated 값을 '문서 생성일'로 쓴다 —
+    경로·내부 상호참조는 이 표면에 절대 렌더링하지 않는다(고객 표면).
+    시계 없음: 빌드 시각 대신 코퍼스의 최신 updated 값을 '문서 생성일'로 쓴다 —
     같은 코퍼스는 언제 빌드해도 같은 바이트를 낸다."""
     title = _declared(cfg, "title", SITE_TITLE + " — 고객 문서")
     eyebrow = _declared(cfg, "eyebrow", "고객 문서")
@@ -1918,15 +1915,15 @@ def build_customer_artifact(programs, cfg, panels):
                 for idx, date, rtitle, badge_html, p in entries))
         for ym, entries in sorted(months.items(), reverse=True))
     # 초기 기사 = '최근 업데이트' 그룹의 머리(릴리즈 최신 날짜; 같은 날짜는 정렬 순서 유지) —
-    # 그 그룹이 열린 채 첫 화면이 뜨므로 선택도 거기서 시작한다. 이전의 programs[0] 은
-    # os.listdir 정렬의 ASCII 첫 디렉터리(대문자 우선)였다(dist upstream-report #4,
-    # 2026-09-04). 릴리즈 이력이 하나도 없으면 programs[0] 으로 되돌아간다. 기사와 사이드바
-    # aria-current 는 같은 first_id 를 본다 — i == 0 과 first_id 가 갈라지던 두 기준을 하나로.
+    # 그 그룹이 열린 채 첫 화면이 뜨므로 선택도 거기서 시작한다. programs[0] 은
+    # os.listdir 정렬의 ASCII 첫 디렉터리(대문자 우선)라 초기 기사로 부적절하다. 릴리즈 이력이
+    # 하나도 없으면 programs[0] 으로 되돌아간다. 기사와 사이드바 aria-current 가 같은
+    # first_id 를 봐야 한다 — i == 0 과 first_id 두 기준이 갈라지면 선택이 어긋난다.
     groups = customer_sidebar_groups(programs, cfg)
     recent = next((members for label, members in groups if label == RECENT_GROUP_LABEL), None)
     first_id = (recent[0] if recent else programs[0])["program"] if programs else ""
     # 열린 그룹 = 최근 그룹; 최근 그룹이 없는 폴백에서는 first_id 가 속한 그룹을 연다 —
-    # 아니면 aria-current 항목이 접힌(display:none) 그룹 안에 숨는다(리뷰 2026-09-04, low).
+    # 아니면 aria-current 항목이 접힌(display:none) 그룹 안에 숨는다.
     def _opened(label, members):
         if recent:
             return label == RECENT_GROUP_LABEL
@@ -1941,12 +1938,12 @@ def build_customer_artifact(programs, cfg, panels):
         for label, members in groups
         for opened in [_opened(label, members)])
     articles = "".join(customer_program_article(cfg, p, first=(p["program"] == first_id)) for p in programs)
-    # 푸터 날짜 = 코퍼스 updated 와 패널 UPDATED 의 최댓값(ADR 0061; 여전히 시계 없음).
+    # 푸터 날짜 = 코퍼스 updated 와 패널 UPDATED 의 최댓값(시계 없음).
     max_updated = max([str(p.get("updated") or "") for p in programs]
                       + [pl["updated"] for pl in panels if pl["updated"]], default="")
     footer_label = _declared(cfg, "footer_date_label", "문서 생성일")
 
-    # 탭 순서(ADR 0061): before-docs 패널(선언 순) → 문서 탭 → after-docs 패널(선언 순).
+    # 탭 순서: before-docs 패널(선언 순) → 문서 탭 → after-docs 패널(선언 순).
     # 초기 선택 = 선언 default_tab, 없으면 렌더 순서의 첫 탭 — CUSTOMER_JS 는 빈 해시에서
     # 아무것도 바꾸지 않으므로 여기서 찍은 aria-selected/.on 이 그대로 첫 화면이다.
     docs_tab = {"id": "docs", "chips": ["명세 %d건" % count, "릴리즈 노트 %d건" % rel_count]}
@@ -1978,7 +1975,7 @@ def build_customer_artifact(programs, cfg, panels):
             top_panels.append('<div class="toppanel%s" data-top="docs">%s</div>' % (on, docs_view))
             continue
         top_tabs.append(tab_button(t["id"], esc(t["label"]), t["chips"]))
-        # 컨테이너에 panel-<id> 스코프 클래스 — 패널 CSS 는 이 아래로 선택자를 스코프한다(ADR 0061).
+        # 컨테이너에 panel-<id> 스코프 클래스 — 패널 CSS 는 이 아래로 선택자를 스코프한다.
         top_panels.append('<div class="toppanel panel-%s%s" data-top="%s">%s</div>'
                           % (esc(t["id"]), on, esc(t["id"]), t["html"]))
         if t["css"]:
@@ -2002,8 +1999,8 @@ def build_customer_artifact(programs, cfg, panels):
 
 
 def _selfcheck_release_helpers():
-    """빌드 시 결정론 회귀 게이트: 배지/동점 로직은 client-pjems 포크에서 조용히 회귀한
-    전력이 있어(GLPrint 카드 UAT 칩 실종) 합성 픽스처로 계약을 고정한다. main() 에서는
+    """빌드 시 결정론 회귀 게이트: 배지/동점 로직은 조용히 회귀하기 쉬워(예: 카드의 UAT 칩이
+    사라져도 실패가 나지 않는다) 합성 픽스처로 계약을 고정한다. main() 에서는
     호출하지 않는다 — 셀프테스트가 `python -c "import build_docs; build_docs.
     _selfcheck_release_helpers()"` 로 직접 부른다(모듈 import 자체는 SITE_TITLE 계산 외에
     부작용이 없어야 한다)."""
@@ -2016,7 +2013,7 @@ def _selfcheck_release_helpers():
     )
     fx = {"release_html": _mark_release_status(convert_body(raw.split("\n")), stages)}
     r = _latest_release(fx)
-    # 옛 버그: 문자열 전체 max 가 같은 날짜에서 Z-second 를 뽑았다 — 문서 위쪽 우선.
+    # 문자열 전체 max 는 같은 날짜에서 Z-second 를 뽑는다 — 문서 위쪽이 우선이어야 한다.
     assert r and r[0] == "2026-08-14" and r[1] == "A-first", \
         "_latest_release tie-break regression: %r" % (r,)
     assert "진행 중" in _release_posture(fx, stages), "posture: 활성 최상단 배지는 진행 중"
@@ -2026,15 +2023,15 @@ def _selfcheck_release_helpers():
     prod_fx = {"release_html": _mark_release_status(
         convert_body("## 2026-08-01 — x [PROD]\n".split("\n")), stages)}
     assert "완료" in _release_posture(prod_fx, stages), "posture: 최상단 PROD 는 완료"
-    # 픽스처에 있는 태그(UAT·PROD)로 검사한다 — 0.38.0 은 픽스처에 없는 [FUT] 배지를 단정해
-    # 항상 실패했고, 로컬 셀프테스트는 Python 3.13 의 -c 트레이스백이 명령 소스(센티널 포함)를
-    # 되비추는 탓에 그 실패를 통과로 읽었다(CI 3.12 에서 발견, 2026-08-27).
+    # 픽스처에 있는 태그(UAT·PROD)로 검사한다 — 픽스처에 없는 [FUT] 배지를 단정하면 항상
+    # 실패한다. `python -c` 로 부르는 셀프테스트는 Python 3.13 의 -c 트레이스백이 명령
+    # 소스(센티널 포함)를 되비추는 탓에 그 실패를 통과로 읽을 수 있다(3.12 에서만 드러난다).
     assert '<span class="relstat rs-uat">UAT</span>' in fx["release_html"] \
         and '<span class="relstat rs-prod">COMPLETE</span>' in prod_fx["release_html"], \
         "기본 어휘의 배지 클래스는 rs-uat/rs-prod 그대로, PROD 라벨은 COMPLETE (포크와 바이트 동일)"
 
 
-# --------------------------------------------------------------- check mode (ADR 0074)
+# --------------------------------------------------------------- check mode
 def _repo_root():
     """ROOT(=docs/) 의 부모 — <rel> 계산의 기준(repo-root-relative, forward slash)."""
     return os.path.dirname(ROOT)
@@ -2043,7 +2040,7 @@ def _repo_root():
 # REQUIRED: docs-as-code 계약이 커밋을 요구하는 표면 — 스캐폴드의 gitignore 템플릿도 이
 # 셋(+ projects_md 선언 시 PROJECTS.md)은 무시하지 않고, docs.yml 과 모든 소비자가 이들의
 # 존재를 전제한다. 부재는 MISSING(실패 집계, exit 1) — 삭제된 커밋 표면을 조용히 통과시키지
-# 않는다(Finding 6). OPTIONAL: 템플릿이 gitignore 하는 렌더 — 부재는 지금처럼 ABSENT(스킵).
+# 않는다. OPTIONAL: 템플릿이 gitignore 하는 렌더 — 부재는 ABSENT(스킵).
 REQUIRED_OUTPUTS = (OUT_JSON, OUT_INDEX_MD, OUT_PROJECTS)
 OPTIONAL_OUTPUTS = (OUT_HTML, OUT_ARTIFACT, OUT_CUSTOMER_ARTIFACT)
 
@@ -2053,7 +2050,7 @@ def _assemble():
     ·outputs 리스트. 두 경로가 각자 조립을 복제하면 그 자체가 조용한 drift 원인이 된다(서로
     다른 표면 목록을 비교/생성) — 그래서 한 곳에서만 만든다. 실패는 모두 sys.exit(<한국어
     메시지>) 로 알린다: 기본 빌드 경로는 그대로 프로세스를 끝내고, --check 경로(_run_check)는
-    이를 캐치해 DRIFT 와 구분되는 REFUSED 로 보고한다(Finding 1/4)."""
+    이를 캐치해 DRIFT 와 구분되는 REFUSED 로 보고한다."""
     adrs = collect(ADR_DIR)
     specs = collect(SPEC_DIR)
     if not adrs and not specs:
@@ -2061,7 +2058,7 @@ def _assemble():
 
     # 모든 표면을 메모리에서 먼저 만든다 — 고객 표면의 거부(sys.exit)가 4-표면만 새로 쓰인
     # 반쪽 산출물을 남기면, 종료 코드를 보지 않는 호출자는 "내부 문서 최신 · 고객 문서 stale"
-    # 을 그대로 커밋한다(리뷰 2026-08-27 medium). 검증을 전부 통과한 뒤에만 파일을 쓴다(디스크
+    # 을 그대로 커밋한다. 검증을 전부 통과한 뒤에만 파일을 쓴다(디스크
     # 쓰기는 main() 의 build 경로만 한다 — --check 는 애초에 쓰지 않는다).
     outputs = [
         (OUT_JSON, json.dumps(build_json(adrs, specs, fm_digest()), ensure_ascii=False, indent=2)),
@@ -2070,7 +2067,7 @@ def _assemble():
         (OUT_ARTIFACT, build_artifact(adrs, specs)),
     ]
 
-    # 고객 코퍼스 표면 (ADR 0060) — 선언됐을 때만, 4-표면 빌드 위에 추가로.
+    # 고객 코퍼스 표면 — 선언됐을 때만, 4-표면 빌드 위에 추가로.
     cust = _load_customer_decl()
     cust_count = 0
     if cust is not None:
@@ -2086,7 +2083,7 @@ def _assemble():
 
 
 def _report_refused(message):
-    """--check 조립 실패 공용 출력 — REFUSED(exit 2), ASCII 전용(Finding 1/4). 재빌드로
+    """--check 조립 실패 공용 출력 — REFUSED(exit 2), ASCII 전용. 재빌드로
     고쳐지지 않는 결함(중복 id, 빈 코퍼스, 고객 선언/코퍼스 결함, 패널 모듈 예외 등 _assemble()
     이 던지는 모든 거부)을 DRIFT(exit 1)와 구분해야, "재빌드하면 고쳐진다"는 신호로 exit 1을
     읽는 CI/운영자가 고칠 수 없는 결함에 재빌드를 반복하지 않는다. builder 의 원 메시지(한국어
@@ -2100,7 +2097,7 @@ def _report_refused(message):
 
 
 def _run_check():
-    """--check (ADR 0074): 디스크와 바이트 비교만 하고 아무 것도 쓰지 않는다.
+    """--check: 디스크와 바이트 비교만 하고 아무 것도 쓰지 않는다.
 
     조립(collect·빈 코퍼스 가드·고객 선언 로드·collect_customer_docs·_load_panels)은 build
     경로와 정확히 같은 _assemble() 을 공유한다 — main() 이 오늘 쓰는 것과 다른 목록을
@@ -2111,11 +2108,12 @@ def _run_check():
     표면은 REQUIRED(위 REQUIRED_OUTPUTS — index.json·INDEX.md·선언시 PROJECTS.md, 커밋을
     요구하는 표면)와 OPTIONAL(OPTIONAL_OUTPUTS — 템플릿이 gitignore 하는 렌더)로 나뉜다.
     REQUIRED 표면의 부재는 MISSING 으로 찍고 실패 집계에 더한다(exit 1); OPTIONAL 표면의
-    부재는 지금처럼 ABSENT 로 건너뛴다(Finding 6).
+    부재는 ABSENT 로 건너뛴다.
 
     바이트 비교는, expected 에 CR 이 전혀 없을 때(빌더는 항상 LF 로 쓴다) 디스크 쪽의 CR을
-    쌍 여부와 무관하게 전부 제거하고 비교한다 — init.ps1/manifest-gate.mjs 가 인용하는
-    ADR 0033 규칙(모든 0x0D 를 그대로 버림)과 맞춘다(Finding 7; 이전에는 \\r\\n 쌍만 접었다).
+    쌍 여부와 무관하게 전부 제거하고 비교한다 — init.ps1/manifest-gate.mjs 가 쓰는
+    규칙(모든 0x0D 를 그대로 버림, ywr-harness ADR 0033)과 맞춘다. \\r\\n 쌍만 접으면 홀로
+    남은 CR 이 있는 체크아웃이 DRIFT 로 읽힌다.
 
     출력은 ASCII 전용(기본 빌드 출력은 한국어 그대로 유지) — 소비자 CI 로그의 인코딩 걱정을
     없앤다.
@@ -2176,7 +2174,7 @@ def main():
             version = argv[vi + 1]
 
     # --check 는 legacy --customer 표면(docs/customer.html)과 병용 불가: 그 표면은
-    # date.today() 를 헤더에 품어서 바이트 비교가 절대 성립하지 않는다(ADR 0074). exit 2 —
+    # date.today() 를 헤더에 품어서 바이트 비교가 절대 성립하지 않는다. exit 2 —
     # 1 은 "drift" 전용이므로 오용은 다른 코드로 구분한다.
     if check_mode and customer_mode:
         print("[check] refused: --check cannot be combined with --customer "

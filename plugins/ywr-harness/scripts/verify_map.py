@@ -4,8 +4,8 @@ Reads the generated docs index (single source of truth: spec frontmatter `implem
 changed files to owning specs, and prints the verify scripts registered under those specs.
 Advisory — no LLM, no network, nothing executed; exits 0 with TWO exceptions, each printing a
 stdout FAILED marker and exiting non-zero because an empty advisory output reads as a pass to
-every consumer: a git failure resolving the changed-file scope (`scope: FAILED`, ADR 0041), and a
-docs index that exists but cannot be read (`index: FAILED`, ADR 0110). An ABSENT index is a
+every consumer: a git failure resolving the changed-file scope (`scope: FAILED`, ywr-harness ADR 0041), and a
+docs index that exists but cannot be read (`index: FAILED`, ywr-harness ADR 0110). An ABSENT index is a
 stdout `index: ABSENT` line with exit 0 — a repo with no docs corpus yet.
 
 Usage:
@@ -18,12 +18,12 @@ Usage:
 "verify the slice" always includes the not-yet-committed state; after a clean commit the union
 degenerates to the range alone.
 
-The committed index carries a frontmatter digest (`fm_digest`, ADR 0043); this script recomputes
+The committed index carries a frontmatter digest (`fm_digest`, ywr-harness ADR 0043); this script recomputes
 it and prints an `index: STALE` advisory line when the docs sources have moved on — the local
 mid-slice complement to CI's on-merge drift gate. A missing stamp is reported, never silent.
 
 Unowned product files are listed as unmapped unless the slice retro's ignore register
-(`retro.ignore_file`) exempts them — one register for both readers (ADR 0115); an exempt file is
+(`retro.ignore_file`) exempts them — one register for both readers (ywr-harness ADR 0115); an exempt file is
 counted, never dropped silently.
 
 Repo-specific values come from `.harness.json` via harness_config — one reader, one validator.
@@ -46,20 +46,19 @@ hc.pin_utf8()
 
 
 # ---------------------------------------------------------------------------------------------
-# Staleness-stamp recomputation (ADR 0043). MUST mirror docs/build_docs.py exactly — the file
-# rule (fm_digest: sorted NNNN-*.md, 0000- excluded) and the block rule (`hc.fm_block`, the
+# Staleness-stamp recomputation (ywr-harness ADR 0043). MUST mirror docs/build_docs.py exactly — the
+# file rule (fm_digest: sorted NNNN-*.md, 0000- excluded) and the block rule (`hc.fm_block`, the
 # builder's split_frontmatter: CRLF fold, lead-HTML-comment skip, opening '---' line, closing
-# line strip() == '---'). The two implementations are held together by the pairing selftest
-# (build-docs.selftest.ps1): change one side alone and that suite fails. A shared import was
-# rejected because build_docs.py stays a standalone stdlib file (spec 0001) — this is the
-# deliberate, selftest-gated duplication.
+# line strip() == '---'). The two implementations are held together by a pairing selftest
+# (build-docs.selftest.ps1): change one side alone and that suite fails. There is no shared
+# import because build_docs.py stays a standalone stdlib file (ywr-harness spec 0001); the
+# duplication is deliberate and selftest-gated.
 #
 # The corpus location is DERIVED, never assumed: the builder resolves adr/ and spec/ as siblings
 # of its own file, and it writes index.json into that same directory — so the corpus dirs are
-# always siblings of the index the declaration points at. Hardcoding `docs/` here instead was a
-# permanent false-STALE for any repo customizing docs.index (review 2026-08-10, high; the
-# alarm-fatigue failure mode this feature exists to prevent), pinned by the selftest's
-# relocated-corpus case.
+# always siblings of the index the declaration points at. Hardcoding `docs/` here would report
+# a permanent false STALE for any repo that customizes docs.index, and a false alarm that never
+# clears teaches readers to ignore the real one.
 # ---------------------------------------------------------------------------------------------
 _FM_FILE_RE = re.compile(r"^\d{4}-.*\.md$")
 
@@ -85,11 +84,11 @@ def spec_files(spec: dict, warns: list[str]) -> list[str]:
     """The normalized `implements_in` paths of one index entry — never a crash on its shape.
 
     An index is a generated file, but the generator that wrote it may be older than this script:
-    builders before 0.54.0 parsed only the one-line `[a, b]` list, so a spec written as a block
-    list landed as `null` and a multi-line flow list as the string `"["` (dist issue #6). The null
-    crashed this script with a TypeError (exit 1 — and CI's verify step fails on it); the string
-    iterated character by character into an empty mapping, silently. Both now read as "this spec
-    owns nothing" and are WARNED, naming the spec, because either one is an ownership hole the
+    builders before plugin 0.54.0 parsed only the one-line `[a, b]` list, so a spec written as a
+    block list lands as `null` and a multi-line flow list as the string `"["`. Iterating either
+    would crash (`null`: TypeError, a non-zero exit that fails CI's verify step) or silently walk
+    the string character by character into an empty mapping. Both read as "this spec owns
+    nothing" and are WARNED, naming the spec, because either one is an ownership hole the
     reader must see. An absent key is an honest empty list and stays silent.
 
     A current builder also writes a non-list for a value that is not a list in the source — an
@@ -128,10 +127,11 @@ def main() -> int:
     for w in warns:
         hc.warn(w)
 
-    # ADR 0110: an ABSENT index is a repo with no docs corpus yet — stated on stdout, exit 0. An
-    # index that exists but cannot be read as an object with a `spec` list is a broken build, the
-    # scope-failure class (ADR 0041): until 0.60.1 it went to stderr with exit 0, and a consumer
-    # reading stdout plus the exit code saw a clean "nothing mapped" run (canon #59).
+    # An ABSENT index is a repo with no docs corpus yet — stated on stdout, exit 0
+    # (ywr-harness ADR 0110). An index that exists but cannot be read as an object with a `spec`
+    # list is a broken build, the same class as the scope failure below: it must print a FAILED
+    # line on stdout and exit non-zero, because a consumer reading stdout plus the exit code
+    # would otherwise see a clean "nothing mapped" run.
     index_path = root / cfg["index"]
     if not index_path.exists() and not index_path.is_symlink():  # a dangling link is FAILED below
         hc.say(f"index: ABSENT — {cfg['index']} does not exist, so no spec owns any file and "
@@ -144,19 +144,19 @@ def main() -> int:
     except (OSError, ValueError) as e:
         print(f"{cfg['index']} unreadable ({type(e).__name__}: {e})", file=sys.stderr)
         hc.say(f"index: FAILED — {cfg['index']} exists but cannot be read ({type(e).__name__}); "
-               "NOTHING was mapped or verified. This run must not be read as a pass (ADR 0110); "
+               "NOTHING was mapped or verified. This run must not be read as a pass (ywr-harness ADR 0110); "
                "rebuild: pwsh docs/build.ps1")
         return 1
     specs = index.get("spec", [])  # a non-object entry is REFUSED per entry in the loop below
 
-    # Staleness signal (ADR 0043). The committed index carries a digest of the corpus
+    # Staleness signal (ywr-harness ADR 0043). The committed index carries a digest of the corpus
     # frontmatter; recompute it and ADVISE when the sources have moved on — the local mid-slice
     # run otherwise maps changed files against ownership someone forgot to rebuild, silently.
     # Advisory only: CI's drift gate is the enforcement on merge. A missing stamp is reported
     # too — silence has to mean "current", never "too old to know".
     stamp = index.get("fm_digest")
     if stamp is None:
-        hc.say("index: no staleness stamp (index predates ADR 0043) — rebuild once to enable: "
+        hc.say("index: no staleness stamp (index predates ywr-harness ADR 0043) — rebuild once to enable: "
                "pwsh docs/build.ps1")
     elif fm_digest((root / cfg["index"]).parent) != stamp:
         hc.say("index: STALE — the adr/spec frontmatter beside the index differs from the "
@@ -166,12 +166,12 @@ def main() -> int:
     try:
         files, prov = hc.changed_files(root, args.rev_range, args.files)
     except subprocess.CalledProcessError as e:
-        # The one non-zero exit (ADR 0041) — same principle as the gate emitter's scope path:
+        # The one non-zero exit (ywr-harness ADR 0041) — same principle as the gate emitter's scope path:
         # a silent empty output is indistinguishable from "nothing to verify", and the /verify
         # skill would read exactly that.
         print(f"git diff failed: {(e.stderr or '').strip()}", file=sys.stderr)
         hc.say("scope: FAILED — git could not resolve the changed-file scope; NOTHING was "
-               "verified. This run must not be read as a pass (ADR 0041).")
+               "verified. This run must not be read as a pass (ywr-harness ADR 0041).")
         return 1
     hc.print_scope(files, prov)
     if not files:
@@ -195,10 +195,10 @@ def main() -> int:
             refused.append(f"index spec entry {n} is not an object — skipped, it maps nothing; "
                            "rebuild the index (pwsh docs/build.ps1)")
             continue
-        # An entry without a usable id still MAPS (O41(c)): dropping it would hide its verify
+        # An entry without a usable id still MAPS: dropping it would hide its verify
         # scripts — a coverage gap reading as "no spec owns this". Shown under a placeholder and
-        # WARNED, the same "never crash, never silent" rule as case L's non-list implements_in.
-        # Until then `spec["id"]` raised KeyError and the whole run died.
+        # WARNED, the same "never crash, never silent" rule as a non-list implements_in
+        # (indexing `spec["id"]` directly would raise KeyError and kill the run).
         sid = spec.get("id")
         if not isinstance(sid, str) or not sid.strip():
             sid = f"(index entry {n}, no id)"
@@ -213,15 +213,14 @@ def main() -> int:
             hits[sid] = {"title": spec.get("title", ""), "matched": matched, "verify": verify}
 
     unmapped = sorted(f for f in files if scope_re.match(f) and not hc.owned(owned, f)) if scope_re else []
-    # The retro's ignore register exempts the same files here (ADR 0115): the list below calls
-    # itself "a slice-retro UNMAPPED finding in the making", which needs both readers on one
-    # register. Before 0.60.5 the mapper read none, so every slice touching a scaffold template
-    # copy the register exempts listed it as debt the retro would never report. One register is
-    # necessary, not sufficient: the SCOPES stay two declarations (`verify.product_scope` here,
-    # `retro.source_scope` there), so a file inside the first and outside the second is still
-    # listed — the repo keeps the two in step (ADR 0115 Consequences). Exempt files are COUNTED,
+    # The retro's ignore register exempts the same files here (ywr-harness ADR 0115): the list below
+    # calls itself "a slice-retro UNMAPPED finding in the making", which needs both readers on one
+    # register — otherwise a file the register exempts would be listed here as debt the retro never
+    # reports. One register is necessary, not sufficient: the SCOPES stay two declarations
+    # (`verify.product_scope` here, `retro.source_scope` there), so a file inside the first and
+    # outside the second is still listed — the repo keeps the two in step. Exempt files are COUNTED,
     # never dropped silently; a bad register line is warned at the end like any refusal, and only
-    # on a run with something unmapped to filter (no list, no read — case P3).
+    # on a run with something unmapped to filter (no list, no read).
     ign = hc.load_ignore(root, cfg["retro_ignore_file"], refused) if unmapped else []
     exempt = [f for f in unmapped if hc.any_match(ign, f)]
     unmapped = [f for f in unmapped if not hc.any_match(ign, f)]
@@ -233,7 +232,7 @@ def main() -> int:
         # Everything below is printed through `hc.say()`, the single stdout exit. It matters most
         # here of all places: id, title and the filenames are repo-supplied, and this output's
         # consumer is a MODEL told to run the `run:` lines — so a newline in any of them could spell
-        # a `run:` line nobody registered (ADR 0032's review; same rule, model instead of `sh`).
+        # a `run:` line nobody registered (same rule as for a shell consumer, here with a model).
         hc.say(f"spec {sid} — {h['title']}")
         for f in h["matched"]:
             hc.say(f"  changed: {f}")

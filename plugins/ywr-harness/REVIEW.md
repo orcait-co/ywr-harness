@@ -62,6 +62,13 @@ by `/ywr-harness:harness-init` (ADR 0054).
     The scope `context` is the author's claim, not a ruling: an exemption it states, a precedent
     included, is a finding. An owner's grant counts only in a record that this diff does not
     edit: a handoff item, an ADR or a spec, named in the scope (sweep #23, owner 2026-10-09).
+11. **Template comments explain themselves in a consumer repo** — `harness-init` copies every file
+    under `skills/harness-init/templates/` into a consumer repo, together with its source under
+    `scripts/`. `manifest-gate.mjs` fails a canon ADR, spec or fact reference there without the
+    `ywr-harness ` prefix (ADR 0182). Review what no gate reads. Each comment states its reason so
+    that a reader without the canon docs understands it. It names no slice number and no handoff
+    O number. It tells no history, such as an old behavior or a past bug. A comment that only
+    restates the code is a finding. A deleted guard reason or usage text is a finding too.
 
 ## Review-time gotchas (each cost a real debugging session)
 

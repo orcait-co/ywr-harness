@@ -67,7 +67,7 @@ surfaces are never shipped to them: they contain rejected options, costs, and tr
 
 Each document type follows its own set of writing rules. People read these documents through a
 browser translator. A model reads some of them in every session. The rules balance the two
-readers. ADR 0125 of the ywr-harness canon records the reasons.
+readers. ywr-harness ADR 0125 records the reasons.
 
 | Rule | Handoff | CLAUDE.md, org guide | New ADR, changed spec section |
 |---|---|---|---|
@@ -91,14 +91,14 @@ the nearest heading above it. Rewrite all of that section, its table cells inclu
 that a script reads byte-identical, such as a parsed line or a matched row name.
 
 A gate checks R3 and R5. `docs/check_docs.py` runs it at pre-commit on each staged spec and new
-ADR, as ADR 0128 of the ywr-harness canon records. The gate checks each changed spec section
+ADR, as ywr-harness ADR 0128 records. The gate checks each changed spec section
 whole. A section whose heading names change notes or a ledger is a records section, and the gate
 does not check it. The line `<!-- ste-lite: records -->` marks any
 other section as records. The line `<!-- ste-lite: verbatim -->` exempts the next paragraph, list
 or table, for text that a script reads. The gate blocks a commit only when `.harness.json`
 declares `"docs": {"ste_lite": true}`. Otherwise it prints its findings as advice.
 
-The same gate checks R8, as ADR 0170 of the ywr-harness canon records. A semicolon inside
+The same gate checks R8, as ywr-harness ADR 0170 records. A semicolon inside
 parentheses and a table cell that holds only an em dash pass. `.harness.json` `docs.ste_words`
 can map a word to the one word this repo uses for that meaning, such as
 `{"via": "through"}`. The gate then flags each listed word outside code spans and URLs. The gate also

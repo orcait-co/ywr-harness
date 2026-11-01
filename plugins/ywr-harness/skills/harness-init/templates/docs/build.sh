@@ -17,9 +17,8 @@ done
 [ -n "$py" ] || { echo "Python을 찾을 수 없습니다 (python3/python/py)." >&2; exit 1; }
 
 today="$(date -u +%F)"
-# Encoding pin — parity with build.ps1. Harmless where the locale is already UTF-8, and the one
-# thing that keeps a non-UTF-8 locale from turning the builder's own output into exit 1 after
-# index.json has been written.
+# Encoding pin, same as build.ps1. Harmless where the locale is already UTF-8. Without it a
+# non-UTF-8 locale turns the builder's own output into exit 1 after index.json is written.
 export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
 exec "$py" "$here/build_docs.py" "$today"

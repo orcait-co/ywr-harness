@@ -1,6 +1,6 @@
 # REVIEW.md — house review invariants (starter seed)
 
-> **This is a starter placed by /ywr-harness:harness-init (ADR 0054) — replace its content with
+> **This is a starter placed by /ywr-harness:harness-init (ywr-harness ADR 0054) — replace its content with
 > THIS repo's own decisions.** It is a SEED: never overwritten, and deliberately outside the
 > re-run drift report, so what you write here stays yours. Until it is rewritten, reviews run
 > against the generic invariants below — real, but not this repo's.
@@ -17,7 +17,7 @@ Each entry: **bold claim**, the mechanism that enforces or checks it, and the so
 add the invariants only this repo can know (its data guarantees, its security boundaries, its
 deterministic cores):
 
-1. **Secrets are never committed** — `.env` is gitignored (root seed, ADR 0053); commit
+1. **Secrets are never committed** — `.env` is gitignored (root seed, ywr-harness ADR 0053); commit
    `.env.example` only. The pre-push hook scans added lines; a false positive is exempted per
    line with `harness:allow-secret`, never with `--no-verify`.
 2. **Skipped checks are reported as skipped, never counted as passed** — and any coverage cap
