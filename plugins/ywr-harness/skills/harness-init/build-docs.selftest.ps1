@@ -1099,6 +1099,23 @@ $ok = (Assert-True 'SL16d both keys: an R5 and an R8 finding fail together (FAIL
     ($rSL16d.Code -eq 1 -and $rSL16d.Out -match '\[ste-lite\] FAIL - 2 finding' -and $rSL16d.Out -notmatch 'advisory:') $rSL16d.Out) -and $ok
 Reset-SL
 
+# SL17 (dist issue #13): the corpus seed that harness-init places is a NEW ADR in a scaffolded
+# repo's first commit, so the gate checks it whole there. It must pass under both keys, or the
+# seed blocks every fresh repo's first commit. The shipped template bytes are checked, with only
+# the id renumbered past the fixture's ADR 0001. The index is rebuilt first, so the exit code is
+# the whole check's verdict, as pre-commit reads it. Mutation anchor: the v0.70.0 seed text (16
+# findings: R3, R5 and R8) turns SL17 red.
+$seedSL = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'templates/docs/adr/0001-adopt-docs-as-code.md'))
+if (-not $seedSL.Contains('id: "0001"')) { throw 'SL17 fixture: the seed ADR has no id: "0001" line' }
+Write-SL 'docs/adr/0002-adopt-docs-as-code.md' $seedSL.Replace('id: "0001"', 'id: "0002"')
+Write-SL '.harness.json' '{"docs": {"ste_lite": true, "ste_marks": true}}'
+$null = & $py.Source (Join-Path $docsSL 'build_docs.py') 2>&1
+Remove-Item -LiteralPath (Join-Path $docsSL 'docs.html'), (Join-Path $docsSL 'docs.artifact.html') -ErrorAction SilentlyContinue
+$rSL17 = Invoke-SLCheck 'docs/adr/0002-adopt-docs-as-code.md'
+$ok = (Assert-True 'SL17 the harness-init seed ADR passes R3, R5, R8 and the option count under both keys (exit 0)' `
+    ($rSL17.Code -eq 0 -and $rSL17.Out -match '\[ste-lite\] OK - \d+ section\(s\) in 1 file\(s\) pass R3, R5, R8 and the ADR option count' -and $rSL17.Out -notmatch '\[ste-lite\]\s+(R\d|OPT) ') $rSL17.Out) -and $ok
+Reset-SL
+
 # --- FL: every YAML list shape a spec is written in indexes as the SAME list (dist issue #6) ----
 # The builder read only the one-line `[a, b]` form: a block list landed in index.json as null and a
 # multi-line flow list as the STRING "[" — and verify_map then crashed on the null (TypeError,

@@ -108,6 +108,25 @@ module needs Claude Code 2.1.287+ with mods allowed:
 Start with `check` off: the side check's answers were measured on three gate runs only, and a wrong
 answer lands at the decision point. Turn it on per stage once you have read its answers on real slices.
 
+`/ywr-harness:harness-init` seeds both stages (ADR 0180). It places `docs/prompts/review-digest.md` and
+`docs/prompts/ready-report.md` when they are absent and never overwrites them, and the `.harness.json`
+template declares both with no `check`. The template's `review.docs_only` excludes `docs/prompts/`, so a
+change to a prompt file alone is never review-exempt. A repository that has run `harness-init` before
+gets the two files and a drift note about the missing declaration on a re-run; its own `.harness.json`
+and `review.docs_only` stay as they are. With no stage declared, `status`, `on` and `off` print the declaration shape and
+say that `harness-init` places the two files.
+
+While the switch is on, each detected stage appends one JSON line to `auto-stages.jsonl` beside the
+switch file in the git directory: `{at, stage, outcome, check, ms}`. `outcome` is `added`,
+`withheld-no-baseline`, `withheld-changed`, `undeclared` or `unreadable`. `check` is `off`, `answer`,
+`none` (the model answered `NONE`), `timeout` (no answer in time, or a failed call) or `busy` (another
+check was running). `ms` runs from the switch read to the end of the stage's work, without the log
+write. The file keeps the last 200 lines, and `status`, `on` and `off` print the last one, rebuilt from
+its five fields; a line of any other shape prints as `(형식이 맞지 않는 줄)` (ADR 0181). Two log writes
+that overlap can lose one line. A failed log write changes nothing else, a failed read of an existing log
+leaves it as it was, and at a stage an off switch neither reads nor writes the file. A shell can write
+the file, so a line is a measurement aid and no proof that a stage ran.
+
 `slice-close` is not a stage: Claude Code's built-in mods guard skips the `skill.prompt` hook of a
 member-installed plugin, which that stage would need (fact 177).
 

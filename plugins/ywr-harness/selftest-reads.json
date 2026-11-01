@@ -52,7 +52,7 @@
     "scripts/resolve-base.selftest.ps1": ["scripts/resolve-base.sh"],
     "scripts/verify_map.selftest.ps1": ["scripts/verify_map.py", "scripts/harness_config.py"],
     "scripts/workflow-gates.selftest.ps1": ["scripts/workflow-gates.mjs", "workflows/**", "agents/reviewer.md"],
-    "skills/harness-init/build-docs.selftest.ps1": ["skills/harness-init/templates/docs/build_docs.py", "skills/harness-init/templates/docs/check_docs.py", "scripts/verify_map.py", "scripts/harness_config.py"],
+    "skills/harness-init/build-docs.selftest.ps1": ["skills/harness-init/templates/docs/build_docs.py", "skills/harness-init/templates/docs/check_docs.py", "skills/harness-init/templates/docs/adr/0001-adopt-docs-as-code.md", "scripts/verify_map.py", "scripts/harness_config.py"],
     "//skills/harness-init/ci-enabled-plugins.selftest.ps1": "In the canon shape it also lints every repo workflow, gated on the root .harness.json and marketplace.json existing.",
     "skills/harness-init/ci-enabled-plugins.selftest.ps1": ["skills/harness-init/templates/.github/workflows/harness-gates.yml", "/.github/workflows/*.yml", "/.harness.json", "/.claude-plugin/marketplace.json"],
     "skills/harness-init/githooks.selftest.ps1": ["skills/harness-init/templates/githooks/**", "skills/harness-init/templates/scripts/harness/**", "skills/harness-init/templates/.github/workflows/harness-gates.yml"],

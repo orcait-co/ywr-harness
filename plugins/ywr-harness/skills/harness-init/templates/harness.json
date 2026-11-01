@@ -26,8 +26,8 @@
     "//": "Regexes. They select and report — they cannot name an executable, so free strings are safe here.",
     "canon": "REVIEW.md",
 
-    "//docs_only": "Surfaces that carry no executable meaning. When EVERY changed file matches, the review tier is 'skip' and deterministic gates suffice. NORMATIVE markdown is excluded: CLAUDE.md, AGENTS.md (project instructions the host loads into every session) and REVIEW.md (the review canon) read as prose but change how every session and every review behaves, so a change to them is never review-exempt. Add to that exclusion any file this repo's own CLAUDE.md makes binding (a GOAL.md of guardrails, say) — the seed names only the files the host and the review load by themselves. Code under docs/ (the placed builder and check scripts: .py, .ps1, .sh) is excluded too — executable, whatever directory it sits in.",
-    "docs_only": ["^docs/(?!.*\\.(py|ps1|sh)$)", "^(?!(CLAUDE|AGENTS|REVIEW)\\.md$)[^/]*\\.md$"],
+    "//docs_only": "Surfaces that carry no executable meaning. When EVERY changed file matches, the review tier is 'skip' and deterministic gates suffice. NORMATIVE markdown is excluded: CLAUDE.md, AGENTS.md (project instructions the host loads into every session) and REVIEW.md (the review canon) read as prose but change how every session and every review behaves, so a change to them is never review-exempt. Add to that exclusion any file this repo's own CLAUDE.md makes binding (a GOAL.md of guardrails, say) — the seed names only the files the host and the review load by themselves. Code under docs/ (the placed builder and check scripts: .py, .ps1, .sh) is excluded too — executable, whatever directory it sits in. So is docs/prompts/ (ADR 0180): a stage prompt of the /ywr-harness:auto switch is added to the model's input and changes how each later session behaves, so a change to one is never review-exempt. If you move a stage prompt out of docs/prompts/, exclude its new path here too.",
+    "docs_only": ["^docs/(?!prompts/)(?!.*\\.(py|ps1|sh)$)", "^(?!(CLAUDE|AGENTS|REVIEW)\\.md$)[^/]*\\.md$"],
 
     "//harness_layer": "Code-bearing surfaces that are tooling rather than product. When every code-bearing file is confined here, the tier is 'small'.",
     "harness_layer": [],
@@ -53,6 +53,12 @@
 
     "//ignore_file": "The UNMAPPED exemption list, which doubles as the visible spec-debt register.",
     "ignore_file": ".githooks/slice-retro-ignore"
+  },
+
+  "//decision_prompts": "Stage prompts for the /ywr-harness:auto switch (ADR 0174, ADR 0180). While the switch is on in a checkout, the plugin adds the prompt file of a declared stage to the model's input at that stage: review-start (the adversarial review call), review-digest (its digest) and ready-report (the harness_gates.py --tree run). While the switch is off, this key does nothing. A stage entry is {\"prompt\": \"<repo-relative .md path>\"}; /ywr-harness:harness-init places the two files below. Start with `check` off, as here. An entry with \"check\": true also asks one side-check model call and adds its answer; turn it on for a stage only after you read real answers, because a wrong answer lands at the decision point. Type /ywr-harness:auto on in each session that should use the stages; the switch is per checkout and per session. While the switch is on, .harness.json and the declared prompt files are read-only to Claude's edit tools. The stage log is auto-stages.jsonl beside the switch file in the git directory.",
+  "decision_prompts": {
+    "review-digest": { "prompt": "docs/prompts/review-digest.md" },
+    "ready-report": { "prompt": "docs/prompts/ready-report.md" }
   },
 
   "groups": [

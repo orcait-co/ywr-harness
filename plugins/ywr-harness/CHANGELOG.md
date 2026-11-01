@@ -12,6 +12,22 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.71.0 — 2026-11-01
+
+- **기존 저장소가 할 일**: `/ywr-harness:auto` 를 쓰려면 `/ywr-harness:harness-init` 을 다시 실행하세요. stage prompt 파일 두 개를 받고, 선언이 빠졌다는 안내(drift note)를 봅니다.
+  기존 `.harness.json` 은 바뀌지 않으므로 `decision_prompts` 선언은 직접 추가하고, `review.docs_only` 에서 `docs/prompts/` 에 걸리는 정규식마다 `^docs/` 바로 뒤에 `(?!prompts/)` 를 넣으세요(ADR 0180).
+- `/ywr-harness:harness-init` 이 `/ywr-harness:auto` 용 stage prompt 를 `docs/prompts/review-digest.md` 와 `docs/prompts/ready-report.md` 로 놓고, 새 `.harness.json` 템플릿이 두 stage 를 이 경로로 선언합니다.
+  이미 있는 파일은 그대로 둡니다. 스위치를 켜지 않으면 아무 일도 하지 않습니다. `check` 는 넣지 않았으니 답을 먼저 읽어 본 뒤 stage 마다 직접 켜세요.
+- 스위치가 켜져 있는 동안 stage 마다 git 디렉터리의 `ywr-harness/auto-stages.jsonl` 에 한 줄(시각, stage, 결과, side check 결과, ms)을 남기고, `/ywr-harness:auto status`·`on`·`off` 가 마지막 줄을 `최근 stage:` 로 보여 줍니다.
+  최근 200줄만 남깁니다. 측정용이며, 셸이 쓸 수 있으므로 stage 가 실행됐다는 증거는 아닙니다.
+- 템플릿의 `review.docs_only` 첫 정규식이 `docs/prompts/` 를 제외합니다. prompt 파일은 이후 모든 세션의 동작을 바꾸므로, 이 파일만 바뀐 변경도 리뷰 면제가 되지 않습니다.
+- `ready-report` prompt 가 `fix_proof.py check` 출력과 verify 판정을 ready report 에 인용하라고 요청합니다.
+- 선언이 없으면 `/ywr-harness:auto status`·`on`·`off` 가 선언 형식과 `/ywr-harness:harness-init` 안내도 함께 보여 줍니다.
+- 로그 파일을 쓰지 못해도 그 stage 는 그대로 진행합니다. 스위치가 꺼져 있으면 stage 에서 로그를 읽지도 쓰지도 않습니다.
+  이미 있는 로그를 읽지 못하면 덮어쓰지 않고 그대로 둡니다. 마지막 줄이 기록 형식이 아니면 `(형식이 맞지 않는 줄)` 로 보여 줍니다(ADR 0181).
+- `/ywr-harness:harness-init` 이 새 저장소에 놓는 `docs/adr/0001-adopt-docs-as-code.md` 를 STE-lite 로 다시 썼습니다. 이전 seed 는 첫 커밋의 pre-commit STE-lite 게이트에서 R3·R5 위반으로 막혔습니다(dist issue #13). R8 위반은 안내로만 나왔습니다.
+  선택지·결정·결과는 같습니다. 이미 첫 커밋을 한 저장소는 할 일이 없습니다. harness-init 은 이미 있는 seed 를 덮어쓰지 않습니다.
+
 ## v0.70.0 — 2026-10-29
 
 - 새 명령 **`/ywr-harness:auto`** (`on` · `off` · `status`) 가 생겼습니다. 이 checkout 에서만 자율 모드를 켭니다.

@@ -18,7 +18,10 @@
 # otherwise; a stage runs only with the input baseline that the typed `on` took in this session (ADR 0176): no
 # baseline, or a changed `.harness.json` or prompt file, withholds the stage with one fixed line and a toast, and
 # the stage uses the same read it hashed; `/ywr-harness:auto on|off|status` writes the state file or nothing, as
-# the argument says; and the
+# the argument says; the stage log (ADR 0180) gets one JSON line per detected stage while the switch is on, with each
+# outcome and side-check result, capped at 200 lines, never written or read with the switch off, and a failed write
+# or read never costs the stage; `status` prints the last line and, with no declaration, the declaration shape and
+# the harness-init hint; and the
 # entry `mods.mjs` registers these hooks beside the others. What it cannot prove - the engine's own event
 # shapes (the digest row, the Workflow call, the `--tree` result), that the guard lets the hooks run, that a
 # real `$.model.complete` answers the way the fake does and honours its request fields (model, effort, max tokens, timeout), that the toast
@@ -283,9 +286,9 @@ eq('CP3 canonPath: a relative path is joined to cwd first (either slash, trailin
     [on[0].includes(K_ON), on[0].includes(K_OFF), on[0].includes(base.statePath), off[0].includes(K_OFF), off[0].includes(K_ON)], [true, false, true, true, false])
   eq('SX3 statusText: on, one baseline line, then one line per declared stage with its prompt; a check stage ends with the check tag; off has no baseline line', [on.slice(2), on.length, off.length], [['- ready-report: docs/p.md \u00b7 check', '- review-start: docs/q.md'], 4, 3])
   const none = M.statusText({ ...base, decl: { stages: {}, problems: [] } }).split('\n')
-  eq('SX4 statusText: no declaration gives one line that names decision_prompts', [none.length, none[2].includes('decision_prompts'), HANGUL.test(none[2])], [3, true, true])
+  eq('SX4 statusText: no declaration gives the line that names decision_prompts, then the declaration shape and the harness-init line (ADR 0180)', [none.length, none[2].includes('decision_prompts'), HANGUL.test(none[2])], [5, true, true])
   const prob = M.statusText({ ...base, decl: { stages: {}, problems: ['first problem', 'second problem'] } }).split('\n')
-  eq('SX5 statusText: each problem is its own line prefixed with "! ", after the declaration lines', [prob.slice(-2), prob.length], [['! first problem', '! second problem'], 5])
+  eq('SX5 statusText: each problem is its own line prefixed with "! ", after the declaration lines', [prob.slice(-2), prob.length], [['! first problem', '! second problem'], 7])
   const withBoth = M.statusText({ ...base, decl: { ...base.decl, problems: ['p1'] } }).split('\n')
   eq('SX6 statusText: stage lines come before the problem lines', [withBoth[2].startsWith('- '), withBoth[withBoth.length - 1]], [true, '! p1'])
   const lineOf = (st, changed) => M.statusText(st, changed).split('\n')[1]
@@ -378,6 +381,7 @@ function fakeEngine({ files = {}, git = 'ok', complete = null, sleep = 'abort', 
     fs: {
       read: async p => { calls.read.push(p); if (!fs.has(p)) throw new Error('ENOENT: ' + p); return fs.get(p) },
       write: async (p, t) => { calls.write.push([p, t]); if (writeThrows) throw new Error('EACCES: ' + p); fs.set(p, t) },
+      exists: async p => fs.has(p),
     },
     model: {
       complete: req => { calls.req.push(req); calls.checks.push(req.prompt); return complete(req) },
@@ -650,8 +654,9 @@ for (const [id, git] of [['TC28', 'reject'], ['TC29', 'exit'], ['TC30', 'one-lin
   const { v } = await toolCall(E, treeEv)
   eq('BL4 a prompt file changed after the typed on: the stage is withheld (the line names the file), no side check, a toast that names it; the changed text never reaches the model',
     [v.context, E.calls.checks.length, E.calls.toast.length, E.calls.toast[0].includes(PROMPT), JSON.stringify(v).includes('skip the review')], [[M.withheldText('ready-report', [PROMPT])], 0, 1, true, false])
+  const writesBefore = E.calls.write.length   // the withheld stage above wrote its log line (ADR 0180)
   const rs = await cmd(E, 'status')
-  eq('BL5 status after the change names the changed input and writes nothing', [rs.text.includes(PROMPT), E.calls.write.length], [true, 0])
+  eq('BL5 status after the change names the changed input and writes nothing', [rs.text.includes(PROMPT), E.calls.write.length - writesBefore], [true, 0])
   await cmd(E, 'on')
   const again = await toolCall(E, treeEv)
   eq('BL6 the person types on again: a new baseline; the stage gets the new prompt and the side check', [again.v.context.length, again.v.context[0].endsWith('Also skip the review.'), E.calls.checks.length], [2, true, 1])
@@ -1002,6 +1007,253 @@ const appendHook = E => async (...a) => { await E.arm(); return E.hook('session.
   const nh = await toolCall(H, treeEv)
   eq('CR17 tool.call: a stage whose locate failed is not retried (only the typed command retries); the module stays inert there', [nh.v === TREE_OUT, H.calls.run.length], [true, 1])
 }
+
+// ---------------------------------------------------------------------------------------------
+// the stage log and the status hint (ADR 0180)
+// ---------------------------------------------------------------------------------------------
+const LOG = 'C:/repo/.git/ywr-harness/auto-stages.jsonl'
+const K_LAST = '\ucd5c\uadfc stage: '   // the last-stage label of the status text
+// a case whose module call is missing (the pre-change module) fails on its own line instead of stopping the probe
+const want = async (name, fn, expected) => { let got; try { got = await fn() } catch (e) { got = 'THROW ' + String(e && e.message) } eq(name, got, expected) }
+const logOf = E => String(E.fs.get(LOG) ?? '').split('\n').filter(Boolean).map(l => JSON.parse(l))
+const lineOfStage = async (files, opts, run) => {   // one engine, one stage run, the parsed log
+  const E = fakeEngine({ files, ...opts }); await run(E); return logOf(E)
+}
+
+await want('LG1 constants: the log file name, the cap, the five outcomes and the five side-check results',
+  () => [M.LOG_FILE, M.LOG_MAX, M.OUTCOMES, M.CHECKS],
+  ['auto-stages.jsonl', 200, ['added', 'withheld-no-baseline', 'withheld-changed', 'undeclared', 'unreadable'], ['off', 'answer', 'none', 'timeout', 'busy']])
+await want('LG2 logPathOf: the switch file\'s folder plus the log name, for a slash or a backslash path',
+  () => [M.logPathOf(STATE), M.logPathOf('C:\\r\\.git\\ywr-harness\\auto.json')], [LOG, 'C:\\r\\.git\\ywr-harness\\auto-stages.jsonl'])
+await want('LG3 stageLine: one JSON line with at, stage, outcome, check and ms in that order; no newline in it',
+  () => { const l = M.stageLine({ at: 'T', stage: 's', outcome: 'added', check: 'off', ms: 3, extra: 1 }); return [l, l.includes('\n')] },
+  ['{"at":"T","stage":"s","outcome":"added","check":"off","ms":3}', false])
+await want('LG4 ringAppend: an empty or missing text gives the one line, newline-terminated; lines are added in order; CRLF and blank lines are dropped',
+  () => [M.ringAppend('', 'a'), M.ringAppend(undefined, 'a'), M.ringAppend('a\nb\n', 'c'), M.ringAppend('a\r\n\r\nb', 'c')], ['a\n', 'a\n', 'a\nb\nc\n', 'a\nb\nc\n'])
+await want('LG5 ringAppend: the default cap is 200 lines, the oldest go first, the new line stays last; a smaller max is honoured',
+  () => {
+    const text = Array.from({ length: 250 }, (_, i) => 'l' + i).join('\n') + '\n'
+    const out = M.ringAppend(text, 'NEW').split('\n').filter(Boolean)
+    const small = M.ringAppend('a\nb\nc\n', 'd', 2)
+    return [out.length, out[0], out[198], out[199], small]
+  }, [200, 'l51', 'l249', 'NEW', 'c\nd\n'])
+await want('LG6 lastLine: the last non-empty line, trimmed; empty, blank and missing texts give the empty string',
+  () => [M.lastLine('a\nb\n'), M.lastLine('a\n  b  \n\n'), M.lastLine(''), M.lastLine('\n \n'), M.lastLine(undefined)], ['b', 'b', '', '', ''])
+await want('LG7 statusText: no declared stage adds the declaration shape (one parseable JSON line) and the harness-init line after the decision_prompts line; a declared stage adds neither',
+  () => {
+    const st = { root: 'C:/repo', statePath: STATE, on: true, baseline: { hashes: { x: 'h' }, stages: [] }, decl: { stages: {}, problems: [] } }
+    const l = M.statusText(st).split('\n')
+    const shape = l[3].slice(l[3].indexOf('{'))
+    const decl = JSON.parse(shape).decision_prompts
+    const withStage = M.statusText({ ...st, decl: { stages: { 'ready-report': { prompt: 'a.md', check: false } }, problems: [] } })
+    return [l.length, HANGUL.test(l[3]), M.parseDecl(JSON.parse(shape)).problems, Object.keys(M.parseDecl(JSON.parse(shape)).stages), Object.keys(decl),
+      l[4].includes('/ywr-harness:harness-init'), l[4].includes('docs/prompts/review-digest.md'), l[4].includes('docs/prompts/ready-report.md'), HANGUL.test(l[4]),
+      withStage.includes('harness-init'), withStage.includes('decision_prompts')]
+  }, [5, true, [], ['ready-report'], ['ready-report'], true, true, true, true, false, false])
+await want('LG8 statusText: the last stage line comes last under the Korean label; none when the line is empty',
+  () => {
+    const st = { root: 'C:/repo', statePath: STATE, on: true, baseline: { hashes: { 'x': 'h' }, stages: [] }, decl: { stages: { 'ready-report': { prompt: 'a.md', check: false } }, problems: ['p'] } }
+    return [M.statusText(st, [], null, 'THE LINE').split('\n').slice(-2), M.statusText(st, []).includes(K_LAST), M.statusText(st, [], null, '').includes(K_LAST)]
+  }, [['! p', K_LAST + 'THE LINE'], false, false])
+
+// each outcome, written once per detected stage while the switch is on
+const REC_KEYS = ['at', 'stage', 'outcome', 'check', 'ms']
+await want('LG9 an added stage with check off logs one line: the five keys, an ISO time, a number of milliseconds, outcome added, check off',
+  async () => {
+    const [l, ...more] = await lineOfStage(filesOn(ALL_STATIC), {}, E => toolCall(E, treeEv))
+    return [more.length, Object.keys(l), new Date(l.at).toISOString() === l.at, Number.isFinite(l.ms) && l.ms >= 0, l.stage, l.outcome, l.check]
+  }, [0, REC_KEYS, true, true, 'ready-report', 'added', 'off'])
+await want('LG10 no baseline in this session and a declared stage: outcome withheld-no-baseline, check off',
+  async () => (await lineOfStage(filesOn(ALL_CHECK), { complete: answers(ANSWER), armed: false }, E => toolCall(E, treeEv))).map(l => [l.stage, l.outcome, l.check]),
+  [['ready-report', 'withheld-no-baseline', 'off']])
+await want('LG11 an input changed after the typed on: outcome withheld-changed, check off, no side check asked',
+  async () => {
+    const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
+    await E.arm(); E.fs.set(ROOT + '/' + PROMPT, 'changed')
+    await toolCall(E, treeEv)
+    return [logOf(E).map(l => [l.stage, l.outcome, l.check]), E.calls.checks.length]
+  }, [[['ready-report', 'withheld-changed', 'off']], 0])
+await want('LG12 an undeclared stage logs undeclared, with a baseline and without one',
+  async () => {
+    const files = filesOn(declOf({ 'review-start': { prompt: PROMPT } }))
+    const a = await lineOfStage(files, {}, E => toolCall(E, treeEv))
+    const b = await lineOfStage(files, { armed: false }, E => toolCall(E, treeEv))
+    return [...a, ...b].map(l => [l.stage, l.outcome, l.check])
+  }, [['ready-report', 'undeclared', 'off'], ['ready-report', 'undeclared', 'off']])
+await want('LG13 a declared prompt file that cannot be read: outcome unreadable, check off, no side check',
+  async () => {
+    const E = fakeEngine({ files: { [STATE]: ON, [ROOT + '/.harness.json']: ALL_CHECK }, complete: answers(ANSWER) })
+    await toolCall(E, treeEv)
+    return [logOf(E).map(l => [l.stage, l.outcome, l.check]), E.calls.checks.length]
+  }, [[['ready-report', 'unreadable', 'off']], 0])
+
+// the side-check result
+await want('LG14 check answer: a real answer within the wait',
+  async () => (await lineOfStage(filesOn(ALL_CHECK), { complete: answers(ANSWER) }, E => toolCall(E, treeEv))).map(l => [l.outcome, l.check]), [['added', 'answer']])
+await want('LG15 check none: the model answered NONE (in any case, or with nothing)',
+  async () => {
+    const out = []
+    for (const t of ['NONE', 'none.', '']) out.push(...(await lineOfStage(filesOn(ALL_CHECK), { complete: answers(t) }, E => toolCall(E, treeEv))).map(l => l.check))
+    return out
+  }, ['none', 'none', 'none'])
+await want('LG16 check timeout: no answer within the wait, a call that rejects, a call that throws at once, a reply that is not answered',
+  async () => {
+    const out = []
+    out.push(...(await lineOfStage(filesOn(ALL_CHECK), { complete: () => new Promise(() => {}), sleep: 'now' }, E => toolCall(E, treeEv))).map(l => [l.outcome, l.check]))
+    out.push(...(await lineOfStage(filesOn(ALL_CHECK), { complete: async () => { throw new Error('check failed') } }, E => toolCall(E, treeEv))).map(l => [l.outcome, l.check]))
+    out.push(...(await lineOfStage(filesOn(ALL_CHECK), { complete: () => { throw new Error('refused at once') } }, E => toolCall(E, treeEv))).map(l => [l.outcome, l.check]))
+    out.push(...(await lineOfStage(filesOn(ALL_CHECK), { complete: async () => ({ isAnswered: false, text: 'late' }) }, E => toolCall(E, treeEv))).map(l => [l.outcome, l.check]))
+    return out
+  }, [['added', 'timeout'], ['added', 'timeout'], ['added', 'timeout'], ['added', 'timeout']])
+await want('LG17 check busy: a stage that starts while another side check runs logs busy; the first logs its own answer after it',
+  async () => {
+    let answer
+    const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: () => new Promise(res => { answer = res }) })
+    const p1 = toolCall(E, treeEv)
+    for (let i = 0; i < 20 && E.calls.checks.length < 1; i++) await tick(5)
+    await toolCall(E, reviewEv, { text: 'started' })
+    answer({ isAnswered: true, text: ANSWER })
+    await p1
+    return logOf(E).map(l => [l.stage, l.outcome, l.check])
+  }, [['review-start', 'added', 'busy'], ['ready-report', 'added', 'answer']])
+
+// each stage shape, the log cap, the switch off, a failing write
+await want('LG18 the three stages each log under their own name, in order: review-start, ready-report, then the digest row',
+  async () => {
+    const E = fakeEngine({ files: filesOn(ALL_STATIC) })
+    await toolCall(E, reviewEv, { text: 'started' })
+    await toolCall(E, treeEv)
+    await appendHook(E)(E.$, digRow(), nextWith(SENT))
+    return logOf(E).map(l => [l.stage, l.outcome])
+  }, [['review-start', 'added'], ['ready-report', 'added'], ['review-digest', 'added']])
+await want('LG19 a call that is no stage logs nothing, even with the switch on; a stage after them does',
+  async () => {
+    const E = fakeEngine({ files: filesOn(ALL_STATIC) })
+    await toolCall(E, { tool: 'Bash', command: 'ls' }, { text: 'x' })
+    await toolCall(E, { tool: 'Workflow', name: 'ywr-harness:other' }, { text: 'y' })
+    await toolCall(E, { ...treeEv, agentId: 'a1' })
+    const quiet = [E.fs.has(LOG), E.calls.write.length, E.calls.read.includes(LOG)]
+    await toolCall(E, treeEv)   // control: a real stage on the same engine does log
+    return [quiet, logOf(E).length]
+  }, [[false, 0, false], 1])
+await want('LG20 the log keeps its last 200 lines: a full log plus one stage is still 200 lines, the oldest gone, the new stage last',
+  async () => {
+    const old = Array.from({ length: 200 }, (_, i) => JSON.stringify({ n: i })).join('\n') + '\n'
+    const E = fakeEngine({ files: filesOn(ALL_STATIC, { [LOG]: old }) })
+    await toolCall(E, treeEv)
+    const lines = logOf(E)
+    return [lines.length, lines[0], lines[198], lines[199].stage, lines[199].outcome]
+  }, [200, { n: 1 }, { n: 199 }, 'ready-report', 'added'])
+await want('LG21 the log is written once per stage, to the file beside the switch file, as a whole (a stage reads it before it writes it)',
+  async () => {
+    const E = fakeEngine({ files: filesOn(ALL_STATIC) })
+    await toolCall(E, treeEv)
+    await toolCall(E, treeEv)
+    const w = E.calls.write.filter(x => x[0] === LOG)
+    return [w.length, E.calls.write.length, w[1][1].split('\n').filter(Boolean).length, w[1][1].endsWith('\n'), E.calls.read.filter(p => p === LOG).length]
+  }, [2, 2, 2, true, 2])
+await want('LG22 a relative git path: the log still sits beside the switch file',
+  async () => {
+    const E = fakeEngine({ git: 'relative', cwd: 'C:/repo/', files: filesOn(ALL_STATIC) })
+    await toolCall(E, treeEv)
+    return [E.calls.write.map(x => x[0]), logOf(E).length]
+  }, [[LOG], 1])
+for (const [id, files] of [['LG23', { [ROOT + '/.harness.json']: ALL_CHECK, [ROOT + '/' + PROMPT]: BODY }], ['LG24', filesOn(ALL_CHECK, { [STATE]: '{"on":false}' })]]) {
+  await want(`${id} switch off (${id === 'LG23' ? 'no state file' : 'on false'}): a stage writes no log line and reads no log; a prefilled log stays as it was`,
+    async () => {
+      const E = fakeEngine({ files: { ...files, [LOG]: 'keep\n' }, complete: answers(ANSWER) })
+      await toolCall(E, treeEv)
+      await toolCall(E, reviewEv, { text: 'started' })
+      await appendHook(E)(E.$, digRow(), nextWith(SENT))
+      const control = fakeEngine({ files: filesOn(ALL_STATIC) })   // the same stage with the switch on does log
+      await toolCall(control, treeEv)
+      return [E.calls.write.length, E.calls.read.includes(LOG), E.fs.get(LOG), logOf(control).length]
+    }, [0, false, 'keep\n', 1])
+}
+await want('LG25 a log write that fails keeps the stage result: the static prompt and the answer still come back, no unhandled rejection',
+  async () => {
+    const before = unhandled
+    const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
+    await E.arm()
+    const write = E.$.fs.write
+    let attempts = 0
+    E.$.fs.write = async (p, t) => { if (p === LOG) { attempts++; throw new Error('EACCES: ' + p) } return write(p, t) }
+    const { v } = await toolCall(E, treeEv)
+    const nd = nextWith(SENT)
+    await appendHook(E)(E.$, digRow(), nd)
+    await tick(30)
+    return [v.context, nd.calls[0].message.content[0].text.includes(STATIC_TEXT('review-digest')), E.fs.has(LOG), unhandled - before, attempts]
+  }, [[STATIC_TEXT('ready-report'), M.answerText('ready-report', { isAnswered: true, text: ANSWER })], true, false, 0, 2])
+await want('LG26 a log read that fails on a log that exists keeps the stage result and leaves the log as it was (no write)',
+  async () => {
+    const E = fakeEngine({ files: filesOn(ALL_STATIC, { [LOG]: 'old\n' }) })
+    await E.arm()
+    const read = E.$.fs.read
+    E.$.fs.read = async p => { if (p === LOG) throw new Error('EIO'); return read(p) }
+    const { v } = await toolCall(E, treeEv)
+    return [v.context, E.fs.get(LOG), E.calls.write.filter(x => x[0] === LOG).length]
+  }, [[STATIC_TEXT('ready-report')], 'old\n', 0])
+await want('LG26b a failed log read whose exists call fails too keeps the log; a missing log (read and exists both say absent) gets its first line',
+  async () => {
+    const before = unhandled
+    const E = fakeEngine({ files: filesOn(ALL_STATIC, { [LOG]: 'old\n' }) })
+    await E.arm()
+    const read = E.$.fs.read
+    E.$.fs.read = async p => { if (p === LOG) throw new Error('EIO'); return read(p) }
+    E.$.fs.exists = async () => { throw new Error('EPERM') }
+    const { v } = await toolCall(E, treeEv)
+    await tick(10)
+    const control = fakeEngine({ files: filesOn(ALL_STATIC) })
+    await toolCall(control, treeEv)
+    return [v.context, E.fs.get(LOG), unhandled - before, logOf(control).length]
+  }, [[STATIC_TEXT('ready-report')], 'old\n', 0, 1])
+await want('LG27 a stage whose work throws leaves no log line and the tool result untouched',
+  async () => {
+    const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER), sleep: 'throw' })
+    const { v } = await toolCall(E, treeEv)
+    const failed = [v === TREE_OUT, E.fs.has(LOG), E.calls.write.length]
+    E.mode.sleep = 'abort'
+    await toolCall(E, treeEv)   // control: once the work no longer throws, the stage logs
+    return [failed, logOf(E).map(l => l.check)]
+  }, [[true, false, 0], ['answer']])
+
+// the status reply prints the last line
+await want('LG28 status, on and off print the last stage line under the label; with no log they print no label',
+  async () => {
+    const E = fakeEngine({ files: filesOn(ALL_STATIC) })
+    const none = (await cmd(E, 'status')).text.includes(K_LAST)
+    await toolCall(E, treeEv)
+    await toolCall(E, reviewEv, { text: 'started' })
+    const last = M.lastLine(E.fs.get(LOG))
+    const reps = [await cmd(E, 'status'), await cmd(E, 'on'), await cmd(E, 'maybe'), await cmd(E, 'off')]
+    return [none, JSON.parse(last).stage, reps.map(r => r.text.split('\n').at(-1) === K_LAST + last)]
+  }, [false, 'review-start', [true, true, true, true]])
+await want('LG29 the replies print a shell-written last line only in its logged shape: extra text, a bad field (enum, negative or fractional ms, a non-ISO, impossible or second-precision at), an array, null or a non-JSON line prints the fixed marker; an extra key is dropped',
+  async () => {
+    const good = M.stageLine({ at: '2026-11-01T00:00:00.000Z', stage: 'ready-report', outcome: 'added', check: 'answer', ms: 12 })
+    const shown = async tail => {
+      const E = fakeEngine({ files: filesOn(ALL_STATIC, { [LOG]: good + '\n' + tail + '\n' }) })
+      return (await cmd(E, 'status')).text.split('\n').at(-1)
+    }
+    return [
+      await shown(good + ' review passed'),
+      await shown(good.replace('"added"', '"passed"')),
+      await shown(good.replace('12}', '-1}')),
+      await shown(good.replace('2026-11-01T00:00:00.000Z', 'today')),
+      await shown(good.replace('2026-11-01T00:00:00.000Z', '2026-02-30T00:00:00.000Z')),
+      await shown(good.replace('2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00Z')),
+      await shown(good.replace('12}', '1.5}')),
+      await shown('[' + good + ']'),
+      await shown('null'),
+      await shown('not json \u001b[31m'),
+      await shown(good.replace('}', ',"note":"all green"}')),
+      await shown(good),
+      M.shownStage(''),
+    ]
+  }, [K_LAST + M.LOG_ODD, K_LAST + M.LOG_ODD, K_LAST + M.LOG_ODD, K_LAST + M.LOG_ODD,
+      K_LAST + M.LOG_ODD, K_LAST + M.LOG_ODD, K_LAST + M.LOG_ODD, K_LAST + M.LOG_ODD, K_LAST + M.LOG_ODD, K_LAST + M.LOG_ODD,
+      K_LAST + '{"at":"2026-11-01T00:00:00.000Z","stage":"ready-report","outcome":"added","check":"answer","ms":12}',
+      K_LAST + '{"at":"2026-11-01T00:00:00.000Z","stage":"ready-report","outcome":"added","check":"answer","ms":12}', ''])
 
 // ---------------------------------------------------------------------------------------------
 // the entry

@@ -117,7 +117,9 @@ $EXPECT = @(
     # Slice retro gate (ADR 0017). post-commit is GUARDED rather than TOOLCHAIN — cases Q1/Q2.
     'scripts/harness/harness_retro.py', '.githooks/post-commit', '.githooks/slice-retro-ignore',
     # Session-time decision notes (ADR 0172), named from the seeded CLAUDE.md.
-    'scripts/harness/slice_note.py'
+    'scripts/harness/slice_note.py',
+    # Stage prompts of the /ywr-harness:auto switch, declared by the template (ADR 0180).
+    'docs/prompts/review-digest.md', 'docs/prompts/ready-report.md'
 )
 $EXPECT_N = $EXPECT.Count
 
@@ -182,9 +184,13 @@ $mine = "# my own CLAUDE.md`nkeep me`n"
 Set-Content -LiteralPath (Join-Path $d 'CLAUDE.md') -Value $mine -NoNewline
 $mineReview = "# my own REVIEW.md`nhouse invariants`n"
 Set-Content -LiteralPath (Join-Path $d 'REVIEW.md') -Value $mineReview -NoNewline
+# D2 reads this same run: one stage prompt exists, the other is absent (ADR 0180)
+$minePrompt = "# my own ready-report prompt`nkeep me`n"
+New-Item -ItemType Directory -Force -Path (Join-Path $d 'docs/prompts') | Out-Null
+Set-Content -LiteralPath (Join-Path $d 'docs/prompts/ready-report.md') -Value $minePrompt -NoNewline
 $rD = Invoke-Init @('-Target', $d)
 $after = Get-Content -LiteralPath (Join-Path $d 'CLAUDE.md') -Raw
-$ok = (Assert-True 'D existing seeds reported preserved' ($rD.Out -match 'preserved=2') $rD.Out) -and $ok
+$ok = (Assert-True 'D existing seeds reported preserved' ($rD.Out -match 'preserved=3\b') $rD.Out) -and $ok
 $ok = (Assert-True 'D existing seed is byte-identical afterwards' ($after -eq $mine) 'CLAUDE.md was modified') -and $ok
 $ok = (Assert-True 'D existing REVIEW.md is byte-identical afterwards (ADR 0054 — SEED)' `
         ((Get-Content -LiteralPath (Join-Path $d 'REVIEW.md') -Raw) -eq $mineReview) 'REVIEW.md was modified') -and $ok
@@ -193,6 +199,27 @@ $ok = (Assert-True 'D preserved seed still warns the reader' ($rD.Out -match 'ne
 # placeholder prose a repo rewrites wholesale, so a note would be permanent noise. These seeds
 # share zero lines with their templates — a note here means the exclusion regressed.
 $ok = (Assert-True 'D rewritten CLAUDE.md/REVIEW.md never carry a drift note' ($rD.Out -notmatch 'this seed lacks') $rD.Out) -and $ok
+
+# --- D2: the stage prompt seeds (ADR 0180) ---------------------------------------------------
+# Seeds: an existing file survives byte-identical, an absent one is placed, and the template
+# declares both with no `check`, so the placed .harness.json turns the switch's stages on as soon as
+# the member types `on`. No regex of `review.docs_only` exempts docs/prompts/. The declaration checks
+# read the .harness.json this run PLACED, not the template, so a placement that rewrote it fails here.
+# It reads case D's run, so it costs no init run of its own (owner, 2026-10-30).
+$ok = (Assert-True 'D2 an existing stage prompt is byte-identical afterwards (ADR 0180 - SEED)' `
+        ((Get-Content -LiteralPath (Join-Path $d 'docs/prompts/ready-report.md') -Raw) -eq $minePrompt) 'ready-report.md was modified') -and $ok
+$ok = (Assert-True 'D2 the absent stage prompt is placed, equal to its template' `
+        ((Get-Content -LiteralPath (Join-Path $d 'docs/prompts/review-digest.md') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/prompts/review-digest.md') -Raw)) 'review-digest.md missing or differs') -and $ok
+$tplDecl = Get-Content -LiteralPath (Join-Path $d '.harness.json') -Raw | ConvertFrom-Json
+$stages = @($tplDecl.decision_prompts.PSObject.Properties.Name)
+$ok = (Assert-True 'D2 the placed .harness.json declares review-digest and ready-report with their seed paths and no check' `
+        ($stages.Count -eq 2 -and $tplDecl.decision_prompts.'review-digest'.prompt -ceq 'docs/prompts/review-digest.md' -and
+        $tplDecl.decision_prompts.'ready-report'.prompt -ceq 'docs/prompts/ready-report.md' -and
+        @($tplDecl.decision_prompts.PSObject.Properties | Where-Object { $_.Value.PSObject.Properties.Name -contains 'check' }).Count -eq 0) "stages=$($stages -join ',')") -and $ok
+$docsOnly = @($tplDecl.review.docs_only | ForEach-Object { [regex]::new('\A(?:' + $_ + ')') })
+$exempt = { param($p) @($docsOnly | Where-Object { $_.IsMatch($p) }).Count -gt 0 }
+$ok = (Assert-True 'D2 review.docs_only exempts a doc and no prompt file, no placed script' `
+        ((& $exempt 'docs/adr/0002-x.md') -and -not (& $exempt 'docs/prompts/ready-report.md') -and -not (& $exempt 'docs/build_docs.py')) 'docs_only regex moved') -and $ok
 
 # --- E: content files are never touched -------------------------------------------------------
 # A repo's accumulated decisions are the one thing a re-runnable scaffold must not endanger.

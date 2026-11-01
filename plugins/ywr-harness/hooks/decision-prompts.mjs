@@ -45,6 +45,17 @@
 // tracked. `/ywr-harness:auto on|off|status` is answered here by `command.run`, with no model turn
 // (fact 136); the skill body runs only where the host drops the module.
 //
+// The stage log (ADR 0180): while the switch is on, each detected stage appends one JSON line
+// `{at, stage, outcome, check, ms}` to `auto-stages.jsonl` beside the switch file, so a later session can
+// tell whether a stage ran. `$.fs` has no append call: the hook reads the whole file, adds the line, keeps
+// the last `LOG_MAX` lines and writes it whole. A failed write is swallowed and changes nothing at the stage.
+// A failed read of a log that exists skips the write, so the stage leaves the log as it was; a missing log
+// starts empty (ADR 0181). At a stage with the switch off the hook neither reads nor writes it. `status`, `on`
+// and `off` print the last line, rebuilt from its five fields after a shape check (`shownStage`); a line of
+// another shape prints as `LOG_ODD` (ADR 0181). The file is shell-writable, so a line proves nothing about a stage. `ms` runs from the
+// switch read to the end of the stage work, without the log write itself. A stage whose work throws leaves no
+// line. Two stages whose log writes overlap can lose one line: the later whole-file write wins (ADR 0180).
+//
 // A checkout with the switch off pays one `git rev-parse`, started without a wait at the first main turn,
 // and no file read or model call on a call that is not a stage: the stage shapes are pure checks on `e`,
 // and the edit guard only compares paths while the cached state is off. The cache is refreshed at each stage and each `/ywr-harness:auto`, so a switch
@@ -58,6 +69,10 @@ export const COMMAND = 'ywr-harness:auto'
 export const STAGES = ['review-start', 'review-digest', 'ready-report']
 export const REVIEW_WORKFLOW = 'ywr-harness:adversarial-review'
 export const STATE_REL = 'ywr-harness/auto.json'
+export const LOG_FILE = 'auto-stages.jsonl'   // beside the switch file
+export const LOG_MAX = 200                    // lines the stage log keeps
+export const OUTCOMES = ['added', 'withheld-no-baseline', 'withheld-changed', 'undeclared', 'unreadable']
+export const CHECKS = ['off', 'answer', 'none', 'timeout', 'busy']
 export const CHECK_WAIT_MS = 30000
 export const CHECK_MODEL = 'sonnet'
 export const CHECK_EFFORT = 'low'
@@ -236,9 +251,53 @@ export function editTarget(e, st, cwd) {
   return rels.some(rel => t === `${base}/${canonPath(rel)}`) ? 'input' : null
 }
 
+// The stage log's path: the switch file's folder plus `LOG_FILE`.
+export function logPathOf(statePath) {
+  return String(statePath ?? '').replace(/[^\\/]*$/, '') + LOG_FILE
+}
+
+// One stage record as one JSON line (JSON never carries a raw newline).
+export function stageLine(rec) {
+  return JSON.stringify({ at: rec.at, stage: rec.stage, outcome: rec.outcome, check: rec.check, ms: rec.ms })
+}
+
+// The log's text with `line` added and only the last `max` lines kept; every line ends in a newline.
+export function ringAppend(text, line, max = LOG_MAX) {
+  const lines = String(text ?? '').split(/\r?\n/).filter(l => l !== '')
+  lines.push(line)
+  return lines.slice(-max).join('\n') + '\n'
+}
+
+// The last non-empty line of the log's text, or the empty string.
+export function lastLine(text) {
+  const lines = String(text ?? '').split(/\r?\n/).filter(l => l.trim() !== '')
+  return lines.length ? lines[lines.length - 1].trim() : ''
+}
+
+// The stage log's last line as the replies show it: rebuilt from its five fields when each one has its
+// logged shape, so a shell-written line cannot put its own text in a reply; `LOG_ODD` for any other line
+// (ADR 0181).
+export const LOG_ODD = '(형식이 맞지 않는 줄)'
+// `at` as the module writes it: the `toISOString` text of a real time, so an impossible date fails
+const isIsoAt = at => typeof at === 'string' && Number.isFinite(Date.parse(at)) &&
+  new Date(Date.parse(at)).toISOString() === at
+export function shownStage(line) {
+  if (!line) return ''
+  let r
+  try { r = JSON.parse(line) } catch { return LOG_ODD }
+  const ok = r !== null && typeof r === 'object' && !Array.isArray(r) &&
+    isIsoAt(r.at) && STAGES.includes(r.stage) &&
+    OUTCOMES.includes(r.outcome) && CHECKS.includes(r.check) && Number.isSafeInteger(r.ms) && r.ms >= 0
+  return ok ? stageLine(r) : LOG_ODD
+}
+
+// The declaration shape that `status` shows when no stage is declared (ADR 0180 Decision 7).
+export const DECL_SHAPE = '{"decision_prompts":{"ready-report":{"prompt":"docs/prompts/ready-report.md","check":false}}}'
+
 // `changed`: the inputs that differ from the session's baseline, or null when the session has none.
 // `baseLine`: the `on` reply's own baseline line, in place of the computed one.
-export function statusText(st, changed = null, baseLine = null) {
+// `lastStage`: the last line of the stage log, or the empty string.
+export function statusText(st, changed = null, baseLine = null, lastStage = '') {
   const lines = []
   if (!st.root) return '이 폴더는 git 저장소가 아니거나 git 을 찾지 못해 auto 스위치를 쓸 수 없습니다.'
   lines.push(`auto 스위치: ${st.on ? '켜짐' : '꺼짐'} (이 checkout 만, ${st.statePath})`)
@@ -251,8 +310,13 @@ export function statusText(st, changed = null, baseLine = null) {
   const names = Object.keys(st.decl.stages)
   if (names.length) {
     for (const n of names) lines.push(`- ${n}: ${st.decl.stages[n].prompt}${st.decl.stages[n].check ? ' · check' : ''}`)
-  } else lines.push('.harness.json 에 decision_prompts 선언이 없어 켜져 있어도 아무 일도 하지 않습니다.')
+  } else {
+    lines.push('.harness.json 에 decision_prompts 선언이 없어 켜져 있어도 아무 일도 하지 않습니다.')
+    lines.push(`선언 형식 (stage: ${STAGES.join(' | ')}): ${DECL_SHAPE}`)
+    lines.push('/ywr-harness:harness-init 을 실행하면 docs/prompts/review-digest.md 와 docs/prompts/ready-report.md 를 놓습니다 (이미 있는 파일은 그대로 둡니다).')
+  }
   for (const p of st.decl.problems) lines.push(`! ${p}`)
+  if (lastStage) lines.push(`최근 stage: ${lastStage}`)
   return lines.join('\n')
 }
 
@@ -355,21 +419,41 @@ function withhold($, stage, changed) {
 
 // The stage's texts for the model: the static prompt, then the side-check answer when declared. [] when the
 // switch is off, the stage is undeclared now and at the baseline, or its prompt file cannot be read. The
-// withheld line alone when the session has no baseline or an input changed (ADR 0176).
+// withheld line alone when the session has no baseline or an input changed (ADR 0176). While the switch is
+// on, the stage is logged once its work is done (ADR 0180).
 async function stageTexts($, st, stage, e, r) {
+  const t0 = Date.now()
   try { st.on = parseSwitch(await $.fs.read(st.statePath)) } catch { st.on = false }
   if (!st.on) return []
+  const rec = { outcome: null, check: 'off' }
+  const texts = await stageWork($, st, stage, e, r, rec)
+  await logStage($, st, stage, rec, Date.now() - t0)
+  return texts
+}
+
+// The stage's work; `rec` takes the outcome and the side-check result for the log.
+async function stageWork($, st, stage, e, r, rec) {
   const { texts: inputs, decl } = await readInputs($, st)
   st.decl = decl
   const entry = decl.stages[stage]
-  if (!st.baseline) return entry ? withhold($, stage, null) : []
+  if (!st.baseline) {
+    rec.outcome = entry ? 'withheld-no-baseline' : 'undeclared'
+    return entry ? withhold($, stage, null) : []
+  }
   const changed = changedInputs(st.baseline.hashes, await hashInputs(inputs))
-  if (changed.length) return entry || st.baseline.stages.includes(stage) ? withhold($, stage, changed) : []
-  if (!entry || inputs[entry.prompt] === null) return []
+  if (changed.length) {
+    const held = entry || st.baseline.stages.includes(stage)
+    rec.outcome = held ? 'withheld-changed' : 'undeclared'
+    return held ? withhold($, stage, changed) : []
+  }
+  if (!entry) { rec.outcome = 'undeclared'; return [] }
+  if (inputs[entry.prompt] === null) { rec.outcome = 'unreadable'; return [] }
   const promptText = inputs[entry.prompt]
   const texts = [contextText(stage, entry.prompt, promptText)]
-  if (entry.check && !st.checking) {
+  if (entry.check && st.checking) rec.check = 'busy'
+  else if (entry.check) {
     st.checking = true
+    rec.check = 'timeout'   // until an answer comes back: no answer in the wait, or a failed call
     try {
       // the call carries its own timeout; the race bounds a host that ignores it, and its timer is
       // aborted once the call settles, so no 30 s timer outlives the stage
@@ -380,15 +464,41 @@ async function stageTexts($, st, stage, e, r) {
         prompt: checkPrompt(stage, promptText, stageData(stage, e, r)),
       })).catch(() => null)
       const timeout = $.clock.sleep(CHECK_WAIT_MS, { signal: stop.signal }).then(() => null, () => null)
-      let answer
-      try { answer = answerText(stage, await Promise.race([call, timeout])) } finally { stop.abort() }
+      let raw
+      try { raw = await Promise.race([call, timeout]) } finally { stop.abort() }
+      const answer = answerText(stage, raw)
+      rec.check = answer ? 'answer' : raw && raw.isAnswered === true && typeof raw.text === 'string' ? 'none' : 'timeout'
       if (answer) {
         texts.push(answer)
         try { $.ui.toast(`[ywr-harness] ${stage}: ${answer.split('\n').slice(1).join(' ').slice(0, 200)}`) } catch { /* headless */ }
       }
     } finally { st.checking = false }
   }
+  rec.outcome = 'added'
   return texts
+}
+
+// One line in the stage log. The log is a measurement aid: a failed read or write changes nothing else.
+async function logStage($, st, stage, rec, ms) {
+  if (!rec.outcome) return
+  try {
+    const path = logPathOf(st.statePath)
+    let text = ''
+    try { text = String(await $.fs.read(path)) } catch {
+      // a missing log starts empty; a log that exists but cannot be read keeps its lines, so the stage
+      // writes nothing (ADR 0181). An exists call that fails proves nothing, so the log is kept then too.
+      let there = true
+      try { there = await $.fs.exists(path) } catch { /* unknown: keep the log */ }
+      if (there) return
+    }
+    const line = stageLine({ at: new Date().toISOString(), stage, outcome: rec.outcome, check: rec.check, ms })
+    await $.fs.write(path, ringAppend(text, line))
+  } catch { /* the stage goes on without its line */ }
+}
+
+// The last line of the stage log as the replies show it (`shownStage`), or the empty string.
+async function lastStage($, st) {
+  try { return shownStage(lastLine(String(await $.fs.read(logPathOf(st.statePath))))) } catch { return '' }
 }
 
 export const EDIT_DENY = 'ywr-harness: the /ywr-harness:auto switch is on, so .harness.json and the declared ' +
@@ -474,7 +584,7 @@ export function register(on) {
           baseLine = '이 세션의 입력 기준값: 기록하지 못함. stage prompt 는 들어가지 않습니다. 원인을 확인한 뒤 다시 입력하세요.'
         }
       } else st.baseline = null
-      return { text: statusText(st, st.baseline ? [] : null, baseLine), context: [`ywr-harness auto switch is now ${st.on ? 'ON' : 'OFF'} in this checkout (ADR 0174, ADR 0175, ADR 0176).`] }
+      return { text: statusText(st, st.baseline ? [] : null, baseLine, await lastStage($, st)), context: [`ywr-harness auto switch is now ${st.on ? 'ON' : 'OFF'} in this checkout (ADR 0174, ADR 0175, ADR 0176).`] }
     }
     const usage = arg && arg !== 'status'
     await refresh($, st)
@@ -482,7 +592,8 @@ export function register(on) {
     if (st.baseline) {
       try { changed = changedInputs(st.baseline.hashes, await hashInputs((await readInputs($, st)).texts)) } catch { changed = null }
     }
-    if (usage) return { text: '사용법: /ywr-harness:auto on | off | status\n' + statusText(st, changed), context: ['ywr-harness auto: unknown argument; nothing changed.'] }
-    return { text: statusText(st, changed), context: [`ywr-harness auto switch is ${st.on ? 'ON' : 'OFF'} in this checkout.`] }
+    const last = await lastStage($, st)
+    if (usage) return { text: '사용법: /ywr-harness:auto on | off | status\n' + statusText(st, changed, null, last), context: ['ywr-harness auto: unknown argument; nothing changed.'] }
+    return { text: statusText(st, changed, null, last), context: [`ywr-harness auto switch is ${st.on ? 'ON' : 'OFF'} in this checkout.`] }
   })
 }

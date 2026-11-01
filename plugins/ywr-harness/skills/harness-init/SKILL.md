@@ -106,6 +106,14 @@ no report.
    (ADR 0054) — the slice close cites this file, and until it is rewritten reviews run against
    the generic starters only.
 5. Rebuild and commit `index.json` + `INDEX.md` with the source change.
+6. **Read the two stage prompts** the scaffold seeded, `docs/prompts/review-digest.md` and
+   `docs/prompts/ready-report.md` (ADR 0180). The template declares both under `decision_prompts`
+   with no `check`, and they do nothing until the member types `/ywr-harness:auto on`. An existing
+   `.harness.json` stays as it is. When the drift note names `decision_prompts`, tell the member to add
+   the key. On every re-run of an existing repository, also check `review.docs_only`: when a regex
+   there still matches `docs/prompts/`, tell the member to exclude that directory, for example with
+   `(?!prompts/)` after `^docs/`. Then confirm that `docs/prompts/ready-report.md` matches no entry. The
+   drift note never names this regex.
 
 If the run reported `SKIP build — python not on PATH`, the four surfaces do not exist yet: no
 tooling can query this repo's decisions until `pwsh docs/build.ps1` succeeds.

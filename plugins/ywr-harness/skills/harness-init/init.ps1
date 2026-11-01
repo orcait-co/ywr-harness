@@ -238,6 +238,10 @@ $SEED = [ordered]@{
     # TOOLCHAIN: its whole purpose is to hold values only this repo knows, so overwriting it on a
     # re-run would erase exactly the configuration it exists to carry.
     'harness.json'  = '.harness.json'
+    # The stage prompts that the template's `decision_prompts` declares for the /ywr-harness:auto switch
+    # (ADR 0180). SEED: a repo rewrites them for its own rules, and they do nothing while the switch is off.
+    'docs/prompts/review-digest.md' = 'docs/prompts/review-digest.md'
+    'docs/prompts/ready-report.md'  = 'docs/prompts/ready-report.md'
 }
 # Placed ONLY when docs/adr/ holds no record yet. Two reasons, both load-bearing:
 #   1. The builder refuses an empty corpus ("found no .md with frontmatter") — correct behavior,
