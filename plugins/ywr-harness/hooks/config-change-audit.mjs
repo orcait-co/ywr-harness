@@ -27,9 +27,9 @@
 // U+2028/U+2029 and the backtick become a space, then a hard cap), so a hostile value cannot forge
 // a second `[hook:*]` line in the banner a person or a model reads.
 //
-// Ported from PowerShell (ADR 0116) with its semantics kept: the event name is compared
+// Ported from PowerShell (ywr-harness ADR 0116) with its semantics kept: the event name is compared
 // case-insensitively and payload keys are read case-insensitively (as PSCustomObject member access
-// was); `file_path` goes through the PowerShell [string] cast. Deliberate deviations (spec 0006
+// was); `file_path` goes through the PowerShell [string] cast. Deliberate deviations (ywr-harness spec 0006
 // §3.1): a payload string stays a string (ConvertFrom-Json turned an ISO-date-shaped one into a
 // DateTime, which then read as "not a string"), and the drift key order is Intl.Collator's. The hook
 // never exits the process: it returns, so stdout drains and the exit code stays 0.

@@ -12,6 +12,11 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.73.0 — 2026-11-01
+
+- 훅이 세션에 넣는 안내, skill 본문, 플러그인 스크립트의 출력이 정본 기록을 `ywr-harness ADR NNNN` 형식으로만 가리킵니다(ywr-harness ADR 0185). 접두 없이 번호만 쓴 ADR 참조를 모델이 저장소 자신의 ADR 로 읽는 문제를 막습니다. 동작은 바뀌지 않습니다.
+  `/doctor prompt-audit` 가 이 문제를 찾았습니다. 0.71.1 은 `/ywr-harness:harness-init` 이 놓는 파일에만 같은 규칙을 적용했습니다. 기존 저장소는 할 일이 없습니다.
+
 ## v0.72.0 — 2026-11-01
 
 - **기존 저장소가 할 일(선택)**: 저장소 `CLAUDE.md` 의 `## Working principles` 에서 harness 절차 bullet 을 지우세요. 지울 bullet 은 Artifact 제목, adversarial review 호출, 슬라이스당 1회 리뷰, owner-typed close, slice 노트, handoff bullet 입니다. 일반 규칙 bullet(ADR 먼저, secrets, `docs/adr` append-only, 결정적 게이트 먼저)은 org guide 에 이미 있습니다. `## Deliverable length` 섹션도 org guide v1.20 으로 옮겨집니다(ADR 0183).

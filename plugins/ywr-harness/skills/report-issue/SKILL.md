@@ -6,10 +6,10 @@ disable-model-invocation: true
 
 # report-issue — send a defect or request to the canon
 
-Harness defects are fixed in the canon and never patched in a consuming repo (ADR 0010). This
+Harness defects are fixed in the canon and never patched in a consuming repo (ywr-harness ADR 0010). This
 skill is how a member gets a defect there: the canon `ywrlabs/ywr-harness` is private, so the
 report is filed on the PUBLIC dist tracker (`orcait-co/ywr-harness`), and the canon's session-start
-inbox lists every open dist issue (ADR 0064, ADR 0085). The script sets no label: GitHub silently
+inbox lists every open dist issue (ywr-harness ADR 0064, ywr-harness ADR 0085). The script sets no label: GitHub silently
 drops a label set by a filer without push access, so the inbox does not depend on one.
 
 Invoke: `/ywr-harness:report-issue <description>`. `$ARGUMENTS` is the member's description. Two
@@ -68,9 +68,9 @@ The script files the reviewed file (title line stripped) with `gh issue create` 
 ## What this skill never does
 
 - **Never files without step 3.** The confirmation is the whole safety of a public tracker.
-- **Never includes file contents or diffs** (ADR 0064 option E) — file names, versions and commit
+- **Never includes file contents or diffs** (ywr-harness ADR 0064 option E) — file names, versions and commit
   subjects only. When the canon needs the diff it asks in the issue thread.
 - **Never runs `/ywr-harness:harness-init`**, even when the dry run shows a refresh would fix
-  things — a re-run reverts the very edit being reported (ADR 0010's signal; ADR 0033/0042 on
+  things — a re-run reverts the very edit being reported (ywr-harness ADR 0010's signal; ywr-harness ADR 0033/0042 on
   direction).
 - **Never regenerates the body at filing time.** `-File` takes the file the member read.

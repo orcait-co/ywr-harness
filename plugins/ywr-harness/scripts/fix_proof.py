@@ -1,10 +1,10 @@
-"""Failing-then-passing proof for each high the review names (ADR 0169). Backend for /slice-close stage 2.
+"""Failing-then-passing proof for each high the review names (ywr-harness ADR 0169). Backend for /slice-close stage 2.
 
-A fix-check leg READS a fix (ADR 0090); nothing in that leg runs the finding's scenario. This script
+A fix-check leg READS a fix (ywr-harness ADR 0090); nothing in that leg runs the finding's scenario. This script
 runs it. The closer runs a command that shows the defect BEFORE editing the fix, and the same command
 after it. Each run is recorded with the exit code this script observed, the worktree snapshots taken
-just before and just after it (the `--tree` identity, ADR 0105) and HEAD. `check` then passes a key only on that
-evidence, so the proof is not the closer's own line in the close record — ADR 0105's "input, never
+just before and just after it (the `--tree` identity, ywr-harness ADR 0105) and HEAD. `check` then passes a key only on that
+evidence, so the proof is not the closer's own line in the close record — ywr-harness ADR 0105's "input, never
 proof" applies to such a line.
 
 The closer does not choose which keys `check` covers. The review's digest names them (`high_ids`), and
@@ -12,9 +12,9 @@ The closer does not choose which keys `check` covers. The review's digest names 
 it exits 3, and the close waits for the owner to accept each waived key in the owner-typed
 /slice-close. Without that, leaving out one key or writing one reason was enough to pass.
 
-A review run on a plugin older than ADR 0169 prints no `high_ids` (ADR 0173). `check` then reads the
+A review run on a plugin older than ywr-harness ADR 0169 prints no `high_ids` (ywr-harness ADR 0173). `check` then reads the
 counts that line does print, and names one key per confirmed high itself (`H1`, `H2`, ...): the closer
-never names the key set (ADR 0169 option H). A rejected finding's severity is not on the line, so an old
+never names the key set (ywr-harness ADR 0169 option H). A rejected finding's severity is not on the line, so an old
 digest with `rejected` above 0 exits 3, and the owner answers it.
 
 Usage:
@@ -35,7 +35,7 @@ records at the current HEAD count, and each id carries the finding's fingerprint
 earlier slice nor a re-review can lend a proof to another finding. The journal lives under
 `git rev-parse --git-path` (per worktree, never tracked) and is append-only.
 
-Plugin-only on purpose: the scaffold does not vendor it (ADR 0169 option E — the emitter executes
+Plugin-only on purpose: the scaffold does not vendor it (ywr-harness ADR 0169 option E — the emitter executes
 nothing, and a consumer's CI has no use for a session step).
 """
 
@@ -57,11 +57,11 @@ hc.pin_utf8()
 JOURNAL = "ywr-harness/fix-proof.jsonl"
 # The workflow's ids are `F<n>-<fingerprint>` and so on; the shape is all the script enforces of a key.
 KEY_RX = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,31}")
-# The digest field the adversarial-review workflow prints (ADR 0169): `none`, or the count and then the
+# The digest field the adversarial-review workflow prints (ywr-harness ADR 0169): `none`, or the count and then the
 # ids of the in-scope confirmed highs and of the rejected highs that not every vote refuted.
 ID = r"[FR][0-9]+-[0-9a-f]{8}"
 HIGH_IDS_RX = re.compile(rf"(?:^| · )high_ids (?:none|([0-9]+): ({ID}(?:,{ID})*))(?= · |$)")
-# The counts a workflow older than ADR 0169 prints (ADR 0173): in-scope confirmed by severity, and every
+# The counts a workflow older than ywr-harness ADR 0169 prints (ywr-harness ADR 0173): in-scope confirmed by severity, and every
 # rejected finding at any severity. The line shows no rejected severity, so only `rejected 0` rules a high out.
 # The old line goes on from `rejected R` to its coverage field; a new one goes on to `high_ids`. So a new
 # digest cut short right after `rejected R` never reads as an old one.
@@ -143,12 +143,12 @@ def main() -> int:
     except OSError as e:
         # The journal could not be read or written: no record is a missing proof, never a traceback
         # a reader might retry or paraphrase as a pass.
-        hc.say(f"fix proof: FAILED — journal I/O: {e} (ADR 0169)")
+        hc.say(f"fix proof: FAILED — journal I/O: {e} (ywr-harness ADR 0169)")
         return 2
 
 
 def proof_main() -> int:
-    ap = argparse.ArgumentParser(description="Record and check failing-then-passing runs for fixed findings (ADR 0169).")
+    ap = argparse.ArgumentParser(description="Record and check failing-then-passing runs for fixed findings (ywr-harness ADR 0169).")
     ap.add_argument("--repo", dest="repo", default=None)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p_run = sub.add_parser("run", help="run a command at the repo root and record its exit code")
@@ -162,7 +162,7 @@ def proof_main() -> int:
     p_check.add_argument("keys", nargs="*", help="keys beyond the digest's high_ids, such as a fixed O<n>")
     args = ap.parse_args()
 
-    legacy = None  # (confirmed highs, rejected) of a digest older than ADR 0169
+    legacy = None  # (confirmed highs, rejected) of a digest older than ywr-harness ADR 0169
     if args.cmd == "check":
         m = HIGH_IDS_RX.search(args.digest)
         if m:
@@ -181,7 +181,7 @@ def proof_main() -> int:
             lm, rm = LEGACY_RX.match(args.digest), REJECTED_RX.search(args.digest)
             if not (lm and rm):
                 hc.say("fix proof: FAILED — the digest carries no `high_ids` field and no counts of a workflow "
-                       "older than ADR 0169 (`confirmed N (hN mN lN)` first, then `rejected N` and the coverage "
+                       "older than ywr-harness ADR 0169 (`confirmed N (hN mN lN)` first, then `rejected N` and the coverage "
                        "field). Pass the review's digest line verbatim.")
                 return 2
             legacy = (int(lm.group(1)), int(rm.group(1)))
@@ -219,7 +219,7 @@ def proof_main() -> int:
             print(f"git failed: {(e.stderr or '').strip()}", file=sys.stderr)
         else:
             print(f"snapshot failed: {e}", file=sys.stderr)
-        hc.say("fix proof: FAILED — no git worktree snapshot; nothing was run or checked (ADR 0169).")
+        hc.say("fix proof: FAILED — no git worktree snapshot; nothing was run or checked (ywr-harness ADR 0169).")
         return 2
 
     if args.cmd == "run":
@@ -234,7 +234,7 @@ def proof_main() -> int:
         try:
             after, head_after = hc.worktree_snapshot(root)
         except (subprocess.CalledProcessError, OSError):
-            hc.say(f"proof {args.key}: FAILED — no snapshot after the run; nothing was recorded (ADR 0169).")
+            hc.say(f"proof {args.key}: FAILED — no snapshot after the run; nothing was recorded (ywr-harness ADR 0169).")
             return 2
         prior = [r for r in read_records(path) if r.get("head") == head]
         append(path, {"key": args.key, "kind": "run", "argv": argv, "exit": code, "tree": tree,
@@ -260,7 +260,7 @@ def proof_main() -> int:
         return 0
 
     added = [k for k in keys if k not in required]
-    source = (f"the pre-ADR 0169 digest's confirmed high count {legacy[0]} (rejected {legacy[1]}, ADR 0173)"
+    source = (f"the old digest's confirmed high count {legacy[0]} (rejected {legacy[1]}, ywr-harness ADR 0173)"
               if legacy else "the digest's high_ids")
     hc.say(f"fix proof: keys {','.join(required) or 'none'} from {source}"
            + (f" + {','.join(added)} added" if added else ""))
@@ -273,17 +273,17 @@ def proof_main() -> int:
     where = f"tree {tree[:SHORT]} · HEAD {head[:SHORT]}"
     if by_state["MISSING"]:
         hc.say(f"fix proof: FAILED — {len(by_state['MISSING'])} of {len(keys)} key(s) without a proof: "
-               f"{', '.join(by_state['MISSING'])}; the close stops (ADR 0169)")
+               f"{', '.join(by_state['MISSING'])}; the close stops (ywr-harness ADR 0169)")
         return 1
     # The line shows no rejected severity, so a rejected finding of an old digest is the owner's call.
     old = legacy is not None and legacy[1] > 0
     if by_state["WAIVED"] or old:
         # Never green on a waiver: the session that wrote the reason cannot also accept it.
         items = ([f"waived {', '.join(by_state['WAIVED'])}"] if by_state["WAIVED"] else []) + (
-            [f"the pre-ADR 0169 digest's rejected {legacy[1]} (a severity the line does not show, ADR 0173)"]
+            [f"the old digest's rejected {legacy[1]} (a severity the line does not show, ywr-harness ADR 0173)"]
             if old else [])
         hc.say(f"fix proof: OWNER — {len(by_state['PROVEN'])} proven; {' and '.join(items)} "
-               f"need the owner's acceptance in /ywr-harness:slice-close before the close goes on · {where} (ADR 0169)")
+               f"need the owner's acceptance in /ywr-harness:slice-close before the close goes on · {where} (ywr-harness ADR 0169)")
         return 3
     hc.say(f"fix proof: OK — {len(by_state['PROVEN'])} proven · {where}")
     return 0

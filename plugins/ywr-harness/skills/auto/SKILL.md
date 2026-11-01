@@ -7,7 +7,7 @@ argument-hint: "on | off | status"
 
 # auto — the ywr-harness autonomy switch
 
-The plugin's hooks module answers this command itself (ADR 0174, ADR 0175). It writes the switch
+The plugin's hooks module answers this command itself (ywr-harness ADR 0174, ywr-harness ADR 0175). It writes the switch
 to `ywr-harness/auto.json` under the checkout's git directory, with no model turn. You read this
 body only where the host dropped the module: an older host, `disableAllHooks`, `--safe-mode`, or a
 managed `allowManagedModsOnly`.

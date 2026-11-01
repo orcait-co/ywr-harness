@@ -1,4 +1,4 @@
-// Hooks module (Claude Mods; ADR 0174, narrowed by ADR 0175) — the AUTO switch and its stage prompts.
+// Hooks module (Claude Mods; ywr-harness ADR 0174, narrowed by ywr-harness ADR 0175) — the AUTO switch and its stage prompts.
 // `mods.mjs`, the entry `hooks.json` names under `modules`, registers it beside the ledger and the
 // prerequisite check.
 //
@@ -8,32 +8,32 @@
 //
 // - `review-start`: a main-loop Workflow call that names `ywr-harness:adversarial-review`.
 // - `review-digest`: the main-loop `session.append` row of door `delivery`, origin kind
-//   `task-notification`, whose text holds the digest's fixed words (`DIGEST_MARKS`, ADR 0175 Decision 2).
+//   `task-notification`, whose text holds the digest's fixed words (`DIGEST_MARKS`, ywr-harness ADR 0175 Decision 2).
 //   The user's own prompt can hold the same words, so the door and the origin are part of the check.
 // - `ready-report`: a main-loop shell call whose last step is `harness_gates.py --tree` (`isTreeRun` of
-//   `slice-status.mjs`, which stays unregistered — ADR 0140; this module imports its pure half only).
+//   `slice-status.mjs`, which stays unregistered — ywr-harness ADR 0140; this module imports its pure half only).
 //
 // `slice-close` is not a stage: its detector needs `skill.prompt`, and the built-in guard
-// `cc-plugin-sec-default` skips a user-tier plugin's `skill.prompt` and `classic.*` hooks (ADR 0175).
+// `cc-plugin-sec-default` skips a user-tier plugin's `skill.prompt` and `classic.*` hooks (ywr-harness ADR 0175).
 //
 // The hook runs the stage call first, then reads the switch, `.harness.json` and every declared prompt file
 // once at each stage (a switch turned off takes effect at once; a changed input withholds the stage until
-// the person types `on` again, ADR 0176), then awaits the side check for at most
-// `CHECK_WAIT_MS` (ADR 0175 Decisions 5, 7 and 9). The side check is `$.model.complete` on the `sonnet` alias at
+// the person types `on` again, ywr-harness ADR 0176), then awaits the side check for at most
+// `CHECK_WAIT_MS` (ywr-harness ADR 0175 Decisions 5, 7 and 9). The side check is `$.model.complete` on the `sonnet` alias at
 // effort low, NOT `$.model.fork`: a fork continued the main task, tried tools and held the stage 8–11 s,
-// where the completion answered from the stage data in about 1 s (fact 178). Its prompt is `FRAME`, the
+// where the completion answered from the stage data in about 1 s (ywr-harness fact 178). Its prompt is `FRAME`, the
 // prompt file and the stage's own data; it reads no conversation. A call or row with an `agentId` (a
 // subagent) never starts a stage, and one side check runs at a time.
 //
-// The edit guard (ADR 0175 Decision 13) covers the main loop and every subagent. While the switch is on,
+// The edit guard (ywr-harness ADR 0175 Decision 13) covers the main loop and every subagent. While the switch is on,
 // an Edit / Write / NotebookEdit of `.harness.json` or a declared prompt file is denied. The switch file
 // itself is denied to those tools on or off, so only the typed command turns the switch. Paths compare
 // after `.` / `..` resolution, a relative path joined to the session's cwd. A shell write, a symbolic link,
 // a hard link and, on Windows, a trailing dot or space, a `::$DATA` stream suffix, an 8.3 short name or a
 // drive-relative `C:x` pass; a subagent in another worktree has its relative path joined to the SESSION's
-// cwd (a wrong deny, never a wrong pass). Those limits are recorded, not closed (ADR 0175, re-review).
+// cwd (a wrong deny, never a wrong pass). Those limits are recorded, not closed (ywr-harness ADR 0175, re-review).
 //
-// The input baseline (ADR 0176) closes the shell-write gap of the edit guard for the stage prompts. The
+// The input baseline (ywr-harness ADR 0176) closes the shell-write gap of the edit guard for the stage prompts. The
 // typed `/ywr-harness:auto on` records the SHA-256 of `.harness.json` and of each declared prompt file in
 // this module's memory, which no shell call reaches; no file holds it. A stage hashes the texts it read and
 // uses those same texts, so the check and the use see one read. A changed input, or a session where nobody
@@ -41,20 +41,20 @@
 // stage: no static prompt, no side check, one fixed line for the model (`withheldText`) and a toast for the
 // person. `/ywr-harness:auto on` again takes a new baseline; `off` drops it.
 //
-// The switch state is `<git-path>/ywr-harness/auto.json` (ADR 0174 Decision 3), per worktree, never
+// The switch state is `<git-path>/ywr-harness/auto.json` (ywr-harness ADR 0174 Decision 3), per worktree, never
 // tracked. `/ywr-harness:auto on|off|status` is answered here by `command.run`, with no model turn
-// (fact 136); the skill body runs only where the host drops the module.
+// (ywr-harness fact 136); the skill body runs only where the host drops the module.
 //
-// The stage log (ADR 0180): while the switch is on, each detected stage appends one JSON line
+// The stage log (ywr-harness ADR 0180): while the switch is on, each detected stage appends one JSON line
 // `{at, stage, outcome, check, ms}` to `auto-stages.jsonl` beside the switch file, so a later session can
 // tell whether a stage ran. `$.fs` has no append call: the hook reads the whole file, adds the line, keeps
 // the last `LOG_MAX` lines and writes it whole. A failed write is swallowed and changes nothing at the stage.
 // A failed read of a log that exists skips the write, so the stage leaves the log as it was; a missing log
-// starts empty (ADR 0181). At a stage with the switch off the hook neither reads nor writes it. `status`, `on`
+// starts empty (ywr-harness ADR 0181). At a stage with the switch off the hook neither reads nor writes it. `status`, `on`
 // and `off` print the last line, rebuilt from its five fields after a shape check (`shownStage`); a line of
-// another shape prints as `LOG_ODD` (ADR 0181). The file is shell-writable, so a line proves nothing about a stage. `ms` runs from the
+// another shape prints as `LOG_ODD` (ywr-harness ADR 0181). The file is shell-writable, so a line proves nothing about a stage. `ms` runs from the
 // switch read to the end of the stage work, without the log write itself. A stage whose work throws leaves no
-// line. Two stages whose log writes overlap can lose one line: the later whole-file write wins (ADR 0180).
+// line. Two stages whose log writes overlap can lose one line: the later whole-file write wins (ywr-harness ADR 0180).
 //
 // A checkout with the switch off pays one `git rev-parse`, started without a wait at the first main turn,
 // and no file read or model call on a call that is not a stage: the stage shapes are pure checks on `e`,
@@ -115,7 +115,7 @@ export function parseDecl(raw) {
   for (const [name, entry] of Object.entries(d)) {
     if (!STAGES.includes(name)) {
       out.problems.push(name === 'slice-close'
-        ? 'decision_prompts.slice-close: not a stage (ADR 0175: the guard skips skill.prompt) — ignored'
+        ? 'decision_prompts.slice-close: not a stage (ywr-harness ADR 0175: the guard skips skill.prompt) — ignored'
         : `decision_prompts.${name}: unknown stage (known: ${STAGES.join(', ')}) — ignored`)
       continue
     }
@@ -159,7 +159,7 @@ export function stageOfToolCall(e) {
   return null
 }
 
-// A row's text blocks joined (the digest row carries one text block, fact 177).
+// A row's text blocks joined (the digest row carries one text block, ywr-harness fact 177).
 export function rowText(message) {
   const content = message && Array.isArray(message.content) ? message.content : []
   return content.map(b => (b && b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join('\n')
@@ -276,7 +276,7 @@ export function lastLine(text) {
 
 // The stage log's last line as the replies show it: rebuilt from its five fields when each one has its
 // logged shape, so a shell-written line cannot put its own text in a reply; `LOG_ODD` for any other line
-// (ADR 0181).
+// (ywr-harness ADR 0181).
 export const LOG_ODD = '(형식이 맞지 않는 줄)'
 // `at` as the module writes it: the `toISOString` text of a real time, so an impossible date fails
 const isIsoAt = at => typeof at === 'string' && Number.isFinite(Date.parse(at)) &&
@@ -291,7 +291,7 @@ export function shownStage(line) {
   return ok ? stageLine(r) : LOG_ODD
 }
 
-// The declaration shape that `status` shows when no stage is declared (ADR 0180 Decision 7).
+// The declaration shape that `status` shows when no stage is declared (ywr-harness ADR 0180 Decision 7).
 export const DECL_SHAPE = '{"decision_prompts":{"ready-report":{"prompt":"docs/prompts/ready-report.md","check":false}}}'
 
 // `changed`: the inputs that differ from the session's baseline, or null when the session has none.
@@ -350,7 +350,7 @@ export function withheldText(stage, changed) {
   const why = changed === null
     ? 'nobody typed /ywr-harness:auto on in this session, so the session has no baseline of its inputs'
     : `${changed.join(', ')} changed after /ywr-harness:auto on was typed in this session`
-  return `ywr-harness withheld the ${stage} decision prompt and its side check: ${why} (ADR 0176). ` +
+  return `ywr-harness withheld the ${stage} decision prompt and its side check: ${why} (ywr-harness ADR 0176). ` +
     'Go on without it, and tell the person in your report.'
 }
 
@@ -419,8 +419,8 @@ function withhold($, stage, changed) {
 
 // The stage's texts for the model: the static prompt, then the side-check answer when declared. [] when the
 // switch is off, the stage is undeclared now and at the baseline, or its prompt file cannot be read. The
-// withheld line alone when the session has no baseline or an input changed (ADR 0176). While the switch is
-// on, the stage is logged once its work is done (ADR 0180).
+// withheld line alone when the session has no baseline or an input changed (ywr-harness ADR 0176). While the switch is
+// on, the stage is logged once its work is done (ywr-harness ADR 0180).
 async function stageTexts($, st, stage, e, r) {
   const t0 = Date.now()
   try { st.on = parseSwitch(await $.fs.read(st.statePath)) } catch { st.on = false }
@@ -486,7 +486,7 @@ async function logStage($, st, stage, rec, ms) {
     let text = ''
     try { text = String(await $.fs.read(path)) } catch {
       // a missing log starts empty; a log that exists but cannot be read keeps its lines, so the stage
-      // writes nothing (ADR 0181). An exists call that fails proves nothing, so the log is kept then too.
+      // writes nothing (ywr-harness ADR 0181). An exists call that fails proves nothing, so the log is kept then too.
       let there = true
       try { there = await $.fs.exists(path) } catch { /* unknown: keep the log */ }
       if (there) return
@@ -502,9 +502,9 @@ async function lastStage($, st) {
 }
 
 export const EDIT_DENY = 'ywr-harness: the /ywr-harness:auto switch is on, so .harness.json and the declared ' +
-  'decision prompt files are read-only in this checkout (ADR 0175). Ask the person; they turn the switch off to edit them.'
+  'decision prompt files are read-only in this checkout (ywr-harness ADR 0175). Ask the person; they turn the switch off to edit them.'
 export const STATE_DENY = 'ywr-harness: the /ywr-harness:auto switch file changes only through the /ywr-harness:auto ' +
-  'command, which the person types (ADR 0175). Do not write it.'
+  'command, which the person types (ywr-harness ADR 0175). Do not write it.'
 
 // The edit guard's verdict for one edit call: a deny text, or null. Any failure lets the call through.
 async function guardEdit($, st, e) {
@@ -584,7 +584,7 @@ export function register(on) {
           baseLine = '이 세션의 입력 기준값: 기록하지 못함. stage prompt 는 들어가지 않습니다. 원인을 확인한 뒤 다시 입력하세요.'
         }
       } else st.baseline = null
-      return { text: statusText(st, st.baseline ? [] : null, baseLine, await lastStage($, st)), context: [`ywr-harness auto switch is now ${st.on ? 'ON' : 'OFF'} in this checkout (ADR 0174, ADR 0175, ADR 0176).`] }
+      return { text: statusText(st, st.baseline ? [] : null, baseLine, await lastStage($, st)), context: [`ywr-harness auto switch is now ${st.on ? 'ON' : 'OFF'} in this checkout (ywr-harness ADR 0174, ywr-harness ADR 0175, ywr-harness ADR 0176).`] }
     }
     const usage = arg && arg !== 'status'
     await refresh($, st)

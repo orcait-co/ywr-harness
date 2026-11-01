@@ -69,6 +69,8 @@ by `/ywr-harness:harness-init` (ADR 0054).
     that a reader without the canon docs understands it. It names no slice number and no handoff
     O number. It tells no history, such as an old behavior or a past bug. A comment that only
     restates the code is a finding. A deleted guard reason or usage text is a finding too.
+    ADR 0185 extends only the prefix gate to the plugin runtime and the top CHANGELOG entry
+    (spec 0008 §3.8). The rest of this invariant does not apply to runtime comments.
 
 ## Review-time gotchas (each cost a real debugging session)
 

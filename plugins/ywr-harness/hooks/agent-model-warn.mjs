@@ -1,33 +1,33 @@
 // PreToolUse (matcher `Agent`) — WARN-ONLY note when an Agent-tool spawn names an opus- or
-// fable-family model explicitly (ADR 0086; dist #5 request 1), or a per-call effort of xhigh or max
-// (ADR 0127).
+// fable-family model explicitly (ywr-harness ADR 0086; dist #5 request 1), or a per-call effort of xhigh or max
+// (ywr-harness ADR 0127).
 //
 // Why a warning and not a guard: a per-call `model` overrides a pinned agent's frontmatter
-// (sub-agents docs, resolution order 1 before 2 — ADR 0084 measured `ywr-harness:worker` with
+// (sub-agents docs, resolution order 1 before 2 — ywr-harness ADR 0084 measured `ywr-harness:worker` with
 // `model: opus` running on Opus 5.5), so the plugin's sonnet/haiku pins cannot stop it. A DENY or
 // ASK would still be wrong: the org guide allows an opus worker that demonstrably needs it (the
 // reason goes in the description), and a hook cannot see the session model or judge that reason.
-// (Until ADR 0108 ultracode was a second reason: it lifted every pin and a hook could not detect
+// (Until ywr-harness ADR 0108 ultracode was a second reason: it lifted every pin and a hook could not detect
 // it. Ultracode no longer lifts a pin, so it no longer bears on this hook.) This hook therefore NEVER returns
 // permissionDecision / updatedInput and NEVER blocks: the call proceeds through the normal
 // permission flow whatever it prints.
 //
 // Speaks ONLY when `tool_input.model` is a string naming the opus or fable family (an alias —
-// `opus`, `fable` — or a full id such as `claude-opus-5-5`), on every `subagent_type`: since ADR
-// 0109 no plugin agent pins opus, so an opus-family per-call model always overrides a pin or
-// picks the model of an unpinned type. The prose states the harness rule of ADR 0109, which no longer
+// `opus`, `fable` — or a full id such as `claude-opus-5-5`), on every `subagent_type`: since
+// ywr-harness ADR 0109 no plugin agent pins opus, so an opus-family per-call model always overrides a pin or
+// picks the model of an unpinned type. The prose states the harness rule of ywr-harness ADR 0109, which no longer
 // depends on the session model: implementation and research workers run sonnet in every session
 // (the Agent-tool route is `ywr-harness:worker` with no per-call model), mechanical work haiku,
 // opus · low only for review fan-out on an Opus session, and any other opus/fable worker names its
 // reason in the description.
-// EFFORT clause (ADR 0127): since Claude Code 2.1.292 the Agent tool takes a per-call `effort`, and it
+// EFFORT clause (ywr-harness ADR 0127): since Claude Code 2.1.292 the Agent tool takes a per-call `effort`, and it
 // overrides a pinned agent's frontmatter effort as `model` overrides the model pin (measured: the
 // worker pinned high ran at low when the call said low). The pins were written to keep the deep-work
 // session levels out of workers, so the hook ALSO speaks when `tool_input.effort` is a string that,
 // trimmed and case-insensitively, equals `xhigh` or `max` — on every `subagent_type`, even where the
 // level has no effect (a fork ignores it; Haiku 4.5, still `haiku` on cloud providers, takes none —
 // from 2.1.293 `haiku` is Haiku 5.5 on the Anthropic API, whose requests carry `mech`'s pinned low,
-// fact 101). low / medium / high are the pins' role levels, so they stay silent, as do a
+// ywr-harness fact 101). low / medium / high are the pins' role levels, so they stay silent, as do a
 // non-string, empty or absent effort. A call that matches on model AND effort gets ONE banner
 // covering both points. Not policed: a per-call effort BELOW the pin (a hook would need each repo's
 // agent pins, as for models).
@@ -35,10 +35,10 @@
 // runs its frontmatter pin and Explore/Plan choose their own, while an unpinned type such as
 // `general-purpose` inherits the session model — a leak the org guide's "pass an explicit model"
 // rule governs. Telling those apart would need a list of pinned types kept in step with every
-// repo's agents, so the hook stays silent on all of them (ADR 0108's residual). The payload's top-level
+// repo's agents, so the hook stays silent on all of them (ywr-harness ADR 0108's residual). The payload's top-level
 // session `effort` never suppresses the model warning: xhigh is this seat's normal level and the
 // fan-out the pins exist to stop. Only `tool_input.effort`, the per-call value, is read. No `.harness.json` key: nothing is blocked, so nothing needs an
-// allowance (ADR 0010/0012 surface stays closed).
+// allowance (ywr-harness ADR 0010/0012 surface stays closed).
 //
 // Payload and output contract, verified against the RAW hooks reference 2026-09-23
 // (code.claude.com/docs/en/hooks.md + tools-reference.md):
@@ -52,9 +52,9 @@
 //                additionalContext` (hookEventName PreToolUse) is "String added to Claude's
 //                context alongside the tool result". Exit 0 with no decision leaves the call to
 //                the normal permission flow.
-// Language is reader-keyed (ADR 0045): Korean systemMessage, English additionalContext.
+// Language is reader-keyed (ywr-harness ADR 0045): Korean systemMessage, English additionalContext.
 //
-// Fail-open (spec 0006 §3.1): unparseable stdin, a wrong event or a tool other than Agent -> silent
+// Fail-open (ywr-harness spec 0006 §3.1): unparseable stdin, a wrong event or a tool other than Agent -> silent
 // exit 0. Anti-vacuity: a PreToolUse payload with no non-empty string `tool_name`, or one whose
 // `tool_input` is not an object, emits a SCHEMA-DRIFT banner listing the keys received — a warn
 // hook that cannot read its fields must say so, not fall silent. A missing name is drift, not
@@ -65,9 +65,9 @@
 // harness_config.CONTROL's — C0, DEL, U+0085 NEL, U+2028/U+2029 — plus the backtick: a model reads
 // this output, and it may take any of the three Unicode breaks as a line break. The class lives in
 // hook-lib.mjs; no pwsh hook is left to carry a copy, and the hooks module prerequisites.mjs repeats it
-// in flatten(), held to it by its own selftest (ADR 0142).
+// in flatten(), held to it by its own selftest (ywr-harness ADR 0142).
 // The prose states its rules and cites no decision numbers: a bare "ADR NNNN" resolves against the
-// repo the reader stands in, and this canon is private, so a member can never follow one (spec 0006
+// repo the reader stands in, and this canon is private, so a member can never follow one (ywr-harness spec 0006
 // §3.1). No network, no git, no file writes — one node spawn per Agent call is the whole cost.
 //
 // Comparisons of the event and tool names are case-insensitive, as the pwsh original's `-ne` was.

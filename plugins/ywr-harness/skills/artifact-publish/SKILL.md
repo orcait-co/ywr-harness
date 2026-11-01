@@ -7,7 +7,7 @@ disable-model-invocation: true
 # artifact-publish — verify a declared Artifact source, then publish it, once confirmed
 
 A repo that commits a GENERATED Artifact source declares it in `.harness.json` under
-`artifacts.items[]` with `source` (the committed file) and `check` (its drift gate) — ADR 0068.
+`artifacts.items[]` with `source` (the committed file) and `check` (its drift gate) — ywr-harness ADR 0068.
 This skill is the publish half: the harness can enforce that the source exists and matches its
 generator, but the publish itself is an interactive, owner-account act — headless sessions have
 no Artifact tool (measured, ywr-harness ADR 0063), so it is never automated and never runs from
@@ -28,13 +28,13 @@ python scripts/harness/harness_gates.py --all
   violation (a missing source or a refused check means the page you would publish is not the
   page the repo asserts).
 - `none declared` — nothing to publish; a repo declares its Artifact before this skill applies
-  (first publish happens by hand, THEN the declaration — ADR 0032's contract).
+  (first publish happens by hand, THEN the declaration — ywr-harness ADR 0032's contract).
 - An ok line ending `no check declared — drift … is unenforced` may still be published, but say
   so in the confirmation: nothing proved the committed page matches its generator.
 - An ok line ending `no source declared — hand-published page (ywr-harness ADR 0032 shape); not publishable
   via /ywr-harness:artifact-publish` — a url+title-only declaration. The repo's vendored emitter
-  decides the form. Plugins 0.42.0 to 0.71.0 print `(ADR 0032 shape)`, and older ones print no
-  tail. Treat every form the same. When an ok line names no source, read the item in
+  decides the form. Plugins 0.42.0 to 0.71.0 print the same tail without the `ywr-harness ` prefix, and older
+  ones print no tail. Treat every form the same. When an ok line names no source, read the item in
   `.harness.json`: an item with only `url` and `title` is this shape. The page was published by
   hand and no committed source exists to republish from. OUT of this skill's scope; republishing
   it is a hand act from the owning account. When EVERY declared item has this shape, report
@@ -115,17 +115,17 @@ as last measured (ywr-harness fact 138, Claude Code 2.1.296):
      changes → §3 proved that (the live body is a committed state of the source), so go to
      step 4.
    - It names a fetch of the URL ("fetch the artifact's URL again — re-Reading a file an
-     earlier refusal handed you does not count") → this is the older host behaviour of fact 43.
+     earlier refusal handed you does not count") → this is the older host behaviour of ywr-harness fact 43.
      Call `Artifact action: read` of the `url` once (~45k tokens at 136 KB; the page enters
      context), then go to step 4.
    - It says neither → stop and report its text. A host change moved the precondition; never
      publish again on a guess.
 4. `Artifact publish` — succeeds (the result names the new Version). Record in the close which
-   branch of step 3 ran: fact 138 is one measurement, and the next republish re-measures it.
+   branch of step 3 ran: ywr-harness fact 138 is one measurement, and the next republish re-measures it.
 
 For a large page (megabytes) the saved copy counts as viewed and step 2 is not demanded. Never
 fight a refusal with `force`, and never read the served copy into context for a comparison — the
-hash is the proof (fact 38); §3's `read_file` is what proves nothing is lost, so the refusal's
+hash is the proof (ywr-harness fact 38); §3's `read_file` is what proves nothing is lost, so the refusal's
 saved copy is never needed for a proof. Budget ≈50k tokens of served page per republish at 136 KB
 (step 2), ≈95k when step 3 names the fetch, and none when §3 finds the page already live; a
 smaller page costs proportionally less.
@@ -138,7 +138,7 @@ can redeploy it. Report which account owns it and stop — never work around it.
 After publishing, prove served == committed by byte comparison: `Artifact action: read_file`
 (`path: "index.html"`) again — the saved copy on disk, the result as in §3 (one line above the
 tool's small-file band, a small page's text echoed too); never `action: read` here (it reads the
-whole page into context by design, fact 38). Strip the frame-runtime head through
+whole page into context by design, ywr-harness fact 38). Strip the frame-runtime head through
 `<body>\n` and the trailing `</body></html>`, hash the remainder, compare with the committed
 source file. **The serve wrapper appends ONE trailing LF before `</body></html>`** (measured
 2026-09-01, pre- and post-publish; earlier serves lacked it) — treat served-stripped ==
@@ -146,7 +146,7 @@ committed + one trailing LF as identical. A raw hash mismatch of exactly that on
 lockstep, not drift; anything else is drift. In bytes, with `s` the saved copy and `c` the
 committed file: `body = s[s.index(b'<body>\n') + 7 : s.rindex(b'</body></html>')]`, lockstep iff
 `body == c or body == c + b'\n'`. State both hashes in the close. This is the release-checklist
-item the gate layer cannot perform (it cannot see claude.ai — ADR 0032).
+item the gate layer cannot perform (it cannot see claude.ai — ywr-harness ADR 0032).
 
 The wrapper is the Artifact HOST's skeleton, not the repo's: the tool wraps every published file in
 the same doctype/head/body frame (its own contract), so the slice points above are the same for

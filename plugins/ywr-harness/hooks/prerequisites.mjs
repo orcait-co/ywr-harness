@@ -1,29 +1,29 @@
-// Hooks module (Claude Mods; ADR 0142) — the PREREQUISITE check and its install command. `mods.mjs`, the
+// Hooks module (Claude Mods; ywr-harness ADR 0142) — the PREREQUISITE check and its install command. `mods.mjs`, the
 // entry `hooks.json` names under `modules`, registers it beside the delegation ledger.
 //
-// The plugin needs three tools on PATH: `node` runs the eight settings hooks (ADR 0116), `pwsh` 7+ runs
+// The plugin needs three tools on PATH: `node` runs the eight settings hooks (ywr-harness ADR 0116), `pwsh` 7+ runs
 // the skills' scripts and every selftest, `python` 3.9+ runs the gate scripts. A settings hook cannot
 // report its own runtime's absence, so this check is a mod: the host runs a mod in an engine
-// environment of its own, with no Node (fact 135), and `$.process.run` reaches the host's commands.
+// environment of its own, with no Node (ywr-harness fact 135), and `$.process.run` reaches the host's commands.
 //
 // What it does:
 // - `session.start`: after `next(e)` resolves it starts the three `--version` probes on a
 //   `$.clock.after(0, …)` timer and does not wait for them, so the probes never delay the session start
-//   (ADR 0164; a host without the call runs them directly). A probe that rejects with ENOENT / "not
+//   (ywr-harness ADR 0164; a host without the call runs them directly). A probe that rejects with ENOENT / "not
 //   found", or a command that exits non-zero (the Windows Store `python` alias does), is MISSING; a
 //   `pwsh` below 7 or a `python` below 3.9 is OLD; anything else (a timeout, a surface without
 //   `$.process`) is UNKNOWN and never speaks. On Windows a not-found refusal is tried once more by the
-//   app execution alias path (`aliasPath`, ADR 0150): the runner refuses a bare alias name when the cwd
-//   is an ancestor of the alias folder, as the home folder is (fact 147).
-// - `ui.render` on `AbovePrompt`: while a tool is missing or old, one Korean band (ADR 0045) names the
+//   app execution alias path (`aliasPath`, ywr-harness ADR 0150): the runner refuses a bare alias name when the cwd
+//   is an ancestor of the alias folder, as the home folder is (ywr-harness fact 147).
+// - `ui.render` on `AbovePrompt`: while a tool is missing or old, one Korean band (ywr-harness ADR 0045) names the
 //   tools and `/ywr-harness:setup`. The engine's own `[-]` collapses it. Nothing missing: `next(e)`.
 // - The model note: when the probes find a missing or old tool, `$.session.append` adds ONE English
 //   meta user row, which the person does not see. It tells Claude the cause of the hook errors and
 //   failing scripts it will see, the command, and to install nothing unasked. The module adds no
-//   `prompt.compose` section: on 2.1.296 the engine skips that hook for a user-tier plugin (fact 136).
+//   `prompt.compose` section: on 2.1.296 the engine skips that hook for a user-tier plugin (ywr-harness fact 136).
 //   The row belongs to the conversation, so a `/clear` drops it, and a resume or a fork adds it again.
 // - `command.run` on `ywr-harness:setup` (the command `skills/setup/SKILL.md` declares; a
-//   `$.command.register` name carries no plugin prefix — fact 136): the member typed it, which is the
+//   `$.command.register` name carries no plugin prefix — ywr-harness fact 136): the member typed it, which is the
 //   consent. On Windows with `winget` it probes again and runs `winget install` for each missing or old
 //   tool, one at a time, each output piece's last line in the plugin status line, then reports each
 //   result and asks for a restart (a running session keeps its PATH). Off Windows, or without `winget`,
@@ -41,7 +41,7 @@
 export const COMMAND = 'ywr-harness:setup'
 // An interrupt aborts the command's dispatch, and an aborted dispatch kills the spawned winget (the
 // `$.process.spawn` contract). Whether Esc aborts it, and what a killed winget leaves of an installer
-// it started, is unmeasured (ADR 0142), so the status line says so while an install runs. The next
+// it started, is unmeasured (ywr-harness ADR 0142), so the status line says so while an install runs. The next
 // session's probe shows the band again for anything left half-installed.
 export const ESC_WARN = 'Esc 를 누르면 설치가 끊길 수 있습니다'
 export const PROBE_TIMEOUT_MS = 15000
@@ -103,7 +103,7 @@ export function needsOf(verdicts) {
 // The per-user folder of Windows app execution aliases. The Store `pwsh` and `winget` are aliases there
 // (0-byte reparse points). `$.process.run` refuses a bare alias name with the not-found error when the
 // session's cwd is an ancestor of that folder, the home folder included, and runs the same alias by its
-// absolute path (fact 147, ADR 0150). The Desktop session that showed it ran in the home folder.
+// absolute path (ywr-harness fact 147, ywr-harness ADR 0150). The Desktop session that showed it ran in the home folder.
 const BS = '\\'
 export function aliasPath(localAppData, name) {
   const base = String(localAppData ?? '')
@@ -162,7 +162,7 @@ export function manualText(needs, isWindows) {
   return needs.map(n => (isWindows ? `- ${n.tool.name}: \`${wingetArgv(n.tool).join(' ')}\`` : `- ${n.tool.name}: ${n.tool.other}`)).join('\n')
 }
 
-// `exe` is the `winget` the probe reached: the bare name, or the alias path (fact 147). A line shown to the
+// `exe` is the `winget` the probe reached: the bare name, or the alias path (ywr-harness fact 147). A line shown to the
 // member keeps the bare name, which a terminal resolves.
 export function wingetArgv(tool, exe = 'winget') {
   return [exe, 'install', '--id', tool.winget, '--exact', '--source', 'winget',
@@ -170,7 +170,7 @@ export function wingetArgv(tool, exe = 'winget') {
 }
 
 // A winget exit 0 does not prove the command resolves on PATH: whether the python installer puts
-// `python` on PATH, and whether the Windows Store alias of `python` shadows it, is unmeasured (ADR 0142).
+// `python` on PATH, and whether the Windows Store alias of `python` shadows it, is unmeasured (ywr-harness ADR 0142).
 // The next session's probe is the check, so the report says what a returning band means.
 const PATH_HINT = '재시작한 뒤에도 안내 줄에 다시 나오면, 설치는 됐지만 PATH 에서 찾지 못하는 것입니다.'
 const ALIAS_HINT = ' python 이면 Windows 설정 > 앱 > 고급 앱 설정 > 앱 실행 별칭에서 python.exe 별칭을 끄고, PATH 에 Python 폴더가 있는지 확인하세요.'
@@ -198,7 +198,7 @@ export function resultNote(tool, code, old = null) {
 }
 
 // The tools whose probe was neither found nor missing (a timeout, an unexpected rejection): never
-// reported as present (ADR 0142 Decision 10), never installed blind.
+// reported as present (ywr-harness ADR 0142 Decision 10), never installed blind.
 export function unknownText(verdicts) {
   const names = TOOLS.filter((t, i) => verdicts[i] && verdicts[i].state === 'unknown').map(t => t.name)
   return names.length ? `\n${names.join(' · ')} 은(는) 확인하지 못했습니다 (시간 초과 등). 직접 확인: ${names.map(n => `\`${n} --version\``).join(', ')}` : ''

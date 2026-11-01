@@ -6,13 +6,13 @@ description: Single entry over a repo's spec-owned verify scripts. Maps changed 
 # /verify — router
 
 This body runs in the calling context and does ONE thing: spawn the verification agent in the
-foreground and relay its report. The procedure lives in `procedure.md` beside this file (ADR 0084), and
-the prompt below names it by reference, the form ADR 0025 measured; the agent is fixed (ADR 0108).
+foreground and relay its report. The procedure lives in `procedure.md` beside this file (ywr-harness ADR 0084), and
+the prompt below names it by reference, the form ywr-harness ADR 0025 measured; the agent is fixed (ywr-harness ADR 0108).
 The verify tool-call log stays inside that agent and only its report returns — the property the
-retired `context: fork` gave (ADR 0025).
+retired `context: fork` gave (ywr-harness ADR 0025).
 
 **The agent is always `ywr-harness:verifier`** (pinned sonnet · effort medium), ultracode or not
-(ADR 0108). ADR 0025 measured medium matching high on this procedure's four trap cases
+(ywr-harness ADR 0108). ywr-harness ADR 0025 measured medium matching high on this procedure's four trap cases
 (normal-with-failure, refused, empty range, broken ref), with the procedure given by reference as
 the prompt below does.
 

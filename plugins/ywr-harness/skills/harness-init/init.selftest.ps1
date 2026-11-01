@@ -696,7 +696,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $ok = (Assert-True 'UA1a -AllowUpstreamAhead: no fetch, so no FETCH FAILED line on an unreachable remote' `
             ($rUA1a.Code -eq 0 -and $rUA1a.Out -notmatch 'FETCH FAILED') "exit=$($rUA1a.Code) out=$($rUA1a.Out)") -and $ok
     $ok = (Assert-True 'UA1 failed fetch: one FETCH FAILED line, no hit, the dry run proceeds (freshness limit)' `
-            ($rUA1.Code -eq 0 -and ([regex]::Matches($rUA1.Out, 'FETCH FAILED — git fetch origin exited \d+; the upstream-ahead check reads the remote-tracking refs as of the last fetch \(ADR 0137\)\.')).Count -eq 1 -and
+            ($rUA1.Code -eq 0 -and ([regex]::Matches($rUA1.Out, 'FETCH FAILED — git fetch origin exited \d+; the upstream-ahead check reads the remote-tracking refs as of the last fetch \(ywr-harness ADR 0137\)\.')).Count -eq 1 -and
             $rUA1.Out -notmatch 'not in this checkout' -and $rUA1.Out -notmatch 'UPSTREAM AHEAD' -and $rUA1.Out -notmatch 'ua-missing') "exit=$($rUA1.Code) out=$($rUA1.Out)") -and $ok
     # UA1b: the same unfetched clone, remote reachable again: the run fetches by itself, so the refusal sees the
     # push that no one fetched — the residual ADR 0135 left to the skill's prose (O76). Dry run: nothing written.
@@ -704,7 +704,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $uaFetched = (& git -C $uaC rev-parse origin/main 2>$null | Out-String).Trim()
     $ok = (Assert-True 'UA1b unfetched push: the self-fetch moves origin/main and the dry run REFUSES, saying the refs are fresh' `
             ($rUA1b.Code -eq 1 -and $uaFetched -ne $uaUnfetched -and $rUA1b.Out -cmatch 'REFUSED — origin/main has commit\(s\) not in this checkout that change the scaffold' -and
-            $rUA1b.Out -match 'This run fetched the remote-tracking refs just before the check \(ADR 0137\)\.' -and $rUA1b.Out -notmatch 'FETCH FAILED' -and
+            $rUA1b.Out -match 'This run fetched the remote-tracking refs just before the check \(ywr-harness ADR 0137\)\.' -and $rUA1b.Out -notmatch 'FETCH FAILED' -and
             $rUA1b.Out -notmatch "as of the last fetch — 'git fetch' first" -and -not (Test-Path -LiteralPath (Join-Path $uaC '.harness-version'))) "exit=$($rUA1b.Code) out=$($rUA1b.Out)") -and $ok
 
     Invoke-UaGit $uaC @('fetch', '-q', 'origin')
@@ -736,7 +736,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     # UA3: -AllowUpstreamAhead is the deliberate-divergence path — one Yellow line, then the normal run.
     $rUA3 = Invoke-Init @('-Target', $uaC, '-AllowUpstreamAhead')
     $ok = (Assert-True 'UA3 -AllowUpstreamAhead proceeds with exit 0 and says so once' `
-            ($rUA3.Code -eq 0 -and ([regex]::Matches($rUA3.Out, 'UPSTREAM AHEAD ALLOWED — origin/main has commit')).Count -eq 1 -and $rUA3.Out -match 'proceeding because -AllowUpstreamAhead was given \(ADR 0135\)' -and $rUA3.Out -cnotmatch 'REFUSED — origin/main') `
+            ($rUA3.Code -eq 0 -and ([regex]::Matches($rUA3.Out, 'UPSTREAM AHEAD ALLOWED — origin/main has commit')).Count -eq 1 -and $rUA3.Out -match 'proceeding because -AllowUpstreamAhead was given \(ywr-harness ADR 0135\)' -and $rUA3.Out -cnotmatch 'REFUSED — origin/main') `
             "exit=$($rUA3.Code) out=$($rUA3.Out)") -and $ok
     $ok = (Assert-True 'UA3 the scaffold was placed and stamped' `
             ((Test-Path -LiteralPath (Join-Path $uaC '.harness-version') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $uaC 'scripts/harness/harness_gates.py') -PathType Leaf)) $rUA3.Out) -and $ok
@@ -797,7 +797,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $rUA8 = Invoke-Init @('-Target', $uaC, '-DryRun', '-FetchTimeoutSeconds', '1')
     $uaT0.Stop()
     $ok = (Assert-True 'UA8 hung fetch: stopped at the timeout with one FETCH FAILED line, the run goes on (exit 0)' `
-            ($rUA8.Code -eq 0 -and ([regex]::Matches($rUA8.Out, 'FETCH FAILED — git fetch origin did not finish in 1 s and was stopped; the upstream-ahead check reads the remote-tracking refs as of the last fetch \(ADR 0137\)\.')).Count -eq 1 -and
+            ($rUA8.Code -eq 0 -and ([regex]::Matches($rUA8.Out, 'FETCH FAILED — git fetch origin did not finish in 1 s and was stopped; the upstream-ahead check reads the remote-tracking refs as of the last fetch \(ywr-harness ADR 0137\)\.')).Count -eq 1 -and
             $uaT0.Elapsed.TotalSeconds -lt 20) "exit=$($rUA8.Code) elapsed=$($uaT0.Elapsed.TotalSeconds)s out=$($rUA8.Out)") -and $ok
     # UA8b: a stop can strand git's lock files. The hung transport writes one first (as a fetch killed mid ref
     # update would); an OLD lock is the control. The line names the fresh lock ONLY and deletes neither — an

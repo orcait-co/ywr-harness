@@ -1,8 +1,8 @@
 // SessionStart (matcher `startup|resume|fork`) — old-model route and effort-pin guard, WARN-ONLY
-// (ADR 0107, ADR 0130).
+// (ywr-harness ADR 0107, ywr-harness ADR 0130).
 //
 // The org guide names worker models by family alias and keeps each alias on the newest model
-// (ADR 0106). Three of the routes by which an alias lands on an older model are settings a member
+// (ywr-harness ADR 0106). Three of the routes by which an alias lands on an older model are settings a member
 // can read, and nothing in the harness read them at run time:
 //   - an override: `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL` replaces an alias target
 //     (any value counts); `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_MODEL` / a settings `model` holding a
@@ -11,7 +11,7 @@
 //     alias moves every subagent and workflow agent that is not assigned a model another way to that
 //     family) re-models those agents; `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (any value) runs every
 //     workflow agent on one model and beats the model of each `agent()` call, an explicit one included
-//     (fact 112, ADR 0132; the Claude Code 2.1.296 CHANGELOG only, no doc names it yet); a non-empty
+//     (ywr-harness fact 112, ywr-harness ADR 0132; the Claude Code 2.1.296 CHANGELOG only, no doc names it yet); a non-empty
 //     `modelOverrides` sends its own string for a picked model.
 //   - a cloud provider: `CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,ANTHROPIC_AWS,MANTLE}` — the
 //     model-config doc's "Resolution by provider" table resolves `sonnet` (and on Foundry `opus`)
@@ -20,25 +20,25 @@
 // read stay the guide's: `--resume`/`--continue` keep the saved model, and an old Claude Code ships
 // an old alias table. `--model <full id>` on the command line is invisible here too: the payload's
 // `model` field is optional and the docs do not say whether it holds the alias or the resolved id.
-// A third route no hook can read is the host's own, the sixth route of ADR 0106's list as ADR 0130
+// A third route no hook can read is the host's own, the sixth route of ywr-harness ADR 0106's list as ywr-harness ADR 0130
 // extends it: from 2.1.286, when the API refuses the model an alias
 // resolves to, Claude Code retries once on the previous model of the same tier. It happens at run
 // time, so no setting shows it.
 //
-// The effort pin (ADR 0130). `CLAUDE_CODE_EFFORT_LEVEL` (any non-empty value) sets the effort of every
+// The effort pin (ywr-harness ADR 0130). `CLAUDE_CODE_EFFORT_LEVEL` (any non-empty value) sets the effort of every
 // subagent and workflow agent: the sub-agents doc says it "takes precedence over both" the frontmatter
-// `effort` and an Agent call's `effort`, and fact 108 measured a workflow `agent()` effort losing to it
+// `effort` and an Agent call's `effort`, and ywr-harness fact 108 measured a workflow `agent()` effort losing to it
 // too (2.1.295 only; no doc states that half). Among the settings files the highest-precedence one
 // that sets it is named; the process environment, where Claude Code writes the applied value, wins. `--effort` and `/effort` set the session level only, which a frontmatter pin beats, so they are
 // not read. It is reported in its own clause and never by `--preflight`: the eval wrapper sets it to
-// `low` itself (ADR 0103), so a value in the operator's shell never reaches a child.
+// `low` itself (ywr-harness ADR 0103), so a value in the operator's shell never reaches a child.
 //
 // Sources read: this process's environment — a hook "inherits the parent environment" (hooks doc)
 // and Claude Code "writes each `env` entry into the process environment" (env-vars doc), so a
 // settings `env` value arrives here too — plus the user settings file (`$CLAUDE_CONFIG_DIR`, else
 // `~/.claude`) and the project's `.claude/settings.json` / `.claude/settings.local.json`, whose
 // `model`, `modelOverrides` and `env` keys are read directly. Managed settings are not read: the
-// org payload sets none of these keys (checked when ADR 0106 was written), and its cache is not a
+// org payload sets none of these keys (checked when ywr-harness ADR 0106 was written), and its cache is not a
 // documented read surface. A file that does not parse is skipped: validating settings is the
 // host's job, and a guard that speaks on a parse error would nag about something else.
 //
@@ -50,7 +50,7 @@
 // The matcher skips `clear` and `compact`: they run in the same process, whose environment has not
 // changed, and repeating the note after each would be noise.
 //
-// `--preflight` is the eval runner's refusal (spec 0014 §4.3): the environment half only — an eval
+// `--preflight` is the eval runner's refusal (ywr-harness spec 0014 §4.3): the environment half only — an eval
 // child gets its own config dir, so no settings file of the operator's reaches it — printed as one
 // line per finding, exit 1 when any is found, exit 0 with one "clear" line otherwise. One key list
 // serves both callers, so the guard and the preflight cannot drift apart. (The pwsh original took
@@ -58,9 +58,9 @@
 //
 // Values render through inline() and a length cap (C0, DEL, NEL, U+2028/U+2029, backtick — the
 // hook-lib.mjs inline() class), so a crafted value cannot forge a banner line. The prose cites no
-// decision numbers: a member cannot follow a canon ADR from their own repo (spec 0006 §3.1).
+// decision numbers: a member cannot follow a canon ADR from their own repo (ywr-harness spec 0006 §3.1).
 //
-// Node port (ADR 0116). The environment-variable map is case-insensitive like the original's
+// Node port (ywr-harness ADR 0116). The environment-variable map is case-insensitive like the original's
 // hashtable (an `env` key `anthropic_model` in a settings file is read as ANTHROPIC_MODEL), by ASCII
 // folding. Settings files parse as leniently as ConvertFrom-Json did (hook-lib's parseJsonLoose:
 // comments, trailing commas, single-quoted strings, unquoted keys) and must then be JSON objects

@@ -273,7 +273,7 @@ function isFlattened(c) {
  * Payload-authored text made safe to echo in a banner: every flattened-class character -> a space,
  * trimmed (.NET semantics), then capped at `max` with `max - 1` characters + an ellipsis. Every Node
  * hook imports it. The hooks module `prerequisites.mjs` cannot import this file (a mod has no Node),
- * so its `flatten()` repeats the class, pinned by its own selftest (ADR 0142).
+ * so its `flatten()` repeats the class, pinned by its own selftest (ywr-harness ADR 0142).
  */
 export function inline(text, max = 80) {
   const s = String(text ?? '')

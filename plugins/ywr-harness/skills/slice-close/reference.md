@@ -6,7 +6,7 @@ fires; each one stands on its own.
 
 ## Ignored-tree
 
-The emitter's `ignored-tree claims:` line (ADR 0077) rides the trailer after `hooks:`. Quote the
+The emitter's `ignored-tree claims:` line (ywr-harness ADR 0077) rides the trailer after `hooks:`. Quote the
 line in the close record exactly as printed, whichever form it takes:
 
 - **A claim list** — a declared group whose `match` also claims paths the repo's COMMITTED
@@ -26,12 +26,12 @@ line in the close record exactly as printed, whichever form it takes:
 
 ## Shards
 
-Sharding buys recall, not time (ADR 0070, ADR 0090):
+Sharding buys recall, not time (ywr-harness ADR 0070, ywr-harness ADR 0090):
 
-- ADR 0070 measured it on a 5-file scope. With the other two scope habits the finders finished in 2
+- ywr-harness ADR 0070 measured it on a 5-file scope. With the other two scope habits the finders finished in 2
   requests each and the rest of their time was output generation. Sharding then cut no time and
   cost +69% tokens, because more finders produce more raw findings and more skeptic legs.
-- ADR 0090 records 5 full-tier sharded runs against 18 unsharded ones, over different scopes (not a
+- ywr-harness ADR 0090 records 5 full-tier sharded runs against 18 unsharded ones, over different scopes (not a
   paired comparison): $6.73 against $2.45 per run, 570 s against 412 s, 10.4 against 6.1 confirmed
   findings, precision 0.69 against 0.87 (the one small-tier sharded run: $1.99, 283 s, 8 confirmed,
   precision 1.00 — one run, not a rate). The extra confirmed findings are the reason to shard a
@@ -48,7 +48,7 @@ Sharding buys recall, not time (ADR 0070, ADR 0090):
 
 ## Rebase
 
-A rebase or merge after the review re-arms it only over the overlap (ADR 0072). This applies when
+A rebase or merge after the review re-arms it only over the overlap (ywr-harness ADR 0072). This applies when
 the slice is rebased onto, or merges, a base that other commits advanced after the review ran.
 
 1. Re-run stage 1 over the rebased tree. Always do this: the tree is new, and the gates are cheap.
@@ -73,11 +73,11 @@ re-arms the review too. That is the cheaper error.
 
 ## Prepared
 
-The close is owner-typed, but the stages before it are not (ADR 0105). A session may run stages
+The close is owner-typed, but the stages before it are not (ywr-harness ADR 0105). A session may run stages
 1–3 before the owner types `/ywr-harness:slice-close` and end with a ready report: the emitter's
 output and the result of every command it printed, the review's `digest` and every fix verdict,
 the `fix_proof.py check` output (an exit 3 lists the waivers the owner must answer, and a digest
-older than ADR 0169 — the check prints only its rejected count, so the report also quotes each
+older than ywr-harness ADR 0169 — the check prints only its rejected count, so the report also quotes each
 rejected finding's severity, title and votes from the review's return), the verify
 verdict, and LAST the line `harness_gates.py --tree` printed after the final edit.
 It writes no handoff and makes no commit. Reuse needs those lines verbatim in THIS session's context.

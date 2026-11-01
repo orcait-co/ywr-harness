@@ -1,7 +1,7 @@
 # /verify procedure — spec-owned verification
 
-> You were spawned by the `/ywr-harness:verify` router skill (`SKILL.md` beside this file, ADR 0084) as
-> `ywr-harness:verifier` (ADR 0108). You get **no
+> You were spawned by the `/ywr-harness:verify` router skill (`SKILL.md` beside this file, ywr-harness ADR 0084) as
+> `ywr-harness:verifier` (ywr-harness ADR 0108). You get **no
 > conversation history**. Scope must be self-derivable: the invocation argument your prompt
 > carries, else working tree vs HEAD. Never infer scope from something "we discussed" — it is not
 > in this context. `<PLUGIN_ROOT>` below is the plugin root path your prompt names.
@@ -22,7 +22,7 @@ runner, and the generated docs index for `implements_in` — **not** the spec fi
 frontmatter changed this session, run `pwsh docs/build.ps1` first.
 
 Invocation argument (your prompt carries it) — when non-empty, use it as the range (or explicit file list).
-Pass it to the mapper as given — the mapper is the range check (ADR 0041, below); a git pre-check
+Pass it to the mapper as given — the mapper is the range check (ywr-harness ADR 0041, below); a git pre-check
 of your own adds a round-trip and proves nothing more. **Do NOT silently fall back to the
 working-tree default** — a scope you did not verify produces a verdict about files nobody asked about.
 
@@ -31,10 +31,10 @@ in HEAD) resolves cleanly and then maps only the working tree — the silent fal
 different costume. The mapper prints a `scope:` line and warns when a range matched zero files;
 **quote that line** and call an empty range out by name.
 
-The converse exists too (ADR 0041): if git cannot resolve the scope at all, the mapper prints
+The converse exists too (ywr-harness ADR 0041): if git cannot resolve the scope at all, the mapper prints
 `scope: FAILED` on stdout and exits **non-zero** — NOTHING was verified. Report that as a broken
 scope and stop; never read it as "nothing to verify". An `index: FAILED` line is the same stop for
-a docs index that exists but cannot be read (ADR 0110); `index: ABSENT` means the repo has no index
+a docs index that exists but cannot be read (ywr-harness ADR 0110); `index: ABSENT` means the repo has no index
 yet — quote it, nothing was spec-verified.
 
 ## 2. Check preconditions before running anything
@@ -75,7 +75,7 @@ exists, or say plainly that the surface was not verified.
 
 Files the mapper flags as unmapped have no spec owner. Register them in a spec's `implements_in`
 rather than hand-picking a verify script — hand-picking is the guess this skill exists to remove.
-An entry may name a directory; it owns every file below it (ADR 0104).
+An entry may name a directory; it owns every file below it (ywr-harness ADR 0104).
 
 A new verify script must be registered in its spec's `implements_in` by its own path, even under a
 directory entry. That is the only place this skill looks.

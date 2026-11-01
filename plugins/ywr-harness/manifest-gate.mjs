@@ -68,7 +68,21 @@ function decode(b) {
   if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) return Buffer.from(b.subarray(2)).swap16().toString('utf16le')
   return b.toString('utf8')
 }
-const readText = (p) => decode(fs.readFileSync(p))        // Get-Content -Raw / ReadAllText
+// One read per file per run: several checks read the same files, and the gate writes no file. A
+// cached Buffer is shared, so a caller copies it before any in-place change (decode's swap16 does).
+const byteCache = new Map(), textCache = new Map()
+function readBytes(p) {
+  const k = path.resolve(p)
+  let b = byteCache.get(k)
+  if (b === undefined) { b = fs.readFileSync(p); byteCache.set(k, b) }
+  return b
+}
+function readText(p) {                                    // Get-Content -Raw / ReadAllText
+  const k = path.resolve(p)
+  let t = textCache.get(k)
+  if (t === undefined) { t = decode(readBytes(p)); textCache.set(k, t) }
+  return t
+}
 // Get-Content's lines: CRLF, CR and LF all break, and a final line break opens no extra line.
 function readLines(p) {
   const t = readText(p)
@@ -115,6 +129,11 @@ function ext(name) {
   return i < 0 || i === name.length - 1 ? '' : name.slice(i)
 }
 // Split-Path -Parent: '' for a root.
+// Two paths name one directory once resolved: case-insensitive on win32, as the file system is.
+function samePathCi(a, b) {
+  const x = path.resolve(a), y = path.resolve(b)
+  return WIN ? upper(x) === upper(y) : x === y
+}
 function parentOf(p) { return p === path.parse(p).root ? '' : path.dirname(p) }
 const leafOf = (p) => path.basename(p)                    // Split-Path -Leaf
 const upper = (s) => s.toUpperCase()
@@ -373,7 +392,7 @@ async function main() {
       }
       // An ORDERED byte compare: the first cut's set compare read two swapped lines as identical
       // (measured 2026-09-28).
-      if (!fs.readFileSync(origin).equals(fs.readFileSync(path.join(vendorDir, v)))) {
+      if (!readBytes(origin).equals(readBytes(path.join(vendorDir, v)))) {
         bad(`vendored copy DIVERGED: ${v} — re-copy scripts/${v} into skills/harness-init/templates/scripts/harness/`)
         drift++
       }
@@ -392,6 +411,14 @@ async function main() {
   // reads dot-names on every platform (`hidden()` would drop `.github` off Windows) and skips the
   // gitignored `__pycache__`, whose compiled docstrings would repeat the source.
   const tplRoot = join(root, 'skills/harness-init/templates')
+  // The forms: `ADR 0062`, `ADR-0062`, `ADR #62`, `spec 0003`, `specs 0003`, `fact 12`. An ADR
+  // needs two digits at least, so a placeholder such as "(ADR 1; spec 2)" in a usage example
+  // passes. Known limit: only the first number after the word is read, so `ywr-harness ADR
+  // 0032/0068` passes whole. The runtime check below uses the same pattern (ADR 0185).
+  const refRx = /(?<!ywr-harness )\b(?:ADRs?[- #]?\d{2,4}|specs? #?\d{3,4}|facts? #?\d{1,3})\b/giu
+  // The same pattern without the g flag, for a whole-text test: a g regex keeps lastIndex after
+  // test(), and matchAll copies that index, so the line scan after it would start mid-line.
+  const refAnyRx = new RegExp(refRx.source, 'iu')
   if (isDir(tplRoot)) {
     const tplFiles = []
     const walkAll = (dir) => {
@@ -404,11 +431,6 @@ async function main() {
       }
     }
     walkAll(tplRoot)
-    // The forms: `ADR 0062`, `ADR-0062`, `ADR #62`, `spec 0003`, `specs 0003`, `fact 12`. An ADR
-    // needs two digits at least, so a placeholder such as "(ADR 1; spec 2)" in a usage example
-    // passes. Known limit: only the first number after the word is read, so `ywr-harness ADR
-    // 0032/0068` passes whole.
-    const refRx = /(?<!ywr-harness )\b(?:ADRs?[- #]?\d{2,4}|specs? #?\d{3,4}|facts? #?\d{1,3})\b/giu
     let refBad = 0, refFiles = 0
     for (const f of tplFiles.sort(compare)) {
       if (inCi(ext(path.basename(f)), ['.md', '.pyc'])) continue
@@ -423,6 +445,74 @@ async function main() {
     }
     if (refBad === 0) {
       good(`canon references: every ADR, spec and fact reference in ${refFiles} non-markdown template file(s) carries the 'ywr-harness ' prefix`)
+    }
+  }
+
+  // --- canon references in the plugin runtime (ADR 0185) -------------------------------------------
+  // A consumer session loads or runs every other plugin file from the plugin cache: hook context,
+  // skill text and script output reach its model, which reads a bare number as its own record. The
+  // whole text counts, comments included, because no line rule tells a comment from a multi-line
+  // string. The canon-only set below stays out, and a new file is in scope by default. The templates
+  // keep the rule above. The top CHANGELOG entry is in scope too: the version-announce hook injects
+  // the entry of the loaded version, and the check above holds the top entry to plugin.json.
+  {
+    const skipTopFiles = ['README.md', 'REVIEW.md', 'NOTICE', 'CHANGELOG.md', 'manifest-gate.mjs', 'selftest.ps1',
+      'selftest-reads.json', 'tsconfig.json']
+    const skipTopDirs = ['lib', 'evals', '.claude-plugin']
+    const rtFiles = []
+    const walkRt = (dir, top) => {
+      let ents
+      try { ents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of ents) {
+        const k = entryKind(dir, e)
+        const full = path.join(dir, e.name)
+        if (k === 'dir') {
+          if (e.name === '__pycache__' || (top && inCi(e.name, skipTopDirs)) || samePathCi(full, tplRoot)) continue
+          walkRt(full, false)
+        } else if (k === 'file') {
+          if (top && inCi(e.name, skipTopFiles)) continue
+          const lower = e.name.toLowerCase()               // case-insensitive, as the other exclusions
+          if (lower.includes('.selftest.') || lower.endsWith('.test.ts') || lower.endsWith('.pyc')) continue
+          rtFiles.push(full)
+        }
+      }
+    }
+    walkRt(root, true)
+    const rel = (f) => path.relative(root, f).replace(/\\/g, '/')
+    let rtBad = 0
+    for (const f of rtFiles.sort(compare)) {
+      if (!refAnyRx.test(readText(f))) continue           // a clean file is never split into lines
+      const lines = readLines(f)
+      for (let i = 0; i < lines.length; i++) {
+        for (const m of lines[i].matchAll(refRx)) {
+          bad(`canon reference: ${rel(f)}:${i + 1} '${m[0]}' has no 'ywr-harness ' prefix — a consumer session reads it as its own record (ADR 0185)`)
+          rtBad++
+        }
+      }
+    }
+    let clChecked = false
+    if (exists(clPath)) {
+      const clLines = readLines(clPath)
+      let inTop = false
+      for (let i = 0; i < clLines.length; i++) {
+        if (/^##\s/u.test(clLines[i])) {
+          if (inTop) break
+          inTop = /^##\s+v/iu.test(clLines[i])
+          clChecked = clChecked || inTop
+          continue
+        }
+        if (!inTop) continue
+        for (const m of clLines[i].matchAll(refRx)) {
+          bad(`canon reference: CHANGELOG.md:${i + 1} '${m[0]}' in the top entry has no 'ywr-harness ' prefix — the version-announce hook injects it into consumer sessions (ADR 0185)`)
+          rtBad++
+        }
+      }
+    }
+    // A missing CHANGELOG or one with no `## v` heading already fails the release-notes check above;
+    // this line keeps the skipped half visible instead of a PASS that silently drops it.
+    if (!clChecked) note("canon references: the top CHANGELOG entry was NOT CHECKED — no '## v' heading (see the release-notes check)")
+    if (rtBad === 0) {
+      good(`canon references: every ADR, spec and fact reference in ${rtFiles.length} plugin runtime file(s)${clChecked ? ' and the top CHANGELOG entry' : ''} carries the 'ywr-harness ' prefix`)
     }
   }
 
@@ -476,7 +566,7 @@ async function main() {
     if (!tool || tool.length === 0 || !guard || guard.length === 0 || !markerM) {
       bad(`dogfood placements: could not parse $TOOLCHAIN/$GUARDED/$GUARD_MARKER from init.ps1 — an empty sweep is not a pass (toolchain=${tool ? tool.length : 'none'} guarded=${guard ? guard.length : 'none'})`)
     } else {
-      const folded = (p) => { const b = fs.readFileSync(p); return b.includes(13) ? b.filter(x => x !== 13) : b }
+      const folded = (p) => { const b = readBytes(p); return b.includes(13) ? b.filter(x => x !== 13) : b }
       const markerRx = new RegExp(rxEscape(markerM[1]), 'iu')
       let pDrift = 0, pChecked = 0
       const pAbsent = [], pForeign = []
@@ -788,7 +878,7 @@ async function main() {
         if (adrRefExcludeRx.test(rel)) continue
         const full = join(repoRoot, rel)
         if (!isFile(full)) continue                       // deleted in the work tree
-        const bytes = fs.readFileSync(full)
+        const bytes = readBytes(full)
         if (bytes.includes(0)) continue                   // binary
         adrScanned++
         const text = bytes.toString('utf8')
@@ -921,7 +1011,7 @@ async function main() {
         if (!isPy && !isJs) continue
         const full = join(repoRoot, rel)
         if (!isFile(full)) continue                       // deleted in the work tree
-        const lines = fs.readFileSync(full).toString('utf8').split('\n')
+        const lines = readBytes(full).toString('utf8').split('\n')
         if (isPy) {
           pyFiles++
           let inStr = false, openedAt = 0

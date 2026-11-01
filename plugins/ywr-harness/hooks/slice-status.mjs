@@ -1,5 +1,5 @@
-// Hooks module (Claude Mods; ADR 0138) — the OBSERVE-ONLY slice status line. UNREGISTERED since
-// ADR 0140: `mods.mjs` (the entry `hooks.json` names under `modules`) does not import it, so no line
+// Hooks module (Claude Mods; ywr-harness ADR 0138) — the OBSERVE-ONLY slice status line. UNREGISTERED since
+// ywr-harness ADR 0140: `mods.mjs` (the entry `hooks.json` names under `modules`) does not import it, so no line
 // shows; the file and its selftest stay for a redesign, which a new ADR must register again.
 //
 // One line, pinned under the prompt by `$.ui.status` (one per plugin, beside the engine's notices; the
@@ -8,22 +8,22 @@
 // - the CONTEXT ZONE, from `session.measure`: the org guide's start rule (under ~35 % start freely,
 //   35–60 % only a scoped slice, over 60 % close, past ~85 % plan nothing new; in a 1M window, a
 //   follow-on phase past ~200k tokens starts in a fresh session). The higher zone wins.
-// - the `--tree` FRESHNESS of the prepared close (ADR 0105: the ready report's last line is what
+// - the `--tree` FRESHNESS of the prepared close (ywr-harness ADR 0105: the ready report's last line is what
 //   `harness_gates.py --tree` printed after the final edit), from `tool.call`: after a successful
 //   `--tree` run (a shell call that ENDS with it, `isTreeRun`), the distinct files under the project
 //   root an Edit / Write / NotebookEdit changed, and the Bash / PowerShell calls the engine did not mark
-//   `isReadOnly`, failed ones included, less the PowerShell reads of ADR 0139's list. Before the first `--tree` run there is no `--tree` half, and a
+//   `isReadOnly`, failed ones included, less the PowerShell reads of ywr-harness ADR 0139's list. Before the first `--tree` run there is no `--tree` half, and a
 //   reset (a /clear, a root move, a lost worker) drops it again, so a lost count never reads as "no
-//   change"; the residuals ADR 0138 lists are writes the module cannot see.
+//   change"; the residuals ywr-harness ADR 0138 lists are writes the module cannot see.
 //
-// Observe-only, by contract (ADR 0117's, narrowed by ADR 0138 to allow `$.ui.status` alone): every hook
+// Observe-only, by contract (ywr-harness ADR 0117's, narrowed by ywr-harness ADR 0138 to allow `$.ui.status` alone): every hook
 // hands `next` the event it received and returns what `next` resolved to; the bookkeeping runs after
 // `next`, inside try/catch, except one in-memory mark of a `--tree` run's start before `next`. It never denies, rewrites, starts a turn or writes a file, and the line
 // carries no prompt, command or file text — counts and the zone only. It runs only where the project
 // root holds `.harness.json` (the ledger's rule).
 //
 // The thresholds are constants: the org guide (claude/org-guide.md, "Session hygiene") is their source,
-// and a guide change to the zones changes them in the same slice (ADR 0138 Decision 7).
+// and a guide change to the zones changes them in the same slice (ywr-harness ADR 0138 Decision 7).
 //
 // The pure half (`zoneOf`, `isTreeRun`, `normPath`, `underRoot`, `createTracker`, `statusText`) is
 // exported so `slice-status.selftest.ps1` drives it under plain node with a fake engine; the engine
@@ -106,7 +106,7 @@ export function splitSimple(command) {
   return out
 }
 
-// Whether a shell command's LAST effective step is a `harness_gates.py --tree` run (ADR 0138): one simple
+// Whether a shell command's LAST effective step is a `harness_gates.py --tree` run (ywr-harness ADR 0138): one simple
 // command runs the script (directly or through python / python3 / py) with `--tree` as an argument and no
 // redirection beyond stderr; every simple command after it is a filter reached by a single pipe or a
 // printer; none holds a redirection or a substitution. Commands before it are free (`cd … &&`): the tree
@@ -135,7 +135,7 @@ export function isTreeRun(command) {
   return false
 }
 
-// PowerShell commands the module holds read-only itself (ADR 0139). At 2.1.296 the engine marks no
+// PowerShell commands the module holds read-only itself (ywr-harness ADR 0139). At 2.1.296 the engine marks no
 // PowerShell call `isReadOnly`, `Get-Location` included, while it marks Bash reads
 // (anthropics/claude-code#101149). Every simple command must be one of these readers, and anything else
 // counts as before, so a wrong answer can only hide a "run again", never show a write as "no change".
@@ -162,7 +162,7 @@ const PWSH_UNSAFE = new Set('$`(){}@<>[]#')
 // An environment variable read: the one expansion a qualifying command may hold, bare or inside "…".
 const PWSH_ENV_READ = /^\$env:[A-Za-z_]\w*/i
 
-// A PowerShell command as the read list needs it (ADR 0139): its simple commands, split at a newline, a
+// A PowerShell command as the read list needs it (ywr-harness ADR 0139): its simple commands, split at a newline, a
 // CR, `;`, `|`, `&&` or `||` outside quotes, each a list of words `{ text, quoted, string, runs, env }`. The scan follows
 // pwsh's own quote rules: '' and "" are escaped quotes, `$` and the backtick stay live inside "…", and a
 // backslash is a plain character. Answers null for anything it does not model, and the call counts.
@@ -215,7 +215,7 @@ export function pwshWords(command) {
   return segs.filter(s => s.length)
 }
 
-// Whether a PowerShell command only reads (ADR 0139): every simple command is a reader from the list, one
+// Whether a PowerShell command only reads (ywr-harness ADR 0139): every simple command is a reader from the list, one
 // quoted token alone, which PowerShell only prints, or `git` with a read subcommand. `--%` stops pwsh's own
 // parsing, so a word that holds it counts. git takes an environment value as raw arguments, which could
 // be `--output=…`, so a git command that reads one counts.
@@ -279,7 +279,7 @@ export const MAX_ENTRIES = 10000
 // tracker records each counted change with its number; a run that succeeds keeps only the changes that
 // completed AFTER it started, so an Edit finishing beside a parallel `--tree` run is never wiped.
 // A shell call counts unless the engine marked it `isReadOnly`, a PowerShell call is a listed read
-// (`isPwshReadOnly`, ADR 0139) or a hook denied it (a denied call never
+// (`isPwshReadOnly`, ywr-harness ADR 0139) or a hook denied it (a denied call never
 // ran); a failed one counts too, since a command can write before it fails.
 export function createTracker() {
   let armed = false

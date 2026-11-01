@@ -137,7 +137,7 @@ Set-Content -LiteralPath $kSettingsPath -Value ($kMap | ConvertTo-Json -Depth 20
 $rK = Invoke-Install $k @()
 $sK = Get-Settings $k
 $ok = (Assert-True 'J an old 30 s interval survives a re-run' ($sK.statusLine.refreshInterval -eq 30) "refreshInterval=$($sK.statusLine.refreshInterval)") -and $ok
-$ok = (Assert-True 'J the kept interval is named, with the way out' (($rK.Out -match 'already wired') -and ($rK.Out -match 'refreshInterval 30 kept — no longer wired \(ADR 0122\)')) $rK.Out) -and $ok
+$ok = (Assert-True 'J the kept interval is named, with the way out' (($rK.Out -match 'already wired') -and ($rK.Out -match 'refreshInterval 30 kept — no longer wired \(ywr-harness ADR 0122\)')) $rK.Out) -and $ok
 $ok = (Assert-True 'J the command wiring is untouched' ($sK.statusLine.command -match 'harness-statusline\.js') "got: $($sK.statusLine.command)") -and $ok
 $ok = (Assert-True 'J unrelated keys survive the re-run' ($sK.keepMe -eq 'yes') 'keepMe lost') -and $ok
 # A member-tuned value survives too — any value.

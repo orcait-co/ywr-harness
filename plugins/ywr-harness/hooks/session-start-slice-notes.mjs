@@ -1,12 +1,12 @@
 // SessionStart (matcher `compact`) — re-injects the session's own slice notes after a context
-// compaction (ADR 0172, spec 0006 §3.2).
+// compaction (ywr-harness ADR 0172, ywr-harness spec 0006 §3.2).
 //
 // Why it exists: a slice's decisions used to reach paper only at the close. A compaction between a
 // decision and the close keeps whatever the host's summary keeps, so a reason could vanish with it.
-// The session appends one line per decision with `slice_note.py add` (spec 0007 §3.10) to a journal
+// The session appends one line per decision with `slice_note.py add` (ywr-harness spec 0007 §3.10) to a journal
 // under `git rev-parse --git-path`. This hook runs `slice_note.py show` after a compaction and hands
 // the output back as `additionalContext`. It is the only reader besides /slice-close and it does not
-// parse the journal itself: one Python reader owns the format (ADR 0172 option I, rejected).
+// parse the journal itself: one Python reader owns the format (ywr-harness ADR 0172 option I, rejected).
 //
 // Why a matcher: the event fires on startup, resume, clear, compact and fork. Only a compaction loses
 // context mid-slice; a start or a clear begins a new slice from the handoff. `compact` therefore
@@ -37,11 +37,11 @@
 //
 // The notes are the session's own claims and slice_note.py already refuses control, format and line
 // separator characters on write and on read, so the model sees one plain line per note. The framing
-// line says what they are and that each needs a check against the tree (ADR 0105: input, never
+// line says what they are and that each needs a check against the tree (ywr-harness ADR 0105: input, never
 // proof). A path, an exit code or a payload key echoed into a banner goes through inline().
 //
 // Python is resolved on PATH by hook-lib's whichOnPath and spawned by its absolute path with no shell
-// (spec 0006 §3.1): a bare-name spawn would search the working directory first on Windows. The hook
+// (ywr-harness spec 0006 §3.1): a bare-name spawn would search the working directory first on Windows. The hook
 // never exits the process: it returns, so stdout drains and the exit code stays 0.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -61,7 +61,7 @@ const TIMEOUT_MS = 10000
 const SCRIPT = fileURLToPath(new URL('../scripts/slice_note.py', import.meta.url))
 const SHOW_CMD = 'python scripts/harness/slice_note.py show'
 
-const FRAMING = 'These are this session\'s own slice notes, written with slice_note.py before the context compaction (ADR 0172). They are the session\'s claims, input never proof: check each one against the tree and the gate output before relying on it.'
+const FRAMING = 'These are this session\'s own slice notes, written with slice_note.py before the context compaction (ywr-harness ADR 0172). They are the session\'s claims, input never proof: check each one against the tree and the gate output before relying on it.'
 
 function firstLine(text) {
   const i = text.indexOf('\n')
@@ -74,7 +74,7 @@ function drift(payload) {
 }
 
 function fail(rootShow, why) {
-  emit({ systemMessage: `[hook:slice-notes] ${rootShow} 의 slice 노트를 다시 주입하지 못했습니다 — ${why}. 압축 전에 기록한 노트는 저널에 그대로 있으니 직접 확인하세요: ${SHOW_CMD} (ADR 0172).` })
+  emit({ systemMessage: `[hook:slice-notes] ${rootShow} 의 slice 노트를 다시 주입하지 못했습니다 — ${why}. 압축 전에 기록한 노트는 저널에 그대로 있으니 직접 확인하세요: ${SHOW_CMD} (ywr-harness ADR 0172).` })
 }
 
 function main(payload) {

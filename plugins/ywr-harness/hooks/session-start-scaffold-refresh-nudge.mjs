@@ -1,9 +1,9 @@
 // SessionStart (registered WITHOUT a matcher, deliberately — the drift condition below is the
 // filter, and re-speaking after `compact` re-injects a fact summaries lose) — scaffold-refresh
-// nudge, suggest-only (ADR 0033); also the carrier of the slice rules (ADR 0183) and the slice-note rule
-// (ADR 0172), see below.
+// nudge, suggest-only (ywr-harness ADR 0033); also the carrier of the slice rules (ywr-harness ADR 0183) and the slice-note rule
+// (ywr-harness ADR 0172), see below.
 //
-// The gap this closes is ADR 0014's recorded follow-up: toolchain propagation is pull-based (a
+// The gap this closes is ywr-harness ADR 0014's recorded follow-up: toolchain propagation is pull-based (a
 // plugin improvement reaches a scaffolded repo only on the next /ywr-harness:harness-init run),
 // and nothing detected the repo that never re-ran. This hook byte-compares the installed plugin's
 // templates against the repo's placements and says so when a re-run would actually change
@@ -20,7 +20,7 @@
 // no such parser, so this port lexes init.ps1 (comments, quoted strings, here-strings, variables)
 // and accepts exactly the shapes the AST walk accepted — see the "init.ps1 literal reader" block.
 //
-// Comparison contract (ADR 0033):
+// Comparison contract (ywr-harness ADR 0033):
 //   - TOOLCHAIN placements: EOL-insensitive byte identity (bytes compared after dropping 0x0D).
 //     The seed .gitattributes pins `* eol=lf` and `*.ps1 eol=crlf`, so the SAME file legitimately
 //     differs in raw bytes between the repo checkout and the installed plugin copy; a CR-only
@@ -32,7 +32,7 @@
 //     after this repo's last scaffold run is exactly the stale state.
 //   - GUARDED (post-commit) is compared only when it carries the marker; a marker-less file is
 //     foreign, init.ps1 refuses to touch it, so a re-run would change nothing — silent, the same
-//     shape as the githooks-nudge's foreign-hooksPath silence (ADR 0029).
+//     shape as the githooks-nudge's foreign-hooksPath silence (ywr-harness ADR 0029).
 //   - SEED files are never compared: their content is the consuming repo's decisions.
 //
 // Direction-blindness is stated, not hidden: byte difference cannot tell "repo behind plugin"
@@ -40,7 +40,7 @@
 // *differ*, never *outdated*, and additionalContext warns the model that a re-run would REVERT
 // deliberately newer copies.
 //
-// Stale-basis probe (ADR 0039): a running session keeps the plugin version it loaded — hooks
+// Stale-basis probe (ywr-harness ADR 0039): a running session keeps the plugin version it loaded — hooks
 // resolve to the OLD cache directory until /reload-plugins or a restart, and that directory
 // survives ~2 weeks after an update (doc-verified 2026-08-07). In that window this hook's
 // verdict basis is stale and its advice inverts: the repo may match the NEWER registered
@@ -49,33 +49,33 @@
 // hook checks whether its own copy is still the registered install — self-located from its own
 // path (<plugins>/cache/<marketplace>/<name>/<version>, registry sibling at
 // <plugins>/installed_plugins.json — an UNDOCUMENTED file, read best-effort like the
-// statusline, ADR 0027). Stale -> same file list, but the advice becomes "reload, re-check,
+// statusline, ywr-harness ADR 0027). Stale -> same file list, but the advice becomes "reload, re-check,
 // do NOT run harness-init from this session". A registered version EQUAL to the running one
 // falls back to the normal nudge (same release, same templates — nothing to invert; and
 // "runs vX while the install is vX" would contradict itself). Any probe failure -> the normal
 // nudge: the probe can only improve the advice, never silence the hook.
 //
-// Direction probe (ADR 0042): after drift, the NORMAL branch reads the repo's `.harness-version`
+// Direction probe (ywr-harness ADR 0042): after drift, the NORMAL branch reads the repo's `.harness-version`
 // stamp (written by init.ps1 on every successful run — generated, never a template, never in the
 // placement map, so it can never itself count as drift). stamp > running -> repo AHEAD: the
 // advice flips to "update the plugin, do NOT init" (multi-writer: another writer refreshed this
 // repo with a newer plugin). stamp < running -> refresh advice with the direction stated as
-// measured. equal -> the drift is a hand-edit or partial placement, named as ADR 0010's intended
+// measured. equal -> the drift is a hand-edit or partial placement, named as ywr-harness ADR 0010's intended
 // signal. missing/unparseable -> direction-blind caveat, now on BOTH output surfaces (the old
 // uncaveated "re-run is safe" human banner is retired — the 2026-08-10 audit's asymmetry). The
-// 0039 stale-basis banner takes precedence over all of this; probe failures fall through, never
+// ywr-harness ADR 0039 stale-basis banner takes precedence over all of this; probe failures fall through, never
 // silence.
 //
-// Upstream-ahead probe (ADR 0135): the direction probe reads THIS checkout's stamp, and after a
+// Upstream-ahead probe (ywr-harness ADR 0135): the direction probe reads THIS checkout's stamp, and after a
 // teammate scaffolded or refreshed the repo and pushed, that stamp is the OLD one — it reads
 // "genuinely behind" and sends the person into a run that collides with the pushed scaffold. So,
-// only after drift is found, after the 0039 branch and after the stamp probe, the hook asks the
+// only after drift is found, after the ywr-harness ADR 0039 branch and after the stamp probe, the hook asks the
 // remote-tracking refs whether they carry a commit this checkout lacks that touches `.harness-version`
 // — the stamp ALONE: init.ps1 writes it on every run that changes the version and on a first run, a
 // same-version re-run places byte-identical templates, and a hand edit is not a scaffold run (the
-// 0042 equal-version branch owns hand edits). The walk is patch-equivalence filtered, so a local
+// ywr-harness ADR 0042 equal-version branch owns hand edits). The walk is patch-equivalence filtered, so a local
 // rebase or amend of a stamp commit is no hit. Candidates in order: the current branch's upstream,
-// then origin/HEAD (init.ps1's offline default-branch signal, ADR 0062). A hit replaces the 0042
+// then origin/HEAD (init.ps1's offline default-branch signal, ywr-harness ADR 0062). A hit replaces the ywr-harness ADR 0042
 // behind, equal and direction-blind branches: do NOT run harness-init, pull first. The repo-AHEAD
 // branch (stamp newer than the running plugin) keeps precedence and skips the probe: it already
 // forbids init, and the next session start re-checks after the plugin update. NO network — the refs
@@ -88,7 +88,7 @@
 // prints NOTHING. SessionStart cannot block anything; this hook does not try — exit 0 always,
 // fail-open like its siblings. This hook writes nothing, ever.
 //
-// Slice-note rule (ADR 0172 decision 8, option P): when the repo root holds scripts/harness/slice_note.py
+// Slice-note rule (ywr-harness ADR 0172 decision 8, option P): when the repo root holds scripts/harness/slice_note.py
 // as a FILE, the hook also states the rule for writing a slice note, as English additionalContext. The hook
 // is matcher-less, so the rule rides every source, a compaction included. It is the one output that is not a
 // drift finding: with NO drift it is the whole output (additionalContext only, no systemMessage), so the
@@ -103,7 +103,7 @@
 // parseJsonLoose — the leniency PowerShell 7's ConvertFrom-Json had (comments, trailing commas, ...);
 // the stdin payload is strict JSON and keeps parseJson.
 //
-// Port notes (ADR 0116): event-name comparison, key lookup and the [string] cast keep
+// Port notes (ywr-harness ADR 0116): event-name comparison, key lookup and the [string] cast keep
 // PowerShell's semantics through hook-lib (case-insensitive lookup/compare, psString, .NET Trim).
 // Without git the verdict still runs — detected by hook-lib's gitRun (no git on PATH, or ENOENT), where the original asked
 // `Get-Command git`. The git call follows CLAUDE.md's git subprocess boundary (issue #40):
@@ -127,11 +127,11 @@ function isFile(p) {
 // git calls go through hook-lib's gitRun (PATH-resolved, absolute spawn, bytes decoded once).
 const git = gitRun
 
-// The slice-note rule (ADR 0172). ASCII only, one paragraph; the vendored path is what a session can name
+// The slice-note rule (ywr-harness ADR 0172). ASCII only, one paragraph; the vendored path is what a session can name
 // (it cannot expand ${CLAUDE_PLUGIN_ROOT}).
 const SLICE_NOTE_RULE = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `python scripts/harness/slice_note.py add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner\'s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
 
-// The slice rules (ADR 0183): the harness procedure that the CLAUDE.md seed carried until 0.72.0. ASCII
+// The slice rules (ywr-harness ADR 0183): the harness procedure that the CLAUDE.md seed carried until 0.72.0. ASCII
 // only except the title's middle dot. Each rule carries its own copy markers: phrases that only the
 // pre-0.72.0 seed bullet of that rule held. A repo CLAUDE.md holding any marker of a rule already loads
 // that rule, so the hook leaves out that rule alone. A bare mention of the review workflow, a command or
@@ -520,9 +520,9 @@ function cmpVersion(a, b) {
   return 0
 }
 
-// Upstream-ahead detection (ADR 0135) — the same definition as init.ps1's guard, NO network. Candidate
+// Upstream-ahead detection (ywr-harness ADR 0135) — the same definition as init.ps1's guard, NO network. Candidate
 // refs in order, deduped: the current branch's upstream (accepted only on exit 0 with a refs/ name),
-// then the remote default branch (origin/HEAD, init.ps1's offline default-branch signal, ADR 0062).
+// then the remote default branch (origin/HEAD, init.ps1's offline default-branch signal, ywr-harness ADR 0062).
 // Hit = `git --literal-pathspecs log -1 --cherry-pick --right-only HEAD...<ref> -- .harness-version`
 // exits 0 with a non-empty line; the first hit wins. The stamp is the ONLY path (init.ps1 writes it on
 // every version-changing or first run; a hand edit is not a scaffold run), and --cherry-pick drops a
@@ -553,7 +553,7 @@ function parent(p) {
 
 function drift(payload) {
   const keys = driftKeys(payload)
-  emit({ systemMessage: `[hook:scaffold-refresh-nudge] SCHEMA DRIFT — SessionStart 페이로드에 'cwd' 필드가 없어, 이 저장소의 벤더링된 툴체인이 설치된 플러그인과 일치하는지 확인할 수 없습니다. 수신된 키: ${keys}. 페이로드 형식을 다시 확인하고 hooks/session-start-scaffold-refresh-nudge.mjs을 수정하세요 (ADR 0033).` })
+  emit({ systemMessage: `[hook:scaffold-refresh-nudge] SCHEMA DRIFT — SessionStart 페이로드에 'cwd' 필드가 없어, 이 저장소의 벤더링된 툴체인이 설치된 플러그인과 일치하는지 확인할 수 없습니다. 수신된 키: ${keys}. 페이로드 형식을 다시 확인하고 hooks/session-start-scaffold-refresh-nudge.mjs을 수정하세요 (ywr-harness ADR 0033).` })
 }
 
 function main(payload) {
@@ -582,7 +582,7 @@ function main(payload) {
   // plausibly exists, not in every session on the machine.
   if (!isDir(path.join(root, 'scripts/harness'))) return
 
-  // --- placement map, read from init.ps1's own literals (zero second copy — ADR 0033) ----------
+  // --- placement map, read from init.ps1's own literals (zero second copy — ywr-harness ADR 0033) ----------
   // process.argv[1] keeps the path as launched (the original used $PSScriptRoot, which does not
   // resolve symlinks); import.meta.url is realpath'd.
   const here = path.dirname(process.argv[1] ? path.resolve(process.argv[1]) : fileURLToPath(import.meta.url))
@@ -591,7 +591,7 @@ function main(payload) {
   const templatesDir = path.join(pluginRoot, 'skills/harness-init/templates')
 
   const extractionDrift = detail => emit({
-    systemMessage: `[hook:scaffold-refresh-nudge] EXTRACTION DRIFT — ${detail} — 이 저장소(${rootShow})의 벤더링된 툴체인이 설치된 플러그인과 일치하는지는 UNKNOWN, 확인되지 않았습니다. 설치된 플러그인 자체의 파일이 일관되지 않습니다: ywr-harness를 업데이트하거나 재설치하고 이를 보고하세요 (ADR 0033).`,
+    systemMessage: `[hook:scaffold-refresh-nudge] EXTRACTION DRIFT — ${detail} — 이 저장소(${rootShow})의 벤더링된 툴체인이 설치된 플러그인과 일치하는지는 UNKNOWN, 확인되지 않았습니다. 설치된 플러그인 자체의 파일이 일관되지 않습니다: ywr-harness를 업데이트하거나 재설치하고 이를 보고하세요 (ywr-harness ADR 0033).`,
   })
 
   let toolchain = null
@@ -623,7 +623,7 @@ function main(payload) {
   }
   if (!sentinels.some(s => isFile(path.join(root, s)))) return
 
-  // The rule text (ADR 0183): the slice rules where `.harness.json` is a file, the slice-note rule (ADR 0172)
+  // The rule text (ywr-harness ADR 0183): the slice rules where `.harness.json` is a file, the slice-note rule (ywr-harness ADR 0172)
   // where the vendored script is a file. A part the repo's own CLAUDE.md already copies is left out, and the
   // copy note says so: a session never loads one rule twice. '' = no rule text.
   const rule = ruleText({
@@ -681,7 +681,7 @@ function main(payload) {
   let fileList = shown.join(', ')
   if (drifted.length > shown.length) fileList += `, +${drifted.length - shown.length} more`
 
-  // --- stale-basis probe (ADR 0039) — see the header block --------------------------------------
+  // --- stale-basis probe (ywr-harness ADR 0039) — see the header block --------------------------------------
   // Path equality is case-insensitive: paths here are Windows-first, and on Linux a false
   // case-insensitive MATCH merely degrades to the normal nudge (the pre-0039 behavior), which is the
   // safe direction. Any failure is caught and yields null.
@@ -696,7 +696,7 @@ function main(payload) {
     const mktDir = nameDir && parent(nameDir)      // <plugins>/cache/<marketplace>
     const cacheDir = mktDir && parent(mktDir)      // <plugins>/cache
     // Only a versioned cache copy can be stale-by-supersession. A --plugin-dir or repo-source
-    // copy has no `cache` great-grandparent and stays on the 0033 contract (direction-blind
+    // copy has no `cache` great-grandparent and stays on the ywr-harness ADR 0033 contract (direction-blind
     // caveat), which is the correct reading for a deliberately loaded local copy.
     if (cacheDir && ieq(path.basename(cacheDir), 'cache')) {
       const pluginsDir = parent(cacheDir)
@@ -706,7 +706,7 @@ function main(payload) {
         const reg = parseJsonLoose(readText(regPath))
         // Name from the path, not plugin.json: the path IS what the registry keys index, and it
         // survives an unreadable manifest. The `@<marketplace>` half is not pinned (a consuming
-        // org may register the marketplace under another name — ADR 0027).
+        // org may register the marketplace under another name — ywr-harness ADR 0027).
         const plugins = isObject(reg) ? getProp(reg, 'plugins') : undefined
         const entries = []
         if (isObject(plugins)) {
@@ -726,7 +726,7 @@ function main(payload) {
           if (!current) {
             // >=1 entry, none of them this copy: the session outlived an update (or a scope
             // re-install). Registered version for the message, the statusline's pick order as
-            // spec 0010 records it: user scope wins, then lastUpdated recency — never registry
+            // ywr-harness spec 0010 records it: user scope wins, then lastUpdated recency — never registry
             // order. A usable version is a SCALAR STRING carrying a digit: an array would
             // space-join under [string] into a digit-bearing "1.0.0 2.0.0" that renders malformed
             // (review 2026-08-07, low); the registry's "unknown" sentinel fails the digit test.
@@ -754,19 +754,19 @@ function main(payload) {
   } catch { staleActive = null }
 
   if (staleActive) {
-    const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${drifted.length}개의 벤더링된 툴체인 파일이 이 세션의 ywr-harness (${ver}) 템플릿과 다릅니다 — ${fileList} — 하지만 비교 기준이 STALE합니다: 이 세션은 여전히 ${ver}를 실행 중이지만 이 머신에 등록된 설치는 ${staleActive}입니다. 판정이 뒤집혔을 수 있습니다 (저장소가 단순히 더 새로운 설치와 일치할 수 있습니다). /reload-plugins를 실행하거나 (또는 세션을 재시작) 다음 세션 시작 시 다시 확인하세요; 이 세션에서는 /ywr-harness:harness-init을 실행하지 마세요 — ${ver} 템플릿을 배치하게 됩니다 (ADR 0039). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
-    const ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), but the verdict basis is STALE: this session's ywr-harness hooks and skills still run ${ver} while the machine's registered install is ${staleActive} — a running session keeps the plugin version it loaded until /reload-plugins or a restart. The drift verdict may therefore be inverted: the repo may already match the newer install's templates. Do NOT run or suggest /ywr-harness:harness-init from this session — the loaded skill would place the ${ver} templates and could REVERT correctly refreshed files (ADR 0039). The remedy is /reload-plugins or a session restart, after which the next session start re-checks against the updated plugin. This surface is suggest-only (ADR 0033).`
+    const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${drifted.length}개의 벤더링된 툴체인 파일이 이 세션의 ywr-harness (${ver}) 템플릿과 다릅니다 — ${fileList} — 하지만 비교 기준이 STALE합니다: 이 세션은 여전히 ${ver}를 실행 중이지만 이 머신에 등록된 설치는 ${staleActive}입니다. 판정이 뒤집혔을 수 있습니다 (저장소가 단순히 더 새로운 설치와 일치할 수 있습니다). /reload-plugins를 실행하거나 (또는 세션을 재시작) 다음 세션 시작 시 다시 확인하세요; 이 세션에서는 /ywr-harness:harness-init을 실행하지 마세요 — ${ver} 템플릿을 배치하게 됩니다 (ywr-harness ADR 0039). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
+    const ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), but the verdict basis is STALE: this session's ywr-harness hooks and skills still run ${ver} while the machine's registered install is ${staleActive} — a running session keeps the plugin version it loaded until /reload-plugins or a restart. The drift verdict may therefore be inverted: the repo may already match the newer install's templates. Do NOT run or suggest /ywr-harness:harness-init from this session — the loaded skill would place the ${ver} templates and could REVERT correctly refreshed files (ywr-harness ADR 0039). The remedy is /reload-plugins or a session restart, after which the next session start re-checks against the updated plugin. This surface is suggest-only (ywr-harness ADR 0033).`
     emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
     return
   }
 
   const fileClause = `${drifted.length}개의 벤더링된 툴체인 파일이 설치된 ywr-harness (${ver}) 템플릿과 다릅니다 — ${fileList}`
 
-  // --- direction probe (ADR 0042) — normal branch only -----------------------------------------
+  // --- direction probe (ywr-harness ADR 0042) — normal branch only -----------------------------------------
   // The stale-basis banner above already forbids init and takes precedence. Here, drift is real and
   // the session is current on this machine; what byte comparison cannot say is WHICH SIDE is newer
   // — and under multi-writer "another writer refreshed this repo with a newer plugin" is the
-  // everyday state, not the canon-mid-slice edge 0033 accepted. `.harness-version` (written by
+  // everyday state, not the canon-mid-slice edge ywr-harness ADR 0033 accepted. `.harness-version` (written by
   // init.ps1 on every successful run) orients the advice: repo-ahead flips it to "update the
   // plugin, do NOT init"; repo-behind states the direction as measured; same-version names a
   // hand-edit; unreadable/missing falls back to direction-blind — with the caveat now on the HUMAN
@@ -809,9 +809,9 @@ function main(payload) {
   const both = stampVer && runVer
   const cmp = both ? cmpVersion(stampVer, runVer) : 0
 
-  // --- upstream-ahead probe (ADR 0135) — after the stale-basis branch and the stamp probe ---------
+  // --- upstream-ahead probe (ywr-harness ADR 0135) — after the stale-basis branch and the stamp probe ---------
   // Drift is real and the session is current; the remedy may still be a PULL, not a re-run. A hit
-  // replaces the 0042 behind, equal and direction-blind branches (the local stamp is the OLD one in
+  // replaces the ywr-harness ADR 0042 behind, equal and direction-blind branches (the local stamp is the OLD one in
   // this state, so "genuinely behind" would send the person into a run that collides with the pushed
   // scaffold). Repo-AHEAD (stamp newer than the running plugin) keeps precedence and skips the probe:
   // its advice already forbids init and the next session start re-checks after the plugin update.
@@ -821,8 +821,8 @@ function main(payload) {
     const refShow = inline(hit.ref, 200)
     const shaShow = inline(hit.sha, 40)
     const dateShow = inline(hit.date, 40)
-    const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause} — 그리고 ${refShow}에 이 체크아웃에 없고 스캐폴드 스탬프(.harness-version)를 변경하는 커밋이 있습니다 (최신 ${shaShow}, ${dateShow}) — 다른 클론이 이 저장소를 스캐폴딩하거나 리프레시한 뒤 push한 것입니다. 지금 /ywr-harness:harness-init을 실행하지 마세요; 먼저 pull(${refShow}를 merge 또는 rebase)하세요. 다음 세션 시작 시 다시 확인합니다. ref는 마지막 fetch 시점 기준입니다 (ADR 0135). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
-    const ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), but ${refShow} has commit(s) not in this checkout that change the scaffold stamp, .harness-version (newest ${shaShow}, ${dateShow}): another clone scaffolded or refreshed this repo and pushed (ADR 0135). The drift is therefore most likely this checkout lagging, not the repo lagging the plugin. Do NOT run or suggest /ywr-harness:harness-init from this session — it would place files that collide with the pushed scaffold at the next pull, or put older templates over a newer refresh. Offer pulling instead (merge or rebase ${refShow}); the next session start re-checks. The refs are remote-tracking refs as of the last fetch; no network was used. This surface is suggest-only (ADR 0033).`
+    const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause} — 그리고 ${refShow}에 이 체크아웃에 없고 스캐폴드 스탬프(.harness-version)를 변경하는 커밋이 있습니다 (최신 ${shaShow}, ${dateShow}) — 다른 클론이 이 저장소를 스캐폴딩하거나 리프레시한 뒤 push한 것입니다. 지금 /ywr-harness:harness-init을 실행하지 마세요; 먼저 pull(${refShow}를 merge 또는 rebase)하세요. 다음 세션 시작 시 다시 확인합니다. ref는 마지막 fetch 시점 기준입니다 (ywr-harness ADR 0135). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
+    const ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), but ${refShow} has commit(s) not in this checkout that change the scaffold stamp, .harness-version (newest ${shaShow}, ${dateShow}): another clone scaffolded or refreshed this repo and pushed (ywr-harness ADR 0135). The drift is therefore most likely this checkout lagging, not the repo lagging the plugin. Do NOT run or suggest /ywr-harness:harness-init from this session — it would place files that collide with the pushed scaffold at the next pull, or put older templates over a newer refresh. Offer pulling instead (merge or rebase ${refShow}); the next session start re-checks. The refs are remote-tracking refs as of the last fetch; no network was used. This surface is suggest-only (ywr-harness ADR 0033).`
     emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
     return
   }
@@ -830,17 +830,17 @@ function main(payload) {
   let sys
   let ctx
   if (both && cmp > 0) {
-    sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause} — 그리고 이 저장소의 .harness-version 스탬프에 따르면 마지막으로 ywr-harness ${stampDisp} 로 스캐폴딩되었으며, 이는 이 세션의 ${ver} 보다 NEWER합니다. 저장소가 AHEAD 상태입니다: 이 세션에서 /ywr-harness:harness-init을 실행하지 마세요 — 더 오래된 ${ver} 템플릿을 배치하여 더 새로운 리프레시를 REVERT하게 됩니다 (ADR 0042). 해결 방법: /ywr-harness:update (또는 'claude plugin update')를 실행한 뒤 재시작하거나 /reload-plugins 후 다시 확인하세요. 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
-    ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), and its .harness-version stamp (${stampDisp}) is NEWER than this session's installed ywr-harness (${ver}) — another writer refreshed this repo with a newer plugin (ADR 0042). Do NOT run or suggest /ywr-harness:harness-init from this session: the loaded skill would place the ${ver} templates and REVERT the newer refresh. The remedy is updating the plugin (/ywr-harness:update or 'claude plugin update') and reloading or restarting; the next session start re-checks. This surface is suggest-only (ADR 0033).`
+    sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause} — 그리고 이 저장소의 .harness-version 스탬프에 따르면 마지막으로 ywr-harness ${stampDisp} 로 스캐폴딩되었으며, 이는 이 세션의 ${ver} 보다 NEWER합니다. 저장소가 AHEAD 상태입니다: 이 세션에서 /ywr-harness:harness-init을 실행하지 마세요 — 더 오래된 ${ver} 템플릿을 배치하여 더 새로운 리프레시를 REVERT하게 됩니다 (ywr-harness ADR 0042). 해결 방법: /ywr-harness:update (또는 'claude plugin update')를 실행한 뒤 재시작하거나 /reload-plugins 후 다시 확인하세요. 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
+    ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), and its .harness-version stamp (${stampDisp}) is NEWER than this session's installed ywr-harness (${ver}) — another writer refreshed this repo with a newer plugin (ywr-harness ADR 0042). Do NOT run or suggest /ywr-harness:harness-init from this session: the loaded skill would place the ${ver} templates and REVERT the newer refresh. The remedy is updating the plugin (/ywr-harness:update or 'claude plugin update') and reloading or restarting; the next session start re-checks. This surface is suggest-only (ywr-harness ADR 0033).`
   } else if (both && cmp < 0) {
-    sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause}. 이 저장소의 .harness-version 스탬프(${stampDisp})는 이 세션의 ${ver} 보다 OLDER합니다 — 리프레시 방향은 추측이 아니라 측정된 것입니다 (ADR 0042). 리프레시: 이 저장소에서 /ywr-harness:harness-init을 한 번 실행하고 커밋하세요 (여기서는 재실행이 안전합니다: 툴체인만 갱신되고, 시드는 보존되며, 아무것도 삭제되지 않습니다 — ADR 0010). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
-    ctx = `The repo at ${rootShow} carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates (${ver}), and the repo's .harness-version stamp (${stampDisp}) is OLDER than the installed plugin — the repo is genuinely behind (ADR 0042). A /ywr-harness:harness-init re-run refreshes the toolchain from the canon and never touches seeds or accumulated ADRs. Offer the re-run when the work touches gates, hooks, or CI; do not run it unasked — this surface is suggest-only (ADR 0033).`
+    sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause}. 이 저장소의 .harness-version 스탬프(${stampDisp})는 이 세션의 ${ver} 보다 OLDER합니다 — 리프레시 방향은 추측이 아니라 측정된 것입니다 (ywr-harness ADR 0042). 리프레시: 이 저장소에서 /ywr-harness:harness-init을 한 번 실행하고 커밋하세요 (여기서는 재실행이 안전합니다: 툴체인만 갱신되고, 시드는 보존되며, 아무것도 삭제되지 않습니다 — ywr-harness ADR 0010). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
+    ctx = `The repo at ${rootShow} carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates (${ver}), and the repo's .harness-version stamp (${stampDisp}) is OLDER than the installed plugin — the repo is genuinely behind (ywr-harness ADR 0042). A /ywr-harness:harness-init re-run refreshes the toolchain from the canon and never touches seeds or accumulated ADRs. Offer the re-run when the work touches gates, hooks, or CI; do not run it unasked — this surface is suggest-only (ywr-harness ADR 0033).`
   } else if (both) {
-    sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause} — 저장소의 .harness-version 스탬프가 이 세션의 ${ver} 와 EQUALS이므로, 이 차이는 버전 격차가 아니라 수동 편집(hand-edit) 또는 불완전한 배치입니다 (ADR 0042). /ywr-harness:harness-init을 재실행하면 수동 편집을 캐논 템플릿으로 REVERT하게 됩니다 — 이는 ADR 0010이 의도한 신호입니다 (하니스 결함은 캐논에서 고치며, 소비 저장소에서 패치하지 않습니다). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
-    ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}) at the SAME version as this session's installed plugin (stamp ${stampDisp} equals ${ver}): a hand-edit or partial placement, not staleness (ADR 0042). A harness-init re-run reverts hand-edits — the intended ADR 0010 signal, but confirm the edits are not deliberate local work in progress before suggesting it. This surface is suggest-only (ADR 0033).`
+    sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause} — 저장소의 .harness-version 스탬프가 이 세션의 ${ver} 와 EQUALS이므로, 이 차이는 버전 격차가 아니라 수동 편집(hand-edit) 또는 불완전한 배치입니다 (ywr-harness ADR 0042). /ywr-harness:harness-init을 재실행하면 수동 편집을 캐논 템플릿으로 REVERT하게 됩니다 — 이는 ywr-harness ADR 0010이 의도한 신호입니다 (하니스 결함은 캐논에서 고치며, 소비 저장소에서 패치하지 않습니다). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
+    ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}) at the SAME version as this session's installed plugin (stamp ${stampDisp} equals ${ver}): a hand-edit or partial placement, not staleness (ywr-harness ADR 0042). A harness-init re-run reverts hand-edits — the intended ywr-harness ADR 0010 signal, but confirm the edits are not deliberate local work in progress before suggesting it. This surface is suggest-only (ywr-harness ADR 0033).`
   } else {
-    sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause}. CAVEAT — 이 비교는 direction-blind 상태입니다 (읽을 수 있는 .harness-version 스탬프 없음): 만약 다른 작성자가 이 머신보다 더 새로운 플러그인으로 이 저장소를 리프레시했다면, 여기서 /ywr-harness:harness-init을 재실행하면 그 리프레시를 REVERT하게 됩니다 (ADR 0042). 실행하기 전에 설치된 플러그인이 최신인지 확인하세요 (/ywr-harness:update); 그 외에는 재실행이 안전합니다 (툴체인 갱신, 시드 보존, 삭제 없음 — ADR 0010). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ADR 0033).`
-    ctx = `The repo at ${rootShow} carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates (${ver}): ${fileList}. No readable .harness-version stamp, so the comparison is DIRECTION-BLIND: if this working tree deliberately carries NEWER copies than the installed plugin (the canon mid-slice, or a multi-writer repo refreshed by a newer plugin), a re-run would REVERT them to the older installed templates (ADR 0042). Offer the re-run when the work touches gates, hooks, or CI, after confirming the installed plugin is current; do not run it unasked — this surface is suggest-only (ADR 0033).`
+    sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause}. CAVEAT — 이 비교는 direction-blind 상태입니다 (읽을 수 있는 .harness-version 스탬프 없음): 만약 다른 작성자가 이 머신보다 더 새로운 플러그인으로 이 저장소를 리프레시했다면, 여기서 /ywr-harness:harness-init을 재실행하면 그 리프레시를 REVERT하게 됩니다 (ywr-harness ADR 0042). 실행하기 전에 설치된 플러그인이 최신인지 확인하세요 (/ywr-harness:update); 그 외에는 재실행이 안전합니다 (툴체인 갱신, 시드 보존, 삭제 없음 — ywr-harness ADR 0010). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
+    ctx = `The repo at ${rootShow} carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates (${ver}): ${fileList}. No readable .harness-version stamp, so the comparison is DIRECTION-BLIND: if this working tree deliberately carries NEWER copies than the installed plugin (the canon mid-slice, or a multi-writer repo refreshed by a newer plugin), a re-run would REVERT them to the older installed templates (ywr-harness ADR 0042). Offer the re-run when the work touches gates, hooks, or CI, after confirming the installed plugin is current; do not run it unasked — this surface is suggest-only (ywr-harness ADR 0033).`
   }
   emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
 }

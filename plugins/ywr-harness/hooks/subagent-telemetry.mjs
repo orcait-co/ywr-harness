@@ -7,7 +7,7 @@
 // 'workflow-subagent'. Only DOCUMENTED SubagentStop fields are recorded: the former
 // parent_agent_type column read a field the hooks reference does not list and was empty
 // in all 1,653 rows, so it is gone; there is no model column either — the reference
-// gives SubagentStop no model field (ADR 0086). last_assistant_message is deliberately
+// gives SubagentStop no model field (ywr-harness ADR 0086). last_assistant_message is deliberately
 // NOT persisted (secret-adjacent surface — never persist what may carry a secret); only its
 // length is kept.
 // Appends JSONL to .claude/telemetry/subagent-stops.jsonl (gitignored). Fail-open.

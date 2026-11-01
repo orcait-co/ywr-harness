@@ -11,8 +11,8 @@ is a decision to surface, never a silent default.** Rare cases live in
 `${CLAUDE_PLUGIN_ROOT}/skills/slice-close/reference.md`, each behind ONE **→** trigger line below
 naming its section; read a section only when its trigger fires.
 
-**Owner-typed on purpose** (ADR 0105): stage 5 writes the handoff and the commit, a state change
-is the person's call (ADR 0034), and a skill the model cannot call costs no always-on context.
+**Owner-typed on purpose** (ywr-harness ADR 0105): stage 5 writes the handoff and the commit, a state change
+is the person's call (ywr-harness ADR 0034), and a skill the model cannot call costs no always-on context.
 Stages 1–3 are ordinary session work that a session may run first and report.
 **→ This session already reported the slice ready, ending in a `tree:` line: `reference.md` §Prepared.**
 
@@ -24,7 +24,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py" --range <a>..<b>      # 
 ```
 
 `$ARGUMENTS`, when non-empty, is the range; pass it to `--range` as given — the emitter is the
-range check (ADR 0041). When git cannot resolve the scope (unreachable ref, stale fetch, a typo)
+range check (ywr-harness ADR 0041). When git cannot resolve the scope (unreachable ref, stale fetch, a typo)
 it prints `scope: FAILED` and exits **non-zero**: nothing below it was computed and the run is
 never quoted as a pass. Fix the scope (with the user, if the range was theirs) and re-run.
 
@@ -32,7 +32,7 @@ The emitter prints six things, all of which belong in the close record:
 
 - **`scope:`** — where the file list came from. An empty commit range is called out by name;
   quote that line. A range that matched nothing means everything below rests on the working tree.
-- **`artifact:`** — the declared-Artifact check (ADR 0032). `artifact: VIOLATION` is a defect to
+- **`artifact:`** — the declared-Artifact check (ywr-harness ADR 0032). `artifact: VIOLATION` is a defect to
   fix **before** the close (CI fails on it); `none declared` is a report, not a failure.
 - **`gates:`** — the deterministic commands per declared group. A *whole-program* command has no
   per-file scoping: gate on failures in slice files or new with the slice; record pre-existing
@@ -40,7 +40,7 @@ The emitter prints six things, all of which belong in the close record:
 - **`ungrouped:`** — files no group claims, so **no deterministic gate covers them**. Add a group to
   `.harness.json` or say plainly that those files went ungated.
 - **`review tier:`** with its reason — used by stage 2.
-- **`ignored-tree claims:`** (ADR 0077) — `none — N … checked` is clean; **`NOT CHECKED — git …
+- **`ignored-tree claims:`** (ywr-harness ADR 0077) — `none — N … checked` is clean; **`NOT CHECKED — git …
   failed`** is a failure, treated like `scope: FAILED`.
   **→ A claim list, any other form, or no line at all: `reference.md` §Ignored-tree.**
 
@@ -84,13 +84,13 @@ state, not shipped); a file whose **whole diff a named gate checks** — e.g. `p
 `marketplace.json` carrying only the version bump, with `lockstep: manifest-gate PASS` in
 `gates_passed`. Everything else stays in scope.
 
-An Opus `sessionModel` runs every review worker on opus · low (ADR 0099); any other model keeps
-the pins, and ultracode changes neither (ADR 0108). Record the result's `stats.worker_pins`.
+An Opus `sessionModel` runs every review worker on opus · low (ywr-harness ADR 0099); any other model keeps
+the pins, and ultracode changes neither (ywr-harness ADR 0108). Record the result's `stats.worker_pins`.
 
 `invariants` come from the canon file the emitter printed. If it said **NOT FOUND**, stop and
 resolve that first: a review whose invariants nobody can cite is a review nobody can audit.
 
-Scope habits (ADR 0070, measured): **name the LOCAL path of every source a claim rests on** (a
+Scope habits (ywr-harness ADR 0070, measured): **name the LOCAL path of every source a claim rests on** (a
 URL or "the docs say" costs a finder a `curl` round-trip); **order `files` so files that changed
 together sit together** (shards are cut along that order); **`shards` is a recall lever for dense
 or critical scopes, not a speed lever** — add `shards: 'auto'` when more than ~8 files remain after
@@ -105,7 +105,7 @@ around 14k characters, so the digest survives it; open the full lists only for w
 
 **Disposition**: every confirmed finding ends in exactly one of three buckets — and so does each
 site in its `also_at` list (the same claim at another file:line): a site is dispositioned on its
-own, never by its representative's verdict (ADR 0163):
+own, never by its representative's verdict (ywr-harness ADR 0163):
 
 - **fixed** — the fix is checked as below.
 - **valid, no action** — the claim is true, but no change is worth making now. The reason says
@@ -122,7 +122,7 @@ is dispositioned like a confirmed one (a result with only `rejected_count` is an
 record that splits went unread). Judge each finding *instance vs class*: a class belongs in the
 deterministic-rule backlog, or an LLM re-finds it every slice.
 
-**The fix diff does not re-enter the review** (ADR 0028). Close each fix by:
+**The fix diff does not re-enter the review** (ywr-harness ADR 0028). Close each fix by:
 
 1. **Gates**: `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py" <every file the fix touched>`
    and every command it prints — never a default run, which re-covers the whole uncommitted slice.
@@ -130,10 +130,10 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    `review tier:` line is **not** an input to the table above. While iterating, run the touched
    component's own test file directly (one `*.selftest.ps1`); a full runner this run prints is the
    close gate, run once on the final tree.
-2. **Per-finding fix check** (ADR 0090): read each fix against its finding's claim and failure
+2. **Per-finding fix check** (ywr-harness ADR 0090): read each fix against its finding's claim and failure
    scenario. **High and medium** findings go to skeptic legs on the pinned worker agent
    (`ywr-harness:worker` on every session model — a single Agent-tool leg, not a review
-   workflow's fan-out, ADR 0109; ultracode or not, ADR 0108),
+   workflow's fan-out, ywr-harness ADR 0109; ultracode or not, ywr-harness ADR 0108),
    **batched**: one leg per
    group whose fixes touch the same files or the same defect class, **at most 4 findings per leg**,
    and a leg of its own for a fix that touches a declared critical surface. A leg gets its findings
@@ -142,7 +142,7 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    and answers **per finding** exactly `fixed: true|false` plus a reason. Legs run in parallel.
    Quote every verdict into the close record; `fixed: false` reopens that finding — patch it, then
    re-check it alone. A low closes on the closer's own reading; a nit needs none.
-3. **Fix proof for every high the digest names** (ADR 0169): the script runs the command and
+3. **Fix proof for every high the digest names** (ywr-harness ADR 0169): the script runs the command and
    records its exit code against the `--tree` snapshots before and after it, so the proof is never
    the closer's own line. **The review picks the keys, not the closer**: the digest's `high_ids`
    gives a count and then the `id` of every in-scope confirmed high (`F<n>-<fingerprint>`) and of
@@ -172,7 +172,7 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    (AskUserQuestion), quote each answer into the close record, and stop on any refusal. **Exit 2**
    — `check` could not read its input (the digest, a key, the git snapshot or the journal): it
    checked nothing, so the close stops until a fixed input reaches exit 0, 1 or 3. **A review older
-   than ADR 0169** prints no `high_ids` (ADR 0173): `check` reads the old line's counts instead and
+   than ywr-harness ADR 0169** prints no `high_ids` (ywr-harness ADR 0173): `check` reads the old line's counts instead and
    names the keys itself — `H<n>` is the n-th high in the review's `confirmed` list, in its order;
    the closer never names that set. With `h0` and `rejected 0` there is no key. A `rejected` count
    above 0 makes `check` exit 3, because the line shows no rejected severity: the owner answers the
@@ -186,7 +186,7 @@ patch (it adds a surface, rewrites control/data flow beyond the finding's lines,
 critical surface the original scope did not); name that criterion in the close record. Its
 findings close under this same rule; there is never a third pass.
 
-**A rebase or merge after the review re-arms it only over the overlap (ADR 0072)** — reviewed
+**A rebase or merge after the review re-arms it only over the overlap (ywr-harness ADR 0072)** — reviewed
 files the incoming commits also touched, plus any hand-resolved conflict; an empty overlap keeps
 the review standing, recorded as `review basis:`. **→ Rebased or merged after the review:
 `reference.md` §Rebase.**
@@ -215,23 +215,23 @@ Product files the mapper flags as having no spec owner are spec debt. Register t
 ## 5. Close — one commit
 
 The slice, its handoff update and any regenerated surfaces land in **ONE commit**; the close record
-is written **once**, in that commit's message body (ADR 0090).
+is written **once**, in that commit's message body (ywr-harness ADR 0090).
 
 - **Handoff**: update the one the emitter named, if declared. A declaration ending in `/` is a
-  directory of per-work-line resume files (ADR 0040): update or create the file named after this
+  directory of per-work-line resume files (ywr-harness ADR 0040): update or create the file named after this
   slice's work line, never after a person.
-- **Resume state only** (ADR 0040): the current-state section keeps what changed (one paragraph),
+- **Resume state only** (ywr-harness ADR 0040): the current-state section keeps what changed (one paragraph),
   open risks, next actions and facts established at cost — no close record. It names this slice's
   commit "the commit carrying this handoff", never a sha it cannot know yet (a reader recovers it:
   `git log -1 --format=%h -- <handoff>`). Delete DONE items from the open list, never keep them for
   numbering; refer to items by name. Move a superseded current-state section to
   `docs/handoff-archive/<same filename>`, newest first; a decision worth keeping goes to an ADR or
   spec.
-- **Slice notes** (ADR 0172): run
+- **Slice notes** (ywr-harness ADR 0172): run
   `python "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.py" show [--range <a>..<b>]` with the stage-1
   range. When it also counts notes at other HEADs and a rebase brought in a commit that touched the
   handoff, or the repo declares no handoff, run `show --all` and read those notes too. Each note is the session's own claim, written during the
-  slice: input, never proof (ADR 0105). Check each one against the tree and the stage outputs. Keep the decisions, rejected
+  slice: input, never proof (ywr-harness ADR 0105). Check each one against the tree and the stage outputs. Keep the decisions, rejected
   options and owner answers that still hold for the record body; put the facts and risks that stay
   open into the handoff. Correct or drop a note the tree contradicts, and never let a note stand in
   for a gate run, the digest, a fix proof or the ready report.
@@ -256,7 +256,7 @@ is written **once**, in that commit's message body (ADR 0090).
 - **After the commit**, quote the post-commit retro's output (or that it printed nothing) in the
   close report; if the emitter's `hooks:` line says the hooks do not run here, run
   `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_retro.py"` by hand. A follow-up commit only when a
-  retro finding changes an ADR, a spec or the docs index (ADR 0017); a "no change" result is not
+  retro finding changes an ADR, a spec or the docs index (ywr-harness ADR 0017); a "no change" result is not
   resume state and never gets a commit.
 
 The last item of the record is the point of the whole ritual: a close that does not say what it

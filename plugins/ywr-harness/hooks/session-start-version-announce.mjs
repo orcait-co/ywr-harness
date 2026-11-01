@@ -1,20 +1,20 @@
 // SessionStart (registered WITHOUT a matcher — the state file is the filter: re-fires on
 // resume/clear/compact/fork at the same version are byte-silent) — version-change announcement,
-// announce-once-per-version (ADR 0030).
+// announce-once-per-version (ywr-harness ADR 0030).
 //
-// ADR 0026 made updates land silently; ADR 0027's statusline segment shows THAT the version
+// ywr-harness ADR 0026 made updates land silently; ywr-harness ADR 0027's statusline segment shows THAT the version
 // moved but not WHAT changed. This hook completes the pair: at the first session that actually
 // RUNS a new version, it says so once — old → new, up to three bullets from the member
 // release-notes canon (../CHANGELOG.md), and the onboarding artifact's release-notes tab — then
 // records the version in a one-line user-scope state file and never speaks again for it.
 //
 // The version compared is the LOADED one (this script's own ../.claude-plugin/plugin.json), not
-// the possibly-ahead on-disk install — disk-ahead-of-session is ADR 0027's statusline story, and
+// the possibly-ahead on-disk install — disk-ahead-of-session is ywr-harness ADR 0027's statusline story, and
 // announcing notes for code that is not running yet would be false.
 //
-// State: <config dir>/ywr-harness/announced-version, per Claude Code config dir (ADR 0136). The
+// State: <config dir>/ywr-harness/announced-version, per Claude Code config dir (ywr-harness ADR 0136). The
 // config dir is CLAUDE_CONFIG_DIR when set non-empty (trimmed) and ABSOLUTE, else <home>/.claude
-// (ADR 0046's rule, as harness-statusline.js claudeDir(); on win32 "absolute" needs a drive or UNC
+// (ywr-harness ADR 0046's rule, as harness-statusline.js claudeDir(); on win32 "absolute" needs a drive or UNC
 // prefix, so a drive-less root like \cfg is relative here). A set-but-relative value is unmeasured:
 // the hook is byte-silent and writes nothing — a relative path would follow the spawn cwd, and a
 // fall-back to ~/.claude would read the OTHER account's state. One state file shared by two config
@@ -24,39 +24,39 @@
 // process with a redirected home is a hermetic selftest fixture (the statusline suite documents
 // the same reason). This is the plugin's FIRST user-scope write; it is bounded to this one file
 // and the selftest asserts the confinement. Announce-once is impossible without state, and a
-// stateless per-session notice is the nag class ADR 0029 already rejected.
+// stateless per-session notice is the nag class ywr-harness ADR 0029 already rejected.
 //
-// Legacy adoption (ADR 0136, one time per config dir, read-only on the old file): states written
+// Legacy adoption (ywr-harness ADR 0136, one time per config dir, read-only on the old file): states written
 // before this change sit at <home>/.claude/ywr-harness/announced-version. With CLAUDE_CONFIG_DIR in
 // effect, an ABSENT config-dir state, and a legacy file at a DIFFERENT path (compared resolved, case-
 // insensitive on win32) holding a parseable version, that version is the stored value for the rows
 // below, and the config-dir file ends up holding the current version on every one of them. The
 // legacy file is never written or deleted. No legacy value -> the ordinary first-run row.
 //
-// systemMessage is KOREAN — since ADR 0045 this is the plugin-wide rule, not a per-hook
+// systemMessage is KOREAN — since ywr-harness ADR 0045 this is the plugin-wide rule, not a per-hook
 // divergence: every hook's systemMessage is Korean (the member reader), every additionalContext
-// stays English (the model reader). This hook was simply first (ADR 0030); the sibling hooks now
+// stays English (the model reader). This hook was simply first (ywr-harness ADR 0030); the sibling hooks now
 // carry the same split.
 //
-// Decision table (ADR 0030, absent-state row amended by ADR 0031): own manifest unreadable ->
+// Decision table (ywr-harness ADR 0030, absent-state row amended by ywr-harness ADR 0031): own manifest unreadable ->
 // reported (a plugin that cannot read its own manifest is broken — visible, never silent). No
-// resolvable config dir (a relative CLAUDE_CONFIG_DIR, ADR 0136; or CLAUDE_CONFIG_DIR unset and no
+// resolvable config dir (a relative CLAUDE_CONFIG_DIR, ywr-harness ADR 0136; or CLAUDE_CONFIG_DIR unset and no
 // resolvable home) -> silent (announce-once needs state; a per-session fallback is the rejected
 // nag; the statusline still shows the version). State path truly ABSENT -> first run: seed, and
 // when the seed actually recorded, a LINK-ONLY welcome (no bullets, no version arrow, never
 // "업데이트됨" — the message must be true for a fresh install AND the mechanism's first arrival,
-// which is the whole 0031 point); a failed seed stays byte-silent — a welcome that cannot be
-// recorded would repeat every session (the 0029 nag class) while carrying no news the dist
+// which is the whole ywr-harness ADR 0031 point); a failed seed stays byte-silent — a welcome that cannot be
+// recorded would repeat every session (the ywr-harness ADR 0029 nag class) while carrying no news the dist
 // README lacks. State exists-but-unreadable / newer-than-current -> (re)seed silently ("first
 // run" would be a guess; a downgrade is the member's own act). State == current -> silent.
 // State < current -> announce, then write; a failed write announces anyway with a visible
-// may-repeat note. An adopted legacy value (ADR 0136) takes the same rows: == current and newer-than-
+// may-repeat note. An adopted legacy value (ywr-harness ADR 0136) takes the same rows: == current and newer-than-
 // current write the config-dir file silently, older announces "vLEGACY -> vCURRENT". Non-speaking
 // paths are BYTE-silent because plain stdout on exit 0 becomes session context. Exit 0 always — SessionStart cannot block anything and this hook does not try.
 //
-// Node port (ADR 0116) of the pwsh original; the shared helpers are hook-lib.mjs's. The hook never
+// Node port (ywr-harness ADR 0116) of the pwsh original; the shared helpers are hook-lib.mjs's. The hook never
 // exits the process: it returns, so stdout drains and the exit code stays 0.
-// Deliberate differences from the pwsh original (spec 0006 §3.1): the manifest and the payload must
+// Deliberate differences from the pwsh original (ywr-harness spec 0006 §3.1): the manifest and the payload must
 // be JSON OBJECTS (the original also read a one-element array by member enumeration; the manifest
 // parses as leniently as ConvertFrom-Json did, via hook-lib's parseJsonLoose); a version
 // component over Int32 is an unparseable version, as the original's failed [version] cast was (which
@@ -107,7 +107,7 @@ function isDir(p) {
 /**
  * The first-run seed is an EXCLUSIVE create (flag `wx`), not writeState's overwrite: two sessions
  * starting together both see the path absent, and with a check-then-write each would seed and each
- * would welcome (ADR 0081 measurement arm, B low). `wx` lets exactly one win; the loser gets EEXIST,
+ * would welcome (ywr-harness ADR 0081 measurement arm, B low). `wx` lets exactly one win; the loser gets EEXIST,
  * returns false and stays byte-silent — the existing "a failed seed is silent" row, so no new
  * behavior is needed for it. UTF-8 without BOM.
  */
@@ -198,7 +198,7 @@ function parseStored(raw) {
 }
 
 /**
- * ABSOLUTE for CLAUDE_CONFIG_DIR (ADR 0136). On win32 `path.isAbsolute` also accepts a drive-less root
+ * ABSOLUTE for CLAUDE_CONFIG_DIR (ywr-harness ADR 0136). On win32 `path.isAbsolute` also accepts a drive-less root
  * (`\cfg`, `/cfg`), which follows the drive of the spawn cwd — the per-cwd split the decision rules out —
  * so there only a drive prefix (`C:\` or `C:/`) or a UNC prefix (two leading separators) counts.
  * Anything else is treated like a relative value: byte-silent. Elsewhere `path.isAbsolute` is exact.
@@ -274,7 +274,7 @@ function main(payload) {
   // --- state ------------------------------------------------------------------------------------
   let homeDir = process.env.USERPROFILE || ''
   if (!homeDir) homeDir = process.env.HOME || ''
-  // The config dir (ADR 0136, ADR 0046's rule): CLAUDE_CONFIG_DIR only when ABSOLUTE; set-but-relative
+  // The config dir (ywr-harness ADR 0136, ywr-harness ADR 0046's rule): CLAUDE_CONFIG_DIR only when ABSOLUTE; set-but-relative
   // is unmeasured — silent, never a fall-back to <home>/.claude (that is the other account's state).
   const cfgRaw = netTrim(process.env.CLAUDE_CONFIG_DIR || '')
   let configDir
@@ -288,14 +288,14 @@ function main(payload) {
   const stateDir = psJoin(configDir, 'ywr-harness')
   const stateFile = psJoin(stateDir, 'announced-version')
 
-  // ABSENT is a first run; anything else keeps its ADR 0030 behavior (0031 amends only that row).
+  // ABSENT is a first run; anything else keeps its ywr-harness ADR 0030 behavior (ywr-harness ADR 0031 amends only that row).
   // A DIRECTORY squatting on the path counts as "exists" — welcoming a squatted path would guess
   // "first run" about a machine that already ran. A probe error also counts as "exists".
   const stateExists = stateExistsAt(stateFile)
   let storedRaw = netTrim(readText(stateFile) ?? '')
   let stored = parseStored(storedRaw)
 
-  // Legacy adoption (ADR 0136): a config-dir state that is ABSENT, under an explicit CLAUDE_CONFIG_DIR,
+  // Legacy adoption (ywr-harness ADR 0136): a config-dir state that is ABSENT, under an explicit CLAUDE_CONFIG_DIR,
   // takes its stored value from the pre-0136 shared file when that sits at a different path and holds a
   // parseable version. Read-only on the legacy file. The shared file is the pre-change record of what
   // this machine last announced, so adopting it keeps the first post-change session from re-welcoming.
@@ -311,26 +311,26 @@ function main(payload) {
 
   if (!stored && !stateExists) {
     // First run on this machine — fresh install, or the first version carrying this mechanism;
-    // indistinguishable, and the message below is TRUE in both states (ADR 0031). Write-then-
+    // indistinguishable, and the message below is TRUE in both states (ywr-harness ADR 0031). Write-then-
     // speak, inverted from the update path on purpose: the update announcement protects news,
     // this protects nothing the dist README does not already carry, so a failed seed is silent
     // — and a seed lost to a concurrent first run is a failed seed (newStateExclusive).
     if (newStateExclusive(stateDir, stateFile, currentRaw)) {
       const sys = `[hook:version-announce] ywr-harness v${currentRaw} 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 변경 이력: 플러그인의 CHANGELOG.md · 릴리스 노트 탭(가이드 개정 시 갱신) ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
-      const ctx = `The ywr-harness plugin v${currentRaw} is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the artifact release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ADR 0078). This welcome appears once per machine; do not repeat it unprompted.`
+      const ctx = `The ywr-harness plugin v${currentRaw} is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ywr-harness ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the artifact release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). This welcome appears once per machine; do not repeat it unprompted.`
       emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
     }
     return
   }
   if (!stored || cmpVersion(stored, current) > 0) {
-    // Exists-but-unreadable state, or a downgrade: (re)seed and say nothing (ADR 0030 rows,
+    // Exists-but-unreadable state, or a downgrade: (re)seed and say nothing (ywr-harness ADR 0030 rows,
     // unchanged) — the next session simply retries.
     writeState(stateDir, stateFile, currentRaw)
     return
   }
   if (cmpVersion(stored, current) === 0) {
     // An adopted legacy value equal to current: the config-dir file is still absent, so record it
-    // silently — without it every later session would re-adopt the legacy value (ADR 0136).
+    // silently — without it every later session would re-adopt the legacy value (ywr-harness ADR 0136).
     if (adopted) writeState(stateDir, stateFile, currentRaw)
     return
   }
@@ -360,7 +360,7 @@ function main(payload) {
     body += `\n(안내 기록 실패: ${stateFile} 에 쓸 수 없어 이 안내가 반복될 수 있습니다 — ${configDir} 권한을 확인하세요.)`
   }
 
-  const ctx = `The ywr-harness plugin loaded in this session is v${currentRaw}; the last version announced on this machine was v${storedRaw} (marketplace auto-update, ADR 0026 — updates land at session start, never mid-session). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ADR 0078). If the user asks what changed, read the CHANGELOG entry for v${currentRaw} rather than answering from memory. This announcement is once-per-version (ADR 0030); do not repeat it unprompted.`
+  const ctx = `The ywr-harness plugin loaded in this session is v${currentRaw}; the last version announced on this machine was v${storedRaw} (marketplace auto-update, ywr-harness ADR 0026 — updates land at session start, never mid-session). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). If the user asks what changed, read the CHANGELOG entry for v${currentRaw} rather than answering from memory. This announcement is once-per-version (ywr-harness ADR 0030); do not repeat it unprompted.`
   emit({ systemMessage: body, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
 }
 

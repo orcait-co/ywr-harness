@@ -338,10 +338,16 @@ if ($caught) { Write-Host 'PASS [vendored-copy-reordered] gate exited 1 and name
 else { Write-Host "FAIL [vendored-copy-reordered] exit=$($g.Code) aborted=$($g.Aborted) diverged-named=$([bool]($g.Out -match 'vendored copy DIVERGED: harness_config\.py'))" -ForegroundColor Red }
 $results += [pscustomobject]@{ case = 'vendored-copy-reordered'; exit = $(if ($caught) { 1 } else { 0 }) }
 
-# ADR 0182: a bare canon reference in a template fails, in a dot-directory too (the walk must not
-# use the hidden-name rule, which drops `.github` off Windows). The same bare text in a markdown
-# template and in a `__pycache__` file is out of scope, and a prefixed reference passes, so the
-# case also asserts that the output names exactly the two bare sites, the hyphenated form included.
+# ADR 0182 and ADR 0185 share one fixture and one gate run: the two walks read disjoint trees, so one
+# run answers both cases without a second fixture copy (+1.7 s measured as a separate case).
+# Template half: a bare canon reference in a template fails, in a dot-directory too (the walk must
+# not use the hidden-name rule, which drops `.github` off Windows). The same bare text in a markdown
+# template and in a `__pycache__` file is out of scope, and a prefixed reference passes, so the case
+# asserts exactly the two bare sites, the hyphenated form included.
+# Runtime half: a bare reference in a hook comment, in a skill body and in the top CHANGELOG entry
+# fails. The canon-only set stays out: the README, a lib file, a selftest and an older CHANGELOG entry
+# carry the same bare text and must not be named. The case asserts exactly the three runtime sites,
+# so a widened or a narrowed walk both go red.
 $dir = Reset-Fixture $pluginFx
 $tpl = Join-Path $dir 'skills/harness-init/templates'
 $yml = Join-Path $tpl '.github/workflows/harness-gates.yml'
@@ -350,12 +356,33 @@ $yml = Join-Path $tpl '.github/workflows/harness-gates.yml'
 $pyc = Join-Path $tpl 'scripts/harness/__pycache__'
 New-Item -ItemType Directory -Force -Path $pyc | Out-Null
 [IO.File]::WriteAllText((Join-Path $pyc 'x.cpython-312.pyc'), 'compiled spec 0012 text')
+[IO.File]::AppendAllText((Join-Path $dir 'hooks/decision-prompts.mjs'), "// bare ADR 0175 here; prefixed ywr-harness ADR 0175 there`n")
+[IO.File]::AppendAllText((Join-Path $dir 'skills/verify/SKILL.md'), "`nSee spec 0008 for the gate.`n")
+foreach ($skip in @('README.md', 'lib/selftest-lib.ps1', 'hooks/hook-lib.selftest.ps1')) {
+    [IO.File]::AppendAllText((Join-Path $dir $skip), "`n# canon-only: ADR 0175, fact 12`n")
+}
+$cl = Join-Path $dir 'CHANGELOG.md'
+$clLines = [Collections.Generic.List[string]]([IO.File]::ReadAllLines($cl))
+$heads = @(for ($i = 0; $i -lt $clLines.Count; $i++) { if ($clLines[$i] -match '^##\s+v') { $i } })
+if ($heads.Count -lt 2) { throw 'runtime-canon-ref-bare: the fixture CHANGELOG has fewer than two entries' }
+$clLines.Insert($heads[1] + 1, '- older entry: ADR 0030 stays bare')
+$clLines.Insert($heads[0] + 1, '- top entry: fact 186 is bare')
+[IO.File]::WriteAllLines($cl, $clLines)
 $g = Invoke-Gate (Join-Path $dir 'manifest-gate.mjs')
-$hits = @(($g.Out -split "`n") | Where-Object { $_ -match 'canon reference: templates/' })
+$lines = @($g.Out -split "`n")
+$hits = @($lines | Where-Object { $_ -match 'canon reference: templates/' })
 $caught = ($g.Code -eq 1) -and ($hits.Count -eq 2) -and ($hits[0] -match "templates/\.github/workflows/harness-gates\.yml:\d+ 'ADR 0062'") -and ($hits[1] -match "harness-gates\.yml:\d+ 'ADR-0063'")
 if ($caught) { Write-Host 'PASS [template-canon-ref-bare] gate exited 1 and named only the two bare yml references' -ForegroundColor Green }
 else { Write-Host "FAIL [template-canon-ref-bare] exit=$($g.Code) aborted=$($g.Aborted) hits=$($hits.Count): $($hits -join ' | ')" -ForegroundColor Red }
 $results += [pscustomobject]@{ case = 'template-canon-ref-bare'; exit = $(if ($caught) { 1 } else { 0 }) }
+$hits = @($lines | Where-Object { $_ -match 'canon reference: ' -and $_ -notmatch 'canon reference: templates/' })
+$caught = ($g.Code -eq 1) -and ($hits.Count -eq 3) -and
+    (@($hits | Where-Object { $_ -match "hooks/decision-prompts\.mjs:\d+ 'ADR 0175'" }).Count -eq 1) -and
+    (@($hits | Where-Object { $_ -match "skills/verify/SKILL\.md:\d+ 'spec 0008'" }).Count -eq 1) -and
+    (@($hits | Where-Object { $_ -match "CHANGELOG\.md:$($heads[0] + 2) 'fact 186' in the top entry" }).Count -eq 1)
+if ($caught) { Write-Host 'PASS [runtime-canon-ref-bare] gate exited 1 and named only the hook, skill and top-entry sites' -ForegroundColor Green }
+else { Write-Host "FAIL [runtime-canon-ref-bare] exit=$($g.Code) aborted=$($g.Aborted) hits=$($hits.Count): $($hits -join ' | ')" -ForegroundColor Red }
+$results += [pscustomobject]@{ case = 'runtime-canon-ref-bare'; exit = $(if ($caught) { 1 } else { 0 }) }
 
 Try-Case 'vendored-copy-orphaned' {
     param($d)
@@ -371,10 +398,12 @@ Try-Case 'unparseable-manifest' {
 # The release-notes canon (ADR 0030): a release shipping without notes, with stale notes, or
 # with a link that no longer matches the hook's would each surface only on member machines —
 # as a bullet-less or wrong-tab announcement — which is why the gate owns them canon-side.
+# The runtime canon-reference check (ADR 0185) must also say that it skipped the top entry, never
+# print a PASS that silently drops it; the release-notes failure comes first in the output.
 Try-Case 'changelog-missing' {
     param($d)
     Remove-Item -LiteralPath (Join-Path $d 'CHANGELOG.md') -Force
-}
+} 'CHANGELOG\.md missing[\s\S]*top CHANGELOG entry was NOT CHECKED'
 
 Try-Case 'changelog-version-stale' {
     param($d)

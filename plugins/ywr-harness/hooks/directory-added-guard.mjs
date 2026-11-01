@@ -12,10 +12,10 @@
 //   directory : absolute path of the directory that was added
 //   source    : "slash_command" (/add-dir) | "register_repo_root" (SDK control request)
 //
-// THE READER IS CLAUDE, NOT THE PERSON (ADR 0097). Per the reference, a `slash_command`
+// THE READER IS CLAUDE, NOT THE PERSON (ywr-harness ADR 0097). Per the reference, a `slash_command`
 // systemMessage is delivered "to Claude as context on the next conversation turn, rather than
 // showing it to you", and a `register_repo_root` one goes to the debug log only. So the banner
-// is English (ADR 0045's reader rule, narrowed by ADR 0097), states what the model should do,
+// is English (ywr-harness ADR 0045's reader rule, narrowed by ywr-harness ADR 0097), states what the model should do,
 // and asks it to relay one sentence to the user. The hook runs in the background after the add
 // has completed; a failed hook shows only as a failure COUNT in the transcript (/add-dir) or not at
 // all (register_repo_root), its output going to the debug log — so always exit 0.
@@ -37,12 +37,12 @@
 // U+2028/U+2029 and the backtick become a space, then a hard cap), so a hostile value cannot forge
 // a second `[hook:*]` line in the banner the model reads.
 //
-// Ported from PowerShell (ADR 0116) with its semantics kept: the event name is compared
+// Ported from PowerShell (ywr-harness ADR 0116) with its semantics kept: the event name is compared
 // case-insensitively, payload keys and the settings keys are matched case-insensitively (PSCustomObject
 // access and `-contains` were), the directory is trimmed with .NET Trim semantics, and the instruction
 // env var is trimmed the same way. A settings file loses its BOM before parsing (Get-Content did), and a
 // UTF-16 one is decoded by its BOM; an empty file or a one-element array reads as ConvertFrom-Json read
-// it (settingsKeys). Deliberate deviations (spec 0006 §3.1): a payload string stays a
+// it (settingsKeys). Deliberate deviations (ywr-harness spec 0006 §3.1): a payload string stays a
 // string (no DateTime coercion) and the drift key order is Intl.Collator's. A settings file is parsed
 // as leniently as ConvertFrom-Json did (hook-lib's parseJsonLoose: comments, trailing commas, single
 // quotes, unquoted keys). The hook never exits the process: it returns, so

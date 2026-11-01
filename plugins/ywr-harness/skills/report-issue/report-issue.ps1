@@ -2,7 +2,7 @@
 # rather than failing on a .NET 5+ surface halfway through (issue #51's class).
 #Requires -Version 7.0
 
-# ywr-harness:report-issue — the member-side half of the upstream feedback loop (ADR 0064, spec 0013).
+# ywr-harness:report-issue — the member-side half of the upstream feedback loop (ywr-harness ADR 0064, ywr-harness spec 0013).
 #
 # Two modes, and the split IS the contract:
 #
@@ -12,24 +12,24 @@
 #                          public dist repo. The body is never regenerated here: what was shown
 #                          is what is filed.
 #
-# No label is set, and none is searched for (ADR 0085): GitHub silently drops a label set at
+# No label is set, and none is searched for (ywr-harness ADR 0085): GitHub silently drops a label set at
 # creation by a filer without push access, and most dist collaborators are read-role, so a label
 # landed only for admins. The canon's session-start inbox lists EVERY open dist issue instead, and
 # the `[upstream-report]` title prefix stays as the human-readable marker.
 #
-# What the body carries is decided in ADR 0064: the member's description verbatim; the running
+# What the body carries is decided in ywr-harness ADR 0064: the member's description verbatim; the running
 # and registered plugin versions; `claude --version`; OS + pwsh; the repo as owner/repo (parsed
 # from origin — NEVER the URL, which can carry credentials); the refresh-nudge hook's verdict
-# VERBATIM (a Node hook since ADR 0116, run with a synthetic SessionStart payload — with no node on
+# VERBATIM (a Node hook since ywr-harness ADR 0116, run with a synthetic SessionStart payload — with no node on
 # PATH the report says so instead of a verdict; it writes nothing and
-# exits 0 by contract, ADR 0033); `init.ps1 -DryRun` output VERBATIM (writes nothing, spec 0009);
+# exits 0 by contract, ywr-harness ADR 0033); `init.ps1 -DryRun` output VERBATIM (writes nothing, ywr-harness spec 0009);
 # the local git history of every file the dry run would change; a fingerprint for dedupe. Both
 # readers are called as black boxes on purpose — the placement map lives in init.ps1 and the
 # hook's header forbids a second copy, so this script owns none of that logic.
 #
-# What it never does: include diff text (the tracker is PUBLIC — ADR 0064 option E), run
+# What it never does: include diff text (the tracker is PUBLIC — ywr-harness ADR 0064 option E), run
 # harness-init, file without -File, retry a failed filing, or fall silent: `gh` absent or
-# unauthenticated is a printed NOT FILED with the body kept and the by-hand URL (ADR 0012's
+# unauthenticated is a printed NOT FILED with the body kept and the by-hand URL (ywr-harness ADR 0012's
 # shape — the script prints, the member acts).
 #
 # Exit codes: 0 = drafted / filed · 1 = usage or fatal (nothing useful produced) ·
@@ -56,7 +56,7 @@ param(
 $ErrorActionPreference = 'Stop'
 # pwsh 7.4+ turns a non-zero NATIVE exit code into a terminating error under Stop; every native
 # call below reads $LASTEXITCODE deliberately (git with no remote, gh unauthenticated, init.ps1
-# refusing). Handoff fact 11.
+# refusing). Handoff ywr-harness fact 11.
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -66,7 +66,7 @@ $pwshExe = (Get-Command pwsh).Source
 # An ABSENT command makes Get-Command fall through to module auto-discovery over every PSModulePath
 # directory (~1.4 s measured on the owner's box, 2026-09-29: 1,4xx ms absent vs ~280 ms with it off) —
 # and `gh` is optional for a member, so its absence is the common case. Module auto-loading is switched
-# off for THESE lookups alone and restored in the finally (ADR 0111, widened to git and gh by ADR 0113).
+# off for THESE lookups alone and restored in the finally (ywr-harness ADR 0111, widened to git and gh by ywr-harness ADR 0113).
 # It must be assigned at this script's own scope: the same assignment inside a helper function was
 # measured to change nothing (1.4 s both ways). It must not stay off — with it 'None' even
 # Remove-Variable was "not recognized" in a -File run, so a later cmdlet would fail — and the finally
@@ -115,14 +115,14 @@ function Fence([string]$Text) {
 }
 # One value, one line, for every reader (harness_config.CONTROL's class plus the backtick): C0 controls, DEL,
 # NEL and the two Unicode line/paragraph separators all become spaces — a title from the PUBLIC dist tracker
-# (ANY account can open an issue there, ADR 0085) cannot break the summary line or carry a terminal escape.
+# (ANY account can open an issue there, ywr-harness ADR 0085) cannot break the summary line or carry a terminal escape.
 function Inline([string]$Text) { return ((([string]$Text) -replace '[\u0000-\u001F\u007F\u0085\u2028\u2029`]', ' ').Trim()) }
 
 # =================================================================================================
 # FILE mode
 # =================================================================================================
 if ($File) {
-    if (-not $BodyPath) { Say 'FAIL — -File needs -BodyPath <the body DRAFT wrote>; the reviewed file is what gets filed, never a regenerated one (ADR 0064).' Red; exit 1 }
+    if (-not $BodyPath) { Say 'FAIL — -File needs -BodyPath <the body DRAFT wrote>; the reviewed file is what gets filed, never a regenerated one (ywr-harness ADR 0064).' Red; exit 1 }
     if (-not (Test-Path -LiteralPath $BodyPath -PathType Leaf)) { Say "FAIL — body file not found: $BodyPath" Red; exit 1 }
     $raw = [IO.File]::ReadAllText($BodyPath, [Text.UTF8Encoding]::new($false))
     $lines = $raw -split "`r?`n"
@@ -148,7 +148,7 @@ if ($File) {
     # reviewed file itself stays untouched as the member's record.
     $filedPath = "$BodyPath.filed.md"
     Write-Utf8NoBom $filedPath ($body + "`n")
-    # No `-l` (ADR 0085): for a read-role filer GitHub drops it silently, so it never carried the
+    # No `-l` (ywr-harness ADR 0085): for a read-role filer GitHub drops it silently, so it never carried the
     # report to the inbox — the inbox lists every open dist issue.
     $ghArgs = @('issue', 'create', '-R', $Repo, '-t', $fileTitle, '-F', $filedPath)
     $out = @(& $ghCmd.Source @ghArgs 2>&1 | ForEach-Object { [string]$_ })
@@ -185,7 +185,7 @@ try {
 
 # Registered installs — the registry is self-located from this copy's path when it is a cache
 # install (<plugins>/cache/<marketplace>/<name>/<version>, registry at <plugins>/installed_plugins.json
-# — the refresh nudge's probe, ADR 0039), else the config dir's. UNDOCUMENTED file, read best-effort.
+# — the refresh nudge's probe, ywr-harness ADR 0039), else the config dir's. UNDOCUMENTED file, read best-effort.
 $registered = @()
 $regPaths = [System.Collections.Generic.List[string]]::new()
 try {
@@ -259,15 +259,15 @@ $dryRunCapNote = ''
 $drifted = [System.Collections.Generic.List[string]]::new()
 $foreign = [System.Collections.Generic.List[string]]::new()
 # The dry run can stop BEFORE comparing anything — init.ps1 refuses a downgrade (repo stamp newer than
-# this copy, ADR 0042) with four lines and exit 1, so an empty drifted set means UNKNOWN, not "none"
+# this copy, ywr-harness ADR 0042) with four lines and exit 1, so an empty drifted set means UNKNOWN, not "none"
 # (review 2026-08-28, high). Known only when init exited 0 AND printed its per-file summary line.
 $driftKnown = $false
 $drCode = -1
 if ($scaffolded) {
     $hook = Join-Path $pluginRoot 'hooks/session-start-scaffold-refresh-nudge.mjs'
     if (Test-Path -LiteralPath $hook -PathType Leaf) {
-        # The hook is Node (ADR 0116). `node` is found by scanning $env:PATH with .NET calls — NOT
-        # Get-Command: ADR 0113's auto-loading window allows exactly the git, gh and claude lookups
+        # The hook is Node (ywr-harness ADR 0116). `node` is found by scanning $env:PATH with .NET calls — NOT
+        # Get-Command: ywr-harness ADR 0113's auto-loading window allows exactly the git, gh and claude lookups
         # (report-issue.selftest G1), and an absent command's Get-Command costs ~1.4 s. The rule is how the
         # host launches an exec-form `node`: on Windows only a real node.exe counts (an exec'd command is
         # never a .cmd/.bat shim); elsewhere a regular `node` file with an execute bit (where the runtime cannot
@@ -328,9 +328,9 @@ if ($scaffolded) {
             try { $dr = @(& $pwshExe -NoProfile -ExecutionPolicy Bypass -File $init -Target $root -DryRun 2>&1 | ForEach-Object { [string]$_ }); $drCode = $LASTEXITCODE }
             finally { Pop-Location }
             # Two of init.ps1's line shapes name a file that DIFFERS from its template: `~ <f> (…)`
-            # (would be refreshed / replaced) and the first-run collision refusal (ADR 0055). The
+            # (would be refreshed / replaced) and the first-run collision refusal (ywr-harness ADR 0055). The
             # GUARDED marker-less refusal is different — a foreign file the scaffold leaves alone and
-            # the nudge is silent on by design (ADR 0033) — so it is listed as foreign, not as drift
+            # the nudge is silent on by design (ywr-harness ADR 0033) — so it is listed as foreign, not as drift
             # (the first smoke run counted the canon's own post-commit as "would change").
             foreach ($ln in $dr) {
                 if ($ln -match '^\s*~\s+(\S+)\s+\(') { $drifted.Add($Matches[1]) }
@@ -359,7 +359,7 @@ foreach ($f in ($drifted | Sort-Object -Unique)) {
     else { $historyLines.Add($f + ' — no commit touches this path (untracked or no git)' + $note) }
 }
 
-# Fingerprint — repo + running version + the drifted set. A dedupe HINT (ADR 0064), never a block.
+# Fingerprint — repo + running version + the drifted set. A dedupe HINT (ywr-harness ADR 0064), never a block.
 $fpInput = "$repoId|$runVer|" + (($drifted | Sort-Object -Unique) -join ',')
 $sha = [System.Security.Cryptography.SHA256]::Create()
 try { $hex = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($fpInput)) | ForEach-Object { $_.ToString('x2') }) } finally { $sha.Dispose() }
@@ -395,7 +395,7 @@ $b = [System.Text.StringBuilder]::new()
 [void]$b.AppendLine("- toolchain drift: $driftSummary")
 [void]$b.AppendLine("- fingerprint: ``$fingerprint`` (repo · running version · drifted set — search open reports for it before filing a duplicate)")
 [void]$b.AppendLine()
-[void]$b.AppendLine('## Scaffold drift — refresh-nudge verdict (ADR 0033/0042, quoted verbatim)')
+[void]$b.AppendLine('## Scaffold drift — refresh-nudge verdict (ywr-harness ADR 0033/0042, quoted verbatim)')
 [void]$b.AppendLine()
 [void]$b.AppendLine((Fence $nudgeText))
 [void]$b.AppendLine()
@@ -410,7 +410,7 @@ if ($drifted.Count) {
     [void]$b.AppendLine()
 }
 [void]$b.AppendLine('---')
-[void]$b.AppendLine("Drafted by ``/ywr-harness:report-issue`` (ADR 0064). No file contents or diffs are included — only names, versions and commit subjects; the canon asks for a diff in this thread when it needs one.")
+[void]$b.AppendLine("Drafted by ``/ywr-harness:report-issue`` (ywr-harness ADR 0064). No file contents or diffs are included — only names, versions and commit subjects; the canon asks for a diff in this thread when it needs one.")
 
 $outDir = if ($OutDir) { $OutDir } else { [IO.Path]::GetTempPath() }
 if (-not (Test-Path -LiteralPath $outDir -PathType Container)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
@@ -441,7 +441,7 @@ $searchCap = 20
 if ($drifted.Count) {
     if (Test-GhUsable) {
         try {
-            # Every open dist issue, no label filter (ADR 0085): a read-role member's earlier report
+            # Every open dist issue, no label filter (ywr-harness ADR 0085): a read-role member's earlier report
             # carries no label, and the quoted 12-char fingerprint is the discriminator.
             # The author is named on every hit: without the label, ANY account's issue can carry a published
             # fingerprint, so the member sees who filed the "similar" report before being steered to it.

@@ -21,12 +21,12 @@
 #
 # TOOLCHAIN overwrite applies to RE-runs only: on a FIRST run (no .harness-version stamp) an
 # existing, differing file at a toolchain path is refused rather than replaced — it is not the
-# canon's output, and overwriting it is data loss, not an update (ADR 0055). -Force replaces
+# canon's output, and overwriting it is data loss, not an update (ywr-harness ADR 0055). -Force replaces
 # deliberately; the stamp is withheld while such refusals stand.
 #
 # Exit 0 = placement completed (with or without preserved seeds and refusals). Exit 1 = target
 # unusable, a template is missing from the plugin, a write failed, or a guard refused before any
-# write (downgrade, ADR 0042; upstream ahead, ADR 0135). A failed pre-check fetch (ADR 0137) is one
+# write (downgrade, ywr-harness ADR 0042; upstream ahead, ywr-harness ADR 0135). A failed pre-check fetch (ywr-harness ADR 0137) is one
 # yellow line, never an exit.
 
 [CmdletBinding()]
@@ -36,15 +36,15 @@ param(
     # Report what would change and write nothing.
     [switch]$DryRun,
     # Proceed even when this repo's .harness-version stamp is NEWER than this plugin copy — the
-    # deliberate-rollback path (ADR 0042). Without it, a blind downgrade is refused.
+    # deliberate-rollback path (ywr-harness ADR 0042). Without it, a blind downgrade is refused.
     [switch]$Force,
     # Proceed even when a remote-tracking ref carries commits that change the scaffold and this
-    # checkout lacks them — the deliberate-divergence path (ADR 0135). Without it, a run over scaffold
+    # checkout lacks them — the deliberate-divergence path (ywr-harness ADR 0135). Without it, a run over scaffold
     # work another clone already pushed is refused. Separate from -Force on purpose: -Force also
-    # bypasses the ADR 0055 first-run collision refusals, and coupling the two would let a stale-clone
+    # bypasses the ywr-harness ADR 0055 first-run collision refusals, and coupling the two would let a stale-clone
     # override clobber files.
     [switch]$AllowUpstreamAhead,
-    # Bound on the pre-check fetch of the candidate remotes (ADR 0137). The default is the decision;
+    # Bound on the pre-check fetch of the candidate remotes (ywr-harness ADR 0137). The default is the decision;
     # overridable for tests, which pin the timeout path without a 10 s wait.
     [ValidateRange(1, 600)]
     [int]$FetchTimeoutSeconds = 10
@@ -71,10 +71,10 @@ if (-not (Test-Path -LiteralPath $root -PathType Container)) {
     exit 1
 }
 
-# --- downgrade guard (ADR 0042) ------------------------------------------------------------------
+# --- downgrade guard (ywr-harness ADR 0042) ------------------------------------------------------------------
 # `.harness-version` records which plugin version last scaffolded this repo — written below on
 # every successful non-dry run, GENERATED and never a template (a templated stamp would change
-# every release and nag every repo, 0033's recorded reason for rejecting a stamp in the trigger
+# every release and nag every repo, ywr-harness ADR 0033's recorded reason for rejecting a stamp in the trigger
 # role). When the repo's stamp is NEWER than this copy, another writer refreshed the repo with a
 # newer plugin (the multi-writer everyday state), and proceeding would place older templates over
 # their refresh. Refused BEFORE anything is written; -Force is the deliberate-rollback path. A
@@ -106,7 +106,7 @@ $ownVersion = ConvertTo-VersionOrNull $ownVersionRaw
 # First run = no stamp FILE, whatever its content (only this scaffold plausibly writes that
 # name). On a first run an existing file at a TOOLCHAIN path is by definition not a canon
 # artifact, so overwriting it is data loss, not an update — those collisions are refused below
-# (ADR 0055). A present-but-garbage stamp still counts as "has run": refusing there could only
+# (ywr-harness ADR 0055). A present-but-garbage stamp still counts as "has run": refusing there could only
 # protect files a previous run already placed.
 $isFirstRun = -not (Test-Path -LiteralPath $stampPath -PathType Leaf)
 $repoStamp = $null; $repoStampRaw = ''
@@ -127,22 +127,22 @@ if (Test-Path -LiteralPath $stampPath -PathType Leaf) {
 }
 if ($repoStamp -and $ownVersion -and $repoStamp -gt $ownVersion) {
     if ($Force) {
-        Write-Host "DOWNGRADE FORCED — repo stamp v$repoStampRaw > this plugin v$ownVersionRaw; proceeding because -Force was given (ADR 0042)." -ForegroundColor Yellow
+        Write-Host "DOWNGRADE FORCED — repo stamp v$repoStampRaw > this plugin v$ownVersionRaw; proceeding because -Force was given (ywr-harness ADR 0042)." -ForegroundColor Yellow
     } else {
         Write-Host "REFUSED — this repo's toolchain was last scaffolded by ywr-harness v$repoStampRaw, NEWER than this copy (v$ownVersionRaw)." -ForegroundColor Red
-        Write-Host "  Placing these templates would DOWNGRADE files another writer refreshed (ADR 0042). Nothing was written." -ForegroundColor Red
+        Write-Host "  Placing these templates would DOWNGRADE files another writer refreshed (ywr-harness ADR 0042). Nothing was written." -ForegroundColor Red
         Write-Host "  Remedy: update the plugin first — /ywr-harness:update (or 'claude plugin update'), then restart or /reload-plugins." -ForegroundColor Red
         Write-Host "  A deliberate rollback re-runs with -Force." -ForegroundColor Red
         exit 1
     }
 }
 
-# --- same-version conflict signal (ADR 0067) ------------------------------------------------------
+# --- same-version conflict signal (ywr-harness ADR 0067) ------------------------------------------------------
 # stamp == this plugin's version means the canon cannot have changed a placed file since the last
 # scaffold — a refresh-path delta on this run is a LOCAL hand edit (or a modified plugin copy),
-# the #55 shape ADR 0010 wants surfaced upstream. Collected during placement, reported after it.
-# First runs can never qualify (no stamp), so this never overlaps ADR 0055's collision buckets.
-# When this script itself runs FROM the target tree (the canon dogfood, ADR 0018), templates newer
+# the #55 shape ywr-harness ADR 0010 wants surfaced upstream. Collected during placement, reported after it.
+# First runs can never qualify (no stamp), so this never overlaps ywr-harness ADR 0055's collision buckets.
+# When this script itself runs FROM the target tree (the canon dogfood, ywr-harness ADR 0018), templates newer
 # than the stamp's release are the intended source->placement propagation, not a hand edit — the
 # verdict is replaced by a visible one-line note, never silently dropped.
 $sameVersionRun = [bool]($repoStamp -and $ownVersion -and $repoStamp -eq $ownVersion)
@@ -174,28 +174,28 @@ $TOOLCHAIN = [ordered]@{
     # Vendored so CI needs no access to the canon repo. `${CLAUDE_PLUGIN_ROOT}` is substituted when
     # Claude Code spawns a hook and does not exist in a CI step, and the canon is private with
     # cross-repo Actions access closed — a reusable workflow would require widening that. Byte
-    # identity with the plugin's own copies is enforced by manifest-gate.mjs (ADR 0014).
+    # identity with the plugin's own copies is enforced by manifest-gate.mjs (ywr-harness ADR 0014).
     'scripts/harness/harness_config.py'      = 'scripts/harness/harness_config.py'
     'scripts/harness/harness_gates.py'       = 'scripts/harness/harness_gates.py'
     'scripts/harness/harness_retro.py'       = 'scripts/harness/harness_retro.py'
     'scripts/harness/verify_map.py'          = 'scripts/harness/verify_map.py'
-    # Not a CI script: the session names this path from CLAUDE.md to record its decisions (ADR 0172).
+    # Not a CI script: the session names this path from CLAUDE.md to record its decisions (ywr-harness ADR 0172).
     'scripts/harness/slice_note.py'          = 'scripts/harness/slice_note.py'
-    # CI 의 PR base 해석 단일 소스(ADR 0043) — 벤더링된 워크플로가 직접 sh 로 부른다.
+    # CI 의 PR base 해석 단일 소스(ywr-harness ADR 0043) — 벤더링된 워크플로가 직접 sh 로 부른다.
     'scripts/harness/resolve-base.sh'        = 'scripts/harness/resolve-base.sh'
     '.github/workflows/harness-gates.yml'    = '.github/workflows/harness-gates.yml'
     'scripts/harness/gitignore'              = 'scripts/harness/.gitignore'
-    # The local execution layer (ADR 0015). TOOLCHAIN, not SEED: a hook a repo may edit freely is a
-    # hook that stops being the same gate everywhere, which is the divergence ADR 0010 forbids.
+    # The local execution layer (ywr-harness ADR 0015). TOOLCHAIN, not SEED: a hook a repo may edit freely is a
+    # hook that stops being the same gate everywhere, which is the divergence ywr-harness ADR 0010 forbids.
     'githooks/pre-commit'                    = '.githooks/pre-commit'
     'githooks/pre-push'                      = '.githooks/pre-push'
 }
 # Paths whose $TOOLCHAIN entry was added to this scaffold AFTER repos could already be stamped by
-# an earlier plugin version. The ADR 0055 first-run collision guard below is scoped to the REPO's
+# an earlier plugin version. The ywr-harness ADR 0055 first-run collision guard below is scoped to the REPO's
 # first run — but a path introduced later has its OWN first appearance the moment it enters
 # $TOOLCHAIN: a repo stamped BEFORE that version is not first-run overall, yet has never received
-# this path from the canon, so an existing foreign file there is exactly the ADR 0055 collision,
-# not a normal refresh (ADR 0074 extends ADR 0055 to a path's first appearance).
+# this path from the canon, so an existing foreign file there is exactly the ywr-harness ADR 0055 collision,
+# not a normal refresh (ywr-harness ADR 0074 extends ywr-harness ADR 0055 to a path's first appearance).
 #
 # NOT named `$TOOLCHAIN*` — manifest-gate.mjs's placement-map parser regex-parses only `$TOOLCHAIN` and
 # `$GUARDED` out of this file's text; a prefixed name risks a future accidental match there.
@@ -215,7 +215,7 @@ $INTRODUCED_IN = [ordered]@{
 # already has one never receives the retro at all, silently.
 #
 # So: place when absent, REFRESH when the existing file carries our marker, REFUSE and report
-# otherwise. Same rule as ADR 0015's `core.hooksPath`, applied to a file instead of a config key.
+# otherwise. Same rule as ywr-harness ADR 0015's `core.hooksPath`, applied to a file instead of a config key.
 $GUARD_MARKER = 'ywr-harness:post-commit'
 $GUARDED = [ordered]@{
     'githooks/post-commit' = '.githooks/post-commit'
@@ -223,11 +223,11 @@ $GUARDED = [ordered]@{
 $SEED = [ordered]@{
     'CLAUDE.md'     = 'CLAUDE.md'
     'gitattributes' = '.gitattributes'
-    # Root ignore (ADR 0053): makes the shipped claims true at placement — the html surfaces
+    # Root ignore (ywr-harness ADR 0053): makes the shipped claims true at placement — the html surfaces
     # stay out of the first commit, the telemetry ledger's "(gitignored)" header holds, and
     # CLAUDE.md's ".env is gitignored" line is true. What a repo ignores is its decision → SEED.
     'gitignore'     = '.gitignore'
-    # Starter review canon (ADR 0054): the emitter's default review.canon points at the repo
+    # Starter review canon (ywr-harness ADR 0054): the emitter's default review.canon points at the repo
     # root, and the first slice close hard-stops on NOT FOUND — house invariants are repo-owned
     # decisions, so the container+format is seeded once and the content is theirs.
     'REVIEW.md'     = 'REVIEW.md'
@@ -239,7 +239,7 @@ $SEED = [ordered]@{
     # re-run would erase exactly the configuration it exists to carry.
     'harness.json'  = '.harness.json'
     # The stage prompts that the template's `decision_prompts` declares for the /ywr-harness:auto switch
-    # (ADR 0180). SEED: a repo rewrites them for its own rules, and they do nothing while the switch is off.
+    # (ywr-harness ADR 0180). SEED: a repo rewrites them for its own rules, and they do nothing while the switch is off.
     'docs/prompts/review-digest.md' = 'docs/prompts/review-digest.md'
     'docs/prompts/ready-report.md'  = 'docs/prompts/ready-report.md'
 }
@@ -254,24 +254,24 @@ $SEED_CORPUS = [ordered]@{
     'docs/adr/0001-adopt-docs-as-code.md' = 'docs/adr/0001-adopt-docs-as-code.md'
 }
 
-# --- upstream-ahead guard (ADR 0135) -------------------------------------------------------------
+# --- upstream-ahead guard (ywr-harness ADR 0135) -------------------------------------------------------------
 # Multi-writer, the other direction: a teammate ran this scaffold (first run or refresh) and pushed;
 # this clone has not pulled. A run here would place files that collide with theirs at the next pull,
 # or put older templates over their refresh — and the downgrade guard above cannot see it, because
 # this clone's own stamp is the OLD one. So: look at the remote-tracking refs for commits this
 # checkout lacks that touch the stamp. This function makes no network call — the refs are as of the
-# LAST FETCH, which the pre-check fetch below makes this run's own when it succeeds (ADR 0137). Candidate refs, in order: the current branch's upstream, then the remote default
-# branch (origin/HEAD, already the offline default-branch signal below, ADR 0062). Path: the stamp
+# LAST FETCH, which the pre-check fetch below makes this run's own when it succeeds (ywr-harness ADR 0137). Candidate refs, in order: the current branch's upstream, then the remote default
+# branch (origin/HEAD, already the offline default-branch signal below, ywr-harness ADR 0062). Path: the stamp
 # ALONE. This script writes the stamp on every run that changes the version and on a first run; a
 # same-version re-run places byte-identical templates, so it cannot collide at a pull. A hand edit of a
-# toolchain or guarded file is not a scaffold run (the ADR 0042 equal-version branch owns hand edits),
+# toolchain or guarded file is not a scaffold run (the ywr-harness ADR 0042 equal-version branch owns hand edits),
 # and counting it would refuse init on any long-lived branch behind a hand-edited main. The commit
 # walk is patch-equivalence filtered (--cherry-pick --right-only over HEAD...ref): a local rebase or
 # amend of a stamp commit is not upstream-ahead merely because the pre-rewrite commit is still on the
 # ref until the force-push. git absent, not a repo, no refs, or any git failure is no hit: today's
 # behaviour, never an error line. The refusal sits before the first write, and it applies under
-# -DryRun too — the dry run must show the real run's refusals. Own switch (-AllowUpstreamAhead), never -Force: -Force also bypasses the ADR 0055
-# first-run collision refusals. The refresh nudge runs the same detection (same definition, ADR 0135).
+# -DryRun too — the dry run must show the real run's refusals. Own switch (-AllowUpstreamAhead), never -Force: -Force also bypasses the ywr-harness ADR 0055
+# first-run collision refusals. The refresh nudge runs the same detection (same definition, ywr-harness ADR 0135).
 function Find-UpstreamScaffoldAhead {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $null }
     $refs = @()
@@ -293,7 +293,7 @@ function Find-UpstreamScaffoldAhead {
     }
     return $null
 }
-# --- pre-check fetch (ADR 0137) --------------------------------------------------------------------
+# --- pre-check fetch (ywr-harness ADR 0137) --------------------------------------------------------------------
 # The refs above are as of the last fetch, and the skill's "git fetch first" prose was skippable, so a
 # teammate's unfetched push slipped past the refusal. This script fetches the candidate remotes itself:
 # the current branch's upstream remote, then origin — configured remote NAMES only (a URL-valued
@@ -305,11 +305,11 @@ function Find-UpstreamScaffoldAhead {
 # the whole process tree is stopped; a stop can strand git's *.lock files, so the line NAMES any lock
 # under the git dir written since the fetch began — never deletes one: an IDE's background fetch may own
 # it. Under -DryRun too: the fetch moves remote-tracking refs and objects only, never the working tree,
-# and the dry run must show the real run's refusals (ADR 0135). Skipped under -AllowUpstreamAhead: there
+# and the dry run must show the real run's refusals (ywr-harness ADR 0135). Skipped under -AllowUpstreamAhead: there
 # the check only prints the ALLOWED line, and no outcome waits on a fetch. A failure or timeout NEVER
 # blocks — one yellow line, then the check reads the last fetch. The line never quotes git's output: it
 # can carry a credentialed URL. Success is silent; the refusal block then says the refs are fresh. No
-# candidate remote: no fetch, no line. The SessionStart nudge stays network-free (ADR 0033).
+# candidate remote: no fetch, no line. The SessionStart nudge stays network-free (ywr-harness ADR 0033).
 function Get-FetchCandidateRemotes {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return @() }
     $names = @(& git -C $root remote 2>$null | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
@@ -394,7 +394,7 @@ if (-not $AllowUpstreamAhead) {
         $fetchShow = ($fetchRemotes -join ' ') -replace '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]', ' '
         $fetchFail = Invoke-CandidateFetch $fetchRemotes
         if ($fetchFail) {
-            Write-Host "FETCH FAILED — git fetch $fetchShow $fetchFail; the upstream-ahead check reads the remote-tracking refs as of the last fetch (ADR 0137)." -ForegroundColor Yellow
+            Write-Host "FETCH FAILED — git fetch $fetchShow $fetchFail; the upstream-ahead check reads the remote-tracking refs as of the last fetch (ywr-harness ADR 0137)." -ForegroundColor Yellow
         } else { $fetchedFresh = $true }
     }
 }
@@ -402,10 +402,10 @@ $upstreamAhead = Find-UpstreamScaffoldAhead
 if ($upstreamAhead) {
     $uaClause = "$($upstreamAhead.Ref) has commit(s) not in this checkout that change the scaffold (newest $($upstreamAhead.Sha), $($upstreamAhead.Date))"
     if ($AllowUpstreamAhead) {
-        Write-Host "UPSTREAM AHEAD ALLOWED — $uaClause; proceeding because -AllowUpstreamAhead was given (ADR 0135)." -ForegroundColor Yellow
+        Write-Host "UPSTREAM AHEAD ALLOWED — $uaClause; proceeding because -AllowUpstreamAhead was given (ywr-harness ADR 0135)." -ForegroundColor Yellow
     } else {
         Write-Host "REFUSED — ${uaClause}: another clone scaffolded or refreshed this repo and pushed. Nothing was written." -ForegroundColor Red
-        $freshness = if ($fetchedFresh) { 'This run fetched the remote-tracking refs just before the check (ADR 0137).' } else { "Remote-tracking refs are as of the last fetch — 'git fetch' first to see the newest state." }
+        $freshness = if ($fetchedFresh) { 'This run fetched the remote-tracking refs just before the check (ywr-harness ADR 0137).' } else { "Remote-tracking refs are as of the last fetch — 'git fetch' first to see the newest state." }
         Write-Host "  Remedy: pull first (git pull, or merge/rebase $($upstreamAhead.Ref)), then re-run. $freshness" -ForegroundColor Red
         Write-Host "  A deliberate run on a diverging branch re-runs with -AllowUpstreamAhead." -ForegroundColor Red
         exit 1
@@ -413,8 +413,8 @@ if ($upstreamAhead) {
 }
 
 $created = @(); $refreshed = @(); $preserved = @(); $failed = @(); $skippedSeed = @(); $refused = @()
-# ADR 0055's two buckets: first-run TOOLCHAIN collisions refused (differing content, no stamp,
-# no -Force), and the -Force replacements — labeled truthfully, never as "refreshed". ADR 0074
+# ywr-harness ADR 0055's two buckets: first-run TOOLCHAIN collisions refused (differing content, no stamp,
+# no -Force), and the -Force replacements — labeled truthfully, never as "refreshed". ywr-harness ADR 0074
 # adds a third refusal bucket: a re-run (stamped) that collides on a path $INTRODUCED_IN says this
 # repo's stamp predates — same refusal shape, counted and reported separately because the cause
 # ("this path is new since your stamp") differs from "this repo was never scaffolded".
@@ -424,8 +424,8 @@ function Test-PathIntroducedAfterStamp([string]$Dest) {
     # True when $Dest has an $INTRODUCED_IN entry whose version is STRICTLY NEWER than this repo's
     # stamp — i.e. the path did not exist in the plugin version that last scaffolded this repo, so
     # an existing foreign file there is the PATH's first appearance here, not an ordinary re-run
-    # collision (ADR 0074). An unparsable or missing repo stamp treats every introduced path as
-    # "introduced later" — refusing is the safe side (the same fail-safe direction as the ADR 0042
+    # collision (ywr-harness ADR 0074). An unparsable or missing repo stamp treats every introduced path as
+    # "introduced later" — refusing is the safe side (the same fail-safe direction as the ywr-harness ADR 0042
     # downgrade guard's absent-stamp case is fail-OPEN; this one is deliberately the opposite,
     # because here failing open would silently overwrite a file that never went through this
     # guard). A malformed $INTRODUCED_IN value (should never happen — reviewed at the one call
@@ -460,7 +460,7 @@ function Place([string]$Rel, [string]$Dest, [bool]$Overwrite, [bool]$OwnershipKn
 
     if ($exists) {
         # Identical content is not a refresh — saying "refreshed" for a no-op inflates the report
-        # and hides which files the canon actually changed. The COMPARE is ADR 0033's fold
+        # and hides which files the canon actually changed. The COMPARE is ywr-harness ADR 0033's fold
         # VERBATIM — drop every 0x0D, paired or not — so this surface and the refresh nudge can
         # never disagree on what counts as a change (review 2026-08-06, medium: a CRLF-pair fold
         # here counted a lone-CR delta as a refresh the nudge stays silent on). The seed
@@ -470,13 +470,13 @@ function Place([string]$Rel, [string]$Dest, [bool]$Overwrite, [bool]$OwnershipKn
         if ($existing -eq $text.Replace("`r", '')) { return }
     }
 
-    # First-run TOOLCHAIN collision (ADR 0055): the file exists, its content DIFFERS (the
+    # First-run TOOLCHAIN collision (ywr-harness ADR 0055): the file exists, its content DIFFERS (the
     # identical case returned above), and no stamp says this scaffold has run here — so it is
     # not the canon's output and overwriting it is data loss, not an update. Refused unless
     # -Force; a GUARDED caller that already proved ownership by marker passes $OwnershipKnown.
     # Applies under -DryRun too: the dry run must show the same refusals the real run makes.
     #
-    # ADR 0074 extends the same refusal to a RE-run: $Dest may be a path this repo's stamp
+    # ywr-harness ADR 0074 extends the same refusal to a RE-run: $Dest may be a path this repo's stamp
     # predates (Test-PathIntroducedAfterStamp) — that repo is not first-run overall, but for
     # THIS path it is, so a foreign file there is the identical data-loss shape, just counted and
     # reported under its own reason (bucket picked by which condition actually fired).
@@ -488,7 +488,7 @@ function Place([string]$Rel, [string]$Dest, [bool]$Overwrite, [bool]$OwnershipKn
         else { $script:introducedRefused += $Dest; return }
     }
 
-    # Same-version drift (ADR 0067): reaching here with an existing overwrite-mode file on a
+    # Same-version drift (ywr-harness ADR 0067): reaching here with an existing overwrite-mode file on a
     # RE-run means the content differs from the template while the stamp already equals this
     # plugin's version — a local hand edit this overwrite is about to revert (first runs never
     # set $sameVersionRun, so $isReplacement can't reach here with it). Recorded for the
@@ -554,7 +554,7 @@ function Place-Guarded([string]$Rel, [string]$Dest) {
         }
     }
     # Ownership is settled here (absent, or the marker proved it ours), so the first-run
-    # collision guard inside Place() must not re-judge it (ADR 0055).
+    # collision guard inside Place() must not re-judge it (ywr-harness ADR 0055).
     Place $Rel $Dest $true $true
 }
 
@@ -565,7 +565,7 @@ foreach ($k in $SEED.Keys) { Place $k $SEED[$k] $false; $considered++ }
 
 # "Empty" means NO existing decision records, whatever they are named and wherever they live.
 # The first shipped version matched only `^\d{4}-` names inside docs/adr/ — so a repo whose log
-# used another convention (ADR-001-*, 001-*, dated names) or another conventional home (doc/adr,
+# used another convention (ywr-harness ADR-001-*, 001-*, dated names) or another conventional home (doc/adr,
 # docs/decisions, ...) was seeded with a second 0001, forking its decision history. Two scopes,
 # ONE record predicate:
 #   - docs/adr/: any .md record counts. The scaffold's own placements (0000-template.md,
@@ -625,10 +625,10 @@ if ($existingRecords.Count -eq 0 -and $foreignRecords.Count -eq 0) {
     }
 }
 
-# --- preserved-seed drift note (ADR 0051) ---------------------------------------------------------
+# --- preserved-seed drift note (ywr-harness ADR 0051) ---------------------------------------------------------
 # A preserved seed is the one placement mode with no update path, so this probe REPORTS — never
 # merges — what the current template carries that the seed lacks. It closes the measured blind
-# spot between the toolchain stamp (ADR 0042) and the refresh nudge (ADR 0033): seed drift was
+# spot between the toolchain stamp (ywr-harness ADR 0042) and the refresh nudge (ywr-harness ADR 0033): seed drift was
 # found only by hand (issue #44 — a repo missing `review.derived` and the load-bearing
 # `.githooks/* text eol=lf` line through five releases). Per-seed comparator, a closed set:
 #   harness.json  -> STRUCTURAL: template key paths absent here. `//` comment keys are skipped
@@ -636,7 +636,7 @@ if ($existingRecords.Count -eq 0 -and $foreignRecords.Count -eq 0) {
 #                    design and must not be compared.
 #   line-based    -> template lines (trimmed, non-empty, non-#) absent here; count + first one.
 # CLAUDE.md and REVIEW.md are deliberately absent: both are placeholder prose a repo rewrites
-# wholesale (ADR 0054 for the latter), so every template line would read as "missing" forever —
+# wholesale (ywr-harness ADR 0054 for the latter), so every template line would read as "missing" forever —
 # a permanent-noise note is worse than none.
 # Read-only by construction; an unparseable seed is a reported probe skip, never fatal.
 $DRIFT_SEEDS = @('harness.json', 'gitattributes', 'gitignore', 'githooks/slice-retro-ignore')
@@ -657,9 +657,9 @@ function Get-JsonKeyPaths([object]$Node, [string]$Prefix = '') {
     return $out
 }
 
-# Scaffold gate lines (ADR 0129). Arrays are leaves above, so a repo whose docs group predates ADR
-# 0094 (`gates: []`, or the gate with `files: false`) never learns the file-scoped line — and the
-# STE-lite gate (ADR 0128) runs only when pre-commit hands check_docs.py the staged paths. The
+# Scaffold gate lines (ywr-harness ADR 0129). Arrays are leaves above, so a repo whose docs group predates
+# ywr-harness ADR 0094 (`gates: []`, or the gate with `files: false`) never learns the file-scoped line — and the
+# STE-lite gate (ywr-harness ADR 0128) runs only when pre-commit hands check_docs.py the staged paths. The
 # template is the list, never a second copy here: each script gate it declares on a TOOLCHAIN
 # script must run, in the repo too, on every path the template routes to it. The emitter runs the
 # gates of EVERY group whose `match` claims a path (harness_gates.py), so a path is covered when
@@ -756,7 +756,7 @@ function Get-ScaffoldGateNote([object]$Template, [object]$Repo) {
     # stay silent then. So the working-tree files under each directory that holds a placed path a
     # scaffold gate claims join the probes — a .NET directory listing, no git call, no provider
     # pipeline. The listing is the working tree, not the tracked set: an untracked or ignored draft
-    # there can be named too (ADR 0129 records it). The index's own directory is not listed: the
+    # there can be named too (ywr-harness ADR 0129 records it). The index's own directory is not listed: the
     # index path itself is probed. The listing skips hidden, system and link entries and
     # inaccessible directories. Real files lead the list, so the display cap never hides a real
     # spec behind a template file.
@@ -844,7 +844,7 @@ function Get-SeedDriftNote([string]$Rel, [string]$Dest) {
             $parts += "template has $($missing.Count) key(s) this seed lacks: $($shown -join ', ')$more"
         }
         # Guarded like the reads above: under the script-global EAP=Stop an unforeseen throw here
-        # would turn a completed placement into a non-zero exit (the ADR 0051 exit contract).
+        # would turn a completed placement into a non-zero exit (the ywr-harness ADR 0051 exit contract).
         try { $gateNote = Get-ScaffoldGateNote $t $r } catch { $gateNote = 'scaffold gate probe skipped: ' + $_.Exception.Message }
         if ($gateNote) { $parts += $gateNote }
         return ($parts -join '; ')
@@ -859,7 +859,7 @@ function Get-SeedDriftNote([string]$Rel, [string]$Dest) {
     }
     # Guarded like the JSON branch: under the script-global EAP=Stop an unguarded ReadAllBytes on
     # a locked/ACL-denied seed would abort the WHOLE run non-zero after every placement already
-    # succeeded — the exact exit-contract violation ADR 0051 forbids (review 2026-08-12, high;
+    # succeeded — the exact exit-contract violation ywr-harness ADR 0051 forbids (review 2026-08-12, high;
     # Test-Path above proves existence, never readability).
     try {
         $have = & $readLines $dst
@@ -876,10 +876,10 @@ Write-Host "  created=$($created.Count) refreshed=$($refreshed.Count) replaced=$
 foreach ($f in $created) { Write-Host "  + $f" -ForegroundColor Green }
 foreach ($f in $refreshed) { Write-Host "  ~ $f (toolchain refreshed from canon)" -ForegroundColor Cyan }
 # -Force over a first-run collision is never labeled "refreshed": the previous content was not
-# the canon's, and the label must say what actually happened to it (ADR 0055).
-foreach ($f in $replaced) { Write-Host "  ~ $f (REPLACED a pre-existing non-canon file under -Force — previous content survives only in git history; ADR 0055)" -ForegroundColor Yellow }
+# the canon's, and the label must say what actually happened to it (ywr-harness ADR 0055).
+foreach ($f in $replaced) { Write-Host "  ~ $f (REPLACED a pre-existing non-canon file under -Force — previous content survives only in git history; ywr-harness ADR 0055)" -ForegroundColor Yellow }
 foreach ($f in $firstRunRefused) {
-    Write-Host "  ! $f REFUSED — first run found an existing file at this TOOLCHAIN path (ADR 0055)" -ForegroundColor Yellow
+    Write-Host "  ! $f REFUSED — first run found an existing file at this TOOLCHAIN path (ywr-harness ADR 0055)" -ForegroundColor Yellow
     Write-Host "      Nothing marks it as this scaffold's output, so it was left byte-identical. Merge or move it," -ForegroundColor Yellow
     Write-Host "      then re-run; a deliberate replacement re-runs with -Force (the previous content then survives" -ForegroundColor Yellow
     Write-Host "      only in git history)." -ForegroundColor Yellow
@@ -894,10 +894,10 @@ if ($firstRunRefused.Count) {
     Write-Host "      to canon, and seeds are never touched either way.)" -ForegroundColor Yellow
 }
 foreach ($f in $introducedRefused) {
-    # ADR 0074: this repo IS stamped (unlike the block above), but $f entered $TOOLCHAIN in a
+    # ywr-harness ADR 0074: this repo IS stamped (unlike the block above), but $f entered $TOOLCHAIN in a
     # plugin version newer than that stamp — so for this one path it is still a first appearance,
-    # and an existing foreign file there is the same data loss ADR 0055 refuses, not a refresh.
-    Write-Host "  ! $f REFUSED — this TOOLCHAIN path is new in $($INTRODUCED_IN[$f]) (repo stamped $repoStampRaw) and a different file already exists there; not the canon's output — re-run with -Force to replace it (ADR 0074, extends the first-run guard ADR 0055)" -ForegroundColor Yellow
+    # and an existing foreign file there is the same data loss ywr-harness ADR 0055 refuses, not a refresh.
+    Write-Host "  ! $f REFUSED — this TOOLCHAIN path is new in $($INTRODUCED_IN[$f]) (repo stamped $repoStampRaw) and a different file already exists there; not the canon's output — re-run with -Force to replace it (ywr-harness ADR 0074, extends the first-run guard ywr-harness ADR 0055)" -ForegroundColor Yellow
 }
 foreach ($f in $preserved) {
     $note = ''
@@ -915,20 +915,20 @@ foreach ($f in $refused) {
 }
 foreach ($f in $skippedSeed) { Write-Host "  - $f" -ForegroundColor Yellow }
 
-# --- same-version drift report (ADR 0067) ---------------------------------------------------------
+# --- same-version drift report (ywr-harness ADR 0067) ---------------------------------------------------------
 # The prefix `upstream: SAME-VERSION drift` is a stable contract: the harness-init SKILL keys on
 # it to start the draft->confirm->file flow, and report-issue.ps1's dry-run parser must keep ignoring
 # these lines (they match none of its `~`/`!` shapes).
 if ($sameVersionDrift.Count) {
     if ($inTreeRun) {
-        Write-Host "  upstream: same-version drift on $($sameVersionDrift.Count) file(s), but this plugin copy runs FROM the target tree (canon dogfood, ADR 0018) — source->placement propagation, not a hand edit; no report (ADR 0067)." -ForegroundColor Cyan
+        Write-Host "  upstream: same-version drift on $($sameVersionDrift.Count) file(s), but this plugin copy runs FROM the target tree (canon dogfood, ywr-harness ADR 0018) — source->placement propagation, not a hand edit; no report (ywr-harness ADR 0067)." -ForegroundColor Cyan
     } else {
         Write-Host "  upstream: SAME-VERSION drift — $($sameVersionDrift.Count) file(s) marked ~ above differed from this plugin's templates while the stamp already reads v$repoStampRaw." -ForegroundColor Yellow
         if ($DryRun) {
-            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ADR 0010/0067). A real run will REVERT them; nothing was changed yet." -ForegroundColor Yellow
+            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ywr-harness ADR 0010/0067). A real run will REVERT them; nothing was changed yet." -ForegroundColor Yellow
             Write-Host "      Report it upstream BEFORE the real run (the draft reads the drift still in the working tree): /ywr-harness:report-issue — one confirmation before anything is filed." -ForegroundColor Yellow
         } else {
-            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ADR 0010/0067). This run REVERTED them." -ForegroundColor Yellow
+            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ywr-harness ADR 0010/0067). This run REVERTED them." -ForegroundColor Yellow
             if ($revertSaved.Count) { Write-Host "      pre-revert copies: $revertDir" -ForegroundColor Yellow }
             if ($revertFailed.Count) { Write-Host "      pre-revert copy FAILED for: $($revertFailed -join ', ') — that content now survives only in git history." -ForegroundColor Yellow }
             Write-Host "      Report it upstream so the canon fixes it for every repo: /ywr-harness:report-issue — one confirmation before anything is filed." -ForegroundColor Yellow
@@ -941,7 +941,7 @@ if ($failed.Count) {
     exit 1
 }
 
-# --- toolchain stamp (ADR 0042) ------------------------------------------------------------------
+# --- toolchain stamp (ywr-harness ADR 0042) ------------------------------------------------------------------
 # Stamped only on a run that placed successfully (the failed-exit above never reaches here). The
 # refresh nudge reads this AFTER byte drift is found, to orient its advice; it is never the
 # trigger. In no placement map on purpose: manifest-gate's map-driven sweep and the nudge's
@@ -949,16 +949,16 @@ if ($failed.Count) {
 if ($firstRunRefused.Count -or $introducedRefused.Count) {
     # A stamp means "scaffolded" (and, per-path, "scaffolded at least at this version") — writing
     # it now would make the very next run believe these paths were already resolved, silently
-    # overwriting exactly the files the refusals above just protected (ADR 0055/0074).
+    # overwriting exactly the files the refusals above just protected (ywr-harness ADR 0055/0074).
     $unresolved = $firstRunRefused.Count + $introducedRefused.Count
-    Write-Host "  stamp: NOT written — $unresolved toolchain collision(s) above are unresolved; a stamped repo re-runs with overwrite semantics (ADR 0055/0074)" -ForegroundColor Yellow
+    Write-Host "  stamp: NOT written — $unresolved toolchain collision(s) above are unresolved; a stamped repo re-runs with overwrite semantics (ywr-harness ADR 0055/0074)" -ForegroundColor Yellow
 } elseif ($ownVersionRaw) {
     if ($DryRun) {
         Write-Host "  stamp: would write $STAMP_FILE = $ownVersionRaw (dry run)" -ForegroundColor Cyan
     } else {
         try {
             [IO.File]::WriteAllBytes($stampPath, [System.Text.Encoding]::ASCII.GetBytes("$ownVersionRaw`n"))
-            Write-Host "  stamp: $STAMP_FILE = $ownVersionRaw (which plugin version last scaffolded this repo — ADR 0042; claimed built-in by the emitter, ADR 0044)" -ForegroundColor Green
+            Write-Host "  stamp: $STAMP_FILE = $ownVersionRaw (which plugin version last scaffolded this repo — ywr-harness ADR 0042; claimed built-in by the emitter, ywr-harness ADR 0044)" -ForegroundColor Green
         } catch {
             Write-Host "  stamp: FAILED to write $STAMP_FILE — $($_.Exception.Message) (reported, not silent)" -ForegroundColor Yellow
         }
@@ -967,7 +967,7 @@ if ($firstRunRefused.Count -or $introducedRefused.Count) {
     Write-Host "  stamp: SKIPPED — this plugin copy's own version is unreadable from .claude-plugin/plugin.json (reported, not silent)" -ForegroundColor Yellow
 }
 
-# --- git hooks: executable bit, then CONDITIONAL wiring (ADR 0015) ------------------------------
+# --- git hooks: executable bit, then CONDITIONAL wiring (ywr-harness ADR 0015) ------------------------------
 # This is the only thing init.ps1 does that is not a file write, so it is bounded hard:
 #   unset       -> set it
 #   .githooks   -> leave it
@@ -984,7 +984,7 @@ if (-not $DryRun -and -not $IsWindows) {
     # the bit. NEVER on a hook this run REFUSED (a first-run collision or a marker-less
     # post-commit): "left byte-identical" must include the mode — granting +x would turn a
     # preserved foreign script into a live hook the moment the wiring below lands (review
-    # 2026-08-17, high). The emitter's hooks: line reports the resulting bit gap (ADR 0056), so
+    # 2026-08-17, high). The emitter's hooks: line reports the resulting bit gap (ywr-harness ADR 0056), so
     # the member makes that call, not this block.
     if (Get-Command chmod -ErrorAction SilentlyContinue) {
         $notOurs = @($firstRunRefused) + @($refused)
@@ -1116,9 +1116,9 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 $wireColor = if ($wire -match 'wired$') { 'Green' } else { 'Yellow' }
 Write-Host "  hooks: $wire" -ForegroundColor $wireColor
 
-# ADR 0062 (issue #55). The vendored workflow's push trigger ENUMERATES `branches: [main, master]`
+# ywr-harness ADR 0062 (issue #55). The vendored workflow's push trigger ENUMERATES `branches: [main, master]`
 # — `on:` takes no expressions, `$default-branch` exists only in GitHub's starter templates, and
-# the placed copy must stay byte-identical to the template (ADR 0014), so per-repo substitution is
+# the placed copy must stay byte-identical to the template (ywr-harness ADR 0014), so per-repo substitution is
 # out. A repo whose default branch is outside the list never gets a push run, and GitHub does not
 # even register a workflow no event has matched — nothing in CI can report a run that never
 # happens. The scaffold is the one step that knows the repo, so it says it here. origin/HEAD is the
@@ -1131,7 +1131,7 @@ if ((Get-Command git -ErrorAction SilentlyContinue) -and $wire -notmatch '^(git 
     if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$head)) {
         $defaultBranch = ([string]$head).Trim() -replace '^origin/', ''
         if ($CI_PUSH_BRANCHES -notcontains $defaultBranch) {
-            Write-Host "  ci trigger: default branch '$defaultBranch' is NOT in the vendored workflow's push list [$($CI_PUSH_BRANCHES -join ', ')] — harness-gates never runs on push here (PR and workflow_dispatch runs still do). A default branch outside the list needs a canon change, not a local edit (ADR 0062)." -ForegroundColor Yellow
+            Write-Host "  ci trigger: default branch '$defaultBranch' is NOT in the vendored workflow's push list [$($CI_PUSH_BRANCHES -join ', ')] — harness-gates never runs on push here (PR and workflow_dispatch runs still do). A default branch outside the list needs a canon change, not a local edit (ywr-harness ADR 0062)." -ForegroundColor Yellow
         }
     }
 }
@@ -1150,15 +1150,15 @@ if (-not $DryRun) {
     if ($py -and (Test-Path -LiteralPath $wrapper)) {
         Push-Location $root
         try {
-            # In-process, not a child pwsh (ADR 0071 option E, 2026-09-02): the wrapper's `exit
+            # In-process, not a child pwsh (ywr-harness ADR 0071 option E, 2026-09-02): the wrapper's `exit
             # $LASTEXITCODE` ends the wrapper only and lands here, its env pin is restored in its
             # own finally, and the pwsh cold start it used to cost — measured 0.8 s of a 1.15 s
             # scaffold run — is gone from every member's run and 56 times from the selftest. A
             # throw inside the wrapper (no python — already excluded above) is the child's
             # "exited 1" in this shape.
             try { & $wrapper *> $null } catch { $global:LASTEXITCODE = 1 }
-            # All FOUR surfaces — docs.artifact.html is the artifact-publish path's input (ADR
-            # 0032/0048) and omitting it here taught readers a three-surface pipeline (issue #45).
+            # All FOUR surfaces — docs.artifact.html is the artifact-publish path's input
+            # (ywr-harness ADR 0032/0048) and omitting it here taught readers a three-surface pipeline (issue #45).
             if ($LASTEXITCODE -eq 0) { Write-Host '  built: index.json · INDEX.md · docs.html · docs.artifact.html' -ForegroundColor Green }
             else { Write-Host "  SKIP build — docs/build.ps1 exited $LASTEXITCODE; run it directly and read the error" -ForegroundColor Yellow }
         } finally { Pop-Location }
@@ -1170,7 +1170,7 @@ if (-not $DryRun) {
 if ($preserved.Count) {
     Write-Host ''
     Write-Host 'Preserved seeds were NOT updated. Notes above name template-side keys/lines a seed' -ForegroundColor Yellow
-    Write-Host 'lacks, and scaffold gate lines no claiming group declares (report only — ADR 0051, 0129);' -ForegroundColor Yellow
+    Write-Host 'lacks, and scaffold gate lines no claiming group declares (report only — ywr-harness ADR 0051, 0129);' -ForegroundColor Yellow
     Write-Host 'anything beyond additions still needs a hand compare' -ForegroundColor Yellow
     Write-Host 'against skills/harness-init/templates/. This script will never clobber them.' -ForegroundColor Yellow
 }

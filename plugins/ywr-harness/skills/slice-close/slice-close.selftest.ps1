@@ -44,10 +44,10 @@ $ok = (Assert-Text 'T3 reference.md carries the moved detail (rebase overlap com
 
 # --- C: the ADR 0090 contract lines -----------------------------------------------------------------
 $ok = (Assert-Text 'C1 stage 1: the range goes straight to the emitter, whose scope: FAILED is the range check (ADR 0041)' $skill `
-        @('pass it to `--range` as given', 'the emitter is the\s+range check \(ADR 0041\)', 'scope: FAILED') `
+        @('pass it to `--range` as given', 'the emitter is the\s+range check \(ywr-harness ADR 0041\)', 'scope: FAILED') `
         @('Sanity-check it first', 'git rev-parse')) -and $ok
 $ok = (Assert-Text 'C2 stage 2 scope: exclusions named, lockstep noted, ~8 counts what remains, no ultracode/effort slot (ADR 0108)' $skill `
-        @("the emitter's file list minus the exclusions", 'drift gate passed', 'declared handoff', 'lockstep: manifest-gate PASS', 'more than ~8 files remain after\s+the exclusions', 'recall lever', 'ultracode changes neither \(ADR 0108\)', 'stats\.worker_pins') `
+        @("the emitter's file list minus the exclusions", 'drift gate passed', 'declared handoff', 'lockstep: manifest-gate PASS', 'more than ~8 files remain after\s+the exclusions', 'recall lever', 'ultracode changes neither \(ywr-harness ADR 0108\)', 'stats\.worker_pins') `
         @("files: \[<the emitter's file list>\]", 'for round-trip-bound finders only', '(?m)^\s+(ultracode|effort):')) -and $ok
 $ok = (Assert-Text 'C3 disposition: also_at sites and 1-1 split rejections are the closer''s to read' $skill `
         @('also_at', 'rejected\[\]', 'split 1\u20131', 'rejected_count') `
@@ -56,7 +56,7 @@ $ok = (Assert-Text 'C4 fix gates: the emitter over the fix''s own files, suite-l
         @([regex]::Escape('harness_gates.py" <every file the fix touched>'), 'never a default run', 'own test file\s+directly') `
         @('re-run the emitter over the fix diff')) -and $ok
 $ok = (Assert-Text 'C5 fix checks: batched legs, at most 4, per-finding verdicts, critical gets its own, the pinned worker under ultracode too' $skill `
-        @('ADR 0090', '\*\*batched\*\*', 'at most 4 findings per leg', 'leg of its own for a fix that touches a declared\s+critical surface', '\*\*per finding\*\* exactly `fixed: true\|false`', 'ultracode or not, ADR 0108') `
+        @('ywr-harness ADR 0090', '\*\*batched\*\*', 'at most 4 findings per leg', 'leg of its own for a fix that touches a declared\s+critical surface', '\*\*per finding\*\* exactly `fixed: true\|false`', 'ultracode or not, ywr-harness ADR 0108') `
         @('spawn ONE skeptic leg', 'For a \*\*high or medium\*\* finding', '`general-purpose` under ultracode')) -and $ok
 $ok = (Assert-Text 'C6 stage 3: mapper first, no run: line means no verify spawn and a verbatim scope statement' $skill `
         @([regex]::Escape('scripts/verify_map.py" [--range <a>..<b>]'), 'No `run:` line', 'do \*\*not\*\*\s+invoke the verify skill', 'scope statement, \*\*not\*\* a pass', '/ywr-harness:verify <a>\.\.<b>') `
@@ -65,7 +65,7 @@ $ok = (Assert-Text 'C7 stage 5: one commit, record in the body, handoff names th
         @('\*\*ONE commit\*\*', 'message body', 'at most 72 characters', 'the commit carrying this handoff', [regex]::Escape('git log -1 --format=%h -- <handoff>'), 'Delete DONE items', 'never gets a commit', 'harness_retro\.py') `
         @('(?m)^- Commit\. State in the close:', 'kept for the lettering')) -and $ok
 $ok = (Assert-Text 'C8 ADR 0072 rule stays named in SKILL.md in one line' $skill `
-        @('re-arms it only over the overlap \(ADR 0072\)', 'hand-resolved conflict', 'review basis:') `
+        @('re-arms it only over the overlap \(ywr-harness ADR 0072\)', 'hand-resolved conflict', 'review basis:') `
         @('\(in the reviewed scope or\s+not')) -and $ok
 
 # C9: the verify procedure (spec 0007 s3.7) follows C1's rule - its agent passes the range to the mapper
@@ -73,7 +73,7 @@ $ok = (Assert-Text 'C8 ADR 0072 rule stays named in SKILL.md in one line' $skill
 $procPath = Join-Path $PSScriptRoot '../verify/procedure.md'
 $proc = if (Test-Path -LiteralPath $procPath -PathType Leaf) { Get-Content -LiteralPath $procPath -Raw -Encoding utf8 } else { '' }
 $ok = (Assert-Text 'C9 verify procedure: range goes to the mapper as given, no own git pre-check, no silent fallback' $proc `
-        @('Pass it to the mapper as given', 'the mapper is the range check \(ADR 0041', 'Do NOT silently fall back', 'scope: FAILED') `
+        @('Pass it to the mapper as given', 'the mapper is the range check \(ywr-harness ADR 0041', 'Do NOT silently fall back', 'scope: FAILED') `
         @('Sanity-check it first', 'git rev-parse')) -and $ok
 
 # C10: the prepared close (ADR 0105). What can regress silently is reuse without the identity check
@@ -85,7 +85,7 @@ $ok = (Assert-Text 'C10 prepared close: reuse only on an identical --tree line, 
         @([regex]::Escape('scripts/harness_gates.py" --tree'), 'verbatim in THIS session', 'is no report: run every stage', 'tree: FAILED` \u2192 nothing is reused', 'run the emitter itself again', 'Re-run none of the printed commands,\s+the review or verify', 'The `gates:` window differs', 'prepared: reused at <the tree line>', 'Run stages 1 and 3 in full', [regex]::Escape('git diff --name-only <report tree id> <fresh tree id>'), 'review basis: prepared at', 'writes no handoff and makes no commit') `
         @('(?i)(paraphrase|summary)[^.]{0,40}(is enough|suffices|counts as (a|the) report)', '(?i)another session[^.]{0,40}(may|can) be reused', '(?i)the tree line alone')) -and $ok
 $ok = (Assert-Text 'C10 SKILL.md states why the skill is owner-typed and records a reused preparation' $skill `
-        @('\*\*Owner-typed on purpose\*\* \(ADR 0105\)', 'ADR 0034', 'prepared: reused at') `
+        @('\*\*Owner-typed on purpose\*\* \(ywr-harness ADR 0105\)', 'ywr-harness ADR 0034', 'prepared: reused at') `
         @('(?m)^disable-model-invocation: false')) -and $ok
 
 # C11: the three disposition buckets and the lens-agreement signal (ADR 0163, pstack candidate 9). What
@@ -101,10 +101,10 @@ $ok = (Assert-Text 'C11 disposition: three buckets, no-action names its record, 
 # proof replaced it. ADR 0173 adds exit 2's stop and the old-digest route (dist issue #11: no rule for
 # exit 2 left a second full review as the only way through); its keys come from the count, never the closer.
 $ok = (Assert-Text 'C12 fix proof: the digest picks the keys, check takes it verbatim, exit 1 stops, exit 3 goes to the owner, the leg stays' $skill `
-        @('Fix proof for every high the digest names\*\* \(ADR 0169\)', '\*\*The review picks the keys, not the closer\*\*', '`high_ids`', 'nothing can be left out', [regex]::Escape('scripts/fix_proof.py" run <id> -- <command>'), [regex]::Escape('scripts/fix_proof.py" check --digest "<the digest line, verbatim>"'), '\*\*Before\s+editing a fix\*\*', 'SAME argv', 'names its bucket', '\*\*valid, no action\*\* or \*\*false on\s+reading\*\*', '`R<n>-', 'not every vote refuted', 'fingerprint ties an\s+id to its finding', 'A run that changes the tree', 'cannot count', 'Any non-zero exit is\s+a failing half', '\*\*Exit 1\*\*[^.]*the close stops', '\*\*Exit 3\*\*', 'the session never accepts its own\s+waiver', 'ask the owner about each\s+waived key', 'stop\s+on any refusal', 'never\s+the closer''s own\s+line', 'The skeptic leg above\s+still runs', 'the owner''s answer on each waiver', '\*\*Exit 2\*\*', 'the close stops until a fixed input', '\*\*A review older\s+than ADR 0169\*\*', 'names the keys itself', '`H<n>` is the n-th high in the review''s `confirmed` list', 'the closer never names that set', '`h0` and `rejected 0` there is no key', 'the owner answers the\s+old digest''s rejected findings') `
+        @('Fix proof for every high the digest names\*\* \(ywr-harness ADR 0169\)', '\*\*The review picks the keys, not the closer\*\*', '`high_ids`', 'nothing can be left out', [regex]::Escape('scripts/fix_proof.py" run <id> -- <command>'), [regex]::Escape('scripts/fix_proof.py" check --digest "<the digest line, verbatim>"'), '\*\*Before\s+editing a fix\*\*', 'SAME argv', 'names its bucket', '\*\*valid, no action\*\* or \*\*false on\s+reading\*\*', '`R<n>-', 'not every vote refuted', 'fingerprint ties an\s+id to its finding', 'A run that changes the tree', 'cannot count', 'Any non-zero exit is\s+a failing half', '\*\*Exit 1\*\*[^.]*the close stops', '\*\*Exit 3\*\*', 'the session never accepts its own\s+waiver', 'ask the owner about each\s+waived key', 'stop\s+on any refusal', 'never\s+the closer''s own\s+line', 'The skeptic leg above\s+still runs', 'the owner''s answer on each waiver', '\*\*Exit 2\*\*', 'the close stops until a fixed input', '\*\*A review older\s+than ywr-harness ADR 0169\*\*', 'names the keys itself', '`H<n>` is the n-th high in the review''s `confirmed` list', 'the closer never names that set', '`h0` and `rejected 0` there is no key', 'the owner answers the\s+old digest''s rejected findings') `
         @('(?i)one key of your own', '(?i)pass one key[^.]{0,40}per (confirmed )?high','(?i)exit 2[^.]{0,40}(proceed|continue|goes on)', '(?i)re-run the full review', '(?i)check <every fixed high key>','(?i)a waiver passes', '(?i)check[^.]{0,40}is advisory', '(?i)instead of the skeptic leg', '(?i)after editing the fix, run a command', '(?i)key each high in the fixed bucket', '(?i)false on reading[^.]{0,40}no proof', '(?i)only exit 1 counts', '(?i)split 1.1 \(`R<n>`\)')) -and $ok
 $ok = (Assert-Text 'C12 the prepared report carries the fix-proof output and its waivers for the owner' $ref `
-        @('the `fix_proof.py check` output \(an exit 3 lists the waivers the owner must answer, and a digest\s+older than ADR 0169', 'rejected finding''s severity, title and votes from the review''s return\)') `
+        @('the `fix_proof.py check` output \(an exit 3 lists the waivers the owner must answer, and a digest\s+older than ywr-harness ADR 0169', 'rejected finding''s severity, title and votes from the review''s return\)') `
         @('(?i)fix proof[^.]{0,40}re-run on reuse', '(?i)the session accepts')) -and $ok
 
 # --- META: the assertion guard must be able to fail -----------------------------------------------

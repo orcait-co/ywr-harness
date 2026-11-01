@@ -40,10 +40,10 @@ export const meta = {
 // 요청당 ~36k 토큰이고 그 절반이 파인더/스켑틱이 한 번도 부르지 않는 도구 스키마다(Artifact·
 // Workflow·Agent·Edit·Write·PowerShell …). 도구 허용목록을 가진 플러그인 에이전트로 띄우면 그
 // 스키마가 프리픽스에서 빠진다 — 워커 요청마다 다시 읽히는 값이라 요청 수만큼 곱해진다(small 티어
-// 59 요청 실측: 요청당 캐시 읽기 −29%, 총 컨텍스트 토큰 −26%). 이름은 네임스페이스 형(fact 1) — bare 이름은
+// 59 요청 실측: 요청당 캐시 읽기 −29%, 총 컨텍스트 토큰 −26%). 이름은 네임스페이스 형(ywr-harness fact 1) — bare 이름은
 // 해석되지 않는다.
 // opts.effort 가 에이전트 정의의 effort 핀을 덮어쓰는 것은 실측됨(정의 medium · 호출 low → low).
-// ultracode 에서도 핀은 그대로다(ywr-harness ADR 0108 — ADR 0084 의 예외를 폐기). 2.1.284 부터 ultracode 는 effort 와
+// ultracode 에서도 핀은 그대로다(ywr-harness ADR 0108 — ywr-harness ADR 0084 의 예외를 폐기). 2.1.284 부터 ultracode 는 effort 와
 // 별개의 토글이라 어느 effort 에서든 켜지고, 스테이지별로 모델·effort 를 고르는 이 핀이 세션 상속보다 싸고 빠르다(owner
 // 2026-09-29). args.ultracode·args.effort 는 넘어와도 무시한다 — 던지면 옛 호출자의 리뷰가 죽고, 조용히 버리면 호출자는
 // 풀렸다고 믿는다: 그래서 로그 한 줄과 stats.worker_pins.ignored 로 알린다.
@@ -411,7 +411,7 @@ let deduped = [...byKey.values()]
 // 2차(선택): 12건 초과면 그룹핑 — 같은 근원의 다른 라인/제목/파일 병합. 기본 모드는 reviewer 에이전트 위 sonnet · low
 // (ywr-harness ADR 0102 — 종전 haiku · low 기본 서브에이전트. 기록된 목록 4건 헤드리스 재생, 암당 n=1, 호스트 2.1.283:
 // haiku 347.6 s · 출력 38,967 tok · $0.279 vs sonnet 113.7 s · 9,372 tok · $0.234(5분 쓰기 기준). sonnet 이 "서로 다른
-// 결함은 묶지 마라"를 더 잘 지켰고 ADR 0089 의 파일 교차 클래스를 혼자 재현했다; 그룹 집합이 같은 목록은 0/4).
+// 결함은 묶지 마라"를 더 잘 지켰고 ywr-harness ADR 0089 의 파일 교차 클래스를 혼자 재현했다; 그룹 집합이 같은 목록은 0/4).
 // Opus 세션은 opus · low 로 기본 서브에이전트 그대로.
 // 묶인 항목은 버리지 않는다(ywr-harness ADR 0089 — 위 1차 dedupe 의 "대표만 유지"를 좁힌다): 대표가 나머지의 위치를
 // also_at 으로 들고 가서, 스켑틱은 전 위치를 보고 한 번 판정하고 닫는 쪽은 위치마다 고친다. 실측 slice 25: 그룹핑이

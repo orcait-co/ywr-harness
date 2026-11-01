@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # setup — install the harness prerequisites
 
-The plugin's hooks module answers this command itself on Claude Code 2.1.287 and later (ADR 0142):
+The plugin's hooks module answers this command itself on Claude Code 2.1.287 and later (ywr-harness ADR 0142):
 it probes the tools, runs `winget` and reports, with no model turn. You read this body only where
 the host dropped the module (an older host, `disableAllHooks`, `--safe-mode`, a managed
 `allowManagedModsOnly`). Do the same work by hand. The user typed the command, so the user has

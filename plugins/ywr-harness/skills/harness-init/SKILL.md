@@ -20,8 +20,8 @@ Add `-DryRun` to see the plan without writing. `-Target` defaults to the current
 Requires pwsh 7 (plugin README §Prerequisites) — under Windows PowerShell 5.1 the script
 refuses explicitly rather than running.
 
-**Pull before you scaffold (ADR 0135).** Do not run `git fetch` yourself: `init.ps1` fetches the
-branch's upstream remote and `origin` itself, `-DryRun` included (ADR 0137). A failed or timed-out
+**Pull before you scaffold (ywr-harness ADR 0135).** Do not run `git fetch` yourself: `init.ps1` fetches the
+branch's upstream remote and `origin` itself, `-DryRun` included (ywr-harness ADR 0137). A failed or timed-out
 fetch prints one `FETCH FAILED` line and the run goes on against the last fetch. When a remote-tracking ref (the
 branch's upstream, then `origin/HEAD`) carries a `.harness-version` change this checkout lacks, `init.ps1`
 prints `REFUSED — <ref> has commit(s) not in this checkout that change the scaffold` and writes
@@ -38,7 +38,7 @@ reverts exactly the drift the report needs to read.
 **Brownfield repos (an existing `docs/` or its own build scripts): run `-DryRun` first.** On a
 FIRST run (no `.harness-version` stamp yet), an existing file at a toolchain path whose content
 differs is REFUSED rather than replaced — it is not the canon's output, and overwriting it
-would be data loss (ADR 0055). Merge or move each refused file and re-run; a deliberate
+would be data loss (ywr-harness ADR 0055). Merge or move each refused file and re-run; a deliberate
 replacement re-runs with `-Force`. The version stamp is withheld until the collisions are
 resolved, so a later re-run cannot silently overwrite them either.
 
@@ -49,20 +49,20 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
 - **Toolchain is overwritten** — the builder, templates, and rule documents come from the canon.
   Re-running is how a plugin-side improvement reaches this repo. Do not hand-edit these files:
   the next run reverts them, which is the intended signal (ywr-harness ADR 0010 — harness defects
-  are fixed in the canon, not patched locally). First runs are the exception above (ADR 0055).
+  are fixed in the canon, not patched locally). First runs are the exception above (ywr-harness ADR 0055).
 - **Seeds are never overwritten** — an existing `CLAUDE.md` or `.gitattributes` is preserved
   byte-identical and reported as preserved (template-only additions are reported on the same
-  line, ADR 0051). A seed this repo does not have yet — e.g. the root `.gitignore` (ADR 0053)
-  or the starter `REVIEW.md` (ADR 0054) on a repo scaffolded before they existed — IS placed by
+  line, ywr-harness ADR 0051). A seed this repo does not have yet — e.g. the root `.gitignore` (ywr-harness ADR 0053)
+  or the starter `REVIEW.md` (ywr-harness ADR 0054) on a repo scaffolded before they existed — IS placed by
   a re-run: creation is not an overwrite.
 - **Nothing is ever deleted.** Accumulated ADRs and specs are untouched.
 - **Placement writes LF** — no matter how the installed plugin cache was checked out
   (`core.autocrlf` can stamp CRLF onto it), CRLF in a template folds to LF on write (only the
   pair — a lone 0x0D is content and survives), and a file that differs from its template only in
-  line endings is left alone rather than counted as a refresh (ADR 0036; same comparison contract
-  as the refresh nudge, ADR 0033).
+  line endings is left alone rather than counted as a refresh (ywr-harness ADR 0036; same comparison contract
+  as the refresh nudge, ywr-harness ADR 0033).
 
-## Same-version conflicts → upstream report (ADR 0067)
+## Same-version conflicts → upstream report (ywr-harness ADR 0067)
 
 An `upstream: SAME-VERSION drift` block in the run output means toolchain files were hand-edited
 since the last scaffold at this SAME plugin version (the #55 shape) — the canon cannot have
@@ -80,7 +80,7 @@ the block, do this BEFORE the real run:
 3. Ask ONE question: file it / skip. On file, run the exact FILE command the draft printed
    (`report-issue.ps1 -File -BodyPath …`). On skip, print that command so the member can file later.
    Never file without the confirmation, never change the body after showing it, never include
-   diff text (ADR 0064).
+   diff text (ywr-harness ADR 0064).
 4. Only then run the real `init.ps1`. The revert is intended — the canon ships the fix in a
    release. The real run's block names a `pre-revert copies:` dir where the local content
    survives, so the diff can still be attached in-thread when the canon asks for it.
@@ -103,11 +103,11 @@ no report.
 3. Write the repo's first ADR from `docs/adr/0000-template.md`. Record rejected options; that is
    what makes the record worth keeping.
 4. **Replace the starter content in `REVIEW.md`** with this repo's own review invariants
-   (ADR 0054) — the slice close cites this file, and until it is rewritten reviews run against
+   (ywr-harness ADR 0054) — the slice close cites this file, and until it is rewritten reviews run against
    the generic starters only.
 5. Rebuild and commit `index.json` + `INDEX.md` with the source change.
 6. **Read the two stage prompts** the scaffold seeded, `docs/prompts/review-digest.md` and
-   `docs/prompts/ready-report.md` (ADR 0180). The template declares both under `decision_prompts`
+   `docs/prompts/ready-report.md` (ywr-harness ADR 0180). The template declares both under `decision_prompts`
    with no `check`, and they do nothing until the member types `/ywr-harness:auto on`. An existing
    `.harness.json` stays as it is. When the drift note names `decision_prompts`, tell the member to add
    the key. On every re-run of an existing repository, also check `review.docs_only`: when a regex
@@ -124,17 +124,17 @@ Beyond the docs shape, the scaffold vendors the pieces that actually run the gat
 
 - `.github/workflows/harness-gates.yml` + `scripts/harness/*.py` — CI. Vendored rather than a
   reusable workflow because `${CLAUDE_PLUGIN_ROOT}` does not exist in a CI step and cross-repo
-  Actions access is closed (ADR 0014).
+  Actions access is closed (ywr-harness ADR 0014).
 - `.githooks/pre-commit` — runs the emitter's **file-scoped** gates on staged files. Whole-program
   gates (tests, typecheck) are deferred to CI and the deferral is reported.
 - `.githooks/pre-push` — scans **added lines** of the pushed range for secrets. A false positive is
   exempted per line with the marker `harness:allow-secret`, not with `--no-verify`.
 - `.githooks/post-commit` + `scripts/harness/harness_retro.py` — the slice retro gate: seven
-  deterministic docs-drift checks at zero token cost, advisory, silent when clean (ADR 0017).
+  deterministic docs-drift checks at zero token cost, advisory, silent when clean (ywr-harness ADR 0017).
   Placed **GUARDED** — an existing `post-commit` without the `ywr-harness:post-commit` marker is
   refused rather than overwritten, and the one-line manual wiring is printed instead.
 
-`core.hooksPath` is wired **conditionally** (ADR 0015): set when unset, left alone when already
+`core.hooksPath` is wired **conditionally** (ywr-harness ADR 0015): set when unset, left alone when already
 `.githooks`, and **refused** when it points anywhere else — a repo that aims its hooks elsewhere
 made that choice for reasons this scaffold cannot see.
 
@@ -147,7 +147,7 @@ hooks: .githooks/ present but core.hooksPath is UNSET — NO git hook runs in th
        run: git config core.hooksPath .githooks
 ```
 
-The **executable bit** is the second per-checkout axis of the same gap (ADR 0056): a repo
+The **executable bit** is the second per-checkout axis of the same gap (ywr-harness ADR 0056): a repo
 scaffolded on Windows commits its hooks at mode 100644, and a POSIX/WSL clone then silently
 skips them. The same `hooks:` line reports it on POSIX (CI's ubuntu checkout included) with the
 remedy; on a POSIX clone, `chmod +x .githooks/*` fixes this checkout and
@@ -159,5 +159,5 @@ Stack-specific lint tooling. The gates are **selectors** from a closed set (`ruf
 …) declared in `.harness.json`; installing the tools they name is the repo's job. A gate whose tool
 is missing fails loudly rather than passing quietly. A repo whose gate is its own script (a test
 entry point no selector could name) declares a **script gate** — a closed-set runner plus a
-validated repo-relative path, never a command string (ADR 0024); what that script does is the
+validated repo-relative path, never a command string (ywr-harness ADR 0024); what that script does is the
 repo's code to review, like any code.

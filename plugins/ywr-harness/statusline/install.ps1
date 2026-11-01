@@ -8,10 +8,10 @@
 # Why an installer instead of a plugin component: a plugin cannot contribute the main status line.
 # A plugin's `settings.json` supports only `agent` and `subagentStatusLine` (plugins-reference,
 # "File locations reference"). The status line is a user-scope setting, so a user-scope writer is
-# the only mechanism that exists. ADR 0016 records the decision and the rejected alternatives.
+# the only mechanism that exists. ywr-harness ADR 0016 records the decision and the rejected alternatives.
 #
 # Two effects, and the second is deliberately conservative — it edits a file this script does not
-# own, following the same rule ADR 0015 set for `core.hooksPath`:
+# own, following the same rule ywr-harness ADR 0015 set for `core.hooksPath`:
 #
 #   1. SCRIPT — `harness-statusline.js` is copied to <user>/.claude/. TOOLCHAIN: overwritten every
 #      run, which is how a canon fix reaches this machine.
@@ -26,7 +26,7 @@
 [CmdletBinding()]
 param(
     # Override the target .claude directory. When omitted, the default is the user scope THIS
-    # SESSION runs under: CLAUDE_CONFIG_DIR when set, else ~/.claude (ADR 0046). A default that
+    # SESSION runs under: CLAUDE_CONFIG_DIR when set, else ~/.claude (ywr-harness ADR 0046). A default that
     # ignored the env var installed into a directory a config-dir session never reads — silently,
     # which looks identical to "the plugin did nothing".
     [string]$ClaudeDir,
@@ -40,7 +40,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Resolve the default target (ADR 0046). An explicit -ClaudeDir is trusted verbatim; the env var
+# Resolve the default target (ywr-harness ADR 0046). An explicit -ClaudeDir is trusted verbatim; the env var
 # is NOT — a relative or blank-but-set value (an unexpanded '$HOME/.claude', a stray './cfg')
 # would resolve against whatever directory this script was run FROM, recreating exactly the
 # silent wrong-dir install this default exists to prevent. A value this script cannot interpret
@@ -129,10 +129,10 @@ if ($settings.ContainsKey('statusLine')) { $current = $settings['statusLine'] }
 $currentCmd = if ($current -is [hashtable] -or $current -is [System.Collections.IDictionary]) { [string]$current['command'] } else { '' }
 
 # The block this script writes is the command alone. Through v0.62.1 it also carried
-# `refreshInterval: 30` (ADR 0059); ADR 0122 dropped it: the payload's rate_limits come from the
-# session's own API responses (fact 97), and the one segment that can move while a session idles — the
+# `refreshInterval: 30` (ywr-harness ADR 0059); ywr-harness ADR 0122 dropped it: the payload's rate_limits come from the
+# session's own API responses (ywr-harness fact 97), and the one segment that can move while a session idles — the
 # installed plugin version, read from disk as a restart signal — can wait for the next exchange. A refreshInterval already on our block is left
-# as it is — whether this script or the member put it there cannot be told apart (the ADR 0015 rule,
+# as it is — whether this script or the member put it there cannot be told apart (the ywr-harness ADR 0015 rule,
 # same as the foreign-statusLine refusal below) — and the run says so instead of keeping quiet.
 if (-not $current) {
     if ($DryRun) {
@@ -148,10 +148,10 @@ if (-not $current) {
     Write-Host '  wiring: statusLine already points here — already wired' -ForegroundColor Green
     if ($current.Contains('refreshInterval')) {
         $kept = if ($null -eq $current['refreshInterval']) { 'null' } else { $current['refreshInterval'] }
-        Write-Host "          refreshInterval $kept kept — no longer wired (ADR 0122); delete it from settings.json if you did not set it yourself" -ForegroundColor Yellow
+        Write-Host "          refreshInterval $kept kept — no longer wired (ywr-harness ADR 0122); delete it from settings.json if you did not set it yourself" -ForegroundColor Yellow
     }
 } else {
-    # Same rule as ADR 0015's hooksPath: a value this script did not write is a decision it cannot
+    # Same rule as ywr-harness ADR 0015's hooksPath: a value this script did not write is a decision it cannot
     # see the reasons for.
     Write-Host "  wiring: statusLine is already set to something else — REFUSED to change it" -ForegroundColor Yellow
     Write-Host "          existing: $currentCmd" -ForegroundColor Yellow

@@ -1,6 +1,6 @@
-// Hooks module (Claude Mods, Claude Code 2.1.287+; ADR 0117, ADR 0118) — the OBSERVE-ONLY per-request
+// Hooks module (Claude Mods, Claude Code 2.1.287+; ywr-harness ADR 0117, ywr-harness ADR 0118) — the OBSERVE-ONLY per-request
 // delegation ledger. `mods.mjs`, the entry `hooks.json` names under `modules`, registers it (alone
-// since ADR 0140); the settings hooks beside it are unaffected.
+// since ywr-harness ADR 0140); the settings hooks beside it are unaffected.
 //
 // What it records, per finished model loop (the main loop's turn, or one run of a subagent's loop):
 // every request the loop made (`turn.step`: the model the engine resolved, the effort it sends, the
@@ -10,23 +10,23 @@
 // (`e.isTeammate`); its loop keeps the `agent-tool` kind and its spawn row says `teammate: true`, which
 // is what the reader splits on (schema 2 unchanged — the field is additive). A Workflow `agent()` worker
 // raises `agent.spawn` from Claude Code 2.1.292 with `e.workflow` ({runId, agentIndex}); its spawn row
-// carries `workflow: {run_id, agent_index}` and its loop is kind `workflow` (ADR 0126), and a row with
+// carries `workflow: {run_id, agent_index}` and its loop is kind `workflow` (ywr-harness ADR 0126), and a row with
 // no `model_param` proves the call gave no model, so the worker inherited the session's. On 2.1.287 to
-// 2.1.291 such a worker raises no `agent.spawn` (fact 89): its loop is written with `spawn: null` and
+// 2.1.291 such a worker raises no `agent.spawn` (ywr-harness fact 89): its loop is written with `spawn: null` and
 // `loop: 'unspawned'`, whose steps still name the model and effort it ran on. On 2.1.292+ `unspawned`
 // means an evicted spawn row. From Claude Code 2.1.299 a resumed agent raises `agent.spawn` again with
-// `e.resume` ({agentId}; fact 141): its first spawn row is KEPT and counts the resume in `resumes`, so
-// the per-call model and the first `tool_use_id`/`background` survive (ADR 0147). A resume with no row
+// `e.resume` ({agentId}; ywr-harness fact 141): its first spawn row is KEPT and counts the resume in `resumes`, so
+// the per-call model and the first `tool_use_id`/`background` survive (ywr-harness ADR 0147). A resume with no row
 // in memory starts one from the resume event, flagged `from_resume`.
 //
 // Observe-only, by contract: every hook passes the event on unchanged (`next(e)`, `yield* next(e)`),
 // never rewrites `model`/`effort`, never denies, never draws, and swallows its own failures — the
 // recording code runs after `next` resolved and inside try/catch, because a hook that fails
 // mid-stream is "left where it stood". It never carries a gate: hosts < 2.1.287, `disableAllHooks`,
-// `--safe-mode` and a managed `allowManagedModsOnly` all drop it (ADR 0117).
+// `--safe-mode` and a managed `allowManagedModsOnly` all drop it (ywr-harness ADR 0117).
 //
 // What it never writes: a prompt, a task description, an answer or any other message text (the
-// secret-adjacent rule `subagent-telemetry` keeps). Where it writes (ADR 0118): a RING of twenty
+// secret-adjacent rule `subagent-telemetry` keeps). Where it writes (ywr-harness ADR 0118): a RING of twenty
 // session files, `<project root>/.claude/telemetry/delegations/slot-00.json`..`slot-19.json` —
 // gitignored by the scaffold and the canon — and only where the root holds `.harness.json` (a repo
 // that adopted the harness), so a session in a home directory or a stranger's checkout leaves nothing
@@ -56,7 +56,7 @@ export const MAX_STEPS = 200
 export const MAX_OPEN = 256
 // Spawn rows outlive their loop (a resumed agent runs again under the same id), so they are capped
 // separately and higher (a row is ~330 B); a resume moves its row to the newest end. An evicted row would make that agent's later run read as
-// `unspawned` — the workflow signal ADR 0117 Decision 6 counts on hosts before 2.1.292, and a plain
+// `unspawned` — the workflow signal ywr-harness ADR 0117 Decision 6 counts on hosts before 2.1.292, and a plain
 // eviction after — so each record carries `spawn_rows_evicted`, the session's running count, and a
 // reader discounts `unspawned` when it is > 0.
 export const MAX_SPAWNS = 4096
@@ -165,7 +165,7 @@ export function createLedger({ maxOpen = MAX_OPEN, maxSpawns = MAX_SPAWNS, maxSt
       if (!agentId) return
       const first = spawns.get(agentId)
       if (e.resume && first) {
-        // ADR 0147: a loop row already written holds its own copy, so the count is the resumes so far.
+        // ywr-harness ADR 0147: a loop row already written holds its own copy, so the count is the resumes so far.
         // A denied resume runs nothing, so it changes nothing.
         if ('deny' in r && r.deny) return
         first.resumes++

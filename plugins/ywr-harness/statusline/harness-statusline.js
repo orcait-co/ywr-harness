@@ -1,13 +1,13 @@
 // ywr-harness statusline — location · model · effort · context% · rate-limit% · installed
 // plugin version, plus terminal tab-title sync.
 //
-// TOOLCHAIN (ADR 0010/0016): this is the canon. `install.ps1` copies it to the user scope and it
+// TOOLCHAIN (ywr-harness ADR 0010/0016): this is the canon. `install.ps1` copies it to the user scope and it
 // is OVERWRITTEN on every re-run. Do not hand-edit the installed copy — fix it here.
 //
 // A plugin CANNOT contribute the main status line: a plugin's `settings.json` supports only the
 // `agent` and `subagentStatusLine` keys (plugins-reference, "File locations reference"). So this
 // ships as canon + an installer that writes the user's own settings, rather than as a component
-// Claude Code loads on its own. That constraint is the whole reason ADR 0016 exists.
+// Claude Code loads on its own. That constraint is the whole reason ywr-harness ADR 0016 exists.
 //
 // ## The payload
 //
@@ -19,7 +19,7 @@
 //   workspace.current_dir
 //   workspace.git_worktree               — the linked-worktree NAME (a string), present only
 //                                          inside a `git worktree add` checkout, absent in the
-//                                          main working tree. DOC-VERIFIED 2026-08-19 (ADR 0059;
+//                                          main working tree. DOC-VERIFIED 2026-08-19 (ywr-harness ADR 0059;
 //                                          statusline docs example `"git_worktree":
 //                                          "feature-xyz"`), live confirmation queued — the only
 //                                          key here not yet read off a captured payload.
@@ -30,7 +30,7 @@
 //                                          model-scoped weekly (e.g. Fable vs its Team-plan cap)
 //                                          that is NOT in the payload — do not render any
 //                                          weekly next to the model name until it is
-//                                          (ADR 0049; upstream anthropics/claude-code#85964)
+//                                          (ywr-harness ADR 0049; upstream anthropics/claude-code#85964)
 //
 // A key absent on some version or plan means its segment DISAPPEARS. It is never rendered as
 // `0%`: unmeasured and zero are different states, and a status line that says 0% when it does not
@@ -49,8 +49,8 @@ const os = require("os");
 const path = require("path");
 
 // Display label for the plugin-version segment: the plugin's own manifest name, equally true on
-// every machine this file reaches. (This segment replaced the retired org-guide one — the canon
-// repo's ADR 0027; guide drift detection belongs to spec 0003 §7, not to a glance surface.)
+// every machine this file reaches. (This segment replaced the retired org-guide one —
+// ywr-harness ADR 0027; guide drift detection belongs to ywr-harness spec 0003 §7, not to a glance surface.)
 const PLUGIN_LABEL = "ywr-harness";
 
 const DIM = "\x1b[2m";
@@ -95,7 +95,7 @@ function stripContextSuffix(name) {
 }
 
 // The user scope this session runs under: explicit non-empty arg -> CLAUDE_CONFIG_DIR ->
-// ~/.claude (ADR 0046; an empty explicit arg counts as absent). Claude Code's registry and
+// ~/.claude (ywr-harness ADR 0046; an empty explicit arg counts as absent). Claude Code's registry and
 // settings follow the env var, so a canon that read `~/.claude` unconditionally reported the
 // OTHER account's install on a multi-account machine. The env value is trusted only when
 // ABSOLUTE: a relative value would resolve against whatever cwd the renderer was spawned with,
@@ -112,7 +112,7 @@ function claudeDir(dir, env = process.env) {
 // Tab-title head: the config-dir account (`.claude-ywrlabs` -> `claude-ywrlabs`), or "" when no
 // CLAUDE_CONFIG_DIR is set. The account is the one session dimension with no other surface —
 // `loc` is already the line's first segment — and it is what distinguishes two otherwise
-// identical terminals (ADR 0046). Unlike claudeDir(), no absoluteness demand: the label is a
+// identical terminals (ywr-harness ADR 0046). Unlike claudeDir(), no absoluteness demand: the label is a
 // pure string transform with no filesystem meaning, so the basename of even a relative value is
 // still the account the member set. Anything that strips to nothing yields "" and tabTitle()
 // falls back to the location — never a bare "/model" title.
@@ -176,7 +176,7 @@ function render(j, ver = pluginVersion()) {
     (j.workspace && (j.workspace.current_dir || j.workspace.project_dir)) || j.cwd || "";
   const parts = String(cwd).replace(/\\/g, "/").split("/").filter(Boolean);
   const loc = parts.slice(-2).join("/") || cwd || "?";
-  // Linked-worktree name (ADR 0059). Guarded to the documented STRING shape: anything else —
+  // Linked-worktree name (ywr-harness ADR 0059). Guarded to the documented STRING shape: anything else —
   // absent, object, number — renders nothing, per the absence rule. A wrong host shape must
   // show up as a missing segment, never as a wrong one. The CONTENT is sanitized too
   // (review 2026-08-19, low): the name is a member-chosen directory name interpolated between
@@ -214,8 +214,8 @@ function render(j, ver = pluginVersion()) {
       // The weekly stays at the TAIL for every model, Fable included: v0.32.0 rendered it
       // inside the Fable model chunk and it read as a Fable-scoped figure — which /usage now
       // actually shows, on a different denominator (the Team-plan Fable cap) — while this is
-      // the account-wide number, the only weekly the payload carries (ADR 0049, superseding
-      // 0047; re-measured 2.1.228).
+      // the account-wide number, the only weekly the payload carries (ywr-harness ADR 0049, superseding
+      // ywr-harness ADR 0047; re-measured 2.1.228).
       pct("7d", rl.seven_day && rl.seven_day.used_percentage) +
       // Last. The LABEL is dim like every other label; the VERSION gets magenta — readable
       // without shouting, and deliberately outside the green/yellow/red family so it is never
