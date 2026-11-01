@@ -577,6 +577,29 @@ $g = Invoke-Gate (Join-Path $r 'ywr-harness/manifest-gate.mjs')
 $out = $g.Out
 Record 'placement-skip-cache-shape' ($g.Code -eq 0 -and $out -match 'dogfood placements: skipped' -and $out -match 'release lockstep: skipped — not the canon dogfood shape') "exit=$($g.Code) skip-said=$([bool]($out -match 'dogfood placements: skipped')) lockstep-skip-said=$([bool]($out -match 'release lockstep: skipped'))"
 
+# `--audit-paths` (ADR 0186): the prompt-audit surface, read by the canon release preflight. A path on
+# stdin comes back iff it is on the surface; the mode checks nothing and exits 0. The input holds a path
+# of each kind on and off the surface, a selftest file, a mixed-case path and a Windows separator.
+$apIn = @('REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-digest.md',
+    'workflows/adversarial-review.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\verify\SKILL.md',
+    'hooks/hooks.json', 'hooks/slice-status.test.ts', 'hooks/x.selftest.mjs', 'scripts/fix_proof.py', 'CHANGELOG.md', 'README.md',
+    'skills/harness-init/init.ps1', 'lib/selftest-lib.ps1', 'agents/sub/deep.md')
+$apWant = @('REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-digest.md',
+    'workflows/adversarial-review.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\verify\SKILL.md')
+$psi = [Diagnostics.ProcessStartInfo]::new($nodeExe)
+foreach ($a in @((Join-Path $src 'manifest-gate.mjs'), '--audit-paths')) { $psi.ArgumentList.Add($a) }
+$psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+$psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+$psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+$p = [Diagnostics.Process]::Start($psi)
+$so = $p.StandardOutput.ReadToEndAsync(); $se = $p.StandardError.ReadToEndAsync()
+$inBytes = [Text.UTF8Encoding]::new($false).GetBytes((($apIn | ForEach-Object { "$_`0" }) -join ''))
+$p.StandardInput.BaseStream.Write($inBytes, 0, $inBytes.Length); $p.StandardInput.Close()
+$p.WaitForExit()
+$apGot = @($so.Result -split "`0" | Where-Object { $_ -ne '' })
+Record 'audit-paths-selects-the-surface' ($p.ExitCode -eq 0 -and (($apGot -join '|') -ceq ($apWant -join '|')) -and $so.Result.EndsWith("`0")) "exit=$($p.ExitCode) got=$($apGot -join ', ') stderr=$($se.Result.Trim())"
+$p.Dispose()
+
 # Copy-PluginTree's two branches (O80 review): every fixture above takes the git-listed branch from
 # this checkout, so the whole-directory fallback — the Linux parity image's path — needs its own case.
 # A GIT_DIR that does not exist makes `ls-files` fail wherever the temp root sits. The fallback must

@@ -1114,7 +1114,36 @@ async function main() {
   process.exitCode = 0
 }
 
-try {
+// --- the prompt-audit surface (ADR 0186) ---------------------------------------------------------
+// The files whose change makes the canon release preflight run `/doctor prompt-audit`: the text the
+// 2026-11-01 audit read. This list is the one source; scripts/release.ps1 keeps no copy and asks
+// `node manifest-gate.mjs --audit-paths` instead. Paths are relative to the plugin root, compared
+// case-insensitively as the gate's other path rules are; a selftest file never counts.
+const AUDIT_SURFACE = [
+  /^REVIEW\.md$/i,
+  /^agents\/[^/]+\.md$/i,
+  /^skills\/.+\.md$/i,
+  /^workflows\/[^/]+\.js$/i,
+  /^hooks\/[^/]+\.mjs$/i,
+  /^evals\/.+\.md$/i,
+]
+function isAuditPath(rel) {
+  const p = String(rel).replace(/\\/g, '/')
+  if (p.toLowerCase().includes('.selftest.')) return false
+  return AUDIT_SURFACE.some((rx) => rx.test(p))
+}
+// `--audit-paths`: NUL-separated plugin-relative paths on stdin; the paths on the surface go to stdout,
+// NUL-separated, and the gate checks nothing. Exit 0, or 2 when stdin cannot be read.
+async function auditPaths() {
+  const chunks = []
+  for await (const c of process.stdin) chunks.push(c)
+  const out = Buffer.concat(chunks).toString('utf8').split('\0').filter((p) => p !== '' && isAuditPath(p))
+  process.stdout.write(out.map((p) => p + '\0').join(''))
+}
+
+if (process.argv.includes('--audit-paths')) {
+  try { await auditPaths(); process.exitCode = 0 } catch (e) { process.stderr.write(`manifest-gate --audit-paths: ${e && e.message ? e.message : e}\n`); process.exitCode = 2 }
+} else try {
   await main()
 } catch (e) {
   say(`manifest-gate: ABORTED — the gate itself threw, nothing was checked to the end: ${e && e.stack ? e.stack : e}`, RED)

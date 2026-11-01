@@ -95,9 +95,8 @@ Nothing has left the machine yet. On stop, print what remains so the member can 
 
 For each confirmed item, publish `source` to its declared `url` with the Artifact tool. The
 tool refuses a republish until THIS conversation has Read the live version, and the order
-matters: a fetch placed BEFORE the first refusal counts for nothing (ywr-harness fact 43,
-measured on four releases, v0.40.0 to v0.51.0; the v0.50.0 run placed `action: read` first and
-paid +45k tokens for it). `read_file` never satisfies the precondition (measured). The sequence,
+matters: a fetch placed BEFORE the first refusal counts for nothing (ywr-harness fact 43).
+`read_file` never satisfies the precondition. The sequence,
 as last measured (ywr-harness fact 138, Claude Code 2.1.296):
 
 1. `Artifact publish` of `source` to `url`. It is REFUSED — the contract, not an error: the tool
@@ -148,18 +147,12 @@ committed file: `body = s[s.index(b'<body>\n') + 7 : s.rindex(b'</body></html>')
 `body == c or body == c + b'\n'`. State both hashes in the close. This is the release-checklist
 item the gate layer cannot perform (it cannot see claude.ai — ywr-harness ADR 0032).
 
-The wrapper is the Artifact HOST's skeleton, not the repo's: the tool wraps every published file in
-the same doctype/head/body frame (its own contract), so the slice points above are the same for
-every repo's page — but they were MEASURED on ywr-harness's page (2026-09-01, 2026-09-14 and
-2026-09-15), and a host change would move them — one already moved the head's size (below). If `<body>\n` or the closing pair is not found, or the body matches
-neither form, print the first ~400 and last ~40 bytes of the saved copy, adapt the slice points to
-what the host now serves, and record the new shape in the close — an unrecognised wrapper is a host
-change to report, never drift to declare.
-
-The formula above held byte for byte on three measured republishes, but the head through `<body>\n`
-varies by host serve (355 and 537 bytes have both been served, with no changelog entry naming the
-change): slice at the marker, never at a byte offset; a head of a new
-size is a host change to record, not drift.
+The wrapper is the Artifact HOST's frame, the same for every repo's page. The slice points were
+measured on ywr-harness's page, and the head's size varies by serve, so slice at the markers, never
+at a byte offset. If `<body>\n` or the closing pair is not found, or the body matches neither form,
+print the first ~400 and last ~40 bytes of the saved copy, adapt the slice points to what the host
+now serves, and record the new shape in the close — an unrecognised wrapper is a host change to
+report, never drift to declare.
 
 ## What this skill never does
 

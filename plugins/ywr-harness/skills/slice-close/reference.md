@@ -119,3 +119,15 @@ Edits under assume-unchanged or skip-worktree count, because the snapshot clears
 index copy. It cannot see a byte change that staging normalizes away (a CRLF-only edit), a
 submodule's uncommitted work, an ignored file (a build output), a tool version or a database. When
 a gate reads one of those, run that gate again.
+
+## Old-digest
+
+A review run on a plugin older than ywr-harness ADR 0169 prints no `high_ids` (ywr-harness ADR 0173).
+`check` then reads the old line's counts and names the keys itself: `H<n>` is the n-th high in the
+review's `confirmed` list, in its order. The closer never names that set. With `h0` and `rejected 0`
+there is no key. A `rejected` count above 0 makes `check` exit 3, because the line shows no rejected
+severity. The owner then answers the old digest's rejected findings: quote each one's severity, title
+and votes from the review's return in that question. A second full review is not needed for this.
+
+A result with only `rejected_count`, and no `rejected[]` list, comes from an older workflow. Record
+in the close that its 1–1 splits went unread.

@@ -12,6 +12,11 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.73.1 — 2026-11-01
+
+- reviewer·mech 에이전트와 verify·artifact-publish·slice-close skill 본문에서 측정 경위와 반복 문단을 걷어냈습니다. 규칙은 그대로이고, 모델이 매번 읽는 문구만 줄었습니다. 드문 경우인 예전 digest 처리는 `/ywr-harness:slice-close` 의 `reference.md` §Old-digest 로 옮겼습니다.
+- `/ywr-harness:harness-init` 이 놓는 `docs/prompts/review-digest.md` 가 리뷰 결과의 처리 방식을 slice-close 와 같은 세 가지(fixed · valid, no action · false on reading)로 안내합니다. 이미 그 파일이 있는 저장소는 새 문구로 바꾸려면 직접 고쳐야 합니다.
+
 ## v0.73.0 — 2026-11-01
 
 - 훅이 세션에 넣는 안내, skill 본문, 플러그인 스크립트의 출력이 정본 기록을 `ywr-harness ADR NNNN` 형식으로만 가리킵니다(ywr-harness ADR 0185). 접두 없이 번호만 쓴 ADR 참조를 모델이 저장소 자신의 ADR 로 읽는 문제를 막습니다. 동작은 바뀌지 않습니다.
