@@ -140,7 +140,7 @@ tool's small-file band, a small page's text echoed too); never `action: read` he
 whole page into context by design, ywr-harness fact 38). Strip the frame-runtime head through
 `<body>\n` and the trailing `</body></html>`, hash the remainder, compare with the committed
 source file. **The serve wrapper appends ONE trailing LF before `</body></html>`** (measured
-2026-09-01, pre- and post-publish; earlier serves lacked it) — treat served-stripped ==
+pre- and post-publish) — treat served-stripped ==
 committed + one trailing LF as identical. A raw hash mismatch of exactly that one-byte shape is
 lockstep, not drift; anything else is drift. In bytes, with `s` the saved copy and `c` the
 committed file: `body = s[s.index(b'<body>\n') + 7 : s.rindex(b'</body></html>')]`, lockstep iff

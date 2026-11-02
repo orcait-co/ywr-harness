@@ -7,9 +7,11 @@
 // it also asks one side-check model call and adds its answer beside the prompt:
 //
 // - `review-start`: a main-loop Workflow call that names `ywr-harness:adversarial-review`.
-// - `review-digest`: the main-loop `session.append` row of door `delivery`, origin kind
-//   `task-notification`, whose text holds the digest's fixed words (`DIGEST_MARKS`, ywr-harness ADR 0175 Decision 2).
-//   The user's own prompt can hold the same words, so the door and the origin are part of the check.
+// - `review-digest`: the main-loop `session.append` row of door `delivery` or `prompt`, origin kind
+//   `task-notification`, whose text holds the digest's fixed words (`DIGEST_MARKS`, ywr-harness ADR 0175 Decision 2,
+//   ywr-harness ADR 0187). A workflow that ends during a turn arrives on `delivery`; one that ends while the session is
+//   idle opens a new turn on `prompt` (ywr-harness fact 192). The user's own prompt can hold the same words, so
+//   the origin is part of the check.
 // - `ready-report`: a main-loop shell call whose last step is `harness_gates.py --tree` (`isTreeRun` of
 //   `slice-status.mjs`, which stays unregistered — ywr-harness ADR 0140; this module imports its pure half only).
 //
@@ -80,13 +82,15 @@ export const CHECK_MAX_TOKENS = 400
 export const PROMPT_MAX = 16000 // characters of one prompt file the model reads
 export const DATA_MAX = 6000    // characters of stage data in the side-check prompt
 export const DIGEST_MARKS = ['· multi_lens ', 'full lists follow (confirmed']
+export const DIGEST_DOORS = ['delivery', 'prompt'] // mid-turn, idle (ywr-harness ADR 0187)
 export const SHELL_TOOLS = ['Bash', 'PowerShell']
 export const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit']
 export const FRAME =
   'You are a side check that ywr-harness runs at one stage of a coding session. You see only the ' +
-  'repository prompt and the stage data below, not the conversation. Read both. Answer in plain text, ' +
-  'in at most three sentences, with the one thing the main session should check or do now, judged ' +
-  'from the stage data. If nothing needs saying, answer exactly NONE.'
+  'repository prompt and the stage data below, not the conversation. Read both. Answer in plain text ' +
+  'with the one thing the main session should check or do now, judged from the stage data. Keep it ' +
+  'short: the main session reads it as added context, and the answer stops at a small token cap. If ' +
+  'nothing needs saying, answer exactly NONE.'
 
 export const INPUT_HARNESS = '.harness.json'
 
@@ -166,7 +170,7 @@ export function rowText(message) {
 }
 
 export function isDigestRow(e) {
-  if (!e || e.agentId !== undefined || e.door !== 'delivery') return false
+  if (!e || e.agentId !== undefined || !DIGEST_DOORS.includes(e.door)) return false
   if (!e.origin || e.origin.kind !== 'task-notification') return false
   const text = rowText(e.message)
   return DIGEST_MARKS.every(m => text.includes(m))
@@ -547,7 +551,7 @@ export function register(on) {
     return texts.length ? { ...r, context: [...(r.context || []), ...texts] } : r
   })
 
-  on('session.append', { door: 'delivery' }, async ($, e, next) => {
+  on('session.append', { door: DIGEST_DOORS }, async ($, e, next) => {
     if (!isDigestRow(e)) return next(e)
     let message = null
     try {

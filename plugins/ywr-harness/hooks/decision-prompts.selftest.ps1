@@ -8,7 +8,7 @@
 # cannot check for us: the pure half (the prompt-path and declaration parsers, the switch parser, the three
 # stage detectors, the digest-row check and its append, the stage data and its cut, the side-check answer's NONE
 # rule, the edit-guard path match, the status text) is right; the hook set is exactly turn.start, tool.call,
-# session.append on door delivery and command.run on ywr-harness:auto, and no session.start, no classic.* and
+# session.append on doors delivery and prompt and command.run on ywr-harness:auto, and no session.start, no classic.* and
 # no skill.prompt (the built-in guard skips those for a user-tier plugin, ADR 0175); a switch that is off, a
 # stage that is undeclared, a missing prompt file, a deny from `next`, a call with an `agentId` and a checkout
 # without git all leave the stage untouched and start no side check and never call $.model.fork; a switch that is on adds the static prompt and
@@ -149,10 +149,10 @@ const digRow = (over = {}) => ({ door: 'delivery', origin: { kind: 'task-notific
 eq('DR1 rowText: the text blocks joined by a newline; other blocks and malformed input add nothing',
   [M.rowText({ content: [{ type: 'text', text: 'a' }, { type: 'tool_use' }, { type: 'text', text: 'b' }] }), M.rowText(null), M.rowText({}), M.rowText({ content: 'x' }), M.rowText({ content: [null, { type: 'text', text: 5 }] })],
   ['a\n\nb', '', '', '', '\n'])
-eq('DR2 isDigestRow: door delivery + origin task-notification + both marks is a digest row', M.isDigestRow(digRow()), true)
-eq('DR3 isDigestRow: the same text on door prompt (the user\'s own prompt) is not one',
-  [M.isDigestRow(digRow({ door: 'prompt' })), M.isDigestRow(digRow({ door: undefined })), M.isDigestRow(digRow({ origin: { kind: 'user' } })), M.isDigestRow(digRow({ origin: undefined })), M.isDigestRow(digRow({ origin: null }))],
-  [false, false, false, false, false])
+eq('DR2 isDigestRow: door delivery (mid-turn) or prompt (idle, ADR 0187) + origin task-notification + both marks is a digest row', [M.isDigestRow(digRow()), M.isDigestRow(digRow({ door: 'prompt' }))], [true, true])
+eq('DR3 isDigestRow: the same text from the user\'s own prompt, on another door or with no origin is not one',
+  [M.isDigestRow(digRow({ door: 'prompt', origin: { kind: 'composer' } })), M.isDigestRow(digRow({ door: 'queue' })), M.isDigestRow(digRow({ door: undefined })), M.isDigestRow(digRow({ origin: { kind: 'user' } })), M.isDigestRow(digRow({ origin: undefined })), M.isDigestRow(digRow({ origin: null }))],
+  [false, false, false, false, false, false])
 eq('DR4 isDigestRow: one mark alone is not enough; no text is not',
   [M.isDigestRow(digRow({ message: { content: [{ type: 'text', text: 'x ' + M.DIGEST_MARKS[0] + 'y' }] } })), M.isDigestRow(digRow({ message: { content: [{ type: 'text', text: M.DIGEST_MARKS[1] }] } })), M.isDigestRow(digRow({ message: { content: [] } })), M.isDigestRow(digRow({ message: undefined }))],
   [false, false, false, false])
@@ -330,9 +330,9 @@ function capture(registerFn) {
 {
   const C = capture(M.register)
   eq('H1 register: exactly turn.start, tool.call, session.append, command.run', C.hooks.map(x => x.ev).sort(), ['command.run', 'session.append', 'tool.call', 'turn.start'])
-  eq('H2 register: session.append matches door delivery, command.run matches ywr-harness:auto, turn.start and tool.call have no matcher',
+  eq('H2 register: session.append matches doors delivery and prompt, command.run matches ywr-harness:auto, turn.start and tool.call have no matcher',
     [C.byEv('session.append')[0].matcher, C.byEv('command.run')[0].matcher, C.byEv('turn.start')[0].matcher, C.byEv('tool.call')[0].matcher],
-    [{ door: 'delivery' }, { command: 'ywr-harness:auto' }, undefined, undefined])
+    [{ door: ['delivery', 'prompt'] }, { command: 'ywr-harness:auto' }, undefined, undefined])
   eq('H3 register: no session.start, no classic.*, no skill.prompt, no prompt.compose (the guard skips a user-tier plugin\'s)',
     [C.byEv('session.start').length, C.hooks.filter(x => x.ev.startsWith('classic.')).length, C.byEv('skill.prompt').length, C.byEv('prompt.compose').length], [0, 0, 0, 0])
   eq('H4 register: every hook is a function', C.hooks.every(x => typeof x.fn === 'function'), true)
@@ -862,18 +862,28 @@ const appendHook = E => async (...a) => { await E.arm(); return E.hook('session.
   const next = nextWith(SENT)
   await appendHook(E)(E.$, digRow(), next)
   eq('SA3 session.append: check false -> the static prompt alone is appended; no check', [next.calls[0].message.content[0].text, E.calls.checks.length], [DIG_TEXT + '\n\n' + STATIC_TEXT('review-digest'), 0])
+  const P = fakeEngine({ files: filesOn(ALL_STATIC) })
+  const np = nextWith(SENT)
+  await appendHook(P)(P.$, digRow({ door: 'prompt' }), np)
+  eq('SA3b session.append: the idle-session digest row (door prompt, origin task-notification, ADR 0187) gets the same append, door kept', [np.calls[0].message.content[0].text, np.calls[0].door], [DIG_TEXT + '\n\n' + STATIC_TEXT('review-digest'), 'prompt'])
+  const Q = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
+  const nq = nextWith(SENT)
+  const vq = await appendHook(Q)(Q.$, digRow({ door: 'prompt' }), nq)
+  const extraQ = [STATIC_TEXT('review-digest'), M.answerText('review-digest', { isAnswered: true, text: ANSWER })].join('\n\n')
+  eq('SA3c session.append: check true on the idle-session digest row -> one side check, static prompt then answer appended, door and origin kept, the result is next\'s',
+    [vq === SENT, Q.calls.checks.length, nq.calls[0].message.content[0].text, nq.calls[0].door, nq.calls[0].origin], [true, 1, DIG_TEXT + '\n\n' + extraQ, 'prompt', { kind: 'task-notification' }])
 }
 {
   const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
   const plain = digRow({ message: { type: 'user', content: [{ type: 'text', text: 'Workflow finished with no digest line' }] } })
   const n1 = nextWith(SENT); const r1 = await appendHook(E)(E.$, plain, n1)
-  const asPrompt = digRow({ door: 'prompt' })
+  const asPrompt = digRow({ door: 'prompt', origin: { kind: 'composer' } })
   const n2 = nextWith(SENT); const r2 = await appendHook(E)(E.$, asPrompt, n2)
   const asUser = digRow({ origin: { kind: 'user' } })
   const n3 = nextWith(SENT); await appendHook(E)(E.$, asUser, n3)
   const asAgent = digRow({ agentId: 'a1' })
   const n4 = nextWith(SENT); await appendHook(E)(E.$, asAgent, n4)
-  eq('SA4 session.append: a non-digest delivery row, the digest text on door prompt, a user-origin row and an agentId row reach next as the very same event; no git, no read, no check',
+  eq('SA4 session.append: a non-digest delivery row, the digest text in a typed prompt (door prompt, origin composer), a user-origin row and an agentId row reach next as the very same event; no git, no read, no check',
     [r1 === SENT, r2 === SENT, n1.calls[0] === plain, n2.calls[0] === asPrompt, n3.calls[0] === asUser, n4.calls[0] === asAgent, E.calls.run.length, E.calls.read.length, E.calls.checks.length], [true, true, true, true, true, true, 0, 0, 0])
 }
 {
@@ -1262,9 +1272,9 @@ await want('LG29 the replies print a shell-written last line only in its logged 
   const C = capture(ENTRY.register)
   eq('E1 mods.mjs: registers the ledger, the prerequisites hooks and the decision-prompts hooks, each once',
     C.hooks.map(x => x.ev).sort(), ['agent.spawn', 'command.run', 'command.run', 'session.append', 'session.start', 'tool.call', 'turn.complete', 'turn.start', 'turn.step', 'ui.render'])
-  eq('E2 mods.mjs: the auto command.run, the delivery session.append and an unmatched turn.start and tool.call keep their matchers through the entry',
+  eq('E2 mods.mjs: the auto command.run, the delivery/prompt session.append and an unmatched turn.start and tool.call keep their matchers through the entry',
     [C.byEv('command.run').map(x => x.matcher.command).sort(), C.byEv('session.append')[0].matcher, C.byEv('turn.start')[0].matcher, C.byEv('tool.call')[0].matcher],
-    [['ywr-harness:auto', 'ywr-harness:setup'], { door: 'delivery' }, undefined, undefined])
+    [['ywr-harness:auto', 'ywr-harness:setup'], { door: ['delivery', 'prompt'] }, undefined, undefined])
   eq('E3 mods.mjs: no classic.*, no skill.prompt, no prompt.compose', [C.hooks.filter(x => x.ev.startsWith('classic.')).length, C.byEv('skill.prompt').length, C.byEv('prompt.compose').length], [0, 0, 0])
   const auto = C.byEv('command.run').find(x => x.matcher.command === 'ywr-harness:auto')
   const E = fakeEngine({ files: { [ROOT + '/.harness.json']: ALL_STATIC } })

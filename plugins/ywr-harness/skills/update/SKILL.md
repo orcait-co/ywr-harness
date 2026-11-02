@@ -43,8 +43,7 @@ either command here — run that command again without it, and run every later c
 Judge a command run without `--json` by its exit code and its printed message. A command that ran
 with `--json` and printed `outcome: "failed"` is a failure, not a refusal: never retry it.
 
-`<scope>` is the `scope` of the same `list` object. Pass it even though `-s` now auto-detects
-(`--help`, 2.1.295; it defaulted to `user` when measured 2026-08-06): an explicit scope updates
+`<scope>` is the `scope` of the same `list` object. Always pass it: an explicit scope updates
 exactly the install the list named. `marketplace update` takes no scope flag. If the list shows
 more than one ywr-harness object, run the update once per listed scope. A `project` or `local`
 install belongs to one repo, so run its update from that repo's root. Which such installs the
