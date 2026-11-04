@@ -1093,10 +1093,13 @@ def text_lines(path: Path) -> int | None:
 
 # The options `git_run` puts before every command. The color pins: a user's `color.grep=always`
 # puts ESC codes before each `git grep` path, and the parsed keys silently stop matching.
-# `color.ui=false` alone does not win against a command's own key, so the keys of the colored
-# commands this boundary carries are pinned too. A failure message strips these by their count.
+# `color.ui=false` alone does not win against a command's own key, so the key of each colored
+# command family is pinned too: grep and diff today, and status, branch and show-branch for a
+# later caller. Measured on git 2.53 with every key at `always`: only `git grep` colors the
+# output that the parsers read. A failure message strips these by their count.
 GIT_PINS = ("-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "color.grep=false",
-            "-c", "color.diff=false")
+            "-c", "color.diff=false", "-c", "color.status=false", "-c", "color.branch=false",
+            "-c", "color.showBranch=false")
 
 
 # ---------------------------------------------------------------------------------------------

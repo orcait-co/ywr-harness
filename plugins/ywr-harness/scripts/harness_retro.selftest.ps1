@@ -843,11 +843,18 @@ $ok = (Assert-True 'SZ8 with no in-scope file at or over the limit --coverage pr
 # SZ3: a file ADDED at 1500 lines counts 0 before; a name with a space is read whole. In the next commit
 # git detects three renames (ADR 0188): a 1200-line file moves INTO scope, an in-scope 1000-line file moves,
 # and a 900-line file moves and grows to 1100. A rename counts its old path's lines before, so only the
-# growth reports. The 1500-line file is deleted (a deleted file never reports). The repo sets
-# `color.grep=always` (dist #14): without the color pins of `hc.git_run`, git grep prints ESC codes before
-# each path, and SZ3 and SZ8 go red.
+# growth reports. The 1500-line file is deleted (a deleted file never reports). The repo sets every color
+# key that `hc.GIT_PINS` pins to `always` (dist #14): without the pins, git grep prints ESC codes before
+# each path, and SZ3 and SZ8 go red. The other keys guard a later caller; on git 2.53 no other parsed
+# command colors its output. The keys go into the repo's config file in one write, and one git read
+# asserts that each took, so a failed write cannot weaken the anchor unseen (twelve `git config` calls
+# cost ~0.85 s).
 $sz3 = New-Repo 'size-added' $CFG
-& git -C $sz3 config color.grep always 2>$null
+$sz3Colors = @('ui', 'grep', 'diff', 'status', 'branch', 'showBranch')
+[IO.File]::AppendAllText((Join-Path $sz3 '.git/config'), "[color]`n" + (($sz3Colors | ForEach-Object { "`t$_ = always`n" }) -join ''))
+$sz3Read = @(& git -C $sz3 config --get-regexp '^color\.' 2>$null)
+$sz3Missing = @($sz3Colors | Where-Object { $sz3Read -notcontains "color.$($_.ToLowerInvariant()) always" })
+$ok = (Assert-True 'SZ3 fixture: every pinned color key reads back as always' ($sz3Missing.Count -eq 0) "missing: $($sz3Missing -join ', ') · read: $($sz3Read -join '; ')") -and $ok
 Write-F $sz3 'src/my big file.py' (Lines 1500)
 Write-F $sz3 'src/edge.py' (Lines 1000)
 Write-F $sz3 'src/under.py' (Lines 999)
