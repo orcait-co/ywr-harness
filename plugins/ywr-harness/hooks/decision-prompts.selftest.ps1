@@ -67,7 +67,7 @@ eq('constants: command, stages, review workflow, state file, wait, caps, digest 
   [M.COMMAND, M.STAGES, M.REVIEW_WORKFLOW, M.STATE_REL, M.CHECK_WAIT_MS, M.PROMPT_MAX, M.DATA_MAX, M.DIGEST_MARKS.length, M.SHELL_TOOLS, M.EDIT_TOOLS],
   ['ywr-harness:auto', ['review-start', 'review-digest', 'ready-report'], 'ywr-harness:adversarial-review', 'ywr-harness/auto.json', 30000, 16000, 6000, 2, ['Bash', 'PowerShell'], ['Edit', 'Write', 'NotebookEdit']])
 eq('constants: slice-close is not a stage', M.STAGES.includes('slice-close'), false)
-eq('constants: the side check runs on the sonnet alias at effort low with a 400-token cap', [M.CHECK_MODEL, M.CHECK_EFFORT, M.CHECK_MAX_TOKENS], ['sonnet', 'low', 400])
+eq('constants: the side check runs on the sonnet alias at effort low with a 1024-token cap (ywr-harness ADR 0189)', [M.CHECK_MODEL, M.CHECK_EFFORT, M.CHECK_MAX_TOKENS], ['sonnet', 'low', 1024])
 
 // SP: safePromptPath
 eq('SP1 safePromptPath: a repo-relative .md path comes back as is; a single segment is fine',
