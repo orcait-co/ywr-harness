@@ -120,30 +120,15 @@ def decl_changed_keys(root: Path, rev_range: str | None) -> list[str] | None:
     return keys
 
 
-# git's own binary test (`buffer_is_binary`): a NUL byte among the first 8,000 bytes.
-BINARY_SNIFF = 8000
-
-
 def added_lines(path: Path) -> int | None:
     """The added-line count `git diff --numstat` prints for `path` as a new file, or None for a
     binary, which numstat prints as `-` and the measure skips. A symlink is one line (its target),
     a directory — an untracked nested repository — one line, like a gitlink. `.gitattributes` is
     not read: a text file marked `binary` or `-diff` there counts its lines, an error toward the
-    larger tier. Read in chunks, so a large untracked file costs time, never memory. Raises
-    OSError when the path cannot be read."""
+    larger tier. The count itself is `hc.text_lines`. Raises OSError when the path cannot be read."""
     if path.is_symlink() or path.is_dir():
         return 1
-    n = 0
-    last = b""
-    with open(path, "rb") as fh:
-        chunk = fh.read(BINARY_SNIFF)
-        if b"\0" in chunk:
-            return None
-        while chunk:
-            n += chunk.count(b"\n")
-            last = chunk[-1:]
-            chunk = fh.read(1 << 20)
-    return n + (1 if last and last != b"\n" else 0)
+    return hc.text_lines(path)
 
 
 def changed_lines(root: Path, rev_range: str | None, is_exempt=None,

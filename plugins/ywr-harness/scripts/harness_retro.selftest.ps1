@@ -840,15 +840,20 @@ $ok = (Assert-True 'SZ2 a bare rev (no start) skips SIZE' ($rSZ2d.Code -eq 0 -an
 $rSZ8c = Invoke-Retro $sz @('--coverage')
 $ok = (Assert-True 'SZ8 with no in-scope file at or over the limit --coverage prints a none line (the binary file is not listed)' ($rSZ8c.Out -match 'files at or over 1,000 lines: none') $rSZ8c.Out) -and $ok
 
-# SZ3: a file ADDED at 1500 lines counts 0 before; a name with a space is read whole. In the next commit a
-# 1200-line file moves INTO scope (its old path is out of scope, so before = 0: a rename can report, ADR 0171)
-# while the 1500-line file is deleted (a deleted file never reports).
+# SZ3: a file ADDED at 1500 lines counts 0 before; a name with a space is read whole. In the next commit
+# git detects three renames (ADR 0188): a 1200-line file moves INTO scope, an in-scope 1000-line file moves,
+# and a 900-line file moves and grows to 1100. A rename counts its old path's lines before, so only the
+# growth reports. The 1500-line file is deleted (a deleted file never reports). The repo sets
+# `color.grep=always` (dist #14): without the color pins of `hc.git_run`, git grep prints ESC codes before
+# each path, and SZ3 and SZ8 go red.
 $sz3 = New-Repo 'size-added' $CFG
+& git -C $sz3 config color.grep always 2>$null
 Write-F $sz3 'src/my big file.py' (Lines 1500)
 Write-F $sz3 'src/edge.py' (Lines 1000)
 Write-F $sz3 'src/under.py' (Lines 999)
 Write-F $sz3 'tools/moved.py' (Lines 1200)
 Write-F $sz3 'other/huge.txt' (Lines 3000)
+Write-F $sz3 'src/grow.py' (('g = 7' + "`n") * 900)   # its own content, so git pairs its rename alone
 Commit $sz3 'chore: add files of several sizes'
 $rSZ3 = Invoke-Retro $sz3 @()
 $ok = (Assert-True 'SZ3 an added 1500-line file reports, a name with a space whole' ($rSZ3.Out -match 'SIZE: src/my big file\.py crossed 1,000 lines \(now 1,500\)') $rSZ3.Out) -and $ok
@@ -859,10 +864,14 @@ $sz8List = $rSZ8.Out.Substring($rSZ8.Out.IndexOf('-- files at or over'))   # the
 $ok = (Assert-True 'SZ8 --coverage lists the two in-scope files at or over 1,000 lines with their counts' ($sz8List -match 'tracked at HEAD\): 2' -and $sz8List -match 'src/my big file\.py\t1,500' -and $sz8List -match 'src/edge\.py\t1,000') $rSZ8.Out) -and $ok
 $ok = (Assert-True 'SZ8 and lists neither the 999-line file nor the out-of-scope ones; the larger file comes first' ($sz8List -notmatch 'under\.py' -and $sz8List -notmatch 'huge\.txt' -and $sz8List -notmatch 'moved\.py' -and $sz8List.IndexOf('my big file') -lt $sz8List.IndexOf('edge.py')) $rSZ8.Out) -and $ok
 & git -C $sz3 mv 'tools/moved.py' 'src/moved.py' 2>$null
+& git -C $sz3 mv 'src/edge.py' 'src/edge2.py' 2>$null
+& git -C $sz3 mv 'src/grow.py' 'src/grown.py' 2>$null
+Write-F $sz3 'src/grown.py' (('g = 7' + "`n") * 1100)
 & git -C $sz3 rm -q 'src/my big file.py' 2>$null
-Commit $sz3 'chore: move one file into scope, delete another'
+Commit $sz3 'chore: move three files, grow one, delete another'
 $rSZ3b = Invoke-Retro $sz3 @()
-$ok = (Assert-True 'SZ3 a 1200-line file renamed into scope reports (absent before counts 0)' ($rSZ3b.Out -match 'SIZE: src/moved\.py crossed 1,000 lines \(now 1,200\)') $rSZ3b.Out) -and $ok
+$ok = (Assert-True 'SZ3 a rename alone never reports, into scope or within it (ADR 0188)' ($rSZ3b.Out -notmatch 'SIZE: src/(moved|edge2)\.py') $rSZ3b.Out) -and $ok
+$ok = (Assert-True 'SZ3 a renamed file that grows across the limit reports, counted from its old path' ($rSZ3b.Out -match 'SIZE: src/grown\.py crossed 1,000 lines \(now 1,100\)') $rSZ3b.Out) -and $ok
 $ok = (Assert-True 'SZ3 the deleted file never reports' ($rSZ3b.Out -notmatch 'my big file') $rSZ3b.Out) -and $ok
 
 # SZ5: the HEAD path is a pre-filter, git has the last word. a.py: HEAD's blob holds 999 lines while the

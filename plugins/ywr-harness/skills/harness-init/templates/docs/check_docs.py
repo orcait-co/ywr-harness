@@ -61,6 +61,12 @@ R8_MARKS = (("em dash", re.compile(r"\u2014|&mdash;|&#8212;|&#x2014;", re.I)),
             ("\"(s)\"", re.compile(r"\w\(e?s\)")),
             ("\"and/or\"", re.compile(r"(?<!\w)and/or(?!\w)", re.I)))
 ENTITY_RX = re.compile(r"&(?:#[0-9]+|#x[0-9a-f]+|[a-z]+);", re.I)
+# R8: a closed pair of brackets or double quotes; its semicolons join no clauses. A bracket pair
+# holds no bracket, so only the innermost pair of a nest guards: an error toward a report. A
+# straight quote opens only after no word character and closes only before none, so an inch mark
+# such as 3" never opens a pair with the next real quote.
+QUOTED_RX = (re.compile(r"\[[^\[\]]*\]"), re.compile(r'(?<!\w)"[^"]*"(?!\w)'),
+             re.compile("\u201c[^\u201c\u201d]*\u201d"))
 ABBREV = {"e.g.", "i.e.", "etc.", "vs.", "cf.", "approx.", "incl.", "no.", "fig."}
 # R3: words a short reference may use besides id-like tokens (docs/README.md §Writing style).
 REF_WORDS = {"adr", "adrs", "spec", "specs", "fact", "facts", "issue", "issues", "slice",
@@ -127,9 +133,14 @@ def _claims(text: str) -> list[str]:
 
 
 def _joining_semicolons(text: str) -> int:
-    """R8: semicolons outside parentheses. A reference list such as "(ADR 1; spec 2)" may use one,
-    and an HTML entity ends in one."""
-    text, depth, n = ENTITY_RX.sub(" ", text), 0, 0
+    """R8: semicolons outside parentheses, brackets and closed double quotes. A reference list such
+    as "(ADR 1; spec 2)" may use one, a quote keeps its source text, and an HTML entity ends in
+    one. A quote or bracket that does not close in the text guards nothing, so a stray inch mark
+    never hides a later semicolon (ywr-harness ADR 0188)."""
+    text = ENTITY_RX.sub(" ", text)
+    for rx in QUOTED_RX:
+        text = rx.sub(" ", text)
+    depth, n = 0, 0
     for ch in text:
         if ch == "(":
             depth += 1
@@ -142,9 +153,10 @@ def _joining_semicolons(text: str) -> int:
 
 def _marks(text: str, words: dict[str, str]) -> list[tuple[str, str]]:
     """R8 and the declared R7 words in one cell or unit of plain text: (rule, label) per kind found.
-    A table cell that holds only an em dash is the empty-cell mark, not a dash in a sentence."""
+    A table cell that holds only an em dash, as the character or as an entity, is the empty-cell
+    mark, not a dash in a sentence."""
     found = []
-    if text.strip() != "\u2014":
+    if not R8_MARKS[0][1].fullmatch(text.strip()):
         found += [("R8", label) for label, rx in R8_MARKS if rx.search(text)]
     if _joining_semicolons(text):
         found.append(("R8", "joining semicolon"))

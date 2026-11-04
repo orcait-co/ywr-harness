@@ -922,6 +922,8 @@ def load(root: Path) -> tuple[dict, list[str]]:
         warns.append(f"docs.ste_marks: expected true or false, got {type(marks).__name__} — "
                      f"the ywr-harness ADR 0170 checks stay advisory")
     words = docs.get("ste_words")
+    if isinstance(words, dict):  # a "//" key is a comment, as in the other sections
+        words = {k: v for k, v in words.items() if not str(k).startswith("//")}
     if isinstance(words, dict) and all(isinstance(k, str) and k.strip() and isinstance(v, str)
                                        and v.strip() for k, v in words.items()):
         cfg["ste_words"] = {k.strip(): v.strip() for k, v in words.items()}
@@ -1067,6 +1069,36 @@ def load(root: Path) -> tuple[dict, list[str]]:
     return cfg, warns
 
 
+# git's own binary test (`buffer_is_binary`): a NUL byte among the first 8,000 bytes.
+BINARY_SNIFF = 8000
+
+
+def text_lines(path: Path) -> int | None:
+    """The line count git gives a file: the `\\n` count, plus one for an unterminated last line.
+    None for a binary file, by git's own test. Read in chunks, so a large file costs time, never
+    memory. The gate emitter and the retro share this one count; each caller decides what a
+    symlink, a directory or a missing file means. Raises OSError when the path cannot be read."""
+    n = 0
+    last = b""
+    with open(path, "rb") as fh:
+        chunk = fh.read(BINARY_SNIFF)
+        if b"\0" in chunk:
+            return None
+        while chunk:
+            n += chunk.count(b"\n")
+            last = chunk[-1:]
+            chunk = fh.read(1 << 20)
+    return n + (1 if last and last != b"\n" else 0)
+
+
+# The options `git_run` puts before every command. The color pins: a user's `color.grep=always`
+# puts ESC codes before each `git grep` path, and the parsed keys silently stop matching.
+# `color.ui=false` alone does not win against a command's own key, so the keys of the colored
+# commands this boundary carries are pinned too. A failure message strips these by their count.
+GIT_PINS = ("-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "color.grep=false",
+            "-c", "color.diff=false")
+
+
 # ---------------------------------------------------------------------------------------------
 # Scope resolution. Lives here, not in either consumer: both /verify and the gate emitter must
 # answer "which files is this slice" the SAME way, and two implementations of that question would
@@ -1105,7 +1137,7 @@ def git_run(root: Path, *args: str, stdin: str | None = None, env: dict | None =
     # distinct, because U+FFFD-merged paths collapse into one set entry and silently shrink the
     # audit scope.
     proc = subprocess.run(
-        ["git", "-c", "core.quotepath=false", *args],  # harness:git-boundary git_run is the boundary
+        ["git", *GIT_PINS, *args],  # harness:git-boundary git_run is the boundary
         cwd=root, capture_output=True,
         input=None if stdin is None else stdin.encode("utf-8"),
         env=None if env is None else {**os.environ, **env},

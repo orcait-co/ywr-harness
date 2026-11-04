@@ -1051,6 +1051,19 @@ $ok = (Assert-True 'SL13 R8 reports each mark kind once; the reference list, cod
     ($rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ em dash' -and $rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ joining semicolon' -and $rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ "\(s\)"' -and $rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ "and/or"' -and $rSL13.Out -match 'R8 docs/spec/0001-s\.md:\d+ em dash: "y &mdash; z' -and $rSL13.Out -match '5\. Table \(whole\)' -and $rSL13.Out -match 'ADVISORY - 5 finding') $rSL13.Out) -and $ok
 Reset-SL
 
+# SL13b (ADR 0188, dist #14): a cell that holds only an em dash entity is the empty-cell mark too, and
+# a semicolon inside a closed bracket pair or closed double quotes (straight or curly) joins no
+# clauses. An unclosed inch mark guards nothing (d8), and it never pairs with a later real quote
+# (d9). Only the innermost bracket pair guards, so the outer semicolon of d10 reports. Mutation
+# anchors: the old U+2014-only exemption adds two findings (d6), a guard that skips an unclosed
+# quote drops d8, a quote that opens after a digit drops d9, and a greedy bracket pattern drops d10.
+$lq = [string][char]0x201C; $rq = [string][char]0x201D
+Edit-SL '| d1 | 0.1.0 | an old row |' "| d1 | 0.1.0 | an old row |`n| d6 | &mdash; | &#8212; |`n| d7 | `"one; two`" and [a; b] and ${lq}c; d${rq} | x |`n| d8 | a 3`" mark; then more | y |`n| d9 | a 3`" pipe; then run `"make`" | y |`n| d10 | [a; [b] c] | y |"
+$rSL13b = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL13b entity em dash cells and closed bracket or quote semicolons pass; an inch mark and an outer bracket do not guard' `
+    ($rSL13b.Out -match 'R8 docs/spec/0001-s\.md:\d+ joining semicolon: "a 3" mark' -and $rSL13b.Out -match 'R8 docs/spec/0001-s\.md:\d+ joining semicolon: "a 3" pipe' -and $rSL13b.Out -match 'R8 docs/spec/0001-s\.md:\d+ joining semicolon: "\[a; \[b\] c\]' -and $rSL13b.Out -match 'ADVISORY - 3 finding') $rSL13b.Out) -and $ok
+Reset-SL
+
 # SL14 (ADR 0170): a declared word is an R7 finding with its replacement, in any case; inside a code
 # span and inside a longer word it passes (the second paragraph would add a finding). SL14b: a bad
 # map warns and drops the whole map, a string docs.ste_marks warns, and both stay advisory.
@@ -1063,6 +1076,15 @@ Write-SL '.harness.json' '{"docs": {"ste_marks": "true", "ste_words": {"via": "t
 $rSL14b = Invoke-SLCheck 'docs/spec/0001-s.md'
 $ok = (Assert-True 'SL14b a bad word map and a string docs.ste_marks: two WARN lines, no R7 finding, exit 0' `
     ($rSL14b.Code -eq 0 -and $rSL14b.Out -match '\[ste-lite\] WARN docs\.ste_words' -and $rSL14b.Out -match '\[ste-lite\] WARN docs\.ste_marks' -and $rSL14b.Out -notmatch 'R7 docs/' -and $rSL14b.Out -match 'OK - 1 section') $rSL14b.Out) -and $ok
+Reset-SL
+
+# SL14c (dist #14): a "//" key in docs.ste_words is a comment, as in the other sections, never a word
+# to flag. Mutation anchor: reading the key as a word adds an R7 finding on the " // " in the text.
+Edit-SL 'A short sentence stands here.' "A short sentence // stands here VIA a path."
+Write-SL '.harness.json' '{"docs": {"ste_words": {"//": "a comment key", "via": "through"}}}'
+$rSL14c = Invoke-SLCheck 'docs/spec/0001-s.md'
+$ok = (Assert-True 'SL14c a "//" key in docs.ste_words is a comment: one R7 finding, for "via" only' `
+    ($rSL14c.Out -match 'R7 docs/spec/0001-s\.md:\d+ "via" -> "through"' -and $rSL14c.Out -notmatch 'R7 [^\r\n]*"//"' -and $rSL14c.Out -match 'ADVISORY - 1 finding') $rSL14c.Out) -and $ok
 Reset-SL
 
 # SL15 (ADR 0170): a new ADR with one option, and one with no options heading, are each a finding.

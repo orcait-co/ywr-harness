@@ -99,9 +99,12 @@ or table, for text that a script reads. The gate blocks a commit only when `.har
 declares `"docs": {"ste_lite": true}`. Otherwise it prints its findings as advice.
 
 The same gate checks R8, as ywr-harness ADR 0170 records. A semicolon inside
-parentheses and a table cell that holds only an em dash pass. `.harness.json` `docs.ste_words`
+parentheses, a closed bracket pair or closed double quotes passes (ywr-harness ADR 0188). A table
+cell that holds only an em dash, or only its entity, passes. A quote or a bracket guards only
+when it closes in the same cell or paragraph, and only the innermost bracket pair guards. A
+straight quote after a letter, a digit or an underscore, such as an inch mark, opens nothing. `.harness.json` `docs.ste_words`
 can map a word to the one word this repo uses for that meaning, such as
-`{"via": "through"}`. The gate then flags each listed word outside code spans and URLs. The gate also
+`{"via": "through"}`. The gate then flags each listed word outside code spans and URLs. A key that starts with `//` is a comment. The gate also
 counts the options of each new ADR. It reads the first level-2 heading that holds the word
 "option", "alternative", "선택지" or "대안". It flags fewer than two entries, or no such heading. These checks block a commit only
 when `.harness.json` declares `"docs": {"ste_marks": true}`. Otherwise they print as advice.

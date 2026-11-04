@@ -56,7 +56,8 @@ def git(root: Path, *args: str, ok_exits: tuple[int, ...] = ()) -> str:
     """One git call through `hc.git_run` — THE boundary. Bytes pipes and one UTF-8/backslashreplace
     decode: text mode on Windows translates newlines and decodes with the console codepage.
     quotepath off: git would otherwise C-quote non-ASCII paths as octal escapes, which no
-    anchored pattern matches.
+    anchored pattern matches. Color off: a user's `color.grep=always` would put ESC codes before
+    each `git grep` path (`hc.GIT_PINS`).
     A non-zero exit RAISES, except the exits a caller names in `ok_exits` as a semantic answer
     (`rev-parse -q --verify` exit 1 = absent), which read as empty output. Never 128: git exits 128
     for EVERY fatal error (a missing object, a bad rev, a corrupt pack), so no caller can read it
@@ -302,17 +303,15 @@ def worktree_lines(root: Path, rel: str) -> int:
     """Lines of a working-tree file as `git grep -c ''` counts them, with no git call: 0 for a
     binary file (a NUL in the first 8000 bytes, git's own test, which `-I` skips), a missing
     file, a symlink or an unreadable one; otherwise the `\\n` count, plus one for an unterminated
-    last line. The HEAD fast path of SIZE only decides WHICH files go to git for the exact count."""
+    last line. The HEAD fast path of SIZE only decides WHICH files go to git for the exact count.
+    The count is `hc.text_lines`, read in chunks after the binary test."""
     p = root / rel
     try:
         if p.is_symlink() or not p.is_file():
             return 0
-        data = p.read_bytes()
+        return hc.text_lines(p) or 0
     except OSError:
         return 0
-    if b"\0" in data[:8000]:
-        return 0
-    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
 
 
 def _chunks(paths: list[str]) -> list[list[str]]:
@@ -357,9 +356,12 @@ def counts_at(root: Path, rev: str, paths: list[str], min_lines: int = 1) -> dic
     return out
 
 
-def size_crossings(root: Path, cand: list[str], pre: str, post: str) -> list[tuple[str, int]]:
+def size_crossings(root: Path, cand: list[str], pre: str, post: str,
+                   renamed: dict[str, str] | None = None) -> list[tuple[str, int]]:
     """[(path, lines after)] for each candidate with fewer than SIZE_LIMIT lines before the range and
     SIZE_LIMIT or more after it (ywr-harness ADR 0171). A file absent before counts 0.
+    `renamed` maps a new path to the old path of a rename that git detected in the range: the old
+    path's count at `pre` is the count before, so a move alone never crosses (ywr-harness ADR 0188).
 
     Speed rule: a commit that touches no large file pays NO git call. With `post` = HEAD the
     working-tree line count picks the candidates first (a residual, named in ywr-harness spec 0007 §3.4:
@@ -378,7 +380,12 @@ def size_crossings(root: Path, cand: list[str], pre: str, post: str) -> list[tup
     hit = sorted(after)
     before: dict[str, int] = {}
     if pre:
-        for chunk in _chunks(hit):
+        moved = {x: (renamed or {})[x] for x in hit if x in (renamed or {})}
+        if moved:
+            old = counts_at(root, pre, sorted(set(moved.values())))
+            for x, o in moved.items():
+                before[x] = old.get(o, 0)
+        for chunk in _chunks([x for x in hit if x not in moved]):
             raw = git(root, "diff", "--numstat", "-z", "--no-renames", pre, post, "--", *chunk)
             for rec in raw.split("\0"):
                 cols = rec.split("\t", 2)
@@ -482,11 +489,13 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
 
     # 8) SIZE — an in-scope file that CROSSES the limit in this range (ywr-harness ADR 0171). Crossing-only is
     #    the UNMAPPED adoption strategy again: new growth reports once, the baseline stays out of
-    #    each commit and lives under --coverage. A deleted file never reports. A range with no
+    #    each commit and lives under --coverage. A deleted file never reports, and a rename that git
+    #    detects counts its old path's lines before (ywr-harness ADR 0188). A range with no
     #    start (a bare rev, `..X`) has no before count to compare, so it skips the check.
     if scope and (pre or not rev_range):
         cand = sorted({c[1][-1] for c in changes if c[0][:1] != "D" and hc.any_match(scope, c[1][-1])})
-        for x, n in size_crossings(root, cand, pre, post):
+        renamed = {c[1][1]: c[1][0] for c in changes if c[0][:1] == "R" and len(c[1]) == 2}
+        for x, n in size_crossings(root, cand, pre, post, renamed):
             f.append(f"SIZE: {x} crossed {SIZE_LIMIT:,} lines (now {n:,}) — consider splitting it")
 
     return f
@@ -796,7 +805,7 @@ def main() -> int:
         # way): an empty retro reads as "clean", so a git failure must print a marker, never silence. The
         # post-commit hook calls this with `|| true`, so the commit is untouched either way.
         print(f"git failed: {(e.stderr or '').strip()}", file=sys.stderr)
-        print(f"[slice-retro] FAILED — git {' '.join(str(a) for a in e.cmd[3:])} exited "
+        print(f"[slice-retro] FAILED — git {' '.join(str(a) for a in e.cmd[1 + len(hc.GIT_PINS):])} exited "
               f"{e.returncode}; NO retro check ran. This is not a clean retro (ywr-harness ADR 0041).")
         return 1
     except OSError as e:
