@@ -84,7 +84,7 @@ $ruleMark = 'Slice notes \(ywr-harness ADR 0172\)'   # a regex for a MustNotMatc
 # The slice rules (ADR 0183), copied VERBATIM as a pin: the head line, then one line per rule, joined by LF.
 $sliceHead = 'ywr-harness slice rules for this repo (ywr-harness ADR 0183). The org guide states the general rules; this repo''s CLAUDE.md states its own facts.'
 $sliceRuleLines = @(
-    '- Review: before a slice closes, run `Workflow({name: ''ywr-harness:adversarial-review'', args: {scope: {files, context, invariants, gates_passed}}})`. `/ywr-harness:slice-close` builds the call. `scope` is an object; a string scope loses sharding, the out-of-scope bucket and the gate check of skeptic #2. Put house review angles in `args.lensExtra`, never a redefined lens set. The review invariants are in `REVIEW.md` at the repo root; replace the harness-init starter there with this repo''s own invariants (ywr-harness ADR 0054).'
+    '- Review: before a slice closes, run `Workflow({name: ''ywr-harness:adversarial-review'', args: {scope: {files, context, invariants, gates_passed}, sessionModel: ''<your own model id>''}})`. `/ywr-harness:slice-close` builds the call. Always pass `sessionModel`: an Opus session then runs every review worker on opus at effort low (ywr-harness ADR 0099). `scope` is an object; a string scope loses sharding, the out-of-scope bucket and the gate check of skeptic #2. Put house review angles in `args.lensExtra`, never a redefined lens set. The review invariants are in `REVIEW.md` at the repo root; replace the harness-init starter there with this repo''s own invariants (ywr-harness ADR 0054).'
     '- The review runs once per slice. A fix diff for its confirmed findings closes with re-run gates and one fix check per finding. Only a fix that is a new mechanism gets one bounded re-review, and the close names the criterion. A rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072).'
     '- The close is owner-typed: `/ywr-harness:slice-close` writes the handoff and the one commit, and it never runs on the model''s own call. The session prepares it: it runs every command that `python scripts/harness/harness_gates.py` printed, the review with its fix checks, and verify. It writes no handoff and makes no commit. Its ready report ends with the line that `python scripts/harness/harness_gates.py --tree` printed after the final edit, and it asks the owner to type the command. The close reuses the report only while it is verbatim in the same session and that line is unchanged; a new session or a compaction summary runs the full close (ywr-harness ADR 0105).'
     '- Handoff: the `handoff` key in `.harness.json` names the resume file. A value that ends in `/` names a directory with one resume file per work line, named after the work line, never after a person. The close that supersedes a `## Current state` section moves it to `docs/handoff-archive/<same filename>`, newest first (ywr-harness ADR 0040).'
@@ -93,6 +93,8 @@ $sliceRuleLines = @(
 $sliceRules = (@($sliceHead) + $sliceRuleLines) -join "`n"
 # The slice rules without the review rule: what a repo whose CLAUDE.md copies only that rule gets.
 $sliceRulesNoReview = (@($sliceHead) + $sliceRuleLines[1..4]) -join "`n"
+# The review-call fill (ADR 0190), copied VERBATIM as a pin: what a review-rule copy without sessionModel gets.
+$reviewFill = 'Review call (ywr-harness ADR 0190): the copy of the review rule in this repo''s CLAUDE.md or .claude/CLAUDE.md shows the call without `sessionModel`. Pass it in every review call: `args: {scope: {...}, sessionModel: ''<your own model id>''}`. An Opus session then runs every review worker on opus at effort low (ywr-harness ADR 0099).'
 # The copy note (ADR 0183): the whole text where the repo CLAUDE.md copies every part.
 $copyNote = 'This repo''s CLAUDE.md or .claude/CLAUDE.md holds its own copy of part of the ywr-harness slice rules, so the plugin does not repeat that part here. After that copy is deleted, the plugin states the current rules at each session start (ywr-harness ADR 0183).'
 # A fresh scaffold holds `.harness.json`, `slice_note.py` and a seed CLAUDE.md with no copy: both parts, a blank line between.
@@ -394,7 +396,11 @@ function Set-CopyClaude([string]$Extra) { [IO.File]::WriteAllText($cpClaude, $se
 
 Set-CopyClaude $oldSeed
 $out = Invoke-Hook (New-Payload @{ cwd = $cp })
-$ok = (Assert-RuleOnly '3a the old seed copies every rule: the copy note alone' $out $copyNote) -and $ok
+$ok = (Assert-RuleOnly '3a the old seed copies every rule: the review-call fill and the copy note (ADR 0190)' $out ($reviewFill + "`n`n" + $copyNote)) -and $ok
+
+Set-CopyClaude ($oldSeed + '- Pass `sessionModel` in every review call.')
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3a a copy that names sessionModel gets no fill: the copy note alone' $out $copyNote) -and $ok
 
 Set-CopyClaude '- Notes: `python scripts/harness/slice_note.py add <decision|rejected|owner|fact|risk> "x"`'
 $out = Invoke-Hook (New-Payload @{ cwd = $cp } 'compact')
@@ -404,7 +410,7 @@ Set-CopyClaude ''
 New-Item -ItemType Directory -Force -Path (Join-Path $cp '.claude') | Out-Null
 Set-Content -LiteralPath (Join-Path $cp '.claude/CLAUDE.md') -Value 'House review angles go in args.lensExtra.'
 $out = Invoke-Hook (New-Payload @{ cwd = $cp })
-$ok = (Assert-RuleOnly '3a review-rule copy in .claude/CLAUDE.md: the other rules, the slice-note rule, the copy note' $out ($sliceRulesNoReview + "`n`n" + $noteRule + "`n`n" + $copyNote)) -and $ok
+$ok = (Assert-RuleOnly '3a review-rule copy in .claude/CLAUDE.md: the other rules, the slice-note rule, the fill, the copy note' $out ($sliceRulesNoReview + "`n`n" + $noteRule + "`n`n" + $reviewFill + "`n`n" + $copyNote)) -and $ok
 Remove-Item -LiteralPath (Join-Path $cp '.claude') -Recurse -Force
 
 Set-CopyClaude 'Run ywr-harness:adversarial-review on PRs. We call slice_note.py add by hand.'

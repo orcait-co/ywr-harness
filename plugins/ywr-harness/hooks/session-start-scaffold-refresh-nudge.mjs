@@ -140,7 +140,11 @@ const SLICE_RULES_HEAD = 'ywr-harness slice rules for this repo (ywr-harness ADR
 const SLICE_RULES = [
   {
     copy: ['args.lensExtra'],
-    text: '- Review: before a slice closes, run `Workflow({name: \'ywr-harness:adversarial-review\', args: {scope: {files, context, invariants, gates_passed}}})`. `/ywr-harness:slice-close` builds the call. `scope` is an object; a string scope loses sharding, the out-of-scope bucket and the gate check of skeptic #2. Put house review angles in `args.lensExtra`, never a redefined lens set. The review invariants are in `REVIEW.md` at the repo root; replace the harness-init starter there with this repo\'s own invariants (ywr-harness ADR 0054).',
+    // A copy of this rule that lacks `need` gets the `fill` line (ywr-harness ADR 0190): the old seed bullet showed
+    // the call without sessionModel, and the hook leaves out the copied rule itself.
+    need: 'sessionModel',
+    fill: 'Review call (ywr-harness ADR 0190): the copy of the review rule in this repo\'s CLAUDE.md or .claude/CLAUDE.md shows the call without `sessionModel`. Pass it in every review call: `args: {scope: {...}, sessionModel: \'<your own model id>\'}`. An Opus session then runs every review worker on opus at effort low (ywr-harness ADR 0099).',
+    text: '- Review: before a slice closes, run `Workflow({name: \'ywr-harness:adversarial-review\', args: {scope: {files, context, invariants, gates_passed}, sessionModel: \'<your own model id>\'}})`. `/ywr-harness:slice-close` builds the call. Always pass `sessionModel`: an Opus session then runs every review worker on opus at effort low (ywr-harness ADR 0099). `scope` is an object; a string scope loses sharding, the out-of-scope bucket and the gate check of skeptic #2. Put house review angles in `args.lensExtra`, never a redefined lens set. The review invariants are in `REVIEW.md` at the repo root; replace the harness-init starter there with this repo\'s own invariants (ywr-harness ADR 0054).',
   },
   {
     copy: ['review basis:', 'bounded re-review'],
@@ -169,15 +173,18 @@ function ruleText({ harnessJson, sliceNote, claudeMd }) {
   const has = markers => markers.some(m => claudeMd.includes(m))
   const parts = []
   let copied = false
+  let fills = []
   if (harnessJson) {
     const left = SLICE_RULES.filter(r => !has(r.copy))
     if (left.length < SLICE_RULES.length) copied = true
     if (left.length) parts.push([SLICE_RULES_HEAD, ...left.map(r => r.text)].join('\n'))
+    fills = SLICE_RULES.filter(r => r.need && has(r.copy) && !claudeMd.includes(r.need)).map(r => r.fill)
   }
   if (sliceNote) {
     if (has(SLICE_NOTE_COPY)) copied = true
     else parts.push(SLICE_NOTE_RULE)
   }
+  if (fills.length) parts.push(fills.join('\n'))
   if (copied) parts.push(COPY_NOTE)
   return parts.join('\n\n')
 }

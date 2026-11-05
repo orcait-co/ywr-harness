@@ -143,8 +143,12 @@ verification. Invoke it as a workflow, or by name from the skill listing (a work
 ```
 Workflow({ name: 'ywr-harness:adversarial-review', args: { scope: {
   files: [<the emitter's file list>], context: '<what the slice does>',
-  invariants: [<from REVIEW.md>], gates_passed: '<the gate commands and results, verbatim>' } } })
+  invariants: [<from REVIEW.md>], gates_passed: '<the gate commands and results, verbatim>' },
+  sessionModel: '<your own model id>' } })
 ```
+
+Always pass `sessionModel`. An Opus session then runs every review worker on opus at effort low
+(ADR 0099). Without it, the workflow keeps its pinned models and gives no error.
 
 `scope` is an object. A string scope still runs, but it loses sharding, the out-of-scope bucket,
 and skeptic #2's check against `gates_passed`, without saying so.
