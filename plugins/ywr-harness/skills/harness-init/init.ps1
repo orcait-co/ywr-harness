@@ -820,6 +820,93 @@ function Get-ScaffoldGateNote([object]$Template, [object]$Repo) {
     return ($lines -join '; ')
 }
 
+# review.docs_only value probe (ywr-harness ADR 0191). Arrays are leaves to the key probe, so a seed
+# whose docs_only predates the template's exclusions (CLAUDE.md, AGENTS.md, REVIEW.md, docs/ code,
+# docs/prompts/) made those paths review-exempt with no note (dist #15). Only the wider direction is
+# named: a path the repo exempts and the template reviews. A narrower repo value is safe and silent.
+# The template is the list; this function holds no copy of its exclusions.
+function Get-DocsOnlyRegexes([object]$Decl) {
+    $out = [pscustomobject]@{ Rx = [System.Collections.Generic.List[regex]]::new(); Bad = 0; NotList = $false }
+    if ($Decl -isnot [System.Management.Automation.PSCustomObject]) { return $out }
+    $rv = $Decl.PSObject.Properties['review']
+    if (-not $rv -or $rv.Value -isnot [System.Management.Automation.PSCustomObject]) { return $out }
+    $dp = $rv.Value.PSObject.Properties['docs_only']
+    if (-not $dp) { return $out }
+    # The emitter ignores a non-list value with a warning, so it exempts nothing. The note still
+    # says the value was not compared (ywr-harness ADR 0191 Decision 5).
+    if ($dp.Value -isnot [array]) { $out.NotList = [bool]$dp.Value; return $out }
+    foreach ($p in $dp.Value) {
+        # compile_re skips an empty pattern. The emitter reads a non-string item as its str(),
+        # which .NET text cannot reproduce exactly, so such an item is not compared.
+        if ($p -is [string] -and -not $p) { continue }
+        if ($p -isnot [string]) { $out.Bad++; continue }
+        # Unanchored: the emitter's docs_exempt is `rx.search` (harness_gates.py). The timeout
+        # bounds a backtracking pattern: a timeout throws, and the caller reports a probe skip.
+        try { $out.Rx.Add([regex]::new((ConvertTo-DotNetPattern $p), [Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromMilliseconds(200))) }
+        catch { $out.Bad++ }
+    }
+    return $out
+}
+
+function Get-DocsOnlyNote([object]$Template, [object]$Repo) {
+    $r = Get-DocsOnlyRegexes $Repo
+    if ($r.NotList) { return 'review.docs_only is not a list, not compared' }
+    $bad = if ($r.Bad) { "review.docs_only: $($r.Bad) pattern(s) .NET cannot read, not compared" } else { '' }
+    if (-not $r.Rx.Count) { return $bad }
+    $t = Get-DocsOnlyRegexes $Template
+    # A template pattern that does not compile would make each path it exempts read as reviewed.
+    # The template is ours and T9h pins it, so this is a skip, never a false list.
+    if ($t.Bad -or $t.NotList) { return 'review.docs_only probe skipped: a template pattern .NET cannot read' }
+    $placed = [System.Collections.Generic.List[string]]::new()
+    foreach ($p in @($TOOLCHAIN.Values) + @($SEED.Values) + @($SEED_CORPUS.Values)) { if (-not $placed.Contains($p)) { $placed.Add($p) } }
+    $ip = if ($Template.docs) { $Template.docs.PSObject.Properties['index'] }
+    if ($ip -and $ip.Value -is [string] -and $ip.Value -and -not $placed.Contains($ip.Value)) { $placed.Add($ip.Value) }
+    # Real files: the root's own files, and every file under each directory that holds a placed
+    # path. A directory under another listed directory is not listed twice. The listing skips
+    # hidden, system and link entries, like the scaffold gate listing above.
+    $dirs = [System.Collections.Generic.List[string]]::new()
+    foreach ($p in $placed) { $i = $p.LastIndexOf('/'); if ($i -gt 0 -and -not $dirs.Contains($p.Substring(0, $i))) { $dirs.Add($p.Substring(0, $i)) } }
+    $dirs.Sort([StringComparer]::Ordinal)
+    $roots = [System.Collections.Generic.List[string]]::new()
+    foreach ($d in $dirs) { if (-not ($roots | Where-Object { $d.StartsWith("$_/", [StringComparison]::Ordinal) })) { $roots.Add($d) } }
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($p in $placed) { [void]$seen.Add($p) }
+    $real = [System.Collections.Generic.List[string]]::new()
+    $skip = [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System -bor [IO.FileAttributes]::ReparsePoint
+    $flat = [IO.EnumerationOptions]::new(); $flat.AttributesToSkip = $skip
+    $deep = [IO.EnumerationOptions]::new(); $deep.AttributesToSkip = $skip; $deep.RecurseSubdirectories = $true
+    $stopped = @()
+    foreach ($d in @('') + @($roots)) {
+        $full = if ($d) { [IO.Path]::Combine($root, $d) } else { $root }
+        if (-not [IO.Directory]::Exists($full)) { continue }
+        try {
+            foreach ($f in [IO.Directory]::EnumerateFiles($full, '*', $(if ($d) { $deep } else { $flat }))) {
+                $rel = [IO.Path]::GetRelativePath($full, $f).Replace('\', '/')
+                if ($d) { $rel = "$d/$rel" }
+                if ($seen.Add($rel)) { $real.Add($rel) }
+            }
+        } catch { $stopped += "$(if ($d) { $d } else { '.' }) ($($_.Exception.Message))" }
+    }
+    $real.Sort([StringComparer]::Ordinal)
+    $wide = [System.Collections.Generic.List[string]]::new()
+    foreach ($p in @($placed) + @($real)) {
+        $rHit = $false; foreach ($x in $r.Rx) { if ($x.IsMatch($p)) { $rHit = $true; break } }
+        if (-not $rHit) { continue }
+        $tHit = $false; foreach ($x in $t.Rx) { if ($x.IsMatch($p)) { $tHit = $true; break } }
+        if (-not $tHit) { $wide.Add($p) }
+    }
+    $lines = @()
+    if ($wide.Count) {
+        $shown = $wide; $more = ''
+        if ($wide.Count -gt 6) { $shown = $wide.GetRange(0, 6); $more = ", +$($wide.Count - 6) more" }
+        $tv = $Template.review.docs_only
+        $lines += "review.docs_only exempts $($wide.Count) probed path(s) the template reviews: $($shown -join ', ')$more (template: $(ConvertTo-Json -InputObject @($tv) -Compress))"
+    }
+    if ($bad) { $lines += $bad }
+    foreach ($s in $stopped) { $lines += "docs_only listing stopped under $s" }
+    return ($lines -join '; ')
+}
+
 function Get-SeedDriftNote([string]$Rel, [string]$Dest) {
     $src = Join-Path $templates $Rel
     $dst = Join-Path $root $Dest
@@ -847,6 +934,8 @@ function Get-SeedDriftNote([string]$Rel, [string]$Dest) {
         # would turn a completed placement into a non-zero exit (the ywr-harness ADR 0051 exit contract).
         try { $gateNote = Get-ScaffoldGateNote $t $r } catch { $gateNote = 'scaffold gate probe skipped: ' + $_.Exception.Message }
         if ($gateNote) { $parts += $gateNote }
+        try { $docsNote = Get-DocsOnlyNote $t $r } catch { $docsNote = 'review.docs_only probe skipped: ' + $_.Exception.Message }
+        if ($docsNote) { $parts += $docsNote }
         return ($parts -join '; ')
     }
     # Line-based seeds. Latin1 is the same byte-faithful read as Place() — both sides go through

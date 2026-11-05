@@ -110,10 +110,15 @@ no report.
    `docs/prompts/ready-report.md` (ywr-harness ADR 0180). The template declares both under `decision_prompts`
    with no `check`, and they do nothing until the member types `/ywr-harness:auto on`. An existing
    `.harness.json` stays as it is. When the drift note names `decision_prompts`, tell the member to add
-   the key. On every re-run of an existing repository, also check `review.docs_only`: when a regex
-   there still matches `docs/prompts/`, tell the member to exclude that directory, for example with
-   `(?!prompts/)` after `^docs/`. Then confirm that `docs/prompts/ready-report.md` matches no entry. The
-   drift note never names this regex.
+   the key. When the drift note names `review.docs_only`, the repository exempts the named paths
+   from review and the template does not (ywr-harness ADR 0191). Tell the member to narrow the value
+   until each named path is reviewed. The note prints the template value, which is one correct
+   value. A path can stay exempt only when the member confirms that it carries no executable or
+   instruction meaning. The note reads only the probed paths, so a value can still exempt a path
+   that the note does not name. The template value is the sure fix. When the note says
+   `review.docs_only probe skipped`, `docs_only listing stopped` or `not compared`, the compare
+   did not finish. Then check the value by hand: no entry may match `CLAUDE.md`, `AGENTS.md`,
+   `REVIEW.md`, a file under `docs/prompts/` or a `.py`, `.ps1` or `.sh` file under `docs/`.
 
 If the run reported `SKIP build — python not on PATH`, the four surfaces do not exist yet: no
 tooling can query this repo's decisions until `pwsh docs/build.ps1` succeeds.

@@ -928,17 +928,22 @@ $rT8h = Invoke-Init @('-Target', $t8h)
 $ok = (Assert-True 'T8h a split-off spec group without the line names the spec paths only' `
     ($rT8h.Out -match ("\(existing seed preserved — no group claiming docs/spec/README\.md, docs/spec/0000-template\.md$t8Gate" + 'docs-corpus\)\)')) $rT8h.Out) -and $ok
 # Group names are the repo's: a renamed group that claims the paths and carries the line covers them.
-$t8c = New-T8Seed 'seed-gate-renamed' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.name = 'decision-records' } } }
+# The seed also carries T9b: a narrower docs_only (ADR 0191) adds no note.
+$t8c = New-T8Seed 'seed-gate-renamed' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.name = 'decision-records' } }; $d.review.docs_only = @('^docs/adr/') }
 $rT8c = Invoke-Init @('-Target', $t8c)
 $ok = (Assert-True 'T8c a renamed group that claims the paths and carries the line gets no note' `
     ($rT8c.Code -eq 0 -and $rT8c.Out -notmatch 'declares the scaffold gate' -and $rT8c.Out -notmatch 'this seed lacks') $rT8c.Out) -and $ok
 # Selectors and paths are exact to the emitter, so a case variant is not the line.
-$t8d = New-T8Seed 'seed-gate-case' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates[0].runner = 'Python' } } }
+# The seed also carries T9f: a non-list docs_only (ADR 0191).
+$t8d = New-T8Seed 'seed-gate-case' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates[0].runner = 'Python' } }; $d.review.docs_only = '^docs/' }
 $rT8d = Invoke-Init @('-Target', $t8d)
 $ok = (Assert-True 'T8d a case-variant runner does not satisfy the line' ($rT8d.Out -match $t8All) $rT8d.Out) -and $ok
 # Both halves on one line: the key half first, then the gate half (the ADR 0128 consumer shape).
 $t8e = New-T8Seed 'seed-gate-and-key' { param($d)
-    $d.docs.PSObject.Properties.Remove('ste_lite'); foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates = @() } } }
+    $d.docs.PSObject.Properties.Remove('ste_lite'); foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates = @() } }
+    $d.review.docs_only = @('^(a+)+$') }
+# The seed also carries T9j: a backtracking docs_only pattern against a root file name (ADR 0191).
+[IO.File]::WriteAllText((Join-Path $t8e (('a' * 40) + '!')), "x`n")
 $rT8e = Invoke-Init @('-Target', $t8e)
 $ok = (Assert-True 'T8e a missing docs.ste_lite key and the gate line join with "; "' `
     ($rT8e.Out -match "template has 1 key\(s\) this seed lacks: docs\.ste_lite; $t8All") $rT8e.Out) -and $ok
@@ -984,8 +989,10 @@ $ownSkill = Join-Path $fxBase 'own-gate-skill'
 Copy-Item -LiteralPath $PSScriptRoot -Destination $ownSkill -Recurse -Force
 $ownDecl = Get-Content -LiteralPath (Join-Path $ownSkill 'templates/harness.json') -Raw | ConvertFrom-Json
 foreach ($g in $ownDecl.groups) { if ($g.name -eq 'docs-corpus') { $g.gates += [pscustomobject]@{ runner = 'python'; script = 'scripts/own_check.py'; files = $true } } }
+# The copy also carries T9k: a template docs_only pattern .NET cannot read (ADR 0191).
+$ownDecl.review.docs_only = @($ownDecl.review.docs_only) + @('^zz*+')
 [IO.File]::WriteAllText((Join-Path $ownSkill 'templates/harness.json'), ($ownDecl | ConvertTo-Json -Depth 16))
-$t8n = New-T8Seed 'seed-gate-own-script' { param($d) }
+$t8n = New-T8Seed 'seed-gate-own-script' { param($d) $d.review.docs_only = @('^CLAUDE\.md$') }
 $rT8n = Invoke-Init @('-Target', $t8n) -Script (Join-Path $ownSkill 'init.ps1')
 $ok = (Assert-True 'T8n a template gate on a non-TOOLCHAIN script is never a scaffold gate' `
     ($rT8n.Code -eq 0 -and $rT8n.Out -notmatch 'own_check' -and $rT8n.Out -notmatch 'declares the scaffold gate') "exit=$($rT8n.Code) out=$($rT8n.Out)") -and $ok
@@ -997,7 +1004,10 @@ $throwInit = Join-Path $throwSkill 'init.ps1'
 $throwSrc = [IO.File]::ReadAllText($throwInit)
 $throwHook = 'function Get-ScaffoldGateNote([object]$Template, [object]$Repo) {'
 $ok = (Assert-True 'T8o the probe function signature is where the injection expects it' $throwSrc.Contains($throwHook) 'signature moved — update the injection') -and $ok
-[IO.File]::WriteAllText($throwInit, $throwSrc.Replace($throwHook, "$throwHook throw 'injected probe failure';"))
+# The copy also carries T9g: the docs_only probe throws too (ADR 0191).
+$t9gHook = 'function Get-DocsOnlyNote([object]$Template, [object]$Repo) {'
+$ok = (Assert-True 'T9g the probe function signature is where the injection expects it' $throwSrc.Contains($t9gHook) 'signature moved — update the injection') -and $ok
+[IO.File]::WriteAllText($throwInit, $throwSrc.Replace($throwHook, "$throwHook throw 'injected probe failure';").Replace($t9gHook, "$t9gHook throw 'injected docs_only failure';"))
 $t8o = New-T8Seed 'seed-gate-throw' { param($d) }
 $rT8o = Invoke-Init @('-Target', $t8o) -Script $throwInit
 $ok = (Assert-True 'T8o a throwing probe is a reported skip, the run exits 0 and still stamps' `
@@ -1071,12 +1081,68 @@ $listInit = Join-Path $listSkill 'init.ps1'
 $listSrc = [IO.File]::ReadAllText($listInit)
 $listHook = "[IO.Directory]::EnumerateFiles(`$full, '*', `$eo)"
 $ok = (Assert-True 'T8v the listing call is where the injection expects it' $listSrc.Contains($listHook) 'listing call moved — update the injection') -and $ok
-[IO.File]::WriteAllText($listInit, $listSrc.Replace($listHook, "`$(throw 'injected listing failure')"))
-$t8v = New-T8Seed 'seed-gate-list-throw' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates = @() } } }
+# The copy also carries T9i: the docs_only listing throws too (ADR 0191).
+$t9iHook = "[IO.Directory]::EnumerateFiles(`$full, '*', `$(if (`$d) { `$deep } else { `$flat }))"
+$ok = (Assert-True 'T9i the docs_only listing call is where the injection expects it' $listSrc.Contains($t9iHook) 'listing call moved — update the injection') -and $ok
+[IO.File]::WriteAllText($listInit, $listSrc.Replace($listHook, "`$(throw 'injected listing failure')").Replace($t9iHook, "`$(throw 'injected docs_only listing failure')"))
+$t8v = New-T8Seed 'seed-gate-list-throw' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates = @() } }; $d.review.docs_only = @('^CLAUDE\.md$') }
 $rT8v = Invoke-Init @('-Target', $t8v) -Script $listInit
 $ok = (Assert-True 'T8v a throwing listing keeps the sample gaps and names where it stopped' `
     ($rT8v.Code -eq 0 -and $rT8v.Out -match $t8All -and $rT8v.Out -match 'real-file listing stopped under docs/adr \(injected listing failure\)') "exit=$($rT8v.Code) out=$($rT8v.Out)") -and $ok
 $ok = (Assert-True 'T4 a template-complete seed names no scaffold gate' ($rT4.Out -notmatch 'declares the scaffold gate') $rT4.Out) -and $ok
+
+# T9: review.docs_only value probe (ADR 0191, dist #15). Arrays are leaves to the key probe, so an
+# old docs_only made CLAUDE.md, docs/ code and the stage prompts review-exempt with no note. The
+# probe names each probe path the repo exempts and the template reviews; the narrower direction is
+# safe and silent. T9a is the reported seed value. T9b, T9f, T9g, T9i, T9j and T9k assert on the T8
+# runs above, whose seeds or skill copies carry their case: a skill copy costs about a second.
+$t9Tmpl = [regex]::Escape('(template: ["^docs/(?!prompts/)(?!.*\\.(py|ps1|sh)$)","^(?!(CLAUDE|AGENTS|REVIEW)\\.md$)[^/]*\\.md$"])')
+function New-T9Seed([string]$Name, [object[]]$DocsOnly) {
+    return New-T8Seed $Name ({ param($d) $d.review.docs_only = $DocsOnly }.GetNewClosure())
+}
+# 10 = the 8 placed paths the old value exempts, plus AGENTS.md and docs/tools/gen.py. GOAL.md is
+# exempt on both sides, so it is not counted.
+$t9a = New-T9Seed 'seed-docs-only-old' @('^docs/', '^[^/]*\.md$')
+[IO.File]::WriteAllText((Join-Path $t9a 'AGENTS.md'), "# agents`n")
+[IO.File]::WriteAllText((Join-Path $t9a 'GOAL.md'), "# goal`n")
+New-Item -ItemType Directory -Force -Path (Join-Path $t9a 'docs/tools') | Out-Null
+[IO.File]::WriteAllText((Join-Path $t9a 'docs/tools/gen.py'), "print(1)`n")
+$rT9a = Invoke-Init @('-Target', $t9a, '-DryRun')
+$t9aLine = (($rT9a.Out -split "`n") | Where-Object { $_ -match '= \.harness\.json ' }) -join ' '
+$ok = (Assert-True 'T9a the old docs_only value names the count, the first paths and the template value' `
+    ($rT9a.Code -eq 0 -and $t9aLine -match ('\(existing seed preserved — review\.docs_only exempts 10 probed path\(s\) the template reviews: ' +
+        'docs/build\.ps1, docs/build\.sh, docs/build_docs\.py, docs/check_docs\.py, CLAUDE\.md, REVIEW\.md, \+4 more ' + $t9Tmpl + '\)')) `
+    "exit=$($rT9a.Code) line=$t9aLine") -and $ok
+$t9aProbe = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'init.ps1') -Raw
+$ok = (Assert-True 'T9a the probe holds no copy of the template exclusions' ($t9aProbe -notmatch 'CLAUDE\|AGENTS') 'init.ps1 names the exclusion regex') -and $ok
+$ok = (Assert-True 'T9b a narrower docs_only gets no note' ($rT8c.Code -eq 0 -and $rT8c.Out -notmatch 'review\.docs_only') $rT8c.Out) -and $ok
+$ok = (Assert-True 'T9b a template-complete seed gets no docs_only note' ($rT4.Out -notmatch 'review\.docs_only') $rT4.Out) -and $ok
+# T9c: one seed for the pattern forms. `prompts/` is unanchored and matches mid-path, as the emitter's
+# rx.search does. A Python named group converts. A .NET-refused pattern and a non-string item are
+# named as not compared, and the other patterns still compare. A real root file follows the placed
+# paths in the displayed list.
+$t9c = New-T9Seed 'seed-docs-only-forms' @('prompts/', '^(?P<n>CLAUDE)\.md$', '^zz*+', 5, '^(REVIEW|AGENTS)\.md$')
+[IO.File]::WriteAllText((Join-Path $t9c 'AGENTS.md'), "# agents`n")
+$rT9c = Invoke-Init @('-Target', $t9c, '-DryRun')
+$ok = (Assert-True 'T9c unanchored and named-group patterns compare; a refused pattern and a non-string item are not compared' `
+    ($rT9c.Code -eq 0 -and $rT9c.Out -match ('review\.docs_only exempts 5 probed path\(s\) the template reviews: CLAUDE\.md, REVIEW\.md, ' +
+        'docs/prompts/review-digest\.md, docs/prompts/ready-report\.md, AGENTS\.md \(template: [^;]*\); review\.docs_only: 2 pattern\(s\) \.NET cannot read, not compared')) $rT9c.Out) -and $ok
+$ok = (Assert-True 'T9f a non-list docs_only is named as not compared, the run exits 0' `
+    ($rT8d.Code -eq 0 -and $rT8d.Out -match '; review\.docs_only is not a list, not compared\)') "exit=$($rT8d.Code) out=$($rT8d.Out)") -and $ok
+$ok = (Assert-True 'T9g a throwing probe is a reported skip, the run exits 0 and still stamps' `
+    ($rT8o.Code -eq 0 -and $rT8o.Out -match 'review\.docs_only probe skipped: injected docs_only failure' -and $rT8o.Out -match 'stamp: ') "exit=$($rT8o.Code) out=$($rT8o.Out)") -and $ok
+$ok = (Assert-True 'T9i a throwing listing keeps the placed-path gap and names where it stopped' `
+    ($rT8v.Code -eq 0 -and $rT8v.Out -match 'exempts 1 probed path\(s\) the template reviews: CLAUDE\.md \(template: ' -and
+     $rT8v.Out -match 'docs_only listing stopped under \. \(injected docs_only listing failure\)') "exit=$($rT8v.Code) out=$($rT8v.Out)") -and $ok
+$ok = (Assert-True 'T9j a backtracking pattern is a reported skip, the run exits 0' `
+    ($rT8e.Code -eq 0 -and $rT8e.Out -match 'review\.docs_only probe skipped: [^\r\n]*timed out') "exit=$($rT8e.Code) out=$($rT8e.Out)") -and $ok
+$ok = (Assert-True 'T9k a template pattern .NET cannot read is a skip line, never a false list' `
+    ($rT8n.Code -eq 0 -and $rT8n.Out -match 'review\.docs_only probe skipped: a template pattern \.NET cannot read' -and
+     $rT8n.Out -notmatch 'review\.docs_only exempts') "exit=$($rT8n.Code) out=$($rT8n.Out)") -and $ok
+# T9h: the template side is ours — a template pattern .NET refused would compare nothing.
+$t9hBad = @(foreach ($p in (Get-Content -LiteralPath (Join-Path $templates 'harness.json') -Raw | ConvertFrom-Json).review.docs_only) {
+    try { [void][regex]::new($p) } catch { $p } })
+$ok = (Assert-True 'T9h every template docs_only pattern compiles in .NET' ($t9hBad.Count -eq 0) "refused: $($t9hBad -join ', ')") -and $ok
 
 # --- U: first-run TOOLCHAIN collision refuses (ADR 0055, issue #50) ----------------------------
 # The measured brownfield loss: a repo's own docs/README.md silently replaced and labeled
