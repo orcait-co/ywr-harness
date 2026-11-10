@@ -28,7 +28,7 @@ range check (ywr-harness ADR 0041). When git cannot resolve the scope (unreachab
 it prints `scope: FAILED` and exits **non-zero**: nothing below it was computed and the run is
 never quoted as a pass. Fix the scope (with the user, if the range was theirs) and re-run.
 
-The emitter prints six things, all of which belong in the close record:
+Six parts of the emitter's output belong in the close record:
 
 - **`scope:`** — where the file list came from. An empty commit range is called out by name;
   quote that line. A range that matched nothing means everything below rests on the working tree.
@@ -43,6 +43,9 @@ The emitter prints six things, all of which belong in the close record:
 - **`ignored-tree claims:`** (ywr-harness ADR 0077) — `none — N … checked` is clean; **`NOT CHECKED — git …
   failed`** is a failure, treated like `scope: FAILED`.
   **→ A claim list, any other form, or no line at all: `reference.md` §Ignored-tree.**
+
+The emitter also prints `review canon:` for stage 2. For stage 5 it prints `handoff:` when the
+repo declares one, and `hooks:` when the repo has a `.githooks/` directory.
 
 **Run every emitted command and fix failures now.** Record the exact commands and results verbatim
 for the review's passed-gates block: mechanical defects never reach an LLM reviewer.
@@ -178,9 +181,11 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    still runs: the proof shows the scenario closed, the leg looks for damage beside it.
 
 No second review over the fix diff — except ONCE when a fix is a new mechanism rather than a
-patch (it adds a surface, rewrites control/data flow beyond the finding's lines, or touches a
-critical surface the original scope did not); name that criterion in the close record. Its
-findings close under this same rule; there is never a third pass.
+patch: its hunks reach outside the finding's lines (a moved call, another function, a new
+branch), it adds a surface, or it touches a critical surface the original scope did not. Name
+that criterion in the close record. The re-review's findings close under this same rule; there
+is never a third pass. Only the owner can skip a due re-review: the ready report asks, this
+owner-typed close asks again when no answer exists, and the close record quotes the answer.
 
 **A rebase or merge after the review re-arms it only over the overlap (ywr-harness ADR 0072)** — reviewed
 files the incoming commits also touched, plus any hand-resolved conflict; an empty overlap keeps

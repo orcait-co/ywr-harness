@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Read-only code reviewer for the canary, finder and skeptic legs of the ywr-harness:adversarial-review workflow — no Edit/Write; it reports findings and never modifies the tree.
+description: Read-only code reviewer for the canary, finder and skeptic legs of the ywr-harness:adversarial-review workflow — no Edit/Write; it reports findings and never modifies the tree. It loads no project or user CLAUDE.md, so it reviews only against what its prompt carries (scope, invariants, gates passed). Not for an ad-hoc review leg unless the request names this agent — spawn ywr-harness:worker for that. The workflow sets model and effort on every call; the pin (sonnet · effort medium) holds on a direct spawn only.
 model: sonnet
 effort: medium
 tools: Read, Grep, Glob, Bash, ToolSearch

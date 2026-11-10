@@ -12,6 +12,13 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.74.2 — 2026-11-10
+
+- 0.74.1 릴리스의 prompt audit 이 찾은 문구 세 곳을 고쳤습니다. 할 일은 없습니다.
+- `/ywr-harness:slice-close` 가 재리뷰를 여는 기준을 `docs/prompts/review-digest.md` 와 맞췄습니다. fix 의 hunk 가 finding 의 줄 밖으로 나가면(옮긴 호출, 다른 함수, 새 분기) 한 번의 bounded re-review 대상입니다. 새 surface 를 더하는 fix 와 원래 scope 밖의 critical surface 를 건드리는 fix 도 지금처럼 대상입니다. 대상인 재리뷰를 건너뛰는 결정은 owner 만 합니다. ready report 가 묻고, 답이 없으면 close 가 다시 묻습니다.
+- `ywr-harness:reviewer` 에이전트 설명에 세 가지를 더했습니다. 이 에이전트는 프로젝트와 사용자의 `CLAUDE.md` 를 읽지 않습니다. 요청이 이 에이전트를 지명하지 않는 임시 리뷰에는 `ywr-harness:worker` 를 씁니다. 고정값 sonnet · effort medium 은 직접 spawn 할 때만 적용되고, 리뷰 workflow 는 호출마다 model 과 effort 를 정합니다.
+- `/ywr-harness:slice-close` 의 emitter 출력 설명을 실제 출력과 맞췄습니다. close record 에 들어가는 여섯 부분 외에 `review canon:` 줄이 있고, handoff 를 선언한 저장소에는 `handoff:` 줄이, `.githooks/` 가 있는 저장소에는 `hooks:` 줄이 나옵니다.
+
 ## v0.74.1 — 2026-11-10
 
 - `/ywr-harness:harness-init` 이 놓는 `docs/README.md` 에 "When a change needs an ADR" 절을 추가했습니다(ywr-harness ADR 0195). 숫자·한도·임계값·타임아웃 같은 상수의 값만 바뀌면 ADR 을 쓰지 않습니다. 그 값을 적은 spec 절을 고치고, 그 spec 의 change notes 절에 날짜가 있는 한 줄(이전 값, 새 값, 이유, 측정)을 남깁니다.
