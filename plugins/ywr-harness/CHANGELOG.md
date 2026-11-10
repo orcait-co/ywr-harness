@@ -12,6 +12,12 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.74.1 — 2026-11-10
+
+- `/ywr-harness:harness-init` 이 놓는 `docs/README.md` 에 "When a change needs an ADR" 절을 추가했습니다(ywr-harness ADR 0195). 숫자·한도·임계값·타임아웃 같은 상수의 값만 바뀌면 ADR 을 쓰지 않습니다. 그 값을 적은 spec 절을 고치고, 그 spec 의 change notes 절에 날짜가 있는 한 줄(이전 값, 새 값, 이유, 측정)을 남깁니다.
+- 선택지 사이의 결정, 메커니즘의 추가·제거, 기존 ADR 을 뒤집거나 좁히는 변경은 지금처럼 ADR 을 먼저 씁니다.
+- 할 일은 없습니다. 기존 저장소의 `docs/README.md` 는 `/ywr-harness:harness-init` 을 다시 실행할 때 새 문구로 바뀝니다.
+
 ## v0.74.0 — 2026-11-05
 
 - orcait-co/qad-adaptive-2025-ep 가 보고한 dist #15 의 요청을 반영했습니다.

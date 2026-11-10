@@ -38,6 +38,18 @@ When a merge conflicts inside `index.json` or `INDEX.md`, never hand-merge them:
 side, re-run the build, and commit the regenerated output. They are derived from the `.md`
 sources, which are the only thing to reconcile.
 
+## When a change needs an ADR
+
+Write an ADR for a decision: a choice between options, a mechanism that is added or removed, or a
+change that reverses or narrows an accepted ADR.
+
+Do not write an ADR for a constant change. A constant is a number, a limit, a threshold or a
+timeout that an ADR or a spec states. When only its value changes, update the spec section that
+states the value. Then add a dated line to the change notes section of that spec: the old value,
+the new value, the reason and any measurement. Add that section when the spec has none. The ADR
+that first stated the value stays as written, and the spec holds the current value. ywr-harness
+ADR 0195 records the reasons.
+
 ## Writing a new record
 
 1. Copy `docs/adr/0000-template.md` (or `docs/spec/0000-template.md`) to
