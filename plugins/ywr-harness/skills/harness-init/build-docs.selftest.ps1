@@ -1209,6 +1209,121 @@ $ok = (Assert-True 'FL5 verify_map maps src/b.py to the block, flow and compact 
 $ok = (Assert-True 'FL10 verify_map warns the comment-only spec as null and names the [] remedy' `
     ($rFL5 -match 'spec 0008: implements_in in the index is null' -and $rFL5 -match 'or \[\] for a spec that owns nothing yet' -and $rFL5 -notmatch '# TBD') $rFL5) -and $ok
 
+# --- NR: the `narrows` relation (ywr-harness ADR 0196) — an ADR names the ADRs it narrows, the
+# builder derives the reverse line. NR1, NR2 and NR3 read ONE corpus from ONE build: every builder
+# run is a Python start, and this suite must not get slower for them. The corpus:
+#   0001 accepted  — the target of 0002 (in force), 0003 (superseded) and 0007 (rejected)
+#   0002 accepted  — narrows [1] as an int
+#   0003 superseded — narrows ["0004", 1]: digit string and int, both out of every reverse list
+#   0004 accepted  — named only by the superseded 0003, so it must stay plain
+#   0005 accepted  — a hand-written narrowed_by, which the builder ignores
+#   0006 accepted  — narrows: [] (nothing)
+#   0007 rejected  — narrows [1], the third status that leaves the reverse list
+#   spec 0001      — narrows [1], ignored: a spec has no accepted decision to narrow
+$repoNR = Join-Path $fx 'repo-narrows'
+$docsNR = Join-Path $repoNR 'docs'
+New-Item -ItemType Directory -Force -Path (Join-Path $docsNR 'adr'), (Join-Path $docsNR 'spec') | Out-Null
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsNR 'build_docs.py')
+function Write-NRDoc([string]$Rel, [string]$Body) {
+    [IO.File]::WriteAllText((Join-Path $docsNR $Rel), ($Body -replace "`r`n", "`n"))
+}
+function Write-NRAdr([string]$Num, [string]$Status, [string]$Extra) {
+    Write-NRDoc "adr/$Num-x.md" "---`nid: `"$Num`"`ntype: adr`ntitle: `"adr $Num`"`nstatus: $Status`n$Extra---`n# $Num`nbody`n"
+}
+function Invoke-NRBuild {
+    $out = & $py.Source (Join-Path $docsNR 'build_docs.py') 2>&1 | Out-String
+    return @{ Out = $out; Code = $LASTEXITCODE }
+}
+Write-NRAdr '0001' 'accepted' ''
+Write-NRAdr '0002' 'accepted' "narrows: [1]`n"
+Write-NRAdr '0003' 'superseded' "narrows: [`"0004`", 1]`n"
+Write-NRAdr '0004' 'accepted' ''
+Write-NRAdr '0005' 'accepted' "narrowed_by: [1]`n"
+Write-NRAdr '0006' 'accepted' "narrows: []`n"
+Write-NRAdr '0007' 'rejected' "narrows: [1]`n"
+Write-NRAdr '0008' 'deprecated' "narrows: [1, 1]`n"
+Write-NRDoc 'spec/0001-s.md' "---`nid: `"0001`"`ntype: spec`ntitle: `"s1`"`nstatus: active`nnarrows: [1]`n---`n# spec 0001`n"
+$rNR = Invoke-NRBuild
+$jsonNR = $null
+try { $jsonNR = Get-Content -LiteralPath (Join-Path $docsNR 'index.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+$indexNR = [IO.File]::ReadAllText((Join-Path $docsNR 'INDEX.md'))
+$htmlNR = [IO.File]::ReadAllText((Join-Path $docsNR 'docs.html'))
+function Get-NRKeys([string]$Node) { return (@($jsonNR.graph.$Node.PSObject.Properties.Name) -join ',') }
+function Get-NRRow([string]$Num) { return (($indexNR -split "`n") | Where-Object { $_ -match "^\| \[$Num\]" } | Select-Object -First 1) }
+
+# NR1: the narrowing ADR carries `narrows`, the named ADR carries the derived `narrowed_by`, the
+# INDEX.md status cell and the docs.html meta panel show both directions. Mutation anchor: a builder
+# that never derives the reverse relation, or never writes the graph keys, turns this red.
+$ok = (Assert-True 'NR1 the corpus with narrows builds (exit 0)' ($rNR.Code -eq 0 -and $jsonNR) $rNR.Out) -and $ok
+$ok = (Assert-True 'NR1 graph adr:0002 holds narrows [1], placed after superseded_by' `
+    ((Get-NRKeys 'adr:0002') -eq 'related_adr,related_spec,superseded_by,narrows' -and (@($jsonNR.graph.'adr:0002'.narrows) -join ',') -eq '1') "keys=$(Get-NRKeys 'adr:0002')") -and $ok
+$ok = (Assert-True 'NR1 graph adr:0001 holds narrowed_by [2] as ints, after superseded_by' `
+    ((Get-NRKeys 'adr:0001') -eq 'related_adr,related_spec,superseded_by,narrowed_by' -and (@($jsonNR.graph.'adr:0001'.narrowed_by) -join ',') -eq '2') "keys=$(Get-NRKeys 'adr:0001') by=$(@($jsonNR.graph.'adr:0001'.narrowed_by) -join ',')") -and $ok
+$ok = (Assert-True 'NR1 the INDEX.md status cell of 0001 reads "Accepted · narrowed by #2"' `
+    ((Get-NRRow '0001') -match '\| Accepted · narrowed by #2 \|') "row=$(Get-NRRow '0001')") -and $ok
+$ok = (Assert-True 'NR1 docs.html carries the narrows row (on 0002) and the reverse row (on 0001)' `
+    ($htmlNR.Contains('<b>좁힘</b> <a href="#adr-0001">#1</a>') -and $htmlNR.Contains('<b>좁혀짐</b> <a href="#adr-0002">#2</a>')) 'meta rows missing from docs.html') -and $ok
+
+# NR2: a narrowing ADR that is superseded (0003), rejected (0007) or deprecated (0008) is left out
+# of the reverse list and of INDEX.md, while its own graph entry keeps `narrows`. 0004 is named only
+# by the superseded 0003, so it stays plain. The graph holds each number once, as an integer: the
+# digit string "0004" of 0003 and the repeated 1 of 0008 print as 4 and 1, and the meta panel links
+# them. Mutation anchor: dropping one status from the filter puts that ADR into 0001's list (and,
+# for superseded, a "narrowed by" cell on 0004); storing the list as written leaves "0004" and 1,1.
+$ok = (Assert-True 'NR2 the superseded, the rejected and the deprecated narrowing ADR stay out of narrowed_by (0001 lists only #2)' `
+    ((@($jsonNR.graph.'adr:0001'.narrowed_by) -join ',') -eq '2' -and (Get-NRRow '0001') -notmatch '#3' -and (Get-NRRow '0001') -notmatch '#7' -and (Get-NRRow '0001') -notmatch '#8') (Get-NRRow '0001')) -and $ok
+$ok = (Assert-True 'NR2 0004 is named only by the superseded 0003: no narrowed_by key, no INDEX.md cell text' `
+    ((Get-NRKeys 'adr:0004') -eq 'related_adr,related_spec,superseded_by' -and (Get-NRRow '0004') -notmatch 'narrowed by') "keys=$(Get-NRKeys 'adr:0004') row=$(Get-NRRow '0004')") -and $ok
+$ok = (Assert-True 'NR2 0003, 0007 and 0008 keep their own narrows in the graph, each number once as an integer' `
+    ((@($jsonNR.graph.'adr:0003'.narrows) -join ',') -eq '4,1' -and $jsonNR.graph.'adr:0003'.narrows[0] -is [ValueType] -and (@($jsonNR.graph.'adr:0007'.narrows) -join ',') -eq '1' -and (@($jsonNR.graph.'adr:0008'.narrows) -join ',') -eq '1') "0003=$(@($jsonNR.graph.'adr:0003'.narrows) -join ',') 0007=$(@($jsonNR.graph.'adr:0007'.narrows) -join ',') 0008=$(@($jsonNR.graph.'adr:0008'.narrows) -join ',')") -and $ok
+$ok = (Assert-True 'NR2 the meta panel of 0003 links the digit-string item (#4 with its anchor)' `
+    ($htmlNR.Contains('<b>좁힘</b> <a href="#adr-0004">#4</a>, <a href="#adr-0001">#1</a>')) 'the 0003 narrows row is not linked as #4, #1') -and $ok
+
+# NR3: nothing appears without a non-empty narrows. 0005 (hand-written narrowed_by), 0006
+# (`narrows: []`) and the spec (narrows [1]) keep exactly the legacy keys, no row carries "narrowed
+# by" but 0001's, and docs.html holds four narrows rows (0002, 0003, 0007, 0008) and one reverse row (0001).
+# The byte identity with the previous builder on a corpus without the key is proved once, outside
+# this suite, against HEAD's committed index. Mutation anchor: reading narrowed_by from the
+# frontmatter, or reading narrows on a spec, adds a key or a row here.
+$ok = (Assert-True 'NR3 0005 (hand-written narrowed_by) and 0006 (narrows: []) hold exactly the legacy graph keys' `
+    ((Get-NRKeys 'adr:0005') -eq 'related_adr,related_spec,superseded_by' -and (Get-NRKeys 'adr:0006') -eq 'related_adr,related_spec,superseded_by') "0005=$(Get-NRKeys 'adr:0005') 0006=$(Get-NRKeys 'adr:0006')") -and $ok
+$ok = (Assert-True 'NR3 the spec graph entry holds only based_on_adr (a spec narrows is ignored)' `
+    ((Get-NRKeys 'spec:0001') -eq 'based_on_adr') "keys=$(Get-NRKeys 'spec:0001')") -and $ok
+$ok = (Assert-True 'NR3 only the row of 0001 carries "narrowed by"' `
+    ((($indexNR -split "`n") | Where-Object { $_ -match 'narrowed by' }).Count -eq 1 -and (Get-NRRow '0005') -notmatch 'narrowed by') (Get-NRRow '0005')) -and $ok
+$ok = (Assert-True 'NR3 docs.html holds four narrows rows and one reverse row, none for the spec or 0005' `
+    (([regex]::Matches($htmlNR, '<b>좁힘</b>')).Count -eq 4 -and ([regex]::Matches($htmlNR, '<b>좁혀짐</b>')).Count -eq 1) `
+    "narrows=$(([regex]::Matches($htmlNR, '<b>좁힘</b>')).Count) reverse=$(([regex]::Matches($htmlNR, '<b>좁혀짐</b>')).Count)") -and $ok
+
+# NR4: a wrong `narrows` value is a refusal that names the file and the value. One fixture, one file
+# rewritten per run; the first kind runs as a normal build (non-zero exit), the other three through
+# --check (exit 2, the REFUSED line), so each kind costs one Python start. The message is Korean:
+# the build run matches the file name and the value only. The --check output is ASCII (Korean as
+# \uXXXX escapes), so those runs also match a word that only their kind's message holds. That tells
+# a non-number item from an unknown number. Mutation anchor: dropping any of the four checks in
+# _resolve_narrows turns that kind's case red.
+function Get-NREscaped([string]$Word) { return (($Word.ToCharArray() | ForEach-Object { if ([int]$_ -ge 128) { '\u{0:x4}' -f [int]$_ } else { [string]$_ } }) -join '') }
+function Invoke-NRCheck {
+    $out = & $py.Source (Join-Path $docsNR 'build_docs.py') '--check' 2>&1 | Out-String
+    return @{ Out = $out; Code = $LASTEXITCODE }
+}
+Write-NRAdr '0002' 'accepted' "narrows: [99]`n"
+$rNR4a = Invoke-NRBuild
+$ok = (Assert-True 'NR4 an unknown ADR number fails the build and names the file and the value' `
+    ($rNR4a.Code -ne 0 -and $rNR4a.Out -match '0002-x\.md' -and $rNR4a.Out -match '99' -and $rNR4a.Out -notmatch 'Traceback') $rNR4a.Out) -and $ok
+Write-NRAdr '0002' 'accepted' "narrows: [2]`n"
+$rNR4b = Invoke-NRCheck
+$ok = (Assert-True 'NR4 the ADR itself: --check exits 2 with REFUSED, naming the file' `
+    ($rNR4b.Code -eq 2 -and $rNR4b.Out -match '\[check\] REFUSED' -and $rNR4b.Out -match '0002-x\.md' -and $rNR4b.Out.Contains((Get-NREscaped '자기 자신'))) $rNR4b.Out) -and $ok
+Write-NRAdr '0002' 'accepted' "narrows: notalist`n"
+$rNR4c = Invoke-NRCheck
+$ok = (Assert-True 'NR4 a value that is not a list: --check exits 2 with REFUSED, naming the file and the value' `
+    ($rNR4c.Code -eq 2 -and $rNR4c.Out -match '\[check\] REFUSED' -and $rNR4c.Out -match '0002-x\.md' -and $rNR4c.Out -match 'notalist' -and $rNR4c.Out.Contains((Get-NREscaped '리스트가'))) $rNR4c.Out) -and $ok
+Write-NRAdr '0002' 'accepted' "narrows: [x7]`n"
+$rNR4d = Invoke-NRCheck
+$ok = (Assert-True 'NR4 an item that is not an ADR number: --check exits 2 with REFUSED, naming the file and the value' `
+    ($rNR4d.Code -eq 2 -and $rNR4d.Out -match '\[check\] REFUSED' -and $rNR4d.Out -match '0002-x\.md' -and $rNR4d.Out -match 'x7' -and $rNR4d.Out.Contains((Get-NREscaped '번호가 아닙'))) $rNR4d.Out) -and $ok
+
 Remove-FixtureRoot $fx
 
 if (-not $ok) { Write-Host 'build-docs selftest: FAILED' -ForegroundColor Red; exit 1 }

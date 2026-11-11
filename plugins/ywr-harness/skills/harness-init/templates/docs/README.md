@@ -11,6 +11,12 @@ To reverse a decision, write a NEW ADR and set the old one's `status: superseded
 `superseded_by`. Editing the original destroys the record of what was believed at the time,
 which is the only thing an ADR is for.
 
+To change only part of a decision, write a NEW ADR and list the old numbers in its `narrows` key. The old ADR
+stays accepted and is not edited. The builder derives the reverse line, so the old ADR shows `narrowed by`
+in the index (ywr-harness ADR 0196). The line lists only a narrowing ADR that is in force: a superseded,
+rejected or deprecated ADR drops out of it. An accepted ADR may gain the `narrows` key later, when its own
+text already states the narrowing. That edit adds a relation and changes no decision text.
+
 ## Frontmatter is the single source of truth
 
 Status, dates, and relationships live in the YAML frontmatter — never restated in the body.

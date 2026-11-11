@@ -12,6 +12,14 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.74.3 — 2026-11-11
+
+- ADR 이 다른 ADR 의 결정 일부를 바꾸면(좁히면) 새 ADR 의 frontmatter 에 `narrows: [번호]` 를 적습니다(ywr-harness ADR 0196). 옛 ADR 은 고치지 않습니다. docs 빌더가 반대 방향을 만들어 넣습니다. `docs/INDEX.md` 에서는 좁혀진 ADR 의 상태 칸에 ` · narrowed by #N` 이 붙고, `index.json` 의 graph 에는 `narrowed_by` 가, `docs.html` 의 메타 패널에는 양방향 링크가 생깁니다. 결정 전체를 바꾸는 경우는 지금처럼 `supersedes` 를 씁니다.
+- `narrows` 를 쓰지 않는 저장소의 생성물은 바이트 단위로 그대로입니다. 할 일은 없습니다. `/ywr-harness:harness-init` 을 다시 실행하면 새 빌더와 ADR 템플릿, `docs/README.md` 가 놓입니다. `narrows` 값이 ADR 번호 목록이 아니거나, 없는 ADR 번호나 자기 번호를 가리키면 빌드가 파일 이름을 대고 멈춥니다.
+- 0.74.2 릴리스의 prompt audit 이 찾은 문구를 고쳤습니다. `ywr-harness:mech` 와 `ywr-harness:verifier` 에이전트 설명에 둘의 경계를 적었습니다. 선언된 검증 절차와 slice close 를 결정하는 실행은 `verifier` 에 맡깁니다. `mech` 는 저장소의 `CLAUDE.md` 를 읽지 않기 때문입니다.
+- `ywr-harness:reviewer` 에이전트의 설명과 본문에 dedupe 레그를 더했습니다. 프롬프트가 읽기를 금지한 레그는 파일을 읽지 않습니다.
+- 세션 시작 훅의 리뷰 규칙이 리뷰 기준 파일을 `.harness.json` 의 `review.canon` 이 가리키는 파일로 안내합니다. 기본값은 지금처럼 저장소 루트의 `REVIEW.md` 입니다.
+
 ## v0.74.2 — 2026-11-10
 
 - 0.74.1 릴리스의 prompt audit 이 찾은 문구 세 곳을 고쳤습니다. 할 일은 없습니다.

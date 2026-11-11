@@ -1,6 +1,6 @@
 ---
 name: mech
-description: Mechanical runner for zero-judgment stages — grep/list/inventory sweeps, format conversion, grouping/dedupe, running a fixed command and reporting its output. Pinned haiku · effort low (the ywr-harness mechanical-stage rule); a per-call model or effort overrides the pin, so omit both. Not for anything needing design or trade-off judgment — that is worker's or the session's job.
+description: Mechanical runner for zero-judgment stages — grep/list/inventory sweeps, format conversion, grouping/dedupe, running a fixed command that needs no repo convention and reporting its output. Pinned haiku · effort low (the ywr-harness mechanical-stage rule); a per-call model or effort overrides the pin, so omit both. Not for anything needing design or trade-off judgment — that is worker's or the session's job. Not for a declared verification procedure or a run whose result decides a slice close — spawn ywr-harness:verifier, which loads the repo's CLAUDE.md for the preconditions; this agent loads none.
 model: haiku
 effort: low
 disallowedTools: Agent

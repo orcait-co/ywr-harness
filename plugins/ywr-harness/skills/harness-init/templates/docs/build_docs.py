@@ -584,6 +584,69 @@ def collect(directory):
     return entries
 
 
+# --------------------------------------------------------------- narrowing (ywr-harness ADR 0196)
+# ADR frontmatter `narrows: [N, ...]` = 이 ADR 이 결정의 '일부'만 바꾸는 옛 ADR 번호들(옛 ADR 은 accepted
+# 로 남는다). 역방향(narrowed_by)은 저자가 쓰지 않고 여기서 유도한다 — 손으로 쓴 narrowed_by 키는 무시.
+# 유도 결과는 밑줄 키(_narrows, _narrowed_by)로 엔트리에 붙인다: graph·INDEX.md·meta 패널은 이 밑줄
+# 키만 읽는다. index.json 의 adr[]·spec[] 는 다른 키와 마찬가지로 frontmatter 를 적힌 그대로 싣는다
+# (밑줄 키는 벗겨진다). ADR 에만 적용 — 스펙의 narrows 는 관계를 만들지 않는다.
+# 상태가 아래 셋인 narrowing ADR 은 역방향 목록에서 뺀다(효력이 없는 좁힘은 표시하지 않는다).
+NARROW_INACTIVE = ("superseded", "rejected", "deprecated")
+
+
+def _adr_key(item):
+    """narrows 항목 → 4자리 ADR id 문자열. ADR 번호(정수 또는 숫자 문자열)가 아니면 None."""
+    if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+        return "%04d" % item
+    if isinstance(item, str) and re.fullmatch(r"[0-9]+", item):
+        return "%04d" % int(item)
+    return None
+
+
+def _adr_num(adr_id):
+    """표면에 찍는 번호: 숫자 id 는 정수(0028 → 28), 그 밖의 id 는 문자열 그대로."""
+    return int(adr_id) if re.fullmatch(r"[0-9]+", adr_id) else adr_id
+
+
+def _resolve_narrows(adrs):
+    """전체 ADR 목록에서 narrows 를 검증하고 역관계를 한 번 유도한다. 잘못된 값은 sys.exit —
+    _assemble() 을 지나므로 일반 빌드는 비정상 종료하고 --check 는 REFUSED(exit 2)로 보고한다."""
+    by_key = {}
+    for e in adrs:
+        by_key[_adr_key(e["id"]) or e["id"]] = e
+    rev = {}
+    for e in adrs:
+        val = e.get("narrows")
+        if val is None or val == []:
+            continue
+        nums = []
+        if not isinstance(val, list):
+            sys.exit("[오류] narrows 값 오류: %s 의 narrows 가 리스트가 아닙니다(값: %r) — ADR 번호 "
+                     "리스트로 적으세요(예: [28, 70], ywr-harness ADR 0196)." % (e["_file"], val))
+        for item in val:
+            key = _adr_key(item)
+            if key is None:
+                sys.exit("[오류] narrows 값 오류: %s 의 narrows 항목 %r 가 ADR 번호가 아닙니다 — "
+                         "정수 또는 숫자 문자열이어야 합니다(ywr-harness ADR 0196)." % (e["_file"], item))
+            target = by_key.get(key)
+            if target is None:
+                sys.exit("[오류] narrows 값 오류: %s 의 narrows 항목 %r 가 코퍼스의 어떤 ADR 도 "
+                         "가리키지 않습니다(ywr-harness ADR 0196)." % (e["_file"], item))
+            if target is e:
+                sys.exit("[오류] narrows 값 오류: %s 의 narrows 항목 %r 가 자기 자신입니다 — ADR 은 "
+                         "다른 ADR 만 좁힐 수 있습니다(ywr-harness ADR 0196)." % (e["_file"], item))
+            if e.get("status") not in NARROW_INACTIVE:
+                rev.setdefault(target["id"], set()).add(e["id"])
+            # 표면에는 번호 하나의 꼴만 찍는다: "0004"·"4"·4 는 같은 ADR 이고, 문자열 그대로면
+            # 링크가 걸리지 않는다. 같은 번호를 두 번 적어도 한 번만 남긴다.
+            if _adr_num(target["id"]) not in nums:
+                nums.append(_adr_num(target["id"]))
+        e["_narrows"] = nums
+    for e in adrs:
+        if e["id"] in rev:
+            e["_narrowed_by"] = sorted(rev[e["id"]])
+
+
 # --------------------------------------------------------------- json + index
 def fm_digest():
     """코퍼스 frontmatter 의 결정론적 다이제스트 — index.json 의 `fm_digest` 스탬프.
@@ -619,11 +682,18 @@ def build_json(adrs, specs, digest=None):
         return d
     graph = {}
     for e in adrs:
-        graph["adr:" + e["id"]] = {
+        node = {
             "related_adr": e.get("related_adr") or [],
             "related_spec": e.get("related_spec") or [],
             "superseded_by": e.get("superseded_by"),
         }
+        # ywr-harness ADR 0196 — 비어 있지 않을 때만 쓴다: narrows 를 쓰지 않는 코퍼스의 커밋된
+        # index 에 새 키가 생기면 그 레포의 drift 검사가 재빌드 전까지 실패한다.
+        if e.get("_narrows"):
+            node["narrows"] = e["_narrows"]
+        if e.get("_narrowed_by"):
+            node["narrowed_by"] = [_adr_num(i) for i in e["_narrowed_by"]]
+        graph["adr:" + e["id"]] = node
     for e in specs:
         graph["spec:" + e["id"]] = {"based_on_adr": e.get("based_on_adr") or []}
     out = {
@@ -648,9 +718,11 @@ def build_index_md(adrs, specs):
     L.append("|---|---|---|---|---|")
     for e in adrs:
         spec = ", ".join((e.get("related_spec") or [])) or "—"
+        status = STATUS_LABEL.get(e.get("status"), e.get("status") or "—")
+        if e.get("_narrowed_by"):   # ywr-harness ADR 0196 — 좁혀진 ADR 만 상태 칸이 바뀐다
+            status += " · narrowed by " + ", ".join("#%s" % _adr_num(i) for i in e["_narrowed_by"])
         L.append("| [%s](%s) | %s | %s | %s | %s |" % (
-            e["id"], e["_relpath"], e.get("title", ""),
-            STATUS_LABEL.get(e.get("status"), e.get("status") or "—"),
+            e["id"], e["_relpath"], e.get("title", ""), status,
             e.get("date") or "—", spec))
     L += ["", "## SPEC (%d)" % len(specs), "",
           "| # | 스펙 | 상태 | 근거 ADR |", "|---|---|---|---|"]
@@ -810,6 +882,11 @@ def meta_panel(e, adr_ids, spec_ids, customer=False):
             rows.append("<b>대체함</b> %s" % ", ".join(link_adr(a, adr_ids) for a in e["supersedes"]))
         if e.get("superseded_by"):
             rows.append("<b>대체됨</b> %s" % link_adr(e["superseded_by"], adr_ids))
+        # ywr-harness ADR 0196 — 밑줄 키는 ADR 에만 붙는다(스펙의 narrows 는 무시). 비어 있으면 행이 없다.
+        if e.get("_narrows"):
+            rows.append("<b>좁힘</b> %s" % ", ".join(link_adr(a, adr_ids) for a in e["_narrows"]))
+        if e.get("_narrowed_by"):
+            rows.append("<b>좁혀짐</b> %s" % ", ".join(link_adr(_adr_num(a), adr_ids) for a in e["_narrowed_by"]))
         if e.get("implements_in"):
             rows.append("<b>구현</b> %s" % ", ".join("<code>%s</code>" % esc(p) for p in e["implements_in"]))
     panel = '<div class="meta">%s</div>' % "".join("<span>%s</span>" % r for r in rows)
@@ -2055,6 +2132,7 @@ def _assemble():
     specs = collect(SPEC_DIR)
     if not adrs and not specs:
         sys.exit("adr/·spec/ 에서 frontmatter 포함 .md 를 찾지 못했습니다.")
+    _resolve_narrows(adrs)   # ywr-harness ADR 0196 — 잘못된 narrows 는 여기서 거부(--check 는 REFUSED)
 
     # 모든 표면을 메모리에서 먼저 만든다 — 고객 표면의 거부(sys.exit)가 4-표면만 새로 쓰인
     # 반쪽 산출물을 남기면, 종료 코드를 보지 않는 호출자는 "내부 문서 최신 · 고객 문서 stale"

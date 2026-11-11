@@ -19,6 +19,7 @@ date: YYYY-MM-DD           # 결정/상태변경 절대일자
 deciders: [ ]              # 결정 참여자 (예: [DevOps Lead])
 supersedes: []             # 이 ADR이 대체하는 옛 ADR 번호들 (예: [3])
 superseded_by: null        # 이 ADR을 대체한 새 ADR 번호 (예: 9)
+narrows: []                # 이 ADR이 결정의 일부만 바꾸는 옛 ADR 번호들, 옛 ADR은 accepted로 남는다 (예: [3])
 related_adr: [ ]           # 의존/연관 결정 번호 (예: [1, 2])
 related_spec: [ ]          # 이 결정이 구현되는 docs/spec id (예: ["0001"])
 tags: [ ]                  # 검색/필터 메타 (예: [ci, docs])
