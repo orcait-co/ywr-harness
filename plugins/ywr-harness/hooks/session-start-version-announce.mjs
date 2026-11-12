@@ -360,7 +360,7 @@ function main(payload) {
     body += `\n(안내 기록 실패: ${stateFile} 에 쓸 수 없어 이 안내가 반복될 수 있습니다 — ${configDir} 권한을 확인하세요.)`
   }
 
-  const ctx = `The ywr-harness plugin loaded in this session is v${currentRaw}; the last version announced on this machine was v${storedRaw} (marketplace auto-update, ywr-harness ADR 0026 — updates land at session start, never mid-session). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). If the user asks what changed, read the CHANGELOG entry for v${currentRaw} rather than answering from memory. This announcement is once-per-version (ywr-harness ADR 0030); do not repeat it unprompted.`
+  const ctx = `The ywr-harness plugin loaded in this session is v${currentRaw}; the last version announced on this machine was v${storedRaw} (marketplace auto-update, ywr-harness ADR 0026 — an update applies at the next session start or at /reload-plugins). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). If the user asks what changed, read the CHANGELOG entry for v${currentRaw} rather than answering from memory. This announcement is once-per-version (ywr-harness ADR 0030); do not repeat it unprompted.`
   emit({ systemMessage: body, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
 }
 

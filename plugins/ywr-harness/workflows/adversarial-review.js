@@ -2,8 +2,8 @@
 // 호출: Workflow({name: 'ywr-harness:adversarial-review', args: {scope: {files, invariants, gates_passed} | '<리뷰 대상+하우스 컨텍스트 블록>',
 //   tier?: 'small', root?: '<레포 루트>', lenses?: [{key, prompt}], lensExtra?: '<하우스 앵글>',
 //   shards?: 'auto' | n | [[files…], …]  (scope.files 필요 — 렌즈별 파인더를 파일 샤드로 분할, ywr-harness ADR 0070),
-//   (ultracode?/effort? 는 ywr-harness ADR 0108 로 폐기 — 넘겨도 무시하고 로그·stats.worker_pins.ignored 로 알린다),
-//   sessionModel?: '<세션 모델 id>'  (opus 계열이면 전 워커 opus · low — ywr-harness ADR 0099)}})
+//   (ultracode?/effort? 는 ywr-harness ADR 0108, sessionModel? 은 ywr-harness ADR 0197 로 폐기 — 넘겨도 무시하고
+//   로그·stats.worker_pins.ignored 로 알린다)}})
 //
 // 렌즈 기본값은 일반 웹앱 앵글(인가·테넌시 경로, 프론트엔드 수명주기)을 이름으로
 // 부르되 특정 레포의 어휘는 굽지 않는다 — 그 레포에서 테넌시 격리가 어떻게 구현되는지·클린룸 명명·특정 결정
@@ -24,7 +24,7 @@ export const meta = {
   description: '적대 코드리뷰 표준 — 렌즈 티어(풀3·small2)·시맨틱 dedupe·심각도 게이트(h/m=2·low=1·nit=0 skeptic)',
   // whenToUse 는 모델만 읽는 목록 텍스트라 영어다(ywr-harness ADR 0045 의 분리 — 멤버 대상은 한국어, 모델 대상은 영어;
   // ywr-harness ADR 0089). 매 턴 모든 세션의 프리픽스에 실린다. description 은 멤버 UI 에 보이므로 한국어 그대로.
-  whenToUse: 'Slice-close gate review, once per slice. args.scope = {files: [...], invariants, gates_passed} (plus the git diff for a diff slice); run the repo\'s deterministic lint gates first and list what passed in gates_passed. args.tier:"small" for a small non-critical diff; house-specific lens angles go in args.lensExtra. A fix diff for its confirmed findings is never re-reviewed: close it with re-run gates + per-finding fix checks; one bounded re-review only when the fix is a new mechanism, not a patch. The pins hold under ultracode too. Always pass args.sessionModel = your own model id: an Opus session runs every worker on opus at effort low.',
+  whenToUse: 'Slice-close gate review, once per slice. args.scope = {files: [...], invariants, gates_passed} (plus the git diff for a diff slice); run the repo\'s deterministic lint gates first and list what passed in gates_passed. args.tier:"small" for a small non-critical diff; house-specific lens angles go in args.lensExtra. A fix diff for its confirmed findings is never re-reviewed: close it with re-run gates + per-finding fix checks; one bounded re-review only when the fix is a new mechanism, not a patch. The pins hold on every session model and under ultracode too.',
   phases: [
     { title: 'Canary', detail: '한도/게이트웨이 확인 1개 (sonnet · reviewer 에이전트)', model: 'sonnet' },
     { title: 'Find', detail: '렌즈 병렬 — 풀 3 · small 2 (sonnet·effort medium · reviewer 에이전트)', model: 'sonnet' },
@@ -47,16 +47,12 @@ export const meta = {
 // 별개의 토글이라 어느 effort 에서든 켜지고, 스테이지별로 모델·effort 를 고르는 이 핀이 세션 상속보다 싸고 빠르다(owner
 // 2026-09-29). args.ultracode·args.effort 는 넘어와도 무시한다 — 던지면 옛 호출자의 리뷰가 죽고, 조용히 버리면 호출자는
 // 풀렸다고 믿는다: 그래서 로그 한 줄과 stats.worker_pins.ignored 로 알린다.
-// Opus 세션(ywr-harness ADR 0099): 호출자가 args.sessionModel 에 세션 모델 id 를 넘기고 그것이 opus 계열이면
-// canary·find·dedupe·verify 전부 opus · low 단일 모델로 돈다 — 스크립트는 세션 모델을
-// 조회할 수 없어 호출자의 신고가 유일한 신호다. 실측(2026-09-28, full 티어 2회 · small 2회, 심은 결함 채점):
-// full 현행 $2.45 · 297 s · 1.5/6 → opus·low $2.09 · 91 s · 5/6. find medium 은 +39% 비용에 +0.5 건, haiku
-// skeptic 은 순차 조회로 느리고 비쌌다, sonnet skeptic 은 참 결함 1건을 기각했다 — 그래서 단일 모델·단일 effort.
-// Opus 가 아닌 세션(sonnet·fable)과 신고 누락은 종전 핀 그대로다 — 누락은 안전한 쪽으로 저하된다.
+// 세션 모델과 무관하게 한 벌의 핀이다(ywr-harness ADR 0197 — ywr-harness ADR 0099 의 Opus 세션 opus · low 분기를 대체).
+// 동시 짝 실측 2계열 × 10라운드(Fable 세션, 호스트 2.1.322): opus · low 는 한 픽스처에서 10라운드 중 9번 느렸고 다른
+// 픽스처에서 5 대 5 였다. opus · low 파인더는 스코프 전체를 `cat -n` 한 번으로 읽고 누적 줄 번호를 인용했다
+// (ywr-harness fact 206·208·209). args.sessionModel 은 넘어와도 무시하고 [retired] 로그와 stats.worker_pins.ignored 로 알린다.
 const REVIEWER = 'ywr-harness:reviewer'
-const work = (prompt, opts = {}) => agent(prompt, OPUS_LOW
-  ? { agentType: REVIEWER, ...opts, model: 'opus', effort: 'low' }
-  : { model: 'sonnet', effort: 'high', agentType: REVIEWER, ...opts })
+const work = (prompt, opts = {}) => agent(prompt, { model: 'sonnet', effort: 'high', agentType: REVIEWER, ...opts })
 
 // args 는 객체가 정석. 문자열이면 JSON 인코딩 → 파싱, 비JSON 평문 → scope 블록 자체로 수용
 // (2026-07-08 회고: 스킬 경유 호출이 "scope: ..." 평문을 넘겨 JSON.parse 즉사 — 어떤 형태든 죽지 않게).
@@ -70,17 +66,14 @@ const _args = (() => {
   }
 })()
 if (!_args.scope) throw new Error("args.scope 필요 — 리뷰 대상 파일 목록 + 하우스 컨텍스트 블록")
-const IGNORED = ['ultracode', 'effort'].filter(k => _args[k] !== undefined && _args[k] !== null && _args[k] !== false)
-if (IGNORED.length) log(`[retired] args.${IGNORED.join('·args.')} 무시 — ultracode 예외는 폐기됐다(ywr-harness ADR 0108); 핀 모드 그대로 돈다.`)
-if (_args.sessionModel !== undefined && typeof _args.sessionModel !== 'string') {
-  throw new Error(`args.sessionModel 은 세션 모델 id 문자열이어야 한다 (받은 값: ${JSON.stringify(_args.sessionModel)})`)
-}
-// 모델 id 모양으로만 켠다(리뷰 2026-09-28, low): 부분 일치 /opus/i 는 템플릿 placeholder 문구나
-// 'magnum-opus-local' 같은 게이트웨이 별칭에도 켜져 opus 비용을 쓴다. 'opus'·'opus[1m]'·'claude-opus-5-5[1m]'·
-// 'anthropic.claude-opus-…'·'claude-opus-4@2025…' 만 맞고, 안 맞으면 핀 모드(안전한 쪽)다.
-const OPUS_ID = /(?:^|[./])(?:claude-)?opus(?:[-@.[]|$)/i
-const OPUS_LOW = OPUS_ID.test(_args.sessionModel || '')
-if (OPUS_LOW) log(`[opus-low] 세션 모델 ${_args.sessionModel} — canary/find/dedupe/verify 워커 = opus · effort low 단일(ywr-harness ADR 0099) — meta.phases 의 sonnet 라벨은 기본 모드 표기다.`)
+const passed = k => _args[k] !== undefined && _args[k] !== null && _args[k] !== false
+const IGNORED_UC = ['ultracode', 'effort'].filter(passed)
+if (IGNORED_UC.length) log(`[retired] args.${IGNORED_UC.join('·args.')} 무시 — ultracode 예외는 폐기됐다(ywr-harness ADR 0108); 핀 모드 그대로 돈다.`)
+// sessionModel 은 ywr-harness ADR 0099 의 Opus 세션 분기 입력이었다. 옛 호출자(ywr-harness ADR 0190 이 넣으라고 안내한 저장소 CLAUDE.md
+// 사본)의 리뷰가 죽지 않게 어떤 값이든 받고 무시한다.
+const IGNORED_SM = passed('sessionModel') ? ['sessionModel'] : []
+if (IGNORED_SM.length) log(`[retired] args.sessionModel 무시 — 모든 세션이 같은 핀으로 돈다(ywr-harness ADR 0197); 호출에서 빼도 된다.`)
+const IGNORED = [...IGNORED_UC, ...IGNORED_SM]
 // 스코프는 문자열 블록 또는 구조화 객체({files, invariants, ...}) — 객체는 직렬화해 프롬프트에 주입.
 // (2026-07-02 회고: 객체를 템플릿에 그대로 넣으면 "[object Object]" 로 스코프가 증발 → 파인더 드리프트 근원)
 const SCOPE = typeof _args.scope === 'string' ? _args.scope : JSON.stringify(_args.scope, null, 2)
@@ -412,7 +405,6 @@ let deduped = [...byKey.values()]
 // (ywr-harness ADR 0102 — 종전 haiku · low 기본 서브에이전트. 기록된 목록 4건 헤드리스 재생, 암당 n=1, 호스트 2.1.283:
 // haiku 347.6 s · 출력 38,967 tok · $0.279 vs sonnet 113.7 s · 9,372 tok · $0.234(5분 쓰기 기준). sonnet 이 "서로 다른
 // 결함은 묶지 마라"를 더 잘 지켰고 ywr-harness ADR 0089 의 파일 교차 클래스를 혼자 재현했다; 그룹 집합이 같은 목록은 0/4).
-// Opus 세션은 opus · low 로 기본 서브에이전트 그대로.
 // 묶인 항목은 버리지 않는다(ywr-harness ADR 0089 — 위 1차 dedupe 의 "대표만 유지"를 좁힌다): 대표가 나머지의 위치를
 // also_at 으로 들고 가서, 스켑틱은 전 위치를 보고 한 번 판정하고 닫는 쪽은 위치마다 고친다. 실측 slice 25: 그룹핑이
 // 네 위치를 조용히 버렸고(그중 low 하나는 HEAD 에 아직 남았다), 한 근원('워커가 xhigh 로 돈다')이 4 파일에 흩어져
@@ -422,8 +414,7 @@ if (deduped.length > 12) {
   const listing = deduped.map((f, i) => `${i}. [${f.severity}] ${f.file}:${f.line ?? '?'} ${f.title}`).join('\n')
   const groups = await agent(
     `아래 코드리뷰 지적 목록에서 **같은 근원 결함**을 가리키는 항목들을 그룹으로 묶어라: 같은 함수의 동일 원인, 동일 패턴의 중복 보고, 그리고 **같은 주장이 서로 다른 파일에 반복된 것**(한 결함이 여러 파일에 적혀 있으면 한 그룹이다 — 묶인 항목의 파일:라인은 전부 보존되고 검증만 한 번 한다). 서로 다른 결함은 절대 묶지 마라 — 같은 파일·같은 렌즈라도 주장이 다르면 따로다. 파일을 읽거나 검색하지 마라 — 아래 목록의 텍스트만으로 묶는다. 그룹은 인덱스 배열의 배열로.\n${listing}`,
-    { label: OPUS_LOW ? 'dedupe:opus' : 'dedupe:sonnet', phase: 'Dedupe',
-      ...(OPUS_LOW ? { model: 'opus', effort: 'low' } : { agentType: REVIEWER, model: 'sonnet', effort: 'low' }), schema: {
+    { label: 'dedupe:sonnet', phase: 'Dedupe', agentType: REVIEWER, model: 'sonnet', effort: 'low', schema: {
       type: 'object',
       properties: { groups: { type: 'array', items: { type: 'array', items: { type: 'integer' } } } },
       required: ['groups'],
@@ -556,7 +547,7 @@ const loss = [
   deadSkeptics && `dead_skeptics ${deadSkeptics}`, unverifiedByDeath && `unverified_by_death ${unverifiedByDeath}`,
   findOmitted && `find_omitted ${findOmitted}`, unreportedCap.length && `cap_unreported ${unreportedCap.length}`,
 ].filter(Boolean)
-const PIN_MODE = OPUS_LOW ? 'opus-low' : 'pinned'
+const PIN_MODE = 'pinned'
 // 지적 id(ywr-harness ADR 0169): /slice-close 가 fix_proof.py 의 키로 쓴다. high_ids 는 증명이 필요한 high 의 목록 — 스코프 안
 // 확정(F)과, 모든 표가 반증하지는 않은 반증 high(R: 1-1 분할, 또는 죽은 표가 남은 것). 닫는 쪽이 키를 고르면 high 하나를 빼는
 // 것만으로 check 가 통과하므로, 목록은 워크플로가 정하고 닫는 쪽은 digest 원문을 check 에 넘긴다. 스코프 밖 확정(O)은 슬라이스
@@ -593,8 +584,7 @@ return {
   stats: {
     tier: TIER, lenses: LENSES.length, shards: SHARDED ? SHARDS.length : 1, finders: UNITS.length,
     worker_pins: {
-      ...(OPUS_LOW ? { mode: PIN_MODE, model: 'opus', effort: 'low', session_model: _args.sessionModel }
-        : { mode: PIN_MODE, model: 'sonnet', effort: 'canary low · find medium · verify low · dedupe low' }),
+      mode: PIN_MODE, model: 'sonnet', effort: 'canary low · find medium · verify low · dedupe low',
       ...(IGNORED.length ? { ignored: IGNORED } : {}),
     },
     dead_lenses: deadLenses, dead_finders: deadFinders, raw: all.length,

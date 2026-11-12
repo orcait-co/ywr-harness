@@ -68,10 +68,10 @@ function Assert-Silent([string]$Name, [string]$Out) {
 
 $ok = $true
 # the harness rule (ADR 0109; the org guide carried it until v1.19, ADR 0144): implementation/research workers sonnet in every session via
-# ywr-harness:worker, mechanical work haiku, opus · low only for review fan-out on an Opus session
+# ywr-harness:worker, mechanical work haiku, no ywr-harness worker or review stage on opus or fable (ADR 0197)
 $warnCore = @('\[hook:agent-model\]', 'ywr-harness rule: implementation', 'ywr-harness 규칙: 구현', 'description', 'demonstrably', 'implementation and research workers run on ''sonnet'' in every session',
-    'subagent_type ''ywr-harness:worker'' with NO per-call model', 'review fan-out \(finders, skeptics\) on an Opus session', 'mechanical work runs on ''haiku''',
-    '구현·조사 워커는 어느 세션이든 sonnet', '호출별 model 없이 ywr-harness:worker 를', 'Opus 세션의 리뷰형 fan-out\(finder·skeptic\)에만', 'cannot see the session model', 'overrides a pinned agent', 'Nothing was blocked',
+    'subagent_type ''ywr-harness:worker'' with NO per-call model', 'No ywr-harness pin uses opus or fable, review stages included', 'mechanical work runs on ''haiku''',
+    '구현·조사 워커는 어느 세션이든 sonnet', '호출별 model 없이 ywr-harness:worker 를', '고정값은 리뷰 단계까지 어느 것도 opus·fable 을 쓰지 않습니다', 'cannot see the session model', 'overrides a pinned agent', 'Nothing was blocked',
     # the rules the removed decision numbers used to stand for, stated on both surfaces; ultracode
     # no longer lifts a pin, and both surfaces say so (ADR 0108)
     'ultracode 가 켜져 있어도 이 고정은 그대로', 'Ultracode does not lift these pins', '판단할 수 없어 차단하지 않았습니다', 'judge the stated reason')
@@ -79,7 +79,7 @@ $warnCore = @('\[hook:agent-model\]', 'ywr-harness rule: implementation', 'ywr-h
 # W1. the dist #5 shape: general-purpose + explicit opus alias -> warns on both surfaces
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; model = 'opus'; description = 'find endpoints'; prompt = 'Find all API endpoints' })
 $ok = (Assert-Warn 'W1 explicit opus alias warns (systemMessage + additionalContext)' $out `
-        (@("모델을 'opus' 로 명시", 'subagent_type: general-purpose', "requested model 'opus'") + $warnCore) @('SCHEMA DRIFT', 'worker-opus', 'Org guide', '조직 가이드')) -and $ok
+        (@("모델을 'opus' 로 명시", 'subagent_type: general-purpose', "requested model 'opus'") + $warnCore) @('SCHEMA DRIFT', 'worker-opus', 'Org guide', '조직 가이드', 'on an Opus session', 'Opus 세션', 'Opus at effort low')) -and $ok   # the retired review rule (ADR 0197) stays out
 
 # W2. a full model id names the family too
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; model = 'claude-opus-5-5'; description = 'd'; prompt = 'p' })

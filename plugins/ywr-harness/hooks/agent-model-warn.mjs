@@ -17,9 +17,9 @@
 // ywr-harness ADR 0109 no plugin agent pins opus, so an opus-family per-call model always overrides a pin or
 // picks the model of an unpinned type. The prose states the harness rule of ywr-harness ADR 0109, which no longer
 // depends on the session model: implementation and research workers run sonnet in every session
-// (the Agent-tool route is `ywr-harness:worker` with no per-call model), mechanical work haiku,
-// opus · low only for review fan-out on an Opus session, and any other opus/fable worker names its
-// reason in the description.
+// (the Agent-tool route is `ywr-harness:worker` with no per-call model), mechanical work haiku, no
+// ywr-harness worker or review stage on opus or fable (ywr-harness ADR 0197 retired the Opus-session review
+// branch), and any other opus/fable worker names its reason in the description.
 // EFFORT clause (ywr-harness ADR 0127): since Claude Code 2.1.292 the Agent tool takes a per-call `effort`, and it
 // overrides a pinned agent's frontmatter effort as `model` overrides the model pin (measured: the
 // worker pinned high ran at low when the call said low). The pins were written to keep the deep-work
@@ -108,11 +108,11 @@ function main(payload) {
   if (modelHit) {
     sysParts.push(`Agent 호출이 모델을 '${mShow}' 로 명시했습니다 (subagent_type: ${type}). ` +
       'ywr-harness 규칙: 구현·조사 워커는 어느 세션이든 sonnet 입니다 — Agent 호출이라면 호출별 model 없이 ywr-harness:worker 를 쓰세요. ' +
-      '기계적 작업은 haiku 이고, opus · effort low 는 Opus 세션의 리뷰형 fan-out(finder·skeptic)에만 씁니다. 그 밖의 opus·fable 모델은 꼭 필요한 워커에만 쓰며 그 이유를 호출의 description 에 적습니다. ' +
+      '기계적 작업은 haiku 이고, ywr-harness 의 고정값은 리뷰 단계까지 어느 것도 opus·fable 을 쓰지 않습니다. 고정값 밖에서 opus·fable 워커를 띄우는 것은 그 모델이 꼭 필요한 작업일 때만이며, 그 이유를 호출의 description 에 적습니다. ' +
       '호출별 model 은 고정(pinned)된 에이전트의 frontmatter 모델보다 우선합니다. ')
     ctxParts.push(`This Agent spawn requested model '${mShow}' (subagent_type '${type}'), an opus/fable-family model. ` +
       "ywr-harness rule: implementation and research workers run on 'sonnet' in every session — for an Agent-tool spawn that route is subagent_type 'ywr-harness:worker' with NO per-call model; mechanical work runs on 'haiku'. " +
-      "Opus at effort low is for review fan-out (finders, skeptics) on an Opus session; any other opus or fable model is only for a worker that demonstrably needs it, with the reason in the spawn's description. " +
+      "No ywr-harness pin uses opus or fable, review stages included. An opus or fable worker outside those pins is only for a task that demonstrably needs that model, with the reason in the spawn's description. " +
       "A per-call model overrides a pinned agent's frontmatter model, so the ywr-harness:worker / ywr-harness:mech pins do not apply to this call. ")
   }
   if (effortHit) {

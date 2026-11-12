@@ -46,9 +46,9 @@ $ok = (Assert-Text 'T3 reference.md carries the moved detail (rebase overlap com
 $ok = (Assert-Text 'C1 stage 1: the range goes straight to the emitter, whose scope: FAILED is the range check (ADR 0041)' $skill `
         @('pass it to `--range` as given', 'the emitter is the\s+range check \(ywr-harness ADR 0041\)', 'scope: FAILED') `
         @('Sanity-check it first', 'git rev-parse')) -and $ok
-$ok = (Assert-Text 'C2 stage 2 scope: exclusions named, lockstep noted, ~8 counts what remains, no ultracode/effort slot (ADR 0108)' $skill `
-        @("the emitter's file list minus the exclusions", 'drift gate passed', 'declared handoff', 'lockstep: manifest-gate PASS', 'more than ~8 files remain after\s+the exclusions', 'recall lever', 'ultracode changes neither \(ywr-harness ADR 0108\)', 'stats\.worker_pins') `
-        @("files: \[<the emitter's file list>\]", 'for round-trip-bound finders only', '(?m)^\s+(ultracode|effort):')) -and $ok
+$ok = (Assert-Text 'C2 stage 2 scope: exclusions named, lockstep noted, ~8 counts what remains, no ultracode/effort/sessionModel slot (ADR 0108, ADR 0197)' $skill `
+        @("the emitter's file list minus the exclusions", 'drift gate passed', 'declared handoff', 'lockstep: manifest-gate PASS', 'more than ~8 files remain after\s+the exclusions', 'recall lever', 'ultracode does not\s+change them \(ywr-harness ADR 0108\)', 'same pins \(ywr-harness ADR 0197\)', 'Do not pass `sessionModel`', 'stats\.worker_pins') `
+        @("files: \[<the emitter's file list>\]", 'for round-trip-bound finders only', '(?m)^\s+(ultracode|effort|sessionModel):')) -and $ok
 $ok = (Assert-Text 'C3 disposition: also_at sites and 1-1 split rejections are the closer''s to read' $skill `
         @('also_at', 'rejected\[\]', 'split 1\u20131', 'rejected_count') `
         @('Then judge each one \*instance vs class\*')) -and $ok

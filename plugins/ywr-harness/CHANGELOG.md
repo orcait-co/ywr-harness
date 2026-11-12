@@ -12,6 +12,13 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.75.0 — 2026-11-12
+
+- 적대 리뷰 워크플로가 모든 세션에서 같은 sonnet 고정값으로 돕니다(ywr-harness ADR 0197). Opus 세션에서 모든 워커를 opus · effort low 로 돌리던 분기를 없앴습니다. 두 번의 동시 비교 측정에서 opus · low 는 더 빠르지 않았고, finder 가 파일에 없는 줄 번호를 인용했습니다. 측정은 Fable 세션에서 띄웠고, recall 과 Opus 세션에서 띄운 실행은 확인하지 않았습니다.
+- `args.sessionModel` 은 더 이상 쓰지 않습니다. 넘겨도 리뷰는 그대로 돌고, `[retired]` 로그 한 줄과 `stats.worker_pins.ignored` 로 알립니다. 저장소 `CLAUDE.md` 의 리뷰 호출에서 `sessionModel` 을 지워도 됩니다.
+- 세션 시작 훅이 `sessionModel` 을 넣으라고 안내하던 줄(ywr-harness ADR 0190)을 없앴습니다. `agent-model-warn` 의 안내도 바뀌었습니다: ywr-harness 의 워커와 리뷰 단계는 opus·fable 을 쓰지 않습니다.
+- 0.75.0 릴리스의 prompt audit 이 찾은 문구 네 곳을 고쳤습니다. 할 일은 없습니다. `/ywr-harness:update` 는 설치 항목이 없으면 멤버가 직접 설치하지 말고 소유자에게 물으라고 안내합니다(ywr-harness ADR 0143). 버전 안내 훅은 업데이트가 다음 세션 시작이나 `/reload-plugins` 에서 적용된다고 적습니다. `/ywr-harness:verify` 절차와 `ywr-harness:reviewer` 설명의 낡은 근거와 표현도 바로잡았습니다.
+
 ## v0.74.3 — 2026-11-11
 
 - ADR 이 다른 ADR 의 결정 일부를 바꾸면(좁히면) 새 ADR 의 frontmatter 에 `narrows: [번호]` 를 적습니다(ywr-harness ADR 0196). 옛 ADR 은 고치지 않습니다. docs 빌더가 반대 방향을 만들어 넣습니다. `docs/INDEX.md` 에서는 좁혀진 ADR 의 상태 칸에 ` · narrowed by #N` 이 붙고, `index.json` 의 graph 에는 `narrowed_by` 가, `docs.html` 의 메타 패널에는 양방향 링크가 생깁니다. 결정 전체를 바꾸는 경우는 지금처럼 `supersedes` 를 씁니다.

@@ -1,7 +1,7 @@
 # /verify procedure — spec-owned verification
 
-> You were spawned by the `/ywr-harness:verify` router skill (`SKILL.md` beside this file, ywr-harness ADR 0084) as
-> `ywr-harness:verifier` (ywr-harness ADR 0108). You get **no
+> You were spawned by the `/ywr-harness:verify` router skill (`SKILL.md` beside this file, ywr-harness ADR 0108) as
+> `ywr-harness:verifier` (ywr-harness ADR 0025, ywr-harness ADR 0108). You get **no
 > conversation history**. Scope must be self-derivable: the invocation argument your prompt
 > carries, else working tree vs HEAD. Never infer scope from something "we discussed" — it is not
 > in this context. `<PLUGIN_ROOT>` below is the plugin root path your prompt names.

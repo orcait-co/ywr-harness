@@ -79,7 +79,7 @@ async function run(plan) {
                             severity: 'low', claim: 'c', evidence: 'e' }], ...om };
     }
     if (label.startsWith('verify:')) return plan.verdict ? plan.verdict(prompt, label) : { refuted: false, reason: 'r' };
-    if (label === 'dedupe:sonnet' || label === 'dedupe:opus' || label === 'dedupe') return { groups: plan.groups ?? [] };
+    if (label === 'dedupe:sonnet' || label === 'dedupe') return { groups: plan.groups ?? [] };
     throw new Error(`stub: unexpected label ${label}`);
   };
   const fn = compile(SCRIPT);
@@ -297,10 +297,14 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   if (bad) fail(name, bad); else pass(name);
 }
 {
-  const name = 'a retired ultracode flag does not override an opus session model';
-  const { result, spawns } = await run({ args: { tier: 'small', ultracode: true, sessionModel: 'claude-opus-5-5', scope: { files: ['f.md'], context: 'c' } } });
+  // Two retirements in one call (ywr-harness ADR 0108 and ADR 0197): each keeps its own log line, and the ignored list
+  // names both keys in the order ultracode/effort, then sessionModel.
+  const name = 'retired ultracode and sessionModel together keep every pin and log one line each';
+  const { result, spawns, logs } = await run({ args: { tier: 'small', ultracode: true, sessionModel: 'claude-opus-5-5', scope: { files: ['f.md'], context: 'c' } } });
   const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
-  if (!workers.length || workers.some((s) => s.model !== 'opus' || s.effort !== 'low') || result.stats.worker_pins?.mode !== 'opus-low' || JSON.stringify(result.stats.worker_pins?.ignored) !== '["ultracode"]') fail(name, JSON.stringify([result.stats.worker_pins, workers.map((s) => [s.label, s.model, s.effort])]));
+  const retired = logs.filter((l) => l.startsWith('[retired]'));
+  if (!workers.length || workers.some((s) => s.model !== 'sonnet' || s.agentType !== 'ywr-harness:reviewer') || result.stats.worker_pins?.mode !== 'pinned' || JSON.stringify(result.stats.worker_pins?.ignored) !== '["ultracode","sessionModel"]') fail(name, JSON.stringify([result.stats.worker_pins, workers.map((s) => [s.label, s.model, s.effort])]));
+  else if (retired.length !== 2 || !retired.some((l) => l.includes('ADR 0108')) || !retired.some((l) => l.includes('args.sessionModel') && l.includes('ADR 0197'))) fail(name, `logs=${JSON.stringify(retired)}`);
   else pass(name);
 }
 {
@@ -316,64 +320,45 @@ await expectThrow('canary failure aborts', { canaryDies: true }, '카나리아 �
   if (result.stats.worker_pins?.mode !== 'pinned' || !String(result.stats.worker_pins?.model).startsWith('sonnet') || 'ignored' in (result.stats.worker_pins ?? {}) || logs.some((l) => l.startsWith('[retired]'))) fail(name, JSON.stringify(result.stats.worker_pins));
   else pass(name);
 }
-// 10o. the Opus-session mode (ywr-harness ADR 0099). The caller reports its own model id in
-//     args.sessionModel; an opus-family id runs EVERY stage — canary, finders,
-//     dedupe, skeptics — on opus at effort low, agentType kept on the reviewer stages. Any other id,
-//     or none, keeps the pinned mode.
+// 10o. args.sessionModel is RETIRED (ywr-harness ADR 0197, superseding ADR 0099's Opus-session mode). Every value
+//     is accepted and ignored: an opus id, any other id, a placeholder, a non-string, and JSON-string args. Each run
+//     keeps every stage on its pin (dedupe included: many 7 crosses the >12 gate), logs one '[retired]' line that
+//     names ADR 0197, reports ['sessionModel'] in stats.worker_pins.ignored and prints 'pins pinned'. No opus-low
+//     branch remains. An absent, null or false value asks for nothing: no log line and no ignored key.
 {
-  const name = 'opus session runs every stage on opus · low';
-  const { result, spawns, logs } = await run({ many: 7, args: { tier: 'small', sessionModel: 'claude-opus-5-5[1m]', scope: { files: ['f.md'], context: 'c' } } });
-  const workers = spawns.filter((s) => /^(canary$|find:|verify:)/.test(s.label));
-  const dedupe = spawns.filter((s) => s.phase === 'Dedupe' || /^dedupe/.test(s.label));
-  const off = workers.filter((s) => s.model !== 'opus' || s.effort !== 'low' || s.agentType !== 'ywr-harness:reviewer');
-  if (!workers.length || !workers.some((s) => /^find:/.test(s.label)) || !workers.some((s) => /^verify:/.test(s.label))) fail(name, 'canary/find/verify spawns not all captured');
-  else if (off.length) fail(name, `pins: ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort, s.agentType]))}`);
-  else if (dedupe.length !== 1 || dedupe[0].model !== 'opus' || dedupe[0].effort !== 'low' || dedupe[0].label !== 'dedupe:opus' || dedupe[0].agentType !== undefined) fail(name, `dedupe=${JSON.stringify(dedupe.map((s) => [s.label, s.model, s.effort]))}`);
-  else if (result.stats.worker_pins?.mode !== 'opus-low' || result.stats.worker_pins?.session_model !== 'claude-opus-5-5[1m]') fail(name, `stats.worker_pins=${JSON.stringify(result.stats.worker_pins)}`);
-  else if (!logs.some((l) => l.startsWith('[opus-low]'))) fail(name, 'mode not logged');
-  else pass(name);
-}
-{
-  // Every stage, dedupe included (many: 7 crosses the >12 gate), must keep its pin; the ids that only
-  // CONTAIN "opus" (a pasted placeholder, gateway aliases) must not switch the mode (review 2026-09-28).
-  const name = 'a non-opus session model keeps every stage pinned';
-  const ids = ['claude-sonnet-5', 'claude-fable-5-1', '', '<your own model id, e.g. claude-opus-5-5>', 'magnum-opus-local', 'non-opus-sonnet-proxy'];
-  let bad = null;
-  for (const m of ids) {
-    const { result, spawns } = await run({ many: 7, args: { tier: 'small', sessionModel: m, scope: { files: ['f.md'], context: 'c' } } });
-    const want = (s) => (/^find:/.test(s.label) ? ['sonnet', 'medium'] : /^(canary$|verify:)/.test(s.label) ? ['sonnet', 'low']
-      : /^dedupe/.test(s.label) ? ['sonnet', 'low'] : null);
-    const off = spawns.filter((s) => want(s) && (s.model !== want(s)[0] || s.effort !== want(s)[1]));
+  const name = '10o a retired sessionModel keeps every stage pinned, logs once and reports the key';
+  const vals = ['claude-opus-5-5[1m]', 'opus', 'anthropic.claude-opus-4-1-20250805-v1:0', 'claude-sonnet-5-5', 'claude-fable-5-2', '', '<your own model id>', true, 42, { id: 'opus' }];
+  const want = (s) => (/^find:/.test(s.label) ? ['sonnet', 'medium'] : /^(canary$|verify:|dedupe)/.test(s.label) ? ['sonnet', 'low'] : null);
+  const check = async (args, keys, tag) => {
+    const { result, spawns, logs } = await run({ many: 7, args });
+    const off = spawns.filter((s) => want(s) && (s.model !== want(s)[0] || s.effort !== want(s)[1] || s.agentType !== 'ywr-harness:reviewer'));
     const dedupe = spawns.filter((s) => /^dedupe/.test(s.label));
-    if (result.stats.worker_pins?.mode !== 'pinned' || off.length || dedupe.length !== 1 || dedupe[0].label !== 'dedupe:sonnet' || dedupe[0].agentType !== 'ywr-harness:reviewer') {
-      bad = `${JSON.stringify(m)}: ${JSON.stringify(result.stats.worker_pins)} ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort]))} dedupe=${dedupe.length}`;
-      break;
-    }
-  }
-  if (bad) fail(name, bad); else pass(name);
-}
-{
-  const name = 'opus ids by shape (alias, 1m, provider-prefixed) switch the mode, also through JSON-string args';
-  const ids = ['opus', 'opus[1m]', 'claude-opus-5-5', 'anthropic.claude-opus-4-1-20250805-v1:0', 'claude-opus-4@20250514'];
+    const wp = result.stats.worker_pins ?? {};
+    const retired = logs.filter((l) => l.startsWith('[retired]'));
+    if (!spawns.some((s) => /^find:/.test(s.label)) || !spawns.some((s) => /^verify:/.test(s.label)) || off.length) return `${tag} pins: ${JSON.stringify(off.map((s) => [s.label, s.model, s.effort, s.agentType]))}`;
+    if (dedupe.length !== 1 || dedupe[0].label !== 'dedupe:sonnet') return `${tag} dedupe=${JSON.stringify(dedupe.map((s) => s.label))}`;
+    if (wp.mode !== 'pinned' || 'session_model' in wp || JSON.stringify(wp.ignored ?? []) !== JSON.stringify(keys) || (!keys.length && 'ignored' in wp)) return `${tag} stats.worker_pins=${JSON.stringify(wp)}`;
+    if (retired.length !== keys.length || (keys.length && !retired[0].includes('ADR 0197')) || logs.some((l) => l.startsWith('[opus-low]'))) return `${tag} logs=${JSON.stringify(logs.filter((l) => l.startsWith('[')))}`;
+    if (!result.digest.includes(' · pins pinned · ')) return `${tag} digest=${result.digest}`;
+    return null;
+  };
   let bad = null;
-  for (const m of ids) {
-    const { result } = await run({ args: { tier: 'small', sessionModel: m, scope: { files: ['f.md'], context: 'c' } } });
-    if (result.stats.worker_pins?.mode !== 'opus-low') { bad = `${m}: ${JSON.stringify(result.stats.worker_pins)}`; break; }
+  for (const m of vals) {
+    bad = await check({ tier: 'small', sessionModel: m, scope: { files: ['f.md'], context: 'c' } }, ['sessionModel'], JSON.stringify(m));
+    if (bad) break;
   }
-  if (!bad) {
-    const { result } = await run({ args: JSON.stringify({ tier: 'small', sessionModel: 'claude-opus-5-5[1m]', scope: { files: ['f.md'], context: 'c' } }) });
-    if (result.stats.worker_pins?.mode !== 'opus-low') bad = `JSON-string args: ${JSON.stringify(result.stats.worker_pins)}`;
+  if (!bad) bad = await check(JSON.stringify({ tier: 'small', sessionModel: 'claude-opus-5-5[1m]', scope: { files: ['f.md'], context: 'c' } }), ['sessionModel'], 'JSON-string args');
+  for (const m of [null, false]) {
+    if (!bad) bad = await check({ tier: 'small', sessionModel: m, scope: { files: ['f.md'], context: 'c' } }, [], JSON.stringify(m));
   }
   if (bad) fail(name, bad); else pass(name);
 }
-await expectThrow('a non-string args.sessionModel is refused',
-  { args: { sessionModel: true, scope: { files: ['f.md'], context: 'c' } } }, 'args.sessionModel');
 
 // 10a. the worker identity (ywr-harness ADR 0069). Canary, finders and skeptics run as the plugin's
 //     tool-restricted reviewer agent — the allowlist is what removes ~half of the prefix every
 //     worker request re-reads, and it only takes effect through agentType. The name must be the
 //     NAMESPACED form (fact 1: a bare name does not resolve, and manifest-gate does not scan
-//     agentType strings — this assertion is the only gate on it). The pinned-mode dedupe grouping
+//     agentType strings — this assertion is the only gate on it). The dedupe grouping
 //     runs as the reviewer agent too, at sonnet · low (ywr-harness ADR 0102 — adopted ADR 0089
 //     candidate I; it was haiku on the default subagent). The dedupe half runs on plan.many (14 findings): run({}) has
 //     2, never crosses >12, and an agentType check over zero dedupe spawns is vacuous (review slice 26).
@@ -746,7 +731,7 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   const name = '12g meta.whenToUse is English and keeps every clause';
   const m = readFileSync(SCRIPT, 'utf8').match(/whenToUse:\s*'((?:[^'\\]|\\.)*)'/);
   const w = m ? m[1] : '';
-  const clauses = ['once per slice', 'files: [...]', 'gates_passed', 'args.tier:"small"', 'args.lensExtra', 'never re-reviewed', 'new mechanism', 'pins hold under ultracode', 'args.sessionModel'];
+  const clauses = ['once per slice', 'files: [...]', 'gates_passed', 'args.tier:"small"', 'args.lensExtra', 'never re-reviewed', 'new mechanism', 'pins hold on every session model and under ultracode'];
   const missing = clauses.filter((c) => !w.includes(c));
   if (!w) fail(name, 'whenToUse literal not found');
   else if (/[가-힣]/.test(w)) fail(name, 'whenToUse carries Hangul — the model-facing listing text is English');
@@ -874,12 +859,12 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   else pass(name);
 }
 {
-  const name = '14c digest counts out_of_scope and rejected, and reports the opus-low pin mode';
-  const { result } = await run({ args: { tier: 'small', sessionModel: 'claude-opus-5-5', scope: { files: ['f.md'], context: 'c' } },
+  const name = '14c digest counts out_of_scope and rejected, and reports the pinned pin mode';
+  const { result } = await run({ args: { tier: 'small', scope: { files: ['f.md'], context: 'c' } },
     findings: (k) => (k === 'correctness-pitfalls' ? [F('f.md', 10, 'high', 'h1'), F('g.md', 11, 'low', 'o1')] : [F('f.md', 20, 'low', 'l1')]),
     verdict: (prompt, label) => (label === 'verify:l1' ? { refuted: true, reason: 'no' } : { refuted: false, reason: 'r' }) });
   const d = result.digest ?? '';
-  if (!d.startsWith('confirmed 1 (h1 m0 l0) · multi_lens 0 · out_of_scope_confirmed 1 · nits 0 · rejected 1 · high_ids 1: F1-') || !d.includes(' · coverage full') || !d.includes('pins opus-low')) fail(name, d);
+  if (!d.startsWith('confirmed 1 (h1 m0 l0) · multi_lens 0 · out_of_scope_confirmed 1 · nits 0 · rejected 1 · high_ids 1: F1-') || !d.includes(' · coverage full') || !d.includes(' · pins pinned · ')) fail(name, d);
   else pass(name);
 }
 {

@@ -75,8 +75,7 @@ Workflow({name: 'ywr-harness:adversarial-review', args: {
   },
   root: '<the session's repo root, absolute — lets absolute and relative reports of one site merge>',
   lensExtra: '<house-specific review angles, if this repo has any>',
-  shards: '<auto only per the shard habit below; omit otherwise>',
-  sessionModel: '<your own model id from your system prompt, verbatim — always>'
+  shards: '<auto only per the shard habit below; omit otherwise>'
 }})
 ```
 
@@ -87,8 +86,9 @@ state, not shipped); a file whose **whole diff a named gate checks** — e.g. `p
 `marketplace.json` carrying only the version bump, with `lockstep: manifest-gate PASS` in
 `gates_passed`. Everything else stays in scope.
 
-An Opus `sessionModel` runs every review worker on opus · low (ywr-harness ADR 0099); any other model keeps
-the pins, and ultracode changes neither (ywr-harness ADR 0108). Record the result's `stats.worker_pins`.
+Every session runs the review workers on the same pins (ywr-harness ADR 0197), and ultracode does not
+change them (ywr-harness ADR 0108). Do not pass `sessionModel`: the workflow ignores it and logs one
+`[retired]` line. Record the result's `stats.worker_pins`.
 
 `invariants` come from the canon file the emitter printed. If it said **NOT FOUND**, stop and
 resolve that first: a review whose invariants nobody can cite is a review nobody can audit.

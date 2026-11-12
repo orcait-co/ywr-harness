@@ -24,8 +24,10 @@ project- or local-scope install sits beside a user-scope one only as its own obj
 - `claude` not on PATH → report that and stop; nothing here works without the CLI.
 - `--json` refused (a host older than the flag) → run the same command without it and read the
   `ywr-harness@<marketplace>` row of the text list for the same four values.
-- No `ywr-harness@…` entry → report "not installed" and stop. Installation is the member's
-  choice (ywr-harness ADR 0010); this skill updates, it never installs.
+- No `ywr-harness@…` entry → report "not installed" and stop. Managed settings install the plugin
+  for every member (ywr-harness ADR 0143), so the member does not install it. The owner can have
+  switched it off, or a new install can still be on its way: tell the member to ask the owner.
+  This skill updates, it never installs.
 
 ## 2. Update on disk
 
