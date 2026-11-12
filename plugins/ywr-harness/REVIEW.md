@@ -117,5 +117,5 @@ deterministic owner that would retire the class forever — a selftest assertion
 `manifest-gate.mjs` or emitter check, a CI step — and record it as an ADR-candidate entry in
 `docs/handoff-archive/BACKLOG.md`, in the section matching the surface, appended at the END of
 that section (the ledger's own header states the append rule; path owned by ADR 0040). The
-handoff's §Next actions carries only items whose trigger has fired. Fixing only the instance is an
-incomplete disposition.
+handoff's §Open items takes a class only as an action, an owner decision or a trigger (ADR 0195);
+the ledger holds the rest. Fixing only the instance is an incomplete disposition.
