@@ -29,7 +29,7 @@
     "agents/agents.selftest.ps1": ["agents/*.md"],
     "hooks/agent-model-warn.selftest.ps1": ["hooks/agent-model-warn.mjs", "hooks/hook-lib.mjs", "hooks/hooks.json"],
     "hooks/config-change-audit.selftest.ps1": ["hooks/config-change-audit.mjs", "hooks/hook-lib.mjs", "hooks/hooks.json"],
-    "hooks/decision-prompts.selftest.ps1": ["hooks/decision-prompts.mjs", "hooks/slice-status.mjs", "hooks/mods.mjs", "hooks/delegation-ledger.mjs", "hooks/prerequisites.mjs", "workflows/adversarial-review.js"],
+    "hooks/decision-prompts.selftest.ps1": ["hooks/decision-prompts.mjs", "hooks/slice-status.mjs", "hooks/mods.mjs", "hooks/delegation-ledger.mjs", "hooks/prerequisites.mjs", "workflows/adversarial-review.js", "skills/slice-close/SKILL.md"],
     "hooks/delegation-ledger.selftest.ps1": ["hooks/delegation-ledger.mjs"],
     "hooks/directory-added-guard.selftest.ps1": ["hooks/directory-added-guard.mjs", "hooks/hook-lib.mjs", "hooks/hooks.json"],
     "hooks/hook-lib.selftest.ps1": ["hooks/hook-lib.mjs"],

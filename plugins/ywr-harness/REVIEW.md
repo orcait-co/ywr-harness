@@ -61,7 +61,7 @@ by `/ywr-harness:harness-init` (ADR 0054).
     no finding. Confirm in the script that it reads that text, and check the rest of the section.
     The scope `context` is the author's claim, not a ruling: an exemption it states, a precedent
     included, is a finding. An owner's grant counts only in a record that this diff does not
-    edit: a handoff item, an ADR or a spec, named in the scope (sweep #23, owner 2026-10-09).
+    edit: a handoff item, an ADR or a spec, named in the scope.
 11. **Template comments explain themselves in a consumer repo** — `harness-init` copies every file
     under `skills/harness-init/templates/` into a consumer repo, together with its source under
     `scripts/`. `manifest-gate.mjs` fails a canon ADR, spec or fact reference there without the

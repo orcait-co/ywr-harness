@@ -12,6 +12,12 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.76.0 — 2026-11-12
+
+- `/ywr-harness:auto` 가 켜져 있는 세션에서는 모델이 `slice-close` 를 부를 수 있습니다(ywr-harness ADR 0198). auto 모듈은 다섯 조건이 모두 맞을 때만 호출에 답하고 스킬 본문을 돌려줍니다: 메인 루프의 호출, 켜진 스위치, 이 세션에서 입력한 `/ywr-harness:auto on` 의 기준값, 그 기준값과 일치하는 입력, 기본 브랜치(`origin/HEAD` 가 가리키는 브랜치)가 아닌 브랜치 위의 `HEAD`. 스위치가 꺼져 있거나 읽기·git 호출이 실패하면 예전처럼 호스트가 호출을 거절합니다. 스위치가 켜져 있는데 조건이 하나라도 안 맞으면 맞지 않은 조건을 모두 알리며 거절하고 직접 입력하는 방법을 안내합니다. 직접 입력하는 `/ywr-harness:slice-close` 는 그대로입니다. 할 일은 없습니다.
+- 세션 시작 안내의 slice-close 규칙과 harness-init의 `docs/prompts/ready-report.md` 템플릿이 위의 auto 예외를 말합니다. 이 세션에서 `/ywr-harness:auto on` 을 입력했고 입력 파일이 그대로이며 `HEAD` 가 기본 브랜치(`origin/HEAD` 가 가리키는 브랜치)가 아니면, 열린 owner 질문이 없을 때 ready report 뒤에 메인 루프의 모델이 `ywr-harness:slice-close` 를 직접 부르라고 안내합니다. 거절되면 멈추고 직접 입력을 요청합니다. 이 템플릿은 seed 라서 이미 scaffold 한 repo 에는 반영되지 않습니다. auto 루프를 쓸 repo 라면 그 파일의 마지막 불릿을 새 템플릿과 같게 고치세요. verify 절차서는 `index: STALE` 줄을 보고 docs index 를 다시 만듭니다.
+- release 전 prompt audit 에 따라 모델이 읽는 문구 몇 곳을 정리했습니다. slice-close 의 문자열 scope 금지 근거, 캐논 전용 관례(`*.selftest.ps1`, `jq`), 이슈 번호와 옛 호스트 버전 서술이 대상입니다. 할 일은 없습니다.
+
 ## v0.75.1 — 2026-11-12
 
 - 리뷰 기준 파일 `REVIEW.md` 의 finding 처분 규칙이 없어진 handoff 섹션(§Next actions)을 가리키던 문장을 고쳤습니다. 이제 handoff 의 §Open items 는 결함 class 를 할 일, 소유자 결정 또는 트리거로만 받고, 나머지는 BACKLOG 원장에 둡니다(ywr-harness ADR 0195). 0.75.0 릴리스의 prompt audit 이 찾은 High 입니다. 할 일은 없습니다.

@@ -18,6 +18,22 @@
 // `slice-close` is not a stage: its detector needs `skill.prompt`, and the built-in guard
 // `cc-plugin-sec-default` skips a user-tier plugin's `skill.prompt` and `classic.*` hooks (ywr-harness ADR 0175).
 //
+// The close gate (ywr-harness ADR 0198) is no stage either: no prompt file, no side check, no stage log. `slice-close`
+// keeps `disable-model-invocation: true`, so the host refuses a model Skill call of `ywr-harness:slice-close`, and
+// the `tool.call` hook sees that call first. The module answers it only when every condition holds: a main-loop call
+// (no `agentId`), the switch on, the typed command's baseline in this session, inputs that match it in one read, and
+// `HEAD` on a branch other than the default branch. Both branches are read as FULL refs (`refs/heads/<x>` and the target
+// `refs/remotes/origin/<x>` of `refs/remotes/origin/HEAD`), so a tag of the same name cannot hide the default branch.
+// The answer is the skill body (frontmatter removed, `${CLAUDE_PLUGIN_ROOT}` replaced by the plugin root with forward
+// slashes, `$ARGUMENTS` by the call's `args`) as tool-result context, behind one fixed line. `args` with a control character,
+// a line or paragraph separator or a backtick is model-chosen text that cannot go into the body, so that call passes on. A switch that is off, a
+// throw, a failed read or git call (an unresolvable default branch, a killed or cut git output included) and a call
+// this gate does not own pass the call on, so the host's refusal stands: no failure can
+// allow a close. Only a switch that is on with an unmet condition denies, and the deny names each unmet condition and
+// the typed command as the other route. A typed `/ywr-harness:slice-close` never reaches `tool.call`, so it is
+// untouched. The module reads `skills/slice-close/SKILL.md` and knows only those two variables; a new variable in that
+// file needs a change here.
+//
 // The hook runs the stage call first, then reads the switch, `.harness.json` and every declared prompt file
 // once at each stage (a switch turned off takes effect at once; a changed input withholds the stage until
 // the person types `on` again, ywr-harness ADR 0176), then awaits the side check for at most
@@ -364,6 +380,85 @@ export function withheldToast(stage, changed) {
     : `[ywr-harness] ${stage}: 입력이 바뀌어 stage prompt 를 넣지 않았습니다 (${changed.join(', ').slice(0, 160)}). 확인한 뒤 /ywr-harness:auto on 을 다시 입력하세요.`
 }
 
+// The close gate's pure half (ywr-harness ADR 0198).
+export const CLOSE_SKILL = 'ywr-harness:slice-close'
+export const CLOSE_SKILL_REL = 'skills/slice-close/SKILL.md'
+export const CLOSE_TYPED = '/ywr-harness:slice-close'
+export const CLOSE_LINE = 'ywr-harness ADR 0198: the /ywr-harness:auto gate answered this call of ywr-harness:slice-close, ' +
+  'which the host refuses without it. The skill body follows. Run it as it says.'
+
+// A Skill call of the close skill, from the main loop or from a subagent.
+export function isCloseCall(e) {
+  return !!e && e.tool === 'Skill' && e.skill === CLOSE_SKILL
+}
+
+// `git rev-parse --symbolic-full-name HEAD` stdout → the branch name out of `refs/heads/<x>`, or `HEAD` when detached;
+// null for anything else. Full refs only: `--abbrev-ref` prints `heads/main` when a tag `main` exists, and that
+// name would never equal the default branch.
+export function parseBranch(stdout) {
+  const s = String(stdout ?? '').trim()
+  if (/[\r\n\x00]/.test(s)) return null
+  if (s === 'HEAD') return 'HEAD'
+  return s.startsWith('refs/heads/') ? s.slice('refs/heads/'.length) || null : null
+}
+
+// `git symbolic-ref refs/remotes/origin/HEAD` stdout (`refs/remotes/origin/main`) → the default branch (`main`); null
+// for anything else, so an unresolved ref is a failure and never a branch name.
+export function parseDefaultBranch(stdout) {
+  const s = String(stdout ?? '').trim()
+  if (!s.startsWith('refs/remotes/origin/') || /[\r\n\x00]/.test(s)) return null
+  return s.slice('refs/remotes/origin/'.length) || null
+}
+
+// The call's `args` as text for the body: the empty string for no args, the text itself when it is a string with no
+// control character (C0, DEL, NEL), no line or paragraph separator and no backtick, null otherwise. `args` is
+// model-chosen text that goes into a trusted body, so a break (a new instruction) or a backtick (the body wraps
+// `$ARGUMENTS` in backticks) ends at the host's refusal.
+export function closeArgs(args) {
+  if (args === undefined) return ''
+  return typeof args === 'string' && !/[\x00-\x1f\x7f\u0085\u2028\u2029`]/.test(args) ? args : null
+}
+
+// The unmet conditions, one text each: `[]` when every one holds. `f`: `agentId` of the call, `changed` (the inputs
+// that differ from the session baseline, or null when the session has none), `branch` (`HEAD` = detached) and
+// `defaultBranch`. The switch is known to be on before this runs.
+export function closeUnmet(f) {
+  const out = []
+  if (f.agentId !== undefined) out.push('the call comes from a subagent; only the main loop may close a slice')
+  if (f.changed === null) out.push('this session has no input baseline; nobody typed /ywr-harness:auto on in it')
+  else if (f.changed.length) out.push(`${f.changed.join(', ')} changed after /ywr-harness:auto on was typed in this session`)
+  if (f.branch === 'HEAD') out.push('HEAD is detached; a model close needs HEAD on a branch')
+  // case-folded on every platform: a case-insensitive ref store (Windows, macOS) lets `git switch Main` commit to `main`
+  else if (f.branch.toLowerCase() === f.defaultBranch.toLowerCase()) out.push(`HEAD is on the default branch ${f.defaultBranch}; a model close runs only on another branch`)
+  return out
+}
+
+export function closeDenyText(unmet) {
+  return 'ywr-harness refused this model call of ywr-harness:slice-close (ywr-harness ADR 0198). Unmet:\n' +
+    unmet.map(u => `- ${u}`).join('\n') + `\nThe person can type ${CLOSE_TYPED} instead.`
+}
+
+// The gate's verdict from the facts: `{ answer: true }` when every condition holds, else `{ deny }`.
+export function closeVerdict(f) {
+  const unmet = closeUnmet(f)
+  return unmet.length ? { deny: closeDenyText(unmet) } : { answer: true }
+}
+
+// The skill file's text without its frontmatter, with `${CLAUDE_PLUGIN_ROOT}` → `root` and `$ARGUMENTS` → `args`
+// (one pass, so a replacement is never scanned again). `root` has its backslashes turned into slashes, so a shell
+// command line in the body never sees one. Null when the text has no frontmatter block.
+export function closeBody(text, root, args) {
+  const s = String(text ?? '')
+  const m = /^﻿?---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/.exec(s)
+  if (!m) return null
+  return s.slice(m[0].length).replace(/\$\{CLAUDE_PLUGIN_ROOT\}|\$ARGUMENTS\b/g, v => (v === '$ARGUMENTS' ? String(args ?? '') : String(root).replace(/\\/g, '/')))
+}
+
+// The answer for the close call: the host's inline-skill result shape and the body as context.
+export function closeAnswer(body) {
+  return { result: { success: true, commandName: CLOSE_SKILL, status: 'inline' }, context: [`${CLOSE_LINE} ${body}`] }
+}
+
 async function readJson($, path) {
   try { return JSON.parse(await $.fs.read(path)) } catch { return null }
 }
@@ -525,6 +620,43 @@ async function guardEdit($, st, e) {
   return null
 }
 
+// One git call at the checkout root: its trimmed stdout. A non-zero exit or a rejection throws to the gate.
+async function gitOut($, st, argv) {
+  const r = await $.process.run(['git', ...argv], { cwd: st.root, timeoutMs: 10000 })
+  // a child the host killed by a signal reads exit code 1, and a cut stdout is a partial ref
+  if (r.exitCode !== 0 || r.isStdoutTruncated === true) throw new Error(`git ${argv[0]} failed`)
+  return String(r.stdout ?? '')
+}
+
+// The close gate for one Skill call of `ywr-harness:slice-close` (ywr-harness ADR 0198): the answer object, a deny
+// object, or null to pass the call on. Null is the failure path too: a throw, a failed read, a failed git call, a
+// default branch git cannot resolve, a body that cannot be built. Only every condition met returns an answer.
+async function closeGate($, st, e) {
+  try {
+    await ensure($, st)
+    if (!st.root) return null
+    try { st.on = parseSwitch(await $.fs.read(st.statePath)) } catch { st.on = false }
+    if (!st.on) return null
+    const args = closeArgs(e.args)
+    if (args === null) return null
+    let changed = null
+    if (st.baseline) {
+      const { texts, decl } = await readInputs($, st)
+      st.decl = decl
+      changed = changedInputs(st.baseline.hashes, await hashInputs(texts))
+    }
+    const branch = parseBranch(await gitOut($, st, ['rev-parse', '--symbolic-full-name', 'HEAD']))
+    const defaultBranch = parseDefaultBranch(await gitOut($, st, ['symbolic-ref', 'refs/remotes/origin/HEAD']))
+    if (!branch || !defaultBranch) return null
+    const verdict = closeVerdict({ agentId: e.agentId, changed, branch, defaultBranch })
+    if (verdict.deny !== undefined) return { deny: verdict.deny }
+    const root = $.plugin.root
+    if (typeof root !== 'string' || !root) return null
+    const body = closeBody(await $.fs.read(`${root}/${CLOSE_SKILL_REL}`), root, args)
+    return body === null ? null : closeAnswer(body)
+  } catch { return null }
+}
+
 export function register(on) {
   const st = newState()
 
@@ -538,6 +670,7 @@ export function register(on) {
       const deny = await guardEdit($, st, e)
       if (deny) return { deny }
     }
+    if (isCloseCall(e)) return (await closeGate($, st, e)) || next(e)
     if (e.agentId !== undefined) return next(e)
     const stage = stageOfToolCall(e)
     if (!stage) return next(e)

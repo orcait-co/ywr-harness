@@ -31,7 +31,7 @@ pwsh docs/build.ps1        # or: bash docs/build.sh
 
 Regenerates four surfaces from the `.md` sources:
 
-- `index.json` — for agents and tooling. Grep or `jq` it; do not read it whole, it grows.
+- `index.json` — for agents and tooling. Grep it; do not read it whole, it grows.
 - `INDEX.md` — lightweight table of contents.
 - `docs.html` — human browsing.
 - `docs.artifact.html` — the claude.ai Artifact publish input (a fragment; the host wraps it).

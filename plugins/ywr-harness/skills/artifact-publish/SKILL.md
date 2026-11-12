@@ -100,9 +100,8 @@ matters: a fetch placed BEFORE the first refusal counts for nothing (ywr-harness
 as last measured (ywr-harness fact 138, Claude Code 2.1.296):
 
 1. `Artifact publish` of `source` to `url`. It is REFUSED — the contract, not an error: the tool
-   saves the served page to a local file and demands it be Read line by line. From Claude Code
-   2.1.274 the refusal arrives before any approval prompt; an older host asks for approval first
-   and refuses after it — the same sequence, one prompt more. Omit `icon` — a redeploy keeps the page's tab icon
+   saves the served page to a local file and demands it be Read line by line. The refusal arrives
+   before any approval prompt. Omit `icon` — a redeploy keeps the page's tab icon
    (`favicon` is the deprecated name); label per the repo's convention (e.g. `v<version>-rn`).
 2. Read that saved file line-complete. Size the slices to the per-call TOKEN cap, not to a line
    count — denser lines need smaller slices (measured 2026-09-07 on a ~2,000-line page: 250-line

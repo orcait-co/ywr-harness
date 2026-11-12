@@ -1014,10 +1014,10 @@ if ($sameVersionDrift.Count) {
     } else {
         Write-Host "  upstream: SAME-VERSION drift — $($sameVersionDrift.Count) file(s) marked ~ above differed from this plugin's templates while the stamp already reads v$repoStampRaw." -ForegroundColor Yellow
         if ($DryRun) {
-            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ywr-harness ADR 0010/0067). A real run will REVERT them; nothing was changed yet." -ForegroundColor Yellow
+            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update (ywr-harness ADR 0010/0067). A real run will REVERT them; nothing was changed yet." -ForegroundColor Yellow
             Write-Host "      Report it upstream BEFORE the real run (the draft reads the drift still in the working tree): /ywr-harness:report-issue — one confirmation before anything is filed." -ForegroundColor Yellow
         } else {
-            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update — the #55 shape (ywr-harness ADR 0010/0067). This run REVERTED them." -ForegroundColor Yellow
+            Write-Host "      At the same version that is a LOCAL hand edit (or a modified plugin copy), never a canon update (ywr-harness ADR 0010/0067). This run REVERTED them." -ForegroundColor Yellow
             if ($revertSaved.Count) { Write-Host "      pre-revert copies: $revertDir" -ForegroundColor Yellow }
             if ($revertFailed.Count) { Write-Host "      pre-revert copy FAILED for: $($revertFailed -join ', ') — that content now survives only in git history." -ForegroundColor Yellow }
             Write-Host "      Report it upstream so the canon fixes it for every repo: /ywr-harness:report-issue — one confirmation before anything is filed." -ForegroundColor Yellow

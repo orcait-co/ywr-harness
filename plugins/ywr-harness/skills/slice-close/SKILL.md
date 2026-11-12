@@ -13,6 +13,7 @@ naming its section; read a section only when its trigger fires.
 
 **Owner-typed on purpose** (ywr-harness ADR 0105): stage 5 writes the handoff and the commit, a state change
 is the person's call (ywr-harness ADR 0034), and a skill the model cannot call costs no always-on context.
+While `/ywr-harness:auto` holds in the session, the auto module may answer a model call on a non-default branch (ywr-harness ADR 0198).
 Stages 1–3 are ordinary session work that a session may run first and report.
 **→ This session already reported the slice ready, ending in a `tree:` line: `reference.md` §Prepared.**
 
@@ -62,7 +63,7 @@ later *fix diff* triggers nothing (its gate and `ungrouped:` output still apply,
 | `small` | `Workflow({name:'ywr-harness:adversarial-review', args:{scope:…, tier:'small'}})` — 2 merged lenses. |
 | `full` | Same call without `tier`. |
 
-`args.scope` is an **object**, never a bare string (a string template renders `[object Object]`):
+`args.scope` is an **object**, never a bare string (a string scope cannot shard, loses the out-of-scope bucket and skeptic #2's gate check):
 
 ```
 Workflow({name: 'ywr-harness:adversarial-review', args: {
@@ -131,7 +132,7 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    and every command it prints — never a default run, which re-covers the whole uncommitted slice.
    Its gate, `ungrouped:` and `ignored-tree claims:` output count exactly as in stage 1; its
    `review tier:` line is **not** an input to the table above. While iterating, run the touched
-   component's own test file directly (one `*.selftest.ps1`); a full runner this run prints is the
+   component's own test file directly; a full runner this run prints is the
    close gate, run once on the final tree.
 2. **Per-finding fix check** (ywr-harness ADR 0090): read each fix against its finding's claim and failure
    scenario. **High and medium** findings go to skeptic legs on the pinned worker agent
@@ -171,8 +172,10 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    edit and after every review, and every line it prints goes into the close record. **Exit 0** —
    every key proven. **Exit 1** — a key has no proof or waiver: the close stops. **Exit 3** — only
    waivers remain: the session never accepts its own waiver, so the ready report lists them, and
-   in this owner-typed close ask the owner about each waived key with its reason
-   (AskUserQuestion), quote each answer into the close record, and stop on any refusal. **Exit 2**
+   in this close ask the owner about each waived key with its reason
+   (AskUserQuestion), quote each answer into the close record, and stop on any refusal. On the model
+   path of ywr-harness ADR 0198 nobody answers: the close stops at exit 3 with no handoff and no
+   commit, and the report lists the waivers. **Exit 2**
    — `check` could not read its input (the digest, a key, the git snapshot or the journal): it
    checked nothing, so the close stops until a fixed input reaches exit 0, 1 or 3.
    **→ A digest with no `high_ids`, or a result with only `rejected_count`:
@@ -185,7 +188,8 @@ patch: its hunks reach outside the finding's lines (a moved call, another functi
 branch), it adds a surface, or it touches a critical surface the original scope did not. Name
 that criterion in the close record. The re-review's findings close under this same rule; there
 is never a third pass. Only the owner can skip a due re-review: the ready report asks, this
-owner-typed close asks again when no answer exists, and the close record quotes the answer.
+close asks again when no answer exists, and the close record quotes the answer. On the model path of
+ywr-harness ADR 0198 an open owner question stops the close with no handoff and no commit.
 
 **A rebase or merge after the review re-arms it only over the overlap (ywr-harness ADR 0072)** — reviewed
 files the incoming commits also touched, plus any hand-resolved conflict; an empty overlap keeps

@@ -14,3 +14,8 @@ The `harness_gates.py --tree` run is the last step before the ready report. Chec
   asked again at the close.
 - Each residual risk and each unverified point is a `python scripts/harness/slice_note.py add risk` note.
 - Do not write the handoff. Do not commit. The owner types `/ywr-harness:slice-close`.
+- One exception is the auto gate (ywr-harness ADR 0198). It holds only in the main loop of a session where the person
+  typed `/ywr-harness:auto on`, with the switch still on, its inputs unchanged and `HEAD` on a branch other
+  than the default branch. There, when the report holds no open owner question, call the
+  `ywr-harness:slice-close` skill yourself after the report. A deny or a host refusal is final: stop and ask
+  the owner to type the command.

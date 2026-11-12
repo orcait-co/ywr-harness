@@ -65,7 +65,7 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
 ## Same-version conflicts → upstream report (ywr-harness ADR 0067)
 
 An `upstream: SAME-VERSION drift` block in the run output means toolchain files were hand-edited
-since the last scaffold at this SAME plugin version (the #55 shape) — the canon cannot have
+since the last scaffold at this SAME plugin version — the canon cannot have
 changed them, a re-run reverts them, and the canon should hear why they were worth editing
 (ywr-harness ADR 0010: the fix belongs in the canon, for every repo). When the DRY RUN prints
 the block, do this BEFORE the real run:
