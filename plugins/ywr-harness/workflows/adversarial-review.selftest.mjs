@@ -731,11 +731,12 @@ const skeptics = (spawns) => spawns.filter((s) => s.label.startsWith('verify:'))
   const name = '12g meta.whenToUse is English and keeps every clause';
   const m = readFileSync(SCRIPT, 'utf8').match(/whenToUse:\s*'((?:[^'\\]|\\.)*)'/);
   const w = m ? m[1] : '';
-  const clauses = ['once per slice', 'files: [...]', 'gates_passed', 'args.tier:"small"', 'args.lensExtra', 'never re-reviewed', 'new mechanism', 'pins hold on every session model and under ultracode'];
+  const clauses = ['once per slice', 'files: [...]', 'gates_passed', 'args.tier:"small"', 'args.lensExtra', 'never re-reviewed', 'a patch or a new mechanism', 'open item', 'pins hold on every session model and under ultracode'];
   const missing = clauses.filter((c) => !w.includes(c));
   if (!w) fail(name, 'whenToUse literal not found');
   else if (/[가-힣]/.test(w)) fail(name, 'whenToUse carries Hangul — the model-facing listing text is English');
   else if (missing.length) fail(name, `clauses missing: ${missing.join(' | ')}`);
+  else if (/bounded re-review/i.test(w)) fail(name, 'whenToUse names a bounded re-review, which ywr-harness ADR 0200 voids');
   else pass(name);
 }
 

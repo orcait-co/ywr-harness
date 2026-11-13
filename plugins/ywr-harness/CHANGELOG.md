@@ -12,6 +12,12 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.77.0 — 2026-11-13
+
+- 리뷰 fix 는 같은 slice 에서 다시 리뷰하지 않습니다(ywr-harness ADR 0200). 땜질이든 새 메커니즘이든 같습니다. fix 는 지금처럼 gate 재실행, finding 별 fix check, high 의 fix proof 로 닫습니다. 0.74.2 의 bounded re-review 와 그 생략을 owner 에게 묻던 질문은 없어졌습니다. 그래서 auto gate 경로의 close 가 이 질문 때문에 멈추지 않습니다.
+- 더 리뷰가 필요한 fix 는 세션이 판단해서 open item 으로 넘깁니다: `python scripts/harness/slice_note.py add risk "open item: review <files and lines> of the <id> fix; <why>"`. close 가 이 노트를 handoff 의 open item 으로 옮기고, close record 에 넘긴 fix 를 적습니다. 넘긴 것이 없으면 `none` 이라고 적습니다.
+- harness-init 의 `docs/prompts/review-digest.md` 와 `docs/prompts/ready-report.md` 템플릿도 같은 규칙을 말합니다. 이 템플릿은 seed 라서 이미 scaffold 한 repo 에는 반영되지 않습니다. 그런 repo 는 두 파일의 재리뷰 불릿을 새 템플릿과 같게 고치세요. `CLAUDE.md` 에 0.72.0 이전 seed 의 `bounded re-review` 불릿이 남은 repo 도 그 불릿을 지우면 세션 시작 안내가 새 규칙을 말합니다.
+
 ## v0.76.0 — 2026-11-12
 
 - `/ywr-harness:auto` 가 켜져 있는 세션에서는 모델이 `slice-close` 를 부를 수 있습니다(ywr-harness ADR 0198). auto 모듈은 다섯 조건이 모두 맞을 때만 호출에 답하고 스킬 본문을 돌려줍니다: 메인 루프의 호출, 켜진 스위치, 이 세션에서 입력한 `/ywr-harness:auto on` 의 기준값, 그 기준값과 일치하는 입력, 기본 브랜치(`origin/HEAD` 가 가리키는 브랜치)가 아닌 브랜치 위의 `HEAD`. 스위치가 꺼져 있거나 읽기·git 호출이 실패하면 예전처럼 호스트가 호출을 거절합니다. 스위치가 켜져 있는데 조건이 하나라도 안 맞으면 맞지 않은 조건을 모두 알리며 거절하고 직접 입력하는 방법을 안내합니다. 직접 입력하는 `/ywr-harness:slice-close` 는 그대로입니다. 할 일은 없습니다.

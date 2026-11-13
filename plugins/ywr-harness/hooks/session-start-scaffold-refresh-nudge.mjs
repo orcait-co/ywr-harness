@@ -144,7 +144,7 @@ const SLICE_RULES = [
   },
   {
     copy: ['review basis:', 'bounded re-review'],
-    text: '- The review runs once per slice. A fix diff for its confirmed findings closes with re-run gates and one fix check per finding. Only a fix that is a new mechanism gets one bounded re-review, and the close names the criterion. A rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072).',
+    text: '- The review runs once per slice. A fix diff for its confirmed findings closes with re-run gates and one fix check per finding. No fix gets a re-review. When a fix needs more review, record an open item: `python scripts/harness/slice_note.py add risk \"open item: review <files and lines> of the <id> fix; <why>\"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).',
   },
   {
     copy: ['owner-typed'],

@@ -18,13 +18,14 @@
 // 워커 모델은 전역 CLAUDE.md 규칙대로 sonnet 고정 · effort 는 상한 high(세션 effort 상속 금지,
 // 2026-07-13 — xhigh/max 딥워크 누수 차단; ultracode 에서도 핀 유지 — ywr-harness ADR 0108). 대량 팬아웃 전 카나리아로 한도 확인(증발 재발 방지).
 // 슬라이스당 1회가 기본(ywr-harness ADR 0028): 확정 지적의 수정 diff 는 재호출 대상이 아니다 —
-// 게이트 재실행 + 지적별 수정 대조로 닫는다. 새 메커니즘급 수정만 1회 한정 재리뷰(마감에 기준 명기).
+// 게이트 재실행 + 지적별 수정 대조로 닫는다. 새 메커니즘급 수정도 재리뷰하지 않고, 더 볼 수정은 세션 판단으로
+// handoff open item 에 넘긴다(ywr-harness ADR 0200).
 export const meta = {
   name: 'adversarial-review',
   description: '적대 코드리뷰 표준 — 렌즈 티어(풀3·small2)·시맨틱 dedupe·심각도 게이트(h/m=2·low=1·nit=0 skeptic)',
   // whenToUse 는 모델만 읽는 목록 텍스트라 영어다(ywr-harness ADR 0045 의 분리 — 멤버 대상은 한국어, 모델 대상은 영어;
   // ywr-harness ADR 0089). 매 턴 모든 세션의 프리픽스에 실린다. description 은 멤버 UI 에 보이므로 한국어 그대로.
-  whenToUse: 'Slice-close gate review, once per slice. args.scope = {files: [...], invariants, gates_passed} (plus the git diff for a diff slice); run the repo\'s deterministic lint gates first and list what passed in gates_passed. args.tier:"small" for a small non-critical diff; house-specific lens angles go in args.lensExtra. A fix diff for its confirmed findings is never re-reviewed: close it with re-run gates + per-finding fix checks; one bounded re-review only when the fix is a new mechanism, not a patch. The pins hold on every session model and under ultracode too.',
+  whenToUse: 'Slice-close gate review, once per slice. args.scope = {files: [...], invariants, gates_passed} (plus the git diff for a diff slice); run the repo\'s deterministic lint gates first and list what passed in gates_passed. args.tier:"small" for a small non-critical diff; house-specific lens angles go in args.lensExtra. A fix diff for its confirmed findings is never re-reviewed, a patch or a new mechanism: close it with re-run gates + per-finding fix checks, and pass a fix that needs more review to a handoff open item. The pins hold on every session model and under ultracode too.',
   phases: [
     { title: 'Canary', detail: '한도/게이트웨이 확인 1개 (sonnet · reviewer 에이전트)', model: 'sonnet' },
     { title: 'Find', detail: '렌즈 병렬 — 풀 3 · small 2 (sonnet·effort medium · reviewer 에이전트)', model: 'sonnet' },

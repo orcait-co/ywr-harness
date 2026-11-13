@@ -19,8 +19,9 @@ The adversarial review returned its digest. Dispose of it under the harness rule
   already in the slice.
 - A fix closes on re-run gates over the fix's own files and one fix check per finding. A worker leg takes at most four
   findings. A fix on a critical surface gets its own leg.
-- A fix whose hunks reach outside the finding's lines (a moved call, another function, a new branch) is a new
-  mechanism. It triggers the ONE bounded re-review, with the criterion named. A skipped re-review goes to the owner in
-  the ready report.
+- No fix gets a re-review in this slice, a patch or a new mechanism (ywr-harness ADR 0200). A rebase re-arm over the overlap is
+  no fix re-review. When you judge that a fix needs more review, record this note on one line:
+  `python scripts/harness/slice_note.py add risk "open item: review <files and lines> of the <id> fix; <why>"`.
+  The close puts it in the handoff. This is your decision, not an owner question.
 - Record each disposition with `python scripts/harness/slice_note.py add decision "<id> fixed: <how>"`, or with
   `add rejected "<id> <disposition>: <reason>"` for a finding that gets no fix.

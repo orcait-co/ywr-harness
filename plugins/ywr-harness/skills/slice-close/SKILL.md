@@ -126,7 +126,7 @@ is dispositioned like a confirmed one. A result with only `rejected_count`: `ref
 §Old-digest. Judge each finding *instance vs class*: a class belongs in the
 deterministic-rule backlog, or an LLM re-finds it every slice.
 
-**The fix diff does not re-enter the review** (ywr-harness ADR 0028). Close each fix by:
+**The fix diff does not re-enter the review** (ywr-harness ADR 0028, ywr-harness ADR 0200). Close each fix by:
 
 1. **Gates**: `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py" <every file the fix touched>`
    and every command it prints — never a default run, which re-covers the whole uncommitted slice.
@@ -152,7 +152,7 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    gives a count and then the `id` of every in-scope confirmed high (`F<n>-<fingerprint>`) and of
    every rejected high that not every vote refuted (`R<n>-…`: a 1–1 split, or a refute beside a
    dead leg). A fixed `O<n>-…` high may be added; nothing can be left out. The fingerprint ties an
-   id to its finding, so a re-review's `F1` never inherits an earlier `F1`'s proof. **Before
+   id to its finding, so a later review's `F1` never inherits an earlier `F1`'s proof. **Before
    editing a fix**, run a command that shows the finding's scenario, and after the fix run the
    SAME argv again:
 
@@ -183,13 +183,14 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    that passed before the fix proves nothing; the check reports it MISSING. The skeptic leg above
    still runs: the proof shows the scenario closed, the leg looks for damage beside it.
 
-No second review over the fix diff — except ONCE when a fix is a new mechanism rather than a
-patch: its hunks reach outside the finding's lines (a moved call, another function, a new
-branch), it adds a surface, or it touches a critical surface the original scope did not. Name
-that criterion in the close record. The re-review's findings close under this same rule; there
-is never a third pass. Only the owner can skip a due re-review: the ready report asks, this
-close asks again when no answer exists, and the close record quotes the answer. On the model path of
-ywr-harness ADR 0198 an open owner question stops the close with no handoff and no commit.
+**No fix gets a re-review in this slice** (ywr-harness ADR 0200, which narrows ywr-harness ADR 0028). A patch
+and a new mechanism close the same way: steps 1 to 3 above. When you judge that a fix needs more
+review, record the need when you decide it:
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.py" add risk "open item: review <files and lines> of the <id> fix; <why>"`.
+Stage 5 puts that note in the handoff as an open item. The next slice that touches those files puts
+those hunks in its review scope. The close record names each fix that went to an open item, or says
+`none`. This is your decision. It is no owner question. The rebase re-arm below is a separate
+rule: it is no re-review of a fix.
 
 **A rebase or merge after the review re-arms it only over the overlap (ywr-harness ADR 0072)** — reviewed
 files the incoming commits also touched, plus any hand-resolved conflict; an empty overlap keeps
@@ -238,7 +239,7 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   handoff, or the repo declares no handoff, run `show --all` and read those notes too. Each note is the session's own claim, written during the
   slice: input, never proof (ywr-harness ADR 0105). Check each one against the tree and the stage outputs. Keep the decisions, rejected
   options and owner answers that still hold for the record body; put the facts and risks that stay
-  open into the handoff. Correct or drop a note the tree contradicts, and never let a note stand in
+  open into the handoff. A risk note that starts with `open item:` becomes an open item there (ywr-harness ADR 0200). Correct or drop a note the tree contradicts, and never let a note stand in
   for a gate run, the digest, a fix proof or the ready report.
 - Regenerate doc surfaces if any ADR/spec source changed (`pwsh docs/build.ps1`), committing
   `index.json` + `INDEX.md` with the change.
@@ -251,7 +252,7 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   whether it did — unknown coverage, never read as full) or the skip reason;
   the fix disposition (each finding's bucket — fixed / valid, no action / false on reading — with
   the count per bucket, gate re-runs, every per-finding verdict, `also_at` sites and split
-  rejections, the `fix_proof.py check` lines and the owner's answer on each waiver, any re-review criterion);
+  rejections, the `fix_proof.py check` lines and the owner's answer on each waiver, each fix passed to an open item or `none`);
   the slice notes kept, as corrected, with the `show` count line; `review basis:` after a rebase; the verify verdict; and
   what went ungated or unverified. **Never paste a CI skip directive into the body** — GitHub skips
   every push- and PR-triggered workflow when the pushed commit's message contains one (the
