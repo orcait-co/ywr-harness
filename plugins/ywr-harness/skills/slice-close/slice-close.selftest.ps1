@@ -83,10 +83,16 @@ $ok = (Assert-Text 'C9 verify procedure: range goes to the mapper as given, no o
 # required lines (review 2026-09-28, low: presence alone let a contradicting sentence pass).
 $ok = (Assert-Text 'C10 prepared close: reuse only on an identical --tree line, verbatim in this session, with the emitter re-run; a change re-runs stages 1+3 and re-arms the review over the changed files' $ref `
         @([regex]::Escape('scripts/harness_gates.py" --tree'), 'verbatim in THIS session', 'is no report: run every stage', 'tree: FAILED` \u2192 nothing is reused', 'run the emitter itself again', 'Re-run none of the printed commands,\s+the review or verify', 'The `gates:` window differs', 'prepared: reused at <the tree line>', 'Run stages 1 and 3 in full', [regex]::Escape('git diff --name-only <report tree id> <fresh tree id>'), 'review basis: prepared at', 'writes no handoff and makes no commit') `
-        @('(?i)(paraphrase|summary)[^.]{0,40}(is enough|suffices|counts as (a|the) report)', '(?i)another session[^.]{0,40}(may|can) be reused', '(?i)the tree line alone')) -and $ok
-$ok = (Assert-Text 'C10 SKILL.md states why the skill is owner-typed and records a reused preparation' $skill `
-        @('\*\*Owner-typed on purpose\*\* \(ywr-harness ADR 0105\)', 'ywr-harness ADR 0034', 'prepared: reused at') `
-        @('(?m)^disable-model-invocation: false')) -and $ok
+        @('(?i)(paraphrase|summary)[^.]{0,40}(is enough|suffices|counts as (a|the) report)', '(?i)another session[^.]{0,40}(may|can) be reused', '(?i)the tree line alone', '(?i)owner-typed')) -and $ok
+$ok = (Assert-Text 'C10 SKILL.md states who runs the close, asks open owner questions first, and records a reused preparation' $skill `
+        @('\*\*The person or the main session runs it\*\* \(ywr-harness ADR 0201\)', 'every owner question of the slice has an answer', 'refuses a call from a subagent', 'prepared: reused at') `
+        @('(?m)^disable-model-invocation:', '(?i)owner-typed on purpose', 'ywr-harness ADR 0198')) -and $ok
+# The description is the one line the host shows for model invocation: it must say that the main session may call the
+# close once every owner question has an answer, that a subagent never does, and no longer say "owner-typed".
+$descLine = [regex]::Match($skill, '(?m)^description:.*$').Value
+$ok = (Assert-Text 'C10 SKILL.md description (frontmatter): the main session calls it once every owner question of the slice has an answer; a subagent never calls it; no owner-typed' $descLine `
+        @('^description: ', 'the person types it, or the main session calls it after its ready report', 'once every owner question of the slice has an answer', 'A subagent never calls it\.') `
+        @('(?i)owner-typed')) -and $ok
 
 # C11: the three disposition buckets and the lens-agreement signal (ADR 0163, pstack candidate 9). What
 # can regress silently is a "valid, no action" with no record behind it, a "false on reading" with no

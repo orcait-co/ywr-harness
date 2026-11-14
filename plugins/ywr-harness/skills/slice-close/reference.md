@@ -73,8 +73,8 @@ re-arms the review too. That is the cheaper error.
 
 ## Prepared
 
-The close is owner-typed, but the stages before it are not (ywr-harness ADR 0105). A session may run stages
-1–3 before the owner types `/ywr-harness:slice-close` and end with a ready report: the emitter's
+The stages before the close are ordinary session work (ywr-harness ADR 0105). A session may run stages
+1–3 before the close runs, typed by the owner or called by the main session (ywr-harness ADR 0201), and end with a ready report: the emitter's
 output and the result of every command it printed, the review's `digest` and every fix verdict,
 the `fix_proof.py check` output (an exit 3 lists the waivers the owner must answer, and a digest
 older than ywr-harness ADR 0169 — the check prints only its rejected count, so the report also quotes each

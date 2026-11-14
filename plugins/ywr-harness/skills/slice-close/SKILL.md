@@ -1,7 +1,6 @@
 ---
 name: slice-close
-description: Slice-close ritual as one command — scope resolution, deterministic gates before any LLM review, proportional adversarial review, spec-owned verify, and one commit that carries the slice, its handoff and the close record. Use when a slice is functionally done and needs closing.
-disable-model-invocation: true
+description: Slice-close ritual as one command — scope resolution, deterministic gates before any LLM review, proportional adversarial review, spec-owned verify, and one commit that carries the slice, its handoff and the close record. Use when a slice is functionally done and needs closing — the person types it, or the main session calls it after its ready report once every owner question of the slice has an answer. A subagent never calls it.
 ---
 
 # /slice-close — slice closing ritual
@@ -11,10 +10,11 @@ is a decision to surface, never a silent default.** Rare cases live in
 `${CLAUDE_PLUGIN_ROOT}/skills/slice-close/reference.md`, each behind ONE **→** trigger line below
 naming its section; read a section only when its trigger fires.
 
-**Owner-typed on purpose** (ywr-harness ADR 0105): stage 5 writes the handoff and the commit, a state change
-is the person's call (ywr-harness ADR 0034), and a skill the model cannot call costs no always-on context.
-While `/ywr-harness:auto` holds in the session, the auto module may answer a model call on a non-default branch (ywr-harness ADR 0198).
-Stages 1–3 are ordinary session work that a session may run first and report.
+**The person or the main session runs it** (ywr-harness ADR 0201): the person types it, or the main session
+calls it after its ready report. Stage 5 writes the handoff and the commit, so the session calls it only when
+every owner question of the slice has an answer: ask an open one first (AskUserQuestion). The auto switch is
+not needed. The plugin refuses a call from a subagent. Stages 1–3 are ordinary session work that a session
+may run first and report.
 **→ This session already reported the slice ready, ending in a `tree:` line: `reference.md` §Prepared.**
 
 ## 1. Scope and gates (one command)
@@ -172,10 +172,11 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    edit and after every review, and every line it prints goes into the close record. **Exit 0** —
    every key proven. **Exit 1** — a key has no proof or waiver: the close stops. **Exit 3** — only
    waivers remain: the session never accepts its own waiver, so the ready report lists them, and
-   in this close ask the owner about each waived key with its reason
-   (AskUserQuestion), quote each answer into the close record, and stop on any refusal. On the model
-   path of ywr-harness ADR 0198 nobody answers: the close stops at exit 3 with no handoff and no
-   commit, and the report lists the waivers. **Exit 2**
+   ask the owner about each waived key with its reason (AskUserQuestion). A key that this
+   session already asked after the ready report keeps that answer; ask only the rest in this close.
+   Quote each answer into the close record, and stop on any refusal. In a headless
+   session nobody answers: the close stops at exit 3 with no handoff and no commit, and the report
+   lists the waivers. **Exit 2**
    — `check` could not read its input (the digest, a key, the git snapshot or the journal): it
    checked nothing, so the close stops until a fixed input reaches exit 0, 1 or 3.
    **→ A digest with no `high_ids`, or a result with only `rejected_count`:

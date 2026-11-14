@@ -10,12 +10,10 @@ The `harness_gates.py --tree` run is the last step before the ready report. Chec
   script ships in the ywr-harness plugin, not in this repository: `/ywr-harness:slice-close` stage 2 names its path.
   When this session has no path, the report says so, and the close runs the check.
 - The report quotes the verify verdict, or the `verify_map.py` output when the verify skill did not run.
-- Each owner question (a cost, a waiver) is asked in this report. An unanswered question is
-  asked again at the close.
+- Each owner question (a cost, a waiver) is listed in this report. The questions are asked with
+  AskUserQuestion after the report, never as plain text in it.
 - Each residual risk and each unverified point is a `python scripts/harness/slice_note.py add risk` note.
-- Do not write the handoff. Do not commit. The owner types `/ywr-harness:slice-close`.
-- One exception is the auto gate (ywr-harness ADR 0198). It holds only in the main loop of a session where the person
-  typed `/ywr-harness:auto on`, with the switch still on, its inputs unchanged and `HEAD` on a branch other
-  than the default branch. There, when the report holds no open owner question, call the
-  `ywr-harness:slice-close` skill yourself after the report. A deny or a host refusal is final: stop and ask
-  the owner to type the command.
+- Do not write the handoff. Do not commit. The close does both.
+- After the report, ask each open owner question with AskUserQuestion. When every question has an answer,
+  call the `ywr-harness:slice-close` skill yourself in the main session (ywr-harness ADR 0201). A subagent never calls it.
+  The person can also type `/ywr-harness:slice-close`.

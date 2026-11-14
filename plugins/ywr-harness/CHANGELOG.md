@@ -12,6 +12,13 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.78.0 — 2026-11-14
+
+- 이제 `/ywr-harness:auto` 없이도 메인 세션의 모델이 `ywr-harness:slice-close` 를 직접 부를 수 있습니다(ywr-harness ADR 0201). 스킬의 `disable-model-invocation` 잠금을 풀었습니다. 모델은 ready report 뒤에 열린 owner 질문을 AskUserQuestion 으로 먼저 묻고, 모든 질문에 답을 받은 뒤 close 를 부릅니다. close 가 하는 일은 그대로입니다(gate, 리뷰, verify, handoff, commit 하나). subagent 의 호출은 거절합니다. 직접 입력하는 `/ywr-harness:slice-close` 도 그대로 쓸 수 있습니다. 0.76.0 의 auto 전용 close gate(브랜치 조건 포함)는 없어졌습니다.
+- Windows 에서 모델이 AskUserQuestion 으로 질문하면 Windows 알림이 뜹니다(ywr-harness ADR 0202). 알림은 포커스를 가져가지 않고, 답하거나 "해제" 를 누를 때까지 화면에 남습니다. 답하면 알림이 저절로 사라집니다. 알림 앱 이름은 Windows PowerShell 로 표시됩니다. 끄려면 user settings 의 `env` 에 `"YWR_HARNESS_QUESTION_NOTIFY": "0"` 을 넣으세요. 방해 금지 모드에서는 알림이 뜨지 않습니다. macOS·Linux 에서는 아무것도 하지 않습니다.
+- `/ywr-harness:auto` 모듈이 화면 우측 상단에 띄우던 toast 를 없앴습니다(ywr-harness ADR 0202). stage 상태는 `/ywr-harness:auto status` 로 봅니다. 스위치를 켜 둔 checkout 은 `/ywr-harness:auto off` 로 끌 수 있습니다.
+- 세션 시작 안내의 close 규칙과 harness-init 의 `docs/prompts/ready-report.md` 템플릿이 위 규칙을 말합니다. 이 템플릿은 seed 라서 이미 scaffold 한 repo 에는 반영되지 않습니다. 그런 repo 는 그 파일의 owner 질문 불릿과 마지막 두 불릿을 새 템플릿과 같게 고치세요. repo 의 `CLAUDE.md` 에 `The close is owner-typed` 로 시작하는 옛 seed 불릿이 남아 있으면, 모델은 그 불릿을 따라 close 를 직접 부르지 않습니다. 그 불릿을 지우면 세션 시작 안내가 새 규칙을 말합니다.
+
 ## v0.77.0 — 2026-11-13
 
 - 리뷰 fix 는 같은 slice 에서 다시 리뷰하지 않습니다(ywr-harness ADR 0200). 땜질이든 새 메커니즘이든 같습니다. fix 는 지금처럼 gate 재실행, finding 별 fix check, high 의 fix proof 로 닫습니다. 0.74.2 의 bounded re-review 와 그 생략을 owner 에게 묻던 질문은 없어졌습니다. 그래서 auto gate 경로의 close 가 이 질문 때문에 멈추지 않습니다.
