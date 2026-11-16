@@ -113,7 +113,7 @@ $EXPECT = @(
     'scripts/harness/resolve-base.sh',
     # Local execution layer (ADR 0015). Placement is asserted here; the WIRING branches are cases
     # K-O, and the hooks' own behaviour is githooks.selftest.ps1.
-    '.githooks/pre-commit', '.githooks/pre-push',
+    '.githooks/pre-commit', '.githooks/pre-push', '.githooks/commit-msg',
     # Slice retro gate (ADR 0017). post-commit is GUARDED rather than TOOLCHAIN — cases Q1/Q2.
     'scripts/harness/harness_retro.py', '.githooks/post-commit', '.githooks/slice-retro-ignore',
     # Session-time decision notes (ADR 0172), named from the seeded CLAUDE.md.
@@ -400,7 +400,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Host 'SKIP [K exec bit] Windows — git invokes hooks through sh regardless of the mode bit' -ForegroundColor Yellow
     } else {
         try {
-            $noExec = @('.githooks/pre-commit', '.githooks/pre-push') | Where-Object {
+            $noExec = @('.githooks/pre-commit', '.githooks/pre-push', '.githooks/commit-msg') | Where-Object {
                 ([IO.File]::GetUnixFileMode((Join-Path $k $_)) -band [IO.UnixFileMode]::UserExecute) -eq 0
             }
             $ok = (Assert-True 'K placed hooks are executable' ($noExec.Count -eq 0) "not executable: $($noExec -join ', ')") -and $ok
@@ -1153,12 +1153,20 @@ $u = New-Target 'first-run-collision'
 New-Item -ItemType Directory -Force -Path (Join-Path $u 'docs') | Out-Null
 $ownDocs = "# my own docs index — not the canon's`n"
 Set-Content -LiteralPath (Join-Path $u 'docs/README.md') -Value $ownDocs -NoNewline
+# F12 (ADR 0208): a repo's own commit-msg hook (husky, commitlint) sits at the path this scaffold now places as TOOLCHAIN.
+# The first-run guard must leave it alone; the seed rides this run, so it costs no extra init run.
+$ownCommitMsg = "#!/bin/sh`n# my own commit-msg (commitlint), not the canon's`n"
+New-Item -ItemType Directory -Force -Path (Join-Path $u '.githooks') | Out-Null
+Set-Content -LiteralPath (Join-Path $u '.githooks/commit-msg') -Value $ownCommitMsg -NoNewline
 $rU1 = Invoke-Init @('-Target', $u)
 $ok = (Assert-True 'U1 first-run collision refuses, run exits 0' `
     ($rU1.Code -eq 0 -and $rU1.Out -match 'docs/README\.md REFUSED — first run found an existing file at this TOOLCHAIN path') "exit=$($rU1.Code) out=$($rU1.Out)") -and $ok
 $ok = (Assert-True 'U1 the colliding file survives byte-identical' `
     ((Get-Content -LiteralPath (Join-Path $u 'docs/README.md') -Raw) -eq $ownDocs) 'first run overwrote a pre-existing file') -and $ok
-$ok = (Assert-True 'U1 refusal is counted' ($rU1.Out -match 'refused=1') $rU1.Out) -and $ok
+$ok = (Assert-True 'U1 refusal is counted (docs/README.md and the foreign commit-msg)' ($rU1.Out -match 'refused=2') $rU1.Out) -and $ok
+$ok = (Assert-True 'U1 a foreign .githooks/commit-msg is REFUSED on the first run, never overwritten' `
+    ($rU1.Out -match '\.githooks/commit-msg REFUSED — first run found an existing file at this TOOLCHAIN path' -and
+     (Get-Content -LiteralPath (Join-Path $u '.githooks/commit-msg') -Raw) -eq $ownCommitMsg) "out=$($rU1.Out)") -and $ok
 $ok = (Assert-True 'U1 the stamp is withheld while refusals stand' `
     ((-not (Test-Path -LiteralPath (Join-Path $u '.harness-version') -PathType Leaf)) -and $rU1.Out -match 'stamp: NOT written') $rU1.Out) -and $ok
 $ok = (Assert-True 'U1 never labeled as a canon refresh' ($rU1.Out -notmatch 'docs/README\.md \(toolchain refreshed') $rU1.Out) -and $ok
@@ -1177,7 +1185,7 @@ $ok = (Assert-True 'U3 dry run shows the refusal too' ($rU3.Out -match 'REFUSED 
 # U4: -Force replaces, labeled truthfully (never "refreshed"), and the run then stamps.
 $rU4 = Invoke-Init @('-Target', $u, '-Force')
 $ok = (Assert-True 'U4 -Force replaces with the truthful label' `
-    ($rU4.Code -eq 0 -and $rU4.Out -match 'docs/README\.md \(REPLACED a pre-existing non-canon file under -Force' -and $rU4.Out -match 'replaced=1') "exit=$($rU4.Code) out=$($rU4.Out)") -and $ok
+    ($rU4.Code -eq 0 -and $rU4.Out -match 'docs/README\.md \(REPLACED a pre-existing non-canon file under -Force' -and $rU4.Out -match 'replaced=2') "exit=$($rU4.Code) out=$($rU4.Out)") -and $ok
 $ok = (Assert-True 'U4 the canon copy is placed' `
     ((Get-Content -LiteralPath (Join-Path $u 'docs/README.md') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/README.md') -Raw)) 'forced run did not place the canon copy') -and $ok
 $ok = (Assert-True 'U4 the stamp is written once resolved' `
@@ -1201,11 +1209,15 @@ if ($IsWindows) {
     New-Item -ItemType Directory -Force -Path (Join-Path $u6 '.githooks') | Out-Null
     Set-Content -LiteralPath (Join-Path $u6 '.githooks/pre-commit') -Value "#!/bin/sh`n# my experiment, deliberately not executable`n" -NoNewline
     Set-Content -LiteralPath (Join-Path $u6 '.githooks/post-commit') -Value "#!/bin/sh`n# my own post-commit, no marker`n" -NoNewline
+    $u6Foreign = "#!/bin/sh`n# my own commit-msg (commitlint), deliberately not executable`n"
+    Set-Content -LiteralPath (Join-Path $u6 '.githooks/commit-msg') -Value $u6Foreign -NoNewline
     $rU6 = Invoke-Init @('-Target', $u6)
-    $execRefused = @('.githooks/pre-commit', '.githooks/post-commit') | Where-Object {
+    $execRefused = @('.githooks/pre-commit', '.githooks/post-commit', '.githooks/commit-msg') | Where-Object {
         ([IO.File]::GetUnixFileMode((Join-Path $u6 $_)) -band [IO.UnixFileMode]::UserExecute) -ne 0
     }
     $ok = (Assert-True 'U6 refused hooks stay non-executable' ($execRefused.Count -eq 0) "chmod +x landed on: $($execRefused -join ', ') out=$($rU6.Out)") -and $ok
+    $ok = (Assert-True 'U6 a foreign commit-msg stays byte-identical (F12)' `
+        ((Get-Content -LiteralPath (Join-Path $u6 '.githooks/commit-msg') -Raw) -eq $u6Foreign) $rU6.Out) -and $ok
     $ok = (Assert-True 'U6 a hook this run PLACED is still made executable' `
         (([IO.File]::GetUnixFileMode((Join-Path $u6 '.githooks/pre-push')) -band [IO.UnixFileMode]::UserExecute) -ne 0) $rU6.Out) -and $ok
 }
@@ -1235,6 +1247,12 @@ Set-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Value $aaForeign 
 # check_docs.py — proving the guard is scoped per path, not per repo.
 $aaBuilder = Join-Path $aa 'docs/build_docs.py'
 Set-Content -LiteralPath $aaBuilder -Value '# locally hacked, old-path file' -NoNewline
+# F12 (ADR 0208): .githooks/commit-msg is an $INTRODUCED_IN path (0.81.0). A repo stamped 0.46.0 that already has its own
+# commit-msg hook (husky, commitlint) meets the same first-appearance guard as check_docs.py. The seed rides this
+# run, so it costs no extra init run.
+$aaCommitMsg = Join-Path $aa '.githooks/commit-msg'
+$aaOwnCommitMsg = "#!/bin/sh`n# my own commit-msg (commitlint), not the canon's`n"
+Set-Content -LiteralPath $aaCommitMsg -Value $aaOwnCommitMsg -NoNewline
 
 # AA1: re-run without -Force refuses, names both versions, leaves the foreign file untouched, and
 # still refreshes the old-path file in the same run.
@@ -1251,7 +1269,12 @@ $ok = (Assert-True 'AA1 init.ps1 carries an $INTRODUCED_IN entry for docs/check_
 $aaIntroduced = if ($aaIntroducedM.Success) { $aaIntroducedM.Groups[1].Value } else { 'NO-ENTRY-PARSED' }
 $ok = (Assert-True 'AA1 the introducing version is named' ($rAA1.Out -match "new in $([regex]::Escape($aaIntroduced))") "want 'new in $aaIntroduced' in: $($rAA1.Out)") -and $ok
 $ok = (Assert-True 'AA1 the repo''s stamped version is named' ($rAA1.Out -match 'stamped 0\.46\.0') $rAA1.Out) -and $ok
-$ok = (Assert-True 'AA1 refused is counted' ($rAA1.Out -match 'refused=1') $rAA1.Out) -and $ok
+$ok = (Assert-True 'AA1 refused is counted (check_docs.py and the foreign commit-msg)' ($rAA1.Out -match 'refused=2') $rAA1.Out) -and $ok
+$ok = (Assert-True 'AA1 init.ps1 carries an $INTRODUCED_IN entry for .githooks/commit-msg' `
+    ((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'init.ps1') -Raw) -match "'\.githooks/commit-msg'\s*=\s*'\d+\.\d+\.\d+'") 'no entry — the guard under test has no version to name') -and $ok
+$ok = (Assert-True 'AA1 a foreign .githooks/commit-msg is REFUSED as new in this version and its bytes are unchanged (F12)' `
+    ($rAA1.Out -match '\.githooks/commit-msg REFUSED — this TOOLCHAIN path is new in' -and
+     (Get-Content -LiteralPath $aaCommitMsg -Raw) -eq $aaOwnCommitMsg) "out=$($rAA1.Out)") -and $ok
 $ok = (Assert-True 'AA1 the foreign bytes are unchanged on disk' `
     ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Raw) -eq $aaForeign) 'foreign check_docs.py was overwritten') -and $ok
 $ok = (Assert-True 'AA1 the stamp is untouched (still the pre-refusal value)' `
@@ -1264,7 +1287,9 @@ $ok = (Assert-True 'AA1 an OLD-path file still refreshes in the same run (guard 
 $rAA2 = Invoke-Init @('-Target', $aa, '-Force')
 $ok = (Assert-True 'AA2 -Force replaces, run exits 0' ($rAA2.Code -eq 0) "exit=$($rAA2.Code)") -and $ok
 $ok = (Assert-True 'AA2 the truthful REPLACED label is used' ($rAA2.Out -match 'docs/check_docs\.py \(REPLACED') $rAA2.Out) -and $ok
-$ok = (Assert-True 'AA2 replaced is counted' ($rAA2.Out -match 'replaced=1') $rAA2.Out) -and $ok
+$ok = (Assert-True 'AA2 replaced is counted' ($rAA2.Out -match 'replaced=2') $rAA2.Out) -and $ok
+$ok = (Assert-True 'AA2 -Force places the canon commit-msg over the foreign one' `
+    ((Get-Content -LiteralPath $aaCommitMsg -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'githooks/commit-msg') -Raw)) 'forced run did not place the canon commit-msg') -and $ok
 $ok = (Assert-True 'AA2 the canon copy is placed' `
     ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/check_docs.py') -Raw)) 'forced run did not place the canon copy') -and $ok
 $ok = (Assert-True 'AA2 the stamp advances once resolved' `

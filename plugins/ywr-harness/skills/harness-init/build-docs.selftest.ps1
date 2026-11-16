@@ -843,6 +843,9 @@ Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsSL 'build_d
 Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $docsSL 'check_docs.py')
 Copy-Item -LiteralPath $harnessConfigSrc -Destination (Join-Path $repoSL 'scripts/harness/harness_config.py')
 $long = 'This sentence is deliberately long so that it runs past the limit of twenty five words that the rule sets for every descriptive sentence in a spec.'
+# ADR 0208: the base spec holds one unchanged placeholder (in section 2), so SL18 can prove that
+# the check reads changed lines only. U+2026 is built, never typed, in this file.
+$dots = [string][char]0x2026
 $slSpec = @"
 ---
 id: "0001"
@@ -864,6 +867,8 @@ A short sentence stands here.
 Old short sentence.
 
 $long
+
+Old skeleton <none | ${dots}> stays.
 
 ## 3. Change notes
 
@@ -1029,8 +1034,11 @@ Edit-SL 'Old short sentence.' 'Old short sentence, edited.'
 $hcSL = Join-Path $repoSL 'scripts/harness/harness_config.py'
 Move-Item -LiteralPath $hcSL -Destination "$hcSL.off"
 try { $rSL12 = Invoke-SLCheck 'docs/spec/0001-s.md' } finally { Move-Item -LiteralPath "$hcSL.off" -Destination $hcSL }
-$ok = (Assert-True 'SL12 harness_config.py missing: NOT CHECKED, exit 0' `
-    ($rSL12.Code -eq 0 -and $rSL12.Out -match '\[ste-lite\] NOT CHECKED') $rSL12.Out) -and $ok
+# ADR 0208 (owner answer 2026-11-16): the placeholder check never passes a file unread. With no
+# harness_config.py it reads every line, so the base fixture's UNCHANGED placeholder now fails the run.
+$ok = (Assert-True 'SL12 harness_config.py missing: STE-lite NOT CHECKED; the placeholder check reads the whole file and fails on the unchanged base placeholder (exit 1)' `
+    ($rSL12.Code -eq 1 -and $rSL12.Out -match '\[ste-lite\] NOT CHECKED' -and $rSL12.Out -match '\[placeholder\] WHOLE FILES \(scripts/harness/harness_config\.py unusable' `
+     -and $rSL12.Out -match '\[placeholder\] FAIL - 1 finding' -and $rSL12.Out -notmatch '\[placeholder\] NOT CHECKED') $rSL12.Out) -and $ok
 Write-SL '.harness.json' '{"docs": {"ste_lite": "true"}}'
 $rSL12b = Invoke-SLCheck 'docs/spec/0001-s.md'
 $ok = (Assert-True 'SL12b a string docs.ste_lite: WARN line, advisory, exit 0' `
@@ -1136,6 +1144,38 @@ Remove-Item -LiteralPath (Join-Path $docsSL 'docs.html'), (Join-Path $docsSL 'do
 $rSL17 = Invoke-SLCheck 'docs/adr/0002-adopt-docs-as-code.md'
 $ok = (Assert-True 'SL17 the harness-init seed ADR passes R3, R5, R8 and the option count under both keys (exit 0)' `
     ($rSL17.Code -eq 0 -and $rSL17.Out -match '\[ste-lite\] OK - \d+ section\(s\) in 1 file\(s\) pass R3, R5, R8 and the ADR option count' -and $rSL17.Out -notmatch '\[ste-lite\]\s+(R\d|OPT) ') $rSL17.Out) -and $ok
+Reset-SL
+
+# SL18 (ADR 0208): the placeholder check reads the same files and changed lines as STE-lite and
+# fails under no key. The base spec holds an unchanged placeholder in section 2 (never reported).
+# Changed lines: a bare `<none | U+2026>` fails; the same span in a code span, `<met | not met>`
+# (accepted: it holds no U+2026), an HTML comment and a plain tag pass. SL18b: a records section is
+# read, a verbatim block is exempt, and docs.ste_lite: false gates nothing. SL18c: a new ADR is read
+# and a changed accepted ADR is skipped. Mutation anchors: a reader that skips records sections drops
+# SL18b, one that reads code spans or the verbatim block adds a finding to SL18 or SL18b, and one
+# that reads unchanged lines reports two in SL18.
+Edit-SL 'A short sentence stands here.' "A short sentence stands here.`nAdd <none | $dots> here.`n`nCode ``<none | $dots>`` span.`n`nNot placeholders: <met | not met>, <!-- <done | $dots> --> and <b>x</b>."
+$rSL18 = Invoke-SLCheck 'docs/spec/0001-s.md'
+$sl18n = ([regex]::Matches($rSL18.Out, '\[placeholder\] docs/spec/')).Count
+$ok = (Assert-True 'SL18 a changed bare placeholder fails with no key (exit 1, one finding on line 12); code span, met-or-not, comment, tag and the unchanged base line pass' `
+    ($rSL18.Code -eq 1 -and $sl18n -eq 1 -and $rSL18.Out -match '\[placeholder\] docs/spec/0001-s\.md:12 unfilled skeleton placeholder: "<none \| \\u2026>"' -and $rSL18.Out -match '\[placeholder\] FAIL - 1 finding' -and $rSL18.Out -match '\[ste-lite\] OK - 1 section') $rSL18.Out) -and $ok
+Reset-SL
+
+Write-SL '.harness.json' '{"docs": {"ste_lite": false}}'
+Edit-SL "## 3. Change notes`n`n" "## 3. Change notes`n`n- <judge: t1 1> note.`n"
+Edit-SL "<!-- ste-lite: verbatim -->`n$long" "<!-- ste-lite: verbatim -->`n$long <none | $dots>"
+$rSL18b = Invoke-SLCheck 'docs/spec/0001-s.md'
+$sl18bn = ([regex]::Matches($rSL18b.Out, '\[placeholder\] docs/spec/')).Count
+$ok = (Assert-True 'SL18b a records section is read (finding), a verbatim block is exempt, docs.ste_lite: false gates nothing (exit 1)' `
+    ($rSL18b.Code -eq 1 -and $sl18bn -eq 1 -and $rSL18b.Out -match 'unfilled skeleton placeholder: "<judge: t1 1>"' -and $rSL18b.Out -match '3\. Change notes \(records, not checked\)' -and $rSL18b.Out -match '\[placeholder\] FAIL - 1 finding') $rSL18b.Out) -and $ok
+Reset-SL
+
+Write-SL 'docs/adr/0005-e.md' "---`nid: `"0005`"`ntype: adr`ntitle: `"e`"`nstatus: accepted`n---`n# 0005. E`n`n<NO KEY SET: judge from --all>`n"
+Add-Content -LiteralPath (Join-Path $docsSL 'adr/0001-a.md') -Value "`n<none | $dots>" -NoNewline
+$rSL18c = Invoke-SLCheck 'docs/adr/0001-a.md' 'docs/adr/0005-e.md'
+$sl18cn = ([regex]::Matches($rSL18c.Out, '\[placeholder\] docs/adr/')).Count
+$ok = (Assert-True 'SL18c a new ADR is read (line 9, NO KEY SET) and a changed accepted ADR is skipped' `
+    ($sl18cn -eq 1 -and $rSL18c.Out -match '\[placeholder\] docs/adr/0005-e\.md:9 unfilled skeleton placeholder: "<NO KEY SET: judge from --all>"' -and $rSL18c.Out -notmatch '0001-a\.md') $rSL18c.Out) -and $ok
 Reset-SL
 
 # --- FL: every YAML list shape a spec is written in indexes as the SAME list (dist issue #6) ----

@@ -182,7 +182,8 @@ outranks the local one is reported as such (ADR 0015).
 |---|---|---|
 | `.githooks/pre-commit` | staged files | Runs the emitter's **file-scoped** gates. Whole-program gates (tests, typecheck) are deferred to CI and the deferral is reported. A failing gate blocks the commit. |
 | `.githooks/pre-push` | added lines of the pushed range | Regex secret scan. Pre-existing secrets outside the range are not re-flagged; a false positive is exempted per line with `harness:allow-secret`. |
-| `.githooks/post-commit` | the commit just made | Slice retro gate (ADR 0017) — seven deterministic docs-drift checks, zero tokens, silent when clean. Advisory: it never blocks. |
+| `.githooks/commit-msg` | the commit message | Refuses a message whose review digest `confirmed N (hX mY lZ)` counts more high and medium findings than it has `class:` lines (ADR 0208). A message with no `confirmed <number>` token starts no Python. A digest with no Python or no `scripts/harness/harness_retro.py` is refused, never passed unchecked. `git commit --no-verify` is the only bypass. |
+| `.githooks/post-commit` | the commit just made | Slice retro gate (ADR 0017) — seven deterministic docs-drift checks plus SIZE and CLASS, zero tokens, silent when clean. Advisory: it never blocks. CLASS reports the same class-line gap as `commit-msg`, for a commit made with `--no-verify`. |
 
 `post-commit` is placed under a third mode, **GUARDED**: written when absent, refreshed when the
 existing file carries the `ywr-harness:post-commit` marker, **refused** otherwise. It is the one
@@ -196,7 +197,7 @@ from the `retro` block in `.harness.json`. **An empty list disables the checks i
 
 ```
 python scripts/harness/harness_retro.py main~3..HEAD   # whole slice — absorbs mid-slice splits
-python scripts/harness/harness_retro.py --coverage     # unowned files + dead implements_in
+python scripts/harness/harness_retro.py --coverage     # unowned files + dead implements_in + class-line tally
 SLICE_RETRO=0 git commit ...                           # skip once
 ```
 

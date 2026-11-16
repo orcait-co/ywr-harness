@@ -16,6 +16,9 @@ The adversarial review returned its digest. Dispose of it under the harness rule
   `/ywr-harness:slice-close` defines the three. A high or medium in `rejected[]` whose votes split 1–1 is read
   against its claim before it counts as rejected. If the claim holds, the finding gets one of the three
   dispositions.
+- Each confirmed high or medium finding also gets one class line in the close record (ywr-harness ADR 0208):
+  `class: <id> instance — <reason>`, or `class: <id> BACKLOG — <deterministic owner>` with one bullet appended to
+  `docs/handoff-archive/BACKLOG.md`, which you create with a title line when the repo has none.
 - A confirmed low gets no disposition and no class judgment (ywr-harness ADR 0206). This covers an out-of-scope low and an
   unverified low too. The close record, the slice commit body, lists each low: its id, title, `file:line` and
   `also_at` count. Mark it `fixed` when you fix it anyway at every site, `fixed in part` with the fixed sites when

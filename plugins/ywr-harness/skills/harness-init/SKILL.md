@@ -134,8 +134,10 @@ Beyond the docs shape, the scaffold vendors the pieces that actually run the gat
   gates (tests, typecheck) are deferred to CI and the deferral is reported.
 - `.githooks/pre-push` — scans **added lines** of the pushed range for secrets. A false positive is
   exempted per line with the marker `harness:allow-secret`, not with `--no-verify`.
+- `.githooks/commit-msg` — refuses a commit message whose review digest counts more high and medium
+  findings than it has `class:` lines; `git commit --no-verify` is the only bypass (ywr-harness ADR 0208).
 - `.githooks/post-commit` + `scripts/harness/harness_retro.py` — the slice retro gate: seven
-  deterministic docs-drift checks at zero token cost, advisory, silent when clean (ywr-harness ADR 0017).
+  deterministic docs-drift checks plus SIZE and CLASS at zero token cost, advisory, silent when clean (ywr-harness ADR 0017).
   Placed **GUARDED** — an existing `post-commit` without the `ywr-harness:post-commit` marker is
   refused rather than overwritten, and the one-line manual wiring is printed instead.
 

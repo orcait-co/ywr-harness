@@ -12,6 +12,16 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.81.0 — 2026-11-16
+
+- `/ywr-harness:slice-close` 의 close record(slice 커밋 본문)에 confirmed high·medium 지적마다 `class:` 줄을 하나씩 적습니다(ywr-harness ADR 0208). 형식은 `class: <id> instance — <결정적 검사로 막을 수 없는 이유>` 또는 `class: <id> BACKLOG — <그 결함 유형을 막을 결정적 검사>` 입니다. `BACKLOG` 이면 `docs/handoff-archive/BACKLOG.md` 에도 항목을 덧붙입니다. 같은 지적의 `also_at` 위치는 한 줄을 같이 씁니다. low 에는 이 줄을 쓰지 않습니다. 지금까지는 이 판단이 스킬의 문장 하나였고, 실제 close 37건의 high·medium 108건 중 판단이 적힌 것이 0건이었습니다.
+- 새 `commit-msg` hook 이 커밋 메시지의 리뷰 digest(`confirmed N (hX mY lZ)`)가 센 high·medium 수보다 `class:` 줄이 적은 커밋을 거절합니다. 피해 가는 방법은 `git commit --no-verify` 뿐입니다. 다른 커밋의 digest 를 인용한 메시지도 거절되니, 그럴 때는 `class:` 줄을 쓰거나 `--no-verify` 를 쓰세요. hook 은 먼저 Python 없이 메시지에 `confirmed` 라는 단어가 있는지 봅니다. 없으면 바로 통과합니다(Windows 측정 커밋당 약 +0.06 초). `#` 으로 시작하는 줄의 digest 도 셉니다. 있는데 Python 이나 `scripts/harness/harness_retro.py` 가 없으면 커밋을 거절합니다. harness-init 을 다시 돌리면 `.githooks/commit-msg` 가 놓입니다. 이미 다른 `commit-msg` hook(husky 등)이 있는 repo 에는 놓지 않고, 그 repo 에서는 post-commit 경고만 남습니다.
+- post-commit slice retro 에도 같은 CLASS 검사가 생겼습니다. hook 을 거치지 않은 커밋을 알려 줍니다. 설정 없이 항상 켜져 있고, 커밋을 막지 않습니다. 이 버전 이전의 close 커밋이 범위에 들어가면 그 커밋들도 알림에 나옵니다. `scripts/harness/harness_retro.py` 는 TOOLCHAIN 이라 harness-init 을 다시 돌리면 반영됩니다.
+- `docs/check_docs.py` 가 바뀐 spec 줄이나 새 ADR 에 남은 skeleton placeholder 를 거절합니다. `…` 가 들어 있는 꺾쇠 구간, `<judge:` 나 `<NO KEY SET` 으로 시작하는 구간이 대상입니다. change notes 같은 기록 섹션도 봅니다. 코드 구간 안의 텍스트와 `<!-- ste-lite: verbatim -->` 아래 블록은 보지 않습니다. `docs.ste_lite` 설정과 상관없이 커밋을 막습니다. 이 파일은 TOOLCHAIN 이라 harness-init 을 다시 돌리면 반영됩니다.
+- `commit-msg` hook 이 git 의 comment string(`core.commentChar`, `core.commentString`)을 읽습니다(ywr-harness ADR 0209). 그 문자열로 시작하는 `class:` 줄은 git 이 커밋할 때 지울 수 있으므로 세지 않습니다. 예를 들어 `core.commentChar` 가 `-` 이면 `- class: ...` 줄은 세지 않으니, 앞의 `- ` 를 빼고 쓰세요. 거절 메시지가 그 문자열을 알려 줍니다. 이 설정을 읽는 git 호출은 통과할 close 커밋에서만 일어나며, Windows 측정 약 +0.06 초입니다. 설정을 읽지 못하면(git 없음 등) 커밋을 거절합니다.
+- `harness_retro.py --coverage` 가 최근 200개 커밋의 close 를 모아 `class:` 줄 집계(`instance`, `BACKLOG`, 다른 형식, class 줄이 모자란 close)를 출력합니다. `/ywr-harness:slice-close` 는 커밋 뒤에 이 집계를 close 보고에 그대로 인용합니다. 0.81.0 이전의 close 는 class 줄이 없으므로 모자란 close 로 셉니다.
+- harness-init 의 `REVIEW.md` 와 `docs/prompts/review-digest.md` 템플릿도 `class:` 줄을 말합니다. 이 파일들은 seed 라서 이미 scaffold 한 repo 에는 반영되지 않습니다. 옛 문구가 새 규칙과 어긋나지 않으므로 고치지 않아도 됩니다. 스킬이 `class:` 줄을 요구합니다.
+
 ## v0.80.0 — 2026-11-16
 
 - harness-init 은 seed 파일을 덮어쓰지 않습니다. 그래서 이미 scaffold 한 repo 의 `CLAUDE.md`, `.claude/CLAUDE.md`, `REVIEW.md`, `docs/prompts/review-digest.md`, `docs/prompts/ready-report.md` 에는 0.77.0~0.79.0 에서 바뀐 옛 규칙 문구가 남을 수 있습니다. 이제 세션을 시작할 때 그런 문구가 남은 파일을 알려 줍니다(ywr-harness ADR 0207). 알림에는 파일, 옛 문구, 그 문구를 뺀 릴리스와 ADR, 현재 문구가 있는 플러그인 템플릿 폴더가 나옵니다. 파일을 고칠 때까지 세션을 시작할 때마다 알립니다. 대상 문구는 옛 seed 에만 있던 문장입니다. 직접 쓴 문장이 그 문구를 그대로 담고 있으면 그 문장도 알림에 나옵니다. 플러그인은 파일을 고치지 않고 알리기만 합니다.

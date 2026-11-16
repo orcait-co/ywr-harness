@@ -131,6 +131,7 @@ SCAFFOLD_CLAIMS: frozenset = frozenset({
     "scripts/harness/.gitignore",
     ".githooks/pre-commit",
     ".githooks/pre-push",
+    ".githooks/commit-msg",
     # $GUARDED destination
     ".githooks/post-commit",
     # $SEED destinations (content is repo-owned; the PATH is scaffold-decided, which is what a

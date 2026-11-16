@@ -1,0 +1,60 @@
+#!/bin/sh
+# commit-msg — refuse a close record that owes `class:` lines and has fewer (ywr-harness ADR 0208).
+#
+# TOOLCHAIN (ywr-harness ADR 0010/0015): placed by /ywr-harness:harness-init and OVERWRITTEN on
+# every re-run. Do not hand-edit — fix it in the canon and re-run the scaffold.
+#
+# What it does: first a pre-filter in plain sh, one `grep -q confirmed` over the raw message file. It
+# cuts nothing and drops no line, so a digest on a `#` line or below a scissors line still shows
+# the token. The word is deliberately looser than the digest shape: the exact digest shape is the
+# Python check's job, and that check counts the whole file. Grep exit 1 means no token, so the hook
+# exits 0 and starts no Python. Grep exit 0 means the message may hold a digest
+# `confirmed N (hX mY lZ)`, so the hook runs
+# `scripts/harness/harness_retro.py --class-message <message file>`. A message that counts more
+# high and medium findings than it has `class:` lines fails that check, and the hook refuses the
+# commit. The check reads no git state and needs no declaration, so it is always on.
+#
+# Failure is a blocked commit. `git commit --no-verify` is the only bypass, and the post-commit
+# retro still reports the same gap afterwards (CLASS). A message with a digest is never passed
+# unchecked: a missing interpreter or script, a crash of the check, or a pre-filter that could not
+# read the message (any grep exit other than 0 or 1) refuses the commit.
+#
+# Copyright (c) 2026 YWR Labs Inc. All rights reserved.
+
+MSG="$1"
+[ -n "$MSG" ] || exit 0
+
+grep -q 'confirmed' "$MSG"
+RC=$?
+if [ $RC -eq 1 ]; then
+    exit 0
+fi
+if [ $RC -ne 0 ]; then
+    echo "[harness] commit-msg: REFUSED — could not read the message (grep exit $RC), so its class lines cannot be checked (ywr-harness ADR 0208). Fix the tool, or commit with --no-verify."
+    exit 1
+fi
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=.
+RETRO="$ROOT/scripts/harness/harness_retro.py"
+if [ ! -f "$RETRO" ]; then
+    echo "[harness] commit-msg: REFUSED — this message holds a review digest, but scripts/harness/harness_retro.py was not found, so its class lines cannot be checked (ywr-harness ADR 0208). Fix the tool, or commit with --no-verify."
+    exit 1
+fi
+
+PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || command -v py 2>/dev/null)
+if [ -z "$PY" ]; then
+    echo "[harness] commit-msg: REFUSED — this message holds a review digest, but python was not found, so its class lines cannot be checked (ywr-harness ADR 0208). Fix the tool, or commit with --no-verify."
+    exit 1
+fi
+
+# Exit 1 is the check's own refusal, and it printed the reason. Any other non-zero exit is a crash
+# of the check: it is reported and the commit is refused too, never passed unchecked.
+"$PY" "$RETRO" --class-message "$MSG"
+RC=$?
+if [ $RC -eq 0 ]; then
+    exit 0
+fi
+if [ $RC -ne 1 ]; then
+    echo "[harness] commit-msg: REFUSED — the class check exited $RC, so this message's class lines cannot be checked (ywr-harness ADR 0208). Fix the tool, or commit with --no-verify."
+fi
+exit 1

@@ -39,5 +39,7 @@ arrives with the first postmortem.
 
 For every confirmed high or medium finding, judge: is this one instance of a defect CLASS? If yes,
 name the deterministic owner that would retire the class (a lint rule, a CI check, a selftest
-assertion) and record it as a decision candidate; fixing only the instance is an incomplete
-disposition. A confirmed low gets no class judgment: `/ywr-harness:slice-close` lists it.
+assertion) and record it as a decision candidate: one bullet at the end of
+`docs/handoff-archive/BACKLOG.md`, created with a title line when absent; fixing only the instance is an incomplete
+disposition. The close record holds the answer as one `class:` line per finding (ywr-harness ADR
+0208). A confirmed low gets no class judgment: `/ywr-harness:slice-close` lists it.

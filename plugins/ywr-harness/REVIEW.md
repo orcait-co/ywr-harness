@@ -112,7 +112,8 @@ by `/ywr-harness:harness-init` (ADR 0054).
 
 ## Finding disposition — fix the class, not the instance
 
-For every confirmed high or medium finding, judge: is this one instance of a defect CLASS? If yes, name the
+For every confirmed high or medium finding, judge: is this one instance of a defect CLASS? The close record
+holds the answer as one `class:` line per finding (ADR 0208). If yes, name the
 deterministic owner that would retire the class forever — a selftest assertion, a
 `manifest-gate.mjs` or emitter check, a CI step — and record it as an ADR-candidate entry in
 `docs/handoff-archive/BACKLOG.md`, in the section matching the surface, appended at the END of

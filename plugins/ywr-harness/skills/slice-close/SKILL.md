@@ -130,8 +130,18 @@ A confirmed high or medium marked `unverified: true` (every skeptic leg died, tw
 claim before it is fixed or dispositioned. A **high or medium** in `rejected[]` whose skeptic
 votes split 1–1 is read by the closer against its claim before it counts as rejected; if true, it
 is dispositioned like a confirmed one. A result with only `rejected_count`: `reference.md`
-§Old-digest. Judge each high and medium finding *instance vs class*: a class belongs in the
-deterministic-rule backlog, or an LLM re-finds it every slice.
+§Old-digest.
+
+**Class line** (ywr-harness ADR 0208): every high or medium finding the digest counts gets ONE line
+in the close record, whatever its bucket; its `also_at` sites share it. Write
+`class: <id> instance — <why no deterministic check can own this defect>` or
+`class: <id> BACKLOG — <the deterministic owner that would retire the class>`, and for `BACKLOG`
+append the entry to `docs/handoff-archive/BACKLOG.md`: one bullet at the end of the section for its
+surface, naming the finding and the owner; create the file with a title line when the repo has
+none, and add the section heading when the file has no such section. Stage it with the slice. A class an
+LLM review keeps re-finding belongs to a deterministic owner. The commit-msg hook refuses a commit whose
+class lines are fewer than the digest's high and medium count, and the slice retro reports one that
+got past the hook. A low gets no class line.
 
 **The fix diff does not re-enter the review** (ywr-harness ADR 0028, ywr-harness ADR 0200). Close each fix by:
 
@@ -261,6 +271,7 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   the low list of stage 2; the fix disposition (each high and medium finding's bucket — fixed / valid, no action / false on reading — with
   the count per bucket, gate re-runs, every per-finding verdict, `also_at` sites and split
   rejections, the `fix_proof.py check` lines and the owner's answer on each waiver, each high or medium fix passed to an open item or `none`);
+  the class line of each high and medium finding;
   the slice notes kept, as corrected, with the `show` count line; `review basis:` after a rebase; the verify verdict; and
   what went ungated or unverified. **Never paste a CI skip directive into the body** — GitHub skips
   every push- and PR-triggered workflow when the pushed commit's message contains one (the
@@ -272,6 +283,11 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_retro.py"` by hand. A follow-up commit only when a
   retro finding changes an ADR, a spec or the docs index (ywr-harness ADR 0017); a "no change" result is not
   resume state and never gets a commit.
+- **Class tally** (ywr-harness ADR 0209): after the commit, run
+  `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_retro.py" --coverage` and quote its `-- class lines`
+  lines verbatim in the close report. The tally counts the `instance` and `BACKLOG` lines of recent
+  closes, this close included. Never truncate it. Under `SLICE_RETRO=0` the run prints nothing: say
+  that the tally did not run, never that it is clean.
 
 The last item of the record is the point of the whole ritual: a close that does not say what it
 did *not* cover reads as complete coverage.

@@ -192,7 +192,7 @@ def exec_bit_gap(root: Path) -> str:
     import os
     if os.name != "posix":
         return ""
-    bad = [h for h in ("pre-commit", "pre-push", "post-commit")
+    bad = [h for h in ("pre-commit", "pre-push", "post-commit", "commit-msg")
            if (root / ".githooks" / h).is_file()
            and not os.access(root / ".githooks" / h, os.X_OK)]
     if not bad:

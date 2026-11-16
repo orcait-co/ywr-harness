@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""docs-as-code drift check (ywr-harness ADR 0074) and STE-lite gate (ywr-harness ADR 0128).
+"""docs-as-code drift check (ywr-harness ADR 0074), STE-lite gate (ywr-harness ADR 0128) and
+skeleton placeholder check (ywr-harness ADR 0208).
 
 The ready-made Artifact `check` (ywr-harness ADR 0068) for this repo's generated docs surfaces
 (index.json, INDEX.md, docs.html, docs.artifact.html, and the customer surfaces
@@ -32,6 +33,12 @@ only when `.harness.json` declares `docs.ste_lite: true`; otherwise they print a
 advice and the exit code is the drift check's. A clean tree (CI) has no change
 against HEAD, so the gate finds nothing there. No arguments: drift check only, which is
 what the Artifact `check` contract (ywr-harness ADR 0068) requires.
+
+With path arguments a placeholder check runs over the same files and changed lines
+(ywr-harness ADR 0208). It reads records sections too, because a skeleton lands in a ledger note,
+and reads text outside code spans and fenced blocks only. A placeholder is an angle-bracket span on one
+line that holds the character U+2026 or starts with `judge:` or `NO KEY SET`. A finding fails the
+run under no key. `<!-- ste-lite: verbatim -->` exempts the next block, as for STE-lite.
 
 TOOLCHAIN placement (ywr-harness ADR 0010): scaffold-owned, re-placed verbatim
 by `/ywr-harness:harness-init` on every run — edit the template upstream,
@@ -67,6 +74,11 @@ ENTITY_RX = re.compile(r"&(?:#[0-9]+|#x[0-9a-f]+|[a-z]+);", re.I)
 # such as 3" never opens a pair with the next real quote.
 QUOTED_RX = (re.compile(r"\[[^\[\]]*\]"), re.compile(r'(?<!\w)"[^"]*"(?!\w)'),
              re.compile("\u201c[^\u201c\u201d]*\u201d"))
+# ywr-harness ADR 0208: an unfilled skeleton, as `cc_sweep.py --note` prints it. One line, no bracket inside.
+ELLIPSIS = "\u2026"
+PLACEHOLDER_RX = re.compile(r"<([^<>\n]*)>")
+CODE_SPAN_RX = re.compile(r"(`+)(.+?)\1", re.S)
+COMMENT_RX = re.compile(r"<!--.*?-->", re.S)
 ABBREV = {"e.g.", "i.e.", "etc.", "vs.", "cf.", "approx.", "incl.", "no.", "fig."}
 # R3: words a short reference may use besides id-like tokens (docs/README.md §Writing style).
 REF_WORDS = {"adr", "adrs", "spec", "specs", "fact", "facts", "issue", "issues", "slice",
@@ -283,7 +295,18 @@ def _section_of(heads: list[dict], ln: int) -> int:
     return stack[-1]["line"] if stack else above[-1]["line"]
 
 
+_DIFFS: dict = {}   # (root, rel) -> result: STE-lite and the placeholder check share one git read
+
+
 def _changed_lines(root: Path, rel: str, hc) -> tuple[set[int], set[int]] | None:
+    """`_diff_against_head`, read once per file for the run."""
+    key = (str(root), rel)
+    if key not in _DIFFS:
+        _DIFFS[key] = _diff_against_head(root, rel, hc)
+    return _DIFFS[key]
+
+
+def _diff_against_head(root: Path, rel: str, hc) -> tuple[set[int], set[int]] | None:
     """(changed, anchors) against HEAD; None when the file is new against HEAD. `changed` holds
     the working-tree lines a hunk adds or rewrites. `anchors` holds, for each pure deletion, the
     line above it, which selects that section. A deletion whose first non-blank removed line is a
@@ -372,13 +395,93 @@ def _check_file(path: Path, rel: str, diff: tuple[set[int], set[int]] | None,
     return len(touched - records), findings, marked
 
 
+def _pick(here: Path, paths: list[str]) -> list[Path]:
+    """The passed paths that are a spec or ADR file of this docs tree."""
+    docs = [here / "spec", here / "adr"]
+    return [p for p in (Path(a).resolve() for a in paths)
+            if p.parent in docs and DOC_RX.match(p.name) and not p.name.startswith("0000-")
+            and p.is_file()]
+
+
+def _mask(text: str) -> str:
+    """Blank each code span and HTML comment, keeping every newline so line numbers hold."""
+    def blank(m):
+        return re.sub(r"[^\n]", " ", m.group(0))
+    return COMMENT_RX.sub(blank, CODE_SPAN_RX.sub(blank, text))
+
+
+def _placeholders(path: Path, rel: str, diff: tuple[set[int], set[int]] | None,
+                  out: list[str]) -> int:
+    """ywr-harness ADR 0208: report each skeleton placeholder on a changed line; returns the count.
+    `_units` holds no frontmatter, fence or comment line, and its `verbatim` flag exempts a block.
+    A records section is read too. A heading line is read, and a marker never exempts it."""
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    heads, units, _ = _units(lines)
+    spans = [(h["line"], h["line"]) for h in heads]
+    spans += [(u["start"], u["end"]) for u in units if not u["skip"]]
+    found = 0
+    for start, end in sorted(spans):
+        masked = _mask("\n".join(lines[start - 1:end])).split("\n")
+        for off, text in enumerate(masked):
+            ln = start + off
+            if diff is not None and ln not in diff[0]:
+                continue
+            for m in PLACEHOLDER_RX.finditer(text):
+                inner = m.group(1)
+                if ELLIPSIS in inner or inner.startswith(("judge:", "NO KEY SET")):
+                    found += 1
+                    out.append(f"[placeholder] {rel}:{ln} unfilled skeleton placeholder: "
+                               f"\"{_ascii(m.group(0)[:60])}\"")
+    return found
+
+
+def placeholders(here: Path, paths: list[str]) -> int:
+    """Run the placeholder check (ywr-harness ADR 0208) over the passed paths. Returns 1 when a finding fails
+    the run. No key gates it. A file whose changed lines cannot be read is read whole: the check
+    never passes a file unread (the owner's answer of 2026-11-16, ywr-harness ADR 0208)."""
+    here = here.resolve()
+    picked = _pick(here, paths)
+    if not picked:
+        print("[placeholder] OK - no spec or ADR of this docs tree among the passed paths")
+        return 0
+    sys.path.insert(0, str(here.parent / "scripts" / "harness"))
+    try:
+        import harness_config as hc
+        root = hc.find_repo_root(here)
+    except Exception as e:                   # no diff without the git boundary: read whole files
+        hc, root = None, here.parent
+        print(f"[placeholder] WHOLE FILES (scripts/harness/harness_config.py unusable: "
+              f"{type(e).__name__} - re-run /ywr-harness:harness-init); every line is read")
+    out, found, files = [], 0, 0
+    for p in picked:
+        rel, whole = p.name, hc is None
+        changed = None
+        if hc is not None:
+            try:
+                rel = p.relative_to(root).as_posix()
+                changed = _changed_lines(root, rel, hc)
+            except (ValueError, subprocess.CalledProcessError, OSError) as e:
+                whole = True
+                print(f"[placeholder] WHOLE FILE ({_ascii(rel)}: {type(e).__name__} reading the diff); "
+                      "every line is read")
+        if not whole and p.parent == here / "adr" and changed is not None:
+            continue                         # an accepted ADR is append-only: never rewritten
+        files += 1
+        found += _placeholders(p, rel, changed, out)
+    for line in out:
+        print(line)
+    if found:
+        print(f"[placeholder] FAIL - {found} finding(s). Fill or remove each skeleton placeholder "
+              "(ywr-harness ADR 0208).")
+        return 1
+    print(f"[placeholder] OK - {files} file(s) read, no unfilled skeleton placeholder")
+    return 0
+
+
 def ste_lite(here: Path, paths: list[str]) -> int:
     """Run the STE-lite gate over the passed paths. Returns 1 when a finding must fail the run."""
     here = here.resolve()
-    docs = [here / "spec", here / "adr"]
-    picked = [p for p in (Path(a).resolve() for a in paths)
-              if p.parent in docs and DOC_RX.match(p.name) and not p.name.startswith("0000-")
-              and p.is_file()]
+    picked = _pick(here, paths)
     if not picked:
         print("[ste-lite] OK - no spec or ADR of this docs tree among the passed paths")
         return 0
@@ -460,4 +563,5 @@ if __name__ == "__main__":
     if not sys.argv[1:]:
         sys.exit(drift)
     ste = ste_lite(here, sys.argv[1:])
-    sys.exit(2 if drift == 2 else max(drift, ste))
+    holders = placeholders(here, sys.argv[1:])
+    sys.exit(2 if drift == 2 else max(drift, ste, holders))
