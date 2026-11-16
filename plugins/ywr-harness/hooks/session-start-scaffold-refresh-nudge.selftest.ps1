@@ -394,8 +394,131 @@ function Set-CopyClaude([string]$Extra) { [IO.File]::WriteAllText($cpClaude, $se
 
 Set-CopyClaude $oldSeed
 $out = Invoke-Hook (New-Payload @{ cwd = $cp })
-# ADR 0197 retired sessionModel and the ADR 0190 review-call fill: a copy without it gets the copy note alone.
-$ok = (Assert-RuleOnly '3a the old seed copies every rule: the copy note alone, no review-call fill (ADR 0197)' $out $copyNote) -and $ok
+# ADR 0197 retired sessionModel and the ADR 0190 review-call fill: a copy without it gets no fill. The old close bullet
+# holds retired text (ADR 0207, `The close is owner-typed`), so that copy is no copy: the close rule is stated, the other
+# copied rules stay left out, the copy note follows, the retired-text part comes last, and a person gets one line.
+$ok = (Assert-Nudge '3a the old seed copies every rule, its close bullet is retired: the close rule, the copy note, the retired part' $out `
+        @([regex]::Escape('CLAUDE.md (`The close is owner-typed`: v0.72.0, ywr-harness ADR 0201)'), 'seed 파일 1개', '직접 고쳐야', 'ADR 0207', '제안만 합니다') `
+        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '템플릿과 다릅니다', 'Put house review angles', 'review basis:', $ruleMark)) -and $ok
+$ctx3a = [string](ConvertFrom-Json $out.Trim()).hookSpecificOutput.additionalContext
+$ok = (Assert-True '3a the retired close copy: exactly the head and the close rule, the copy note, then the retired part' `
+        $ctx3a.StartsWith((@($sliceHead, $sliceRuleLines[2]) -join "`n") + "`n`n" + $copyNote + "`n`nRetired seed text (ywr-harness ADR 0207): ") `
+        "additionalContext: [$ctx3a]") -and $ok
+
+# 3b. Retired seed text (ADR 0207), driven by the hook's own table: every phrase goes into every file its row names,
+#     so every row must fire once per file. CLAUDE.md gets each phrase wrapped over lines (the match collapses
+#     whitespace); .claude/CLAUDE.md gets it on one line, so its copy markers hit and the restated rules prove that a
+#     copy holding retired text is no copy. One hook run without drift, one with drift; the same repo copy as 3a.
+$tableCode = 'const s=require("fs").readFileSync(process.argv[1],"utf8");const a=s.indexOf("const CLAUDE_FILES");const b=s.indexOf("\n]",s.indexOf("const RETIRED_SEED"))+2;process.stdout.write(JSON.stringify(new Function(s.slice(a,b)+";return RETIRED_SEED")()))'
+$retiredRows = @(& $nodeExe -e $tableCode $hook | ConvertFrom-Json)
+$ok = (Assert-True '3b the retired table reads from the hook' ($retiredRows.Count -gt 0 -and -not ($retiredRows | Where-Object { -not $_.phrase })) "rows: $($retiredRows.Count)") -and $ok
+function Get-Squashed([string]$Text) { return ($Text -replace '\s+', ' ') }
+$pinned = Get-Squashed ($sliceRules + ' ' + $noteRule + ' ' + $copyNote)
+$tableFails = @()
+foreach ($row in $retiredRows) {
+    if ($row.version -notmatch '^\d+\.\d+\.\d+$' -or $row.adr -notmatch '^\d{4}$') { $tableFails += "$($row.phrase): version '$($row.version)' or adr '$($row.adr)' is malformed" }
+    if ($pinned.Contains($row.phrase)) { $tableFails += "$($row.phrase): the current slice rules hold it" }
+    foreach ($f in $row.files) {
+        # .claude/CLAUDE.md is no placement; its seed text is CLAUDE.md's.
+        $placed = Join-Path $base $(if ($f -eq '.claude/CLAUDE.md') { 'CLAUDE.md' } else { $f })
+        if (-not (Test-Path -LiteralPath $placed -PathType Leaf)) { $tableFails += "${f}: the real init.ps1 places no such seed"; continue }
+        if ((Get-Squashed ([IO.File]::ReadAllText($placed))).Contains($row.phrase)) { $tableFails += "$($row.phrase): the current seed $f holds it" }
+    }
+}
+$ok = (Assert-True '3b each row: a real seed placement, absent from the current seed and from the slice rules, a well-formed version and ADR' `
+        (-not $tableFails) ($tableFails -join ' · ')) -and $ok
+
+# The version of each row against history (review F1 of slice 236): the seed at the row's release lacks the phrase,
+# and the seed at the release before it holds it. The release tags are `ywr-harness--vX.Y.Z`; a checkout without them
+# (the CI checkout is shallow) is a reported SKIP. One node process reads every seed through one `git cat-file --batch`.
+$canonRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+$tagVers = if ($gitOk) { @(& git -C $canonRoot tag --list 'ywr-harness--v*' 2>$null | ForEach-Object { $_ -replace '^ywr-harness--v', '' } | Where-Object { $_ -match '^\d+\.\d+\.\d+$' } | Sort-Object { [version]$_ }) } else { @() }
+if ($tagVers.Count -lt 2) {
+    Write-Host 'SKIP [3b each row version against the release tags]: no ywr-harness--v* release tags in this checkout' -ForegroundColor Yellow
+} else {
+    $specs = [Collections.Generic.List[object]]::new()
+    foreach ($row in $retiredRows) {
+        $prev = @($tagVers | Where-Object { [version]$_ -lt [version]$row.version }) | Select-Object -Last 1
+        foreach ($f in $row.files) {
+            $tmpl = 'plugins/ywr-harness/skills/harness-init/templates/' + $(if ($f -eq '.claude/CLAUDE.md') { 'CLAUDE.md' } else { $f })
+            $specs.Add(@{ phrase = $row.phrase; file = $f; at = "ywr-harness--v$($row.version):$tmpl"; before = $(if ($prev) { "ywr-harness--v${prev}:$tmpl" } else { '' }) })
+        }
+    }
+    $histCode = @'
+const { execFileSync } = require('child_process')
+const [root, json] = process.argv.slice(1)
+const specs = JSON.parse(json)
+const names = [...new Set(specs.flatMap(s => [s.at, s.before]).filter(Boolean))]
+const out = execFileSync('git', ['-C', root, 'cat-file', '--batch'], { input: names.join('\n') + '\n', maxBuffer: 1 << 26 })
+const text = {}
+let i = 0
+for (const n of names) {
+  const nl = out.indexOf(10, i)
+  const head = out.subarray(i, nl).toString('utf8')
+  i = nl + 1
+  if (head.endsWith(' missing')) { text[n] = null; continue }
+  const size = Number(head.split(' ')[2])
+  text[n] = out.subarray(i, i + size).toString('utf8').replace(/\s+/g, ' ')
+  i += size + 1
+}
+const fails = []
+for (const s of specs) {
+  if (text[s.at] === undefined || text[s.at] === null) fails.push(`${s.phrase} @ ${s.file}: no seed at ${s.at}`)
+  else if (text[s.at].includes(s.phrase)) fails.push(`${s.phrase} @ ${s.file}: the seed of its release still holds it (${s.at})`)
+  if (!s.before) fails.push(`${s.phrase} @ ${s.file}: no release before its version`)
+  else if (!text[s.before] || !text[s.before].includes(s.phrase)) fails.push(`${s.phrase} @ ${s.file}: the seed of the release before does not hold it (${s.before})`)
+}
+process.stdout.write(fails.join('\n'))
+'@
+    $histFails = (& $nodeExe -e $histCode $canonRoot ($specs | ConvertTo-Json -Compress -AsArray) 2>&1 | Out-String).Trim()
+    $ok = (Assert-True '3b each row version against the release tags: its release seed lacks the phrase, the release before holds it' `
+            (-not $histFails) $histFails) -and $ok
+}
+
+$retFiles = [ordered]@{}
+foreach ($row in $retiredRows) { foreach ($f in $row.files) { if (-not $retFiles.Contains($f)) { $retFiles[$f] = @() }; $retFiles[$f] += $row.phrase } }
+New-Item -ItemType Directory -Force -Path (Join-Path $cp '.claude') | Out-Null
+foreach ($f in $retFiles.Keys) {
+    $lines = $retFiles[$f]
+    if ($f -eq 'CLAUDE.md') { Set-CopyClaude (($lines | ForEach-Object { '- ' + ($_ -replace ' ', "`n  ") }) -join "`n"); continue }
+    Add-Content -LiteralPath (Join-Path $cp $f) -Value (($lines | ForEach-Object { "- $_" }) -join "`n")
+}
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$retPatterns = @("seed 파일 $($retFiles.Count)개", '직접 고쳐야', [regex]::Escape((Join-Path 'harness-init' 'templates')))
+$ok = (Assert-Nudge '3b every retired phrase in every file it names: one line names each file, no drift' $out $retPatterns `
+        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '템플릿과 다릅니다', '\+\d+ more')) -and $ok
+$j3b = ConvertFrom-Json $out.Trim()
+$sys3b = [string]$j3b.systemMessage
+$ctx3b = [string]$j3b.hookSpecificOutput.additionalContext
+$rowFails = @()
+foreach ($row in $retiredRows) {
+    $item = "``$($row.phrase)``: v$($row.version), ywr-harness ADR $($row.adr)"
+    $n = ([regex]::Matches($sys3b, [regex]::Escape($item))).Count
+    if ($n -ne @($row.files).Count) { $rowFails += "$($row.phrase): $n hits in the line (want $(@($row.files).Count))" }
+}
+$lastPart = $ctx3b.Substring($ctx3b.LastIndexOf("`n`n") + 2)
+if (-not $lastPart.StartsWith('Retired seed text (ywr-harness ADR 0207): ')) { $rowFails += 'the retired part is not the last part of additionalContext' }
+foreach ($i in 1, 2) { if (-not $ctx3b.Contains($sliceRuleLines[$i])) { $rowFails += "slice rule $i is not restated although its copy holds retired text" } }
+if ($ctx3b.Length -gt 9000 -or $sys3b.Length -gt 9000) { $rowFails += "a string is long: ctx $($ctx3b.Length), sys $($sys3b.Length) (the host caps each at 10,000)" }
+$ok = (Assert-True '3b each row fires once per file, the once and close rules are restated, the retired part is last' (-not $rowFails) ($rowFails -join ' · ')) -and $ok
+
+# The same repo with one toolchain drift: the drift banner first, the retired line after a newline; the context
+# keeps the drift text first and the retired part last.
+Add-Content -LiteralPath (Join-Path $cp 'docs/build.sh') -Value '# drift'
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-Nudge '3b drift and retired text: both lines' $out @('1개의 벤더링된 툴체인 파일', 'docs/build\.sh', "seed 파일 $($retFiles.Count)개") `
+        @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\(missing\)')) -and $ok
+$j3c = ConvertFrom-Json $out.Trim()
+$sysLines = ([string]$j3c.systemMessage) -split "`n"
+$ctx3c = [string]$j3c.hookSpecificOutput.additionalContext
+$ok = (Assert-True '3b drift and retired text: two banner lines in that order, the drift context first and the retired part last' `
+        ($sysLines.Count -eq 2 -and $sysLines[0].Contains('툴체인 파일') -and $sysLines[1].Contains('seed 파일') -and
+        $ctx3c.StartsWith('The repo at ') -and $ctx3c.Substring($ctx3c.LastIndexOf("`n`n") + 2).StartsWith('Retired seed text')) `
+        "sys: [$($j3c.systemMessage)]") -and $ok
+# Restore the copy for the 3a cases below.
+Copy-Item -LiteralPath (Join-Path $fresh 'docs/build.sh') -Destination (Join-Path $cp 'docs/build.sh') -Force
+foreach ($f in $retFiles.Keys) { if (Test-Path -LiteralPath (Join-Path $fresh $f)) { Copy-Item -LiteralPath (Join-Path $fresh $f) -Destination (Join-Path $cp $f) -Force } }
+Remove-Item -LiteralPath (Join-Path $cp '.claude') -Recurse -Force
 
 Set-CopyClaude '- Notes: `python scripts/harness/slice_note.py add <decision|rejected|owner|fact|risk> "x"`'
 $out = Invoke-Hook (New-Payload @{ cwd = $cp } 'compact')

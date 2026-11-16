@@ -33,7 +33,8 @@
 //   - GUARDED (post-commit) is compared only when it carries the marker; a marker-less file is
 //     foreign, init.ps1 refuses to touch it, so a re-run would change nothing — silent, the same
 //     shape as the githooks-nudge's foreign-hooksPath silence (ywr-harness ADR 0029).
-//   - SEED files are never compared: their content is the consuming repo's decisions.
+//   - SEED files are never compared: their content is the consuming repo's decisions. The one read of a seed
+//     is the retired-text scan below (ywr-harness ADR 0207): a fixed phrase list, never a template comparison.
 //
 // Direction-blindness is stated, not hidden: byte difference cannot tell "repo behind plugin"
 // from "repo ahead of the installed plugin" (the canon mid-slice). The systemMessage says
@@ -99,6 +100,12 @@
 // caps each hook string at 10,000 characters (hooks reference); the longest drift ctx is about 1,200
 // characters and the rule about 600, so the sum stays far under it.
 //
+// Retired seed text (ywr-harness ADR 0207, narrows ywr-harness ADR 0033 and ywr-harness ADR 0183): after the scaffold gate, the hook reads
+// CLAUDE.md, .claude/CLAUDE.md, REVIEW.md and the two docs/prompts seeds, and looks for the phrases of RETIRED_SEED.
+// A hit gives a Korean systemMessage that names each file and phrase, and an English part at the end of the rule
+// text. It rides every source and every branch that carries the rule text, a no-drift start included, until a
+// member edits the file. The cost is up to three more small file reads; no process, no git call.
+//
 // The two JSON FILES it reads (the plugin manifest, the installed-plugins registry) go through hook-lib's
 // parseJsonLoose — the leniency PowerShell 7's ConvertFrom-Json had (comments, trailing commas, ...);
 // the stdin payload is strict JSON and keeps parseJson.
@@ -139,22 +146,27 @@ const SLICE_NOTE_RULE = 'Slice notes (ywr-harness ADR 0172): record each decisio
 const SLICE_RULES_HEAD = 'ywr-harness slice rules for this repo (ywr-harness ADR 0183). The org guide states the general rules; this repo\'s CLAUDE.md states its own facts.'
 const SLICE_RULES = [
   {
+    id: 'review',
     copy: ['args.lensExtra'],
     text: '- Review: before a slice closes, run `Workflow({name: \'ywr-harness:adversarial-review\', args: {scope: {files, context, invariants, gates_passed}}})`. `/ywr-harness:slice-close` builds the call. `scope` is an object; a string scope loses sharding, the out-of-scope bucket and the gate check of skeptic #2. Put house review angles in `args.lensExtra`, never a redefined lens set. The review invariants are in the file that `.harness.json` `review.canon` names, `REVIEW.md` at the repo root by default; replace the harness-init starter there with this repo\'s own invariants (ywr-harness ADR 0054).',
   },
   {
+    id: 'once',
     copy: ['review basis:', 'bounded re-review'],
     text: '- The review runs once per slice. A fix diff for its confirmed high and medium findings closes with re-run gates and one fix check per finding. A confirmed low gets no fix check: the close record lists it (ywr-harness ADR 0206). No fix gets a re-review. When a fix needs more review, record an open item: `python scripts/harness/slice_note.py add risk \"open item: review <files and lines> of the <id> fix; <why>\"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).',
   },
   {
+    id: 'close',
     copy: ['owner-typed', 'main session calls it'],
     text: '- The close: `/ywr-harness:slice-close` writes the handoff and the one commit. The person types it, or the main session calls it; a subagent never calls it (ywr-harness ADR 0201). The session prepares the close: it runs every command that `python scripts/harness/harness_gates.py` printed, the review with its fix checks, and verify. It writes no handoff and makes no commit itself. Its ready report ends with the line that `python scripts/harness/harness_gates.py --tree` printed after the final edit. After the report the session asks each open owner question with AskUserQuestion, then calls the skill. The close reuses the report only while it is verbatim in the same session and that line is unchanged; a new session or a compaction summary runs the full close (ywr-harness ADR 0105).',
   },
   {
+    id: 'handoff',
     copy: ['handoff-archive'],
     text: '- Handoff: the `handoff` key in `.harness.json` names the resume file. A value that ends in `/` names a directory with one resume file per work line, named after the work line, never after a person. The close that supersedes a `## Current state` section moves it to `docs/handoff-archive/<same filename>`, newest first (ywr-harness ADR 0040).',
   },
   {
+    id: 'artifacts',
     copy: ['<repo-name> '],
     text: '- Artifacts: a claude.ai Artifact that this repo publishes has the title `<repo-name> · <purpose>` and is declared under `artifacts` in `.harness.json`; CI then fails when the README lacks its link. A generated Artifact also declares its committed `source` file and a `check` drift gate, and `/ywr-harness:artifact-publish` republishes it with one confirmation, never headless (ywr-harness ADR 0032, ywr-harness ADR 0068).',
   },
@@ -164,13 +176,67 @@ const SLICE_RULES = [
 const SLICE_NOTE_COPY = ['decision|rejected|owner|fact|risk']
 const COPY_NOTE = 'This repo\'s CLAUDE.md or .claude/CLAUDE.md holds its own copy of part of the ywr-harness slice rules, so the plugin does not repeat that part here. After that copy is deleted, the plugin states the current rules at each session start (ywr-harness ADR 0183).'
 
-// The rule text from three facts about the repo.
-function ruleText({ harnessJson, sliceNote, claudeMd }) {
+// Retired seed text (ywr-harness ADR 0207). harness-init never overwrites a seed file, so a scaffolded repo keeps a
+// rule that a later release changed until a member edits the file. Each row names one phrase that only an old
+// seed held, the repo files whose seed held it, the release whose seed dropped it and the ADR that changed the
+// rule. A phrase never appears in the current seed or in the slice rules above, so a member's copy of the current
+// rule never matches. The selftest pins both, and where the release tags are present it pins the version: the seed
+// of that release lacks the phrase and the seed of the release before it holds it. `rule` names the slice rule
+// that the phrase belongs to: a CLAUDE.md copy that holds the phrase is no copy of the current rule, so the hook
+// states that rule (narrows ywr-harness ADR 0183 decision 9). Matching is case-sensitive on text whose whitespace
+// runs are collapsed to one space, so a wrapped line still matches. A new retirement adds rows here.
+const CLAUDE_FILES = ['CLAUDE.md', '.claude/CLAUDE.md']
+const DIGEST = 'docs/prompts/review-digest.md'
+const READY = 'docs/prompts/ready-report.md'
+// The CLAUDE.md seed dropped its slice-rule bullets in 0.72.0 (ywr-harness ADR 0183), before the rule itself changed, so
+// its rows carry 0.72.0 and the ADR that later changed the rule.
+const RETIRED_SEED = [
+  { phrase: 'bounded re-review', files: CLAUDE_FILES, rule: 'once', version: '0.72.0', adr: '0200' },
+  { phrase: 'The close is owner-typed', files: CLAUDE_FILES, rule: 'close', version: '0.72.0', adr: '0201' },
+  { phrase: 'bounded re-review', files: [DIGEST, READY], version: '0.77.0', adr: '0200' },
+  { phrase: 'The owner types `/ywr-harness:slice-close`', files: [READY], version: '0.78.0', adr: '0201' },
+  { phrase: 'A deny or a host refusal is final', files: [READY], version: '0.78.0', adr: '0201' },
+  { phrase: 'asked again at the close', files: [READY], version: '0.78.0', adr: '0201' },
+  { phrase: 'every confirmed finding has a disposition', files: [READY], version: '0.79.0', adr: '0206' },
+  { phrase: 'Each confirmed finding', files: [DIGEST], version: '0.79.0', adr: '0206' },
+  { phrase: '`unverified_by_death`), not confirmed', files: [DIGEST], version: '0.79.0', adr: '0206' },
+  { phrase: 'For every confirmed finding, judge', files: ['REVIEW.md'], version: '0.79.0', adr: '0206' },
+]
+
+// Whitespace runs to one space: the form both a phrase and a file text are compared in.
+const squash = s => s.replace(/\s+/g, ' ')
+
+// The retired rows found in the repo: [{ file, rows }] in table file order, one entry per file that holds a row.
+// `texts` maps a repo-relative path to its squashed text, '' for an absent or unreadable file.
+function findRetired(texts) {
+  const order = []
+  for (const r of RETIRED_SEED) for (const f of r.files) if (!order.includes(f)) order.push(f)
+  const hits = []
+  for (const file of order) {
+    const rows = RETIRED_SEED.filter(r => r.files.includes(file) && texts.get(file).includes(r.phrase))
+    if (rows.length) hits.push({ file, rows })
+  }
+  return hits
+}
+
+// The two surfaces of a retired-text finding: a Korean line for the person, an English part for the model.
+function retiredText(hits, rootShow, templatesShow) {
+  if (!hits.length) return { sys: '', ctx: '' }
+  // The list is whole: the table names five files, so no cap applies.
+  const list = hits.map(h => `${h.file} (${h.rows.map(r => `\`${r.phrase}\`: v${r.version}, ywr-harness ADR ${r.adr}`).join('; ')})`).join(', ')
+  const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: seed 파일 ${hits.length}개에 이후 릴리스가 바꾼 ywr-harness 규칙 문구가 남아 있습니다 — ${list}. /ywr-harness:harness-init은 seed 파일을 덮어쓰지 않으므로 직접 고쳐야 합니다. 현재 문구는 설치된 플러그인의 같은 이름 seed 템플릿에 있습니다: ${templatesShow}. 고칠 때까지 세션을 시작할 때마다 알립니다 (ywr-harness ADR 0207). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
+  const ctx = `Retired seed text (ywr-harness ADR 0207): these repo files still hold the text of a ywr-harness rule that a later release changed: ${list}. The version is the release whose seed dropped the text, and the ADR states the current rule. /ywr-harness:harness-init never overwrites a seed file. Where such a file disagrees with the current rule, follow the current rule: the slice rules of this context where they state it, else the ADR. The current seed text is in the installed plugin at ${templatesShow}. Do not edit these files unasked; the person decides the wording.`
+  return { sys, ctx }
+}
+
+// The rule text from four facts about the repo. `restate` holds the ids of the slice rules whose CLAUDE.md copy
+// holds retired text: such a copy does not count as a copy.
+function ruleText({ harnessJson, sliceNote, claudeMd, restate = new Set(), retiredCtx = '' }) {
   const has = markers => markers.some(m => claudeMd.includes(m))
   const parts = []
   let copied = false
   if (harnessJson) {
-    const left = SLICE_RULES.filter(r => !has(r.copy))
+    const left = SLICE_RULES.filter(r => restate.has(r.id) || !has(r.copy))
     if (left.length < SLICE_RULES.length) copied = true
     if (left.length) parts.push([SLICE_RULES_HEAD, ...left.map(r => r.text)].join('\n'))
   }
@@ -179,6 +245,7 @@ function ruleText({ harnessJson, sliceNote, claudeMd }) {
     else parts.push(SLICE_NOTE_RULE)
   }
   if (copied) parts.push(COPY_NOTE)
+  if (retiredCtx) parts.push(retiredCtx)
   return parts.join('\n\n')
 }
 
@@ -623,18 +690,36 @@ function main(payload) {
   }
   if (!sentinels.some(s => isFile(path.join(root, s)))) return
 
+  // The seed files the hook reads, as text; an absent or unreadable file is ''. The CLAUDE.md pair feeds the copy
+  // markers (ywr-harness ADR 0183); every file feeds the retired-text scan (ywr-harness ADR 0207).
+  const raw = new Map()
+  for (const r of RETIRED_SEED) {
+    for (const rel of r.files) {
+      if (raw.has(rel)) continue
+      let t = ''
+      try { if (isFile(path.join(root, rel))) t = readText(path.join(root, rel)) } catch { t = '' }
+      raw.set(rel, t)
+    }
+  }
+  const hits = findRetired(new Map([...raw].map(([k, v]) => [k, squash(v)])))
+  const retired = retiredText(hits, rootShow, inline(templatesDir, 300))
+  const restate = new Set(hits.filter(h => CLAUDE_FILES.includes(h.file)).flatMap(h => h.rows.map(r => r.rule)).filter(Boolean))
+
   // The rule text (ywr-harness ADR 0183): the slice rules where `.harness.json` is a file, the slice-note rule (ywr-harness ADR 0172)
   // where the vendored script is a file. A part the repo's own CLAUDE.md already copies is left out, and the
-  // copy note says so: a session never loads one rule twice. '' = no rule text.
+  // copy note says so: a session never loads one rule twice. A copy that holds retired text is no copy, and the
+  // retired-text part comes last (ywr-harness ADR 0207). '' = no rule text.
   const rule = ruleText({
     harnessJson: isFile(path.join(root, '.harness.json')),
     sliceNote: isFile(path.join(root, 'scripts/harness/slice_note.py')),
-    claudeMd: ['CLAUDE.md', '.claude/CLAUDE.md'].map(rel => {
-      try { return isFile(path.join(root, rel)) ? readText(path.join(root, rel)) : '' } catch { return '' }
-    }).join('\n'),
+    claudeMd: CLAUDE_FILES.map(rel => raw.get(rel)).join('\n'),
+    restate,
+    retiredCtx: retired.ctx,
   })
   // ctx plus the rule text, a blank line between; ctx alone when the rule text is empty.
   const withRule = ctx => (rule ? ctx + '\n\n' + rule : ctx)
+  // A drift banner plus the retired-text line, a newline between (ywr-harness ADR 0207).
+  const withRetired = sys => (retired.sys ? sys + '\n' + retired.sys : sys)
 
   // EOL-insensitive comparable text: Latin1 maps bytes 1:1 to chars (byte-faithful both ways), so
   // this is a byte comparison modulo 0x0D, not a decode — a real encoding or BOM change still
@@ -662,8 +747,10 @@ function main(payload) {
   }
 
   if (!drifted.length) {
-    // No drift: the rule is the whole output, no systemMessage (a person has nothing to act on).
-    if (rule) emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rule } })
+    // No drift: the rule is the whole output, no systemMessage (a person has nothing to act on) — unless a seed
+    // file holds retired text, which the person must edit (ywr-harness ADR 0207).
+    if (retired.sys) emit({ systemMessage: retired.sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rule } })
+    else if (rule) emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rule } })
     return
   }
 
@@ -756,7 +843,7 @@ function main(payload) {
   if (staleActive) {
     const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${drifted.length}개의 벤더링된 툴체인 파일이 이 세션의 ywr-harness (${ver}) 템플릿과 다릅니다 — ${fileList} — 하지만 비교 기준이 STALE합니다: 이 세션은 여전히 ${ver}를 실행 중이지만 이 머신에 등록된 설치는 ${staleActive}입니다. 판정이 뒤집혔을 수 있습니다 (저장소가 단순히 더 새로운 설치와 일치할 수 있습니다). /reload-plugins를 실행하거나 (또는 세션을 재시작) 다음 세션 시작 시 다시 확인하세요; 이 세션에서는 /ywr-harness:harness-init을 실행하지 마세요 — ${ver} 템플릿을 배치하게 됩니다 (ywr-harness ADR 0039). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
     const ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), but the verdict basis is STALE: this session's ywr-harness hooks and skills still run ${ver} while the machine's registered install is ${staleActive} — a running session keeps the plugin version it loaded until /reload-plugins or a restart. The drift verdict may therefore be inverted: the repo may already match the newer install's templates. Do NOT run or suggest /ywr-harness:harness-init from this session — the loaded skill would place the ${ver} templates and could REVERT correctly refreshed files (ywr-harness ADR 0039). The remedy is /reload-plugins or a session restart, after which the next session start re-checks against the updated plugin. This surface is suggest-only (ywr-harness ADR 0033).`
-    emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
+    emit({ systemMessage: withRetired(sys), hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
     return
   }
 
@@ -823,7 +910,7 @@ function main(payload) {
     const dateShow = inline(hit.date, 40)
     const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause} — 그리고 ${refShow}에 이 체크아웃에 없고 스캐폴드 스탬프(.harness-version)를 변경하는 커밋이 있습니다 (최신 ${shaShow}, ${dateShow}) — 다른 클론이 이 저장소를 스캐폴딩하거나 리프레시한 뒤 push한 것입니다. 지금 /ywr-harness:harness-init을 실행하지 마세요; 먼저 pull(${refShow}를 merge 또는 rebase)하세요. 다음 세션 시작 시 다시 확인합니다. ref는 마지막 fetch 시점 기준입니다 (ywr-harness ADR 0135). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
     const ctx = `The repo at ${rootShow} shows scaffold-toolchain drift (${fileList}), but ${refShow} has commit(s) not in this checkout that change the scaffold stamp, .harness-version (newest ${shaShow}, ${dateShow}): another clone scaffolded or refreshed this repo and pushed (ywr-harness ADR 0135). The drift is therefore most likely this checkout lagging, not the repo lagging the plugin. Do NOT run or suggest /ywr-harness:harness-init from this session — it would place files that collide with the pushed scaffold at the next pull, or put older templates over a newer refresh. Offer pulling instead (merge or rebase ${refShow}); the next session start re-checks. The refs are remote-tracking refs as of the last fetch; no network was used. This surface is suggest-only (ywr-harness ADR 0033).`
-    emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
+    emit({ systemMessage: withRetired(sys), hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
     return
   }
 
@@ -842,7 +929,7 @@ function main(payload) {
     sys = `[hook:scaffold-refresh-nudge] ${rootShow}: ${fileClause}. CAVEAT — 이 비교는 direction-blind 상태입니다 (읽을 수 있는 .harness-version 스탬프 없음): 만약 다른 작성자가 이 머신보다 더 새로운 플러그인으로 이 저장소를 리프레시했다면, 여기서 /ywr-harness:harness-init을 재실행하면 그 리프레시를 REVERT하게 됩니다 (ywr-harness ADR 0042). 실행하기 전에 설치된 플러그인이 최신인지 확인하세요 (/ywr-harness:update); 그 외에는 재실행이 안전합니다 (툴체인 갱신, 시드 보존, 삭제 없음 — ywr-harness ADR 0010). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
     ctx = `The repo at ${rootShow} carries a ywr-harness scaffold whose placed toolchain differs from the installed plugin's templates (${ver}): ${fileList}. No readable .harness-version stamp, so the comparison is DIRECTION-BLIND: if this working tree deliberately carries NEWER copies than the installed plugin (the canon mid-slice, or a multi-writer repo refreshed by a newer plugin), a re-run would REVERT them to the older installed templates (ywr-harness ADR 0042). Offer the re-run when the work touches gates, hooks, or CI, after confirming the installed plugin is current; do not run it unasked — this surface is suggest-only (ywr-harness ADR 0033).`
   }
-  emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
+  emit({ systemMessage: withRetired(sys), hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: withRule(ctx) } })
 }
 
 try {
