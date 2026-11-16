@@ -100,6 +100,12 @@ $ok = (Assert-Text 'C10 SKILL.md description (frontmatter): the main session cal
 $ok = (Assert-Text 'C11 disposition: three buckets, no-action names its record, false-on-reading quotes the code, lenses and multi_lens read' $skill `
         @('ends in exactly one of three buckets', '\*\*fixed\*\*', '\*\*valid, no action\*\*', 'names the record that keeps it', 'A true claim with no record is not this bucket', '\*\*false on reading\*\*', 'quotes the line or guard', 'finding''s `lenses`', '`multi_lens`', 'count per bucket') `
         @('every confirmed finding is fixed or gets an explicit reason')) -and $ok
+# C11b: ADR 0206 narrows the buckets to high and medium. What can regress silently is a low back in a
+# bucket (the old "every confirmed finding ends in" wording), a fixed low that needs a reading again, or
+# the low list sent to the handoff as next-slice work (the owner's answer of 2026-11-16).
+$ok = (Assert-Text 'C11b lows: listed with id, title, file:line and also_at count, a fixed mark and no fix check; the list stays in the close record; buckets for high and medium only' $skill `
+        @('\*\*Lows are listed, not dispositioned\*\* \(ywr-harness ADR 0206\)', 'its `id`, title, `file:line` and the count of its `also_at` sites', 'Mark a low\s+`fixed` when you fixed it anyway at every site', '`fixed in part` with the fixed sites named', 'fix gates of step 1 below', 'no fix check and no written reading', 'Mark it\s+`unverified` when the review did; a low can carry both marks', 'no handoff item, no open item, no `BACKLOG\.md` entry and no next-slice candidate', 'each high or medium fix passed to an open item', 'every confirmed \*\*high or medium\*\* finding ends in exactly one of three buckets', 'A low gets no fix check \(ywr-harness ADR 0206\)', 'the low list of stage 2', 'Judge each high and medium finding \*instance vs class\*', 'A confirmed high or medium marked `unverified: true`') `
+        @('every confirmed finding ends in exactly one', 'A low closes on the closer''s own reading', '(?i)\blows?\b[^.]{0,60}(becomes?|goes to|is) (a|an) (handoff )?open item', '(?i)\blows?\b[^.]{0,60}(append|add)[^.]{0,20}BACKLOG','Judge each finding \*instance vs class\*', '(?m)^A confirmed finding marked `unverified')) -and $ok
 
 # C12: the fix proof (ADR 0169, pstack candidate 7). What can regress silently is a key set the closer
 # chooses (leaving one high out passed), a waiver the session accepts itself (a reason alone passed),

@@ -37,6 +37,7 @@ arrives with the first postmortem.
 
 ## Finding disposition — fix the class, not the instance
 
-For every confirmed finding, judge: is this one instance of a defect CLASS? If yes, name the
-deterministic owner that would retire the class (a lint rule, a CI check, a selftest assertion)
-and record it as a decision candidate; fixing only the instance is an incomplete disposition.
+For every confirmed high or medium finding, judge: is this one instance of a defect CLASS? If yes,
+name the deterministic owner that would retire the class (a lint rule, a CI check, a selftest
+assertion) and record it as a decision candidate; fixing only the instance is an incomplete
+disposition. A confirmed low gets no class judgment: `/ywr-harness:slice-close` lists it.

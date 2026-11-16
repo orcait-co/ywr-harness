@@ -107,7 +107,14 @@ Put repo-specific angles in `lensExtra`; a redefined lens set never receives can
 counts, `high_ids` (the highs step 3 below must prove), any coverage loss (dead lenses, finders or skeptics, unverified findings, capped finds), tier, shards, pin mode and `canary_ok`. A completion notice truncates
 around 14k characters, so the digest survives it; open the full lists only for what it names.
 
-**Disposition**: every confirmed finding ends in exactly one of three buckets — and so does each
+**Lows are listed, not dispositioned** (ywr-harness ADR 0206). The close record lists each confirmed
+low, in scope or out of it: its `id`, title, `file:line` and the count of its `also_at` sites. Mark a low
+`fixed` when you fixed it anyway at every site, or `fixed in part` with the fixed sites named: its files go
+through the fix gates of step 1 below, and it gets no fix check and no written reading. Mark it
+`unverified` when the review did; a low can carry both marks. The list stays in the close record. It is
+no handoff item, no open item, no `BACKLOG.md` entry and no next-slice candidate.
+
+**Disposition**: every confirmed **high or medium** finding ends in exactly one of three buckets — and so does each
 site in its `also_at` list (the same claim at another file:line): a site is dispositioned on its
 own, never by its representative's verdict (ywr-harness ADR 0163):
 
@@ -119,11 +126,11 @@ own, never by its representative's verdict (ywr-harness ADR 0163):
   reason quotes the line or guard that shows it. Two or more keys in the finding's `lenses` mean
   independent lenses raised it; the reason then answers each lens's claim in `also_at`.
 
-A confirmed finding marked `unverified: true` (every skeptic leg died, twice) is read against its
+A confirmed high or medium marked `unverified: true` (every skeptic leg died, twice) is read against its
 claim before it is fixed or dispositioned. A **high or medium** in `rejected[]` whose skeptic
 votes split 1–1 is read by the closer against its claim before it counts as rejected; if true, it
 is dispositioned like a confirmed one. A result with only `rejected_count`: `reference.md`
-§Old-digest. Judge each finding *instance vs class*: a class belongs in the
+§Old-digest. Judge each high and medium finding *instance vs class*: a class belongs in the
 deterministic-rule backlog, or an LLM re-finds it every slice.
 
 **The fix diff does not re-enter the review** (ywr-harness ADR 0028, ywr-harness ADR 0200). Close each fix by:
@@ -145,7 +152,7 @@ deterministic-rule backlog, or an LLM re-finds it every slice.
    refute, finding by finding, that each fix closes its scenario without opening an adjacent one,
    and answers **per finding** exactly `fixed: true|false` plus a reason. Legs run in parallel.
    Quote every verdict into the close record; `fixed: false` reopens that finding — patch it, then
-   re-check it alone. A low closes on the closer's own reading; a nit needs none.
+   re-check it alone. A low gets no fix check (ywr-harness ADR 0206); a nit needs none.
 3. **Fix proof for every high the digest names** (ywr-harness ADR 0169): the script runs the command and
    records its exit code against the `--tree` snapshots before and after it, so the proof is never
    the closer's own line. **The review picks the keys, not the closer**: the digest's `high_ids`
@@ -251,9 +258,9 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   (confirmed / rejected counts, `multi_lens`, `stats.worker_pins`, and `stats.find_omitted` with
   `capped_finders` when a finder hit its cap, and `stats.cap_unreported` when a finder did not say
   whether it did — unknown coverage, never read as full) or the skip reason;
-  the fix disposition (each finding's bucket — fixed / valid, no action / false on reading — with
+  the low list of stage 2; the fix disposition (each high and medium finding's bucket — fixed / valid, no action / false on reading — with
   the count per bucket, gate re-runs, every per-finding verdict, `also_at` sites and split
-  rejections, the `fix_proof.py check` lines and the owner's answer on each waiver, each fix passed to an open item or `none`);
+  rejections, the `fix_proof.py check` lines and the owner's answer on each waiver, each high or medium fix passed to an open item or `none`);
   the slice notes kept, as corrected, with the `show` count line; `review basis:` after a rebase; the verify verdict; and
   what went ungated or unverified. **Never paste a CI skip directive into the body** — GitHub skips
   every push- and PR-triggered workflow when the pushed commit's message contains one (the

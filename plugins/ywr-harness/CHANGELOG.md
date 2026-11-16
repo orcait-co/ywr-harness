@@ -12,6 +12,11 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.79.0 — 2026-11-16
+
+- `/ywr-harness:slice-close` 가 confirmed low 지적을 처분하지 않고 목록으로만 남깁니다(ywr-harness ADR 0206). close record(slice 커밋 본문)에 low 마다 id, 제목, `file:line`, `also_at` 개수를 한 줄씩 적습니다. low 에는 세 가지 처분(fixed · valid, no action · false on reading), fix check, "같은 종류의 결함인가" 판단이 더 이상 없습니다. low 를 그 slice 에서 고쳤으면 그 줄에 `fixed`(일부 위치만 고쳤으면 `fixed in part` 와 고친 위치)만 붙이고, 고친 파일은 다른 fix 처럼 fix gate 를 다시 돌립니다. 리뷰가 `unverified` 로 표시한 low 와 scope 밖 low 도 목록에 `unverified` 표시와 함께 올립니다. low 목록은 handoff 나 open item 으로 옮기지 않고, 다음 slice 후보로 추천하지도 않습니다. high·medium 지적은 지금 규칙 그대로입니다.
+- 세션 시작 안내의 리뷰 규칙과 리뷰 workflow 설명도 같은 규칙을 말합니다: fix check 는 high·medium 지적에만 합니다. harness-init 의 `docs/prompts/review-digest.md`, `docs/prompts/ready-report.md`, `REVIEW.md` 템플릿도 같은 규칙을 말합니다. 이 파일들은 seed 라서 이미 scaffold 한 repo 에는 반영되지 않습니다. 그런 repo 는 세 파일의 처분 불릿과 "Finding disposition" 문단을 새 템플릿과 같게 고치세요.
+
 ## v0.78.0 — 2026-11-14
 
 - 이제 `/ywr-harness:auto` 없이도 메인 세션의 모델이 `ywr-harness:slice-close` 를 직접 부를 수 있습니다(ywr-harness ADR 0201). 스킬의 `disable-model-invocation` 잠금을 풀었습니다. 모델은 ready report 뒤에 열린 owner 질문을 AskUserQuestion 으로 먼저 묻고, 모든 질문에 답을 받은 뒤 close 를 부릅니다. close 가 하는 일은 그대로입니다(gate, 리뷰, verify, handoff, commit 하나). subagent 의 호출은 거절합니다. 직접 입력하는 `/ywr-harness:slice-close` 도 그대로 쓸 수 있습니다. 0.76.0 의 auto 전용 close gate(브랜치 조건 포함)는 없어졌습니다.
