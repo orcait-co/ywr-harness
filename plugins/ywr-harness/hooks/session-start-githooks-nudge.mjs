@@ -44,7 +44,7 @@
 // the exit code stays 0.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdin, parseJson, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys } from './hook-lib.mjs'
+import { readStdin, parseJson, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys, markerAbove } from './hook-lib.mjs'
 
 // Test-Path -PathType Container, promoted so every failure (a root that does not exist on this
 // platform, an illegal path) reads as "not there".
@@ -69,6 +69,9 @@ function drift(payload) {
 function main(payload) {
   const cwd = netTrim(psString(getProp(payload, 'cwd')))
   if (!cwd) return drift(payload)
+  // No `.githooks/` from cwd upward: neither the work tree root nor cwd can carry one, so the hook
+  // has nothing to say and starts no git.
+  if (!markerAbove(cwd, '.githooks')) return
 
   // Resolve the work tree root from cwd so a subdirectory session still finds the repo. A failed
   // resolution (not a work tree, vanished cwd) is silent: no repo, no hooks story. No git, no

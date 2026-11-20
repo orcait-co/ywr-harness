@@ -778,7 +778,35 @@ $ok = (Assert-True 'CK7 a duplicate id makes the assembly refuse: exit 2, REFUSE
     ($rCK7.Code -eq 2 -and $rCK7.Out -match '\[check\] REFUSED' -and $rCK7.Out -match '\[check\]\s+builder:' `
      -and $ck7Ascii) $rCK7.Out) -and $ok
 Remove-Item -LiteralPath (Join-Path $docsCK 'adr/0002-rival.md')
-$null = Invoke-CKBuild   # restore a clean build after the refusal fixture
+
+# CK9: argument handling. An unknown argument is refused with exit 2 BEFORE
+# anything is written: index.json is removed first, so a build that ran past the typo would
+# recreate it. A malformed or second date, and a --version without a value, are refused the same way.
+Remove-Item -LiteralPath $idxCK
+$rCK9 = & $py.Source (Join-Path $docsCK 'build_docs.py') '--chek' 2>&1 | Out-String
+$ck9Code = $LASTEXITCODE
+$ok = (Assert-True 'CK9 an unknown flag (--chek) exits 2, names it and writes nothing' `
+    ($ck9Code -eq 2 -and $rCK9 -match '--chek' -and -not (Test-Path -LiteralPath $idxCK)) "exit=${ck9Code}: $rCK9") -and $ok
+$ck9Bad = @(@('2026-1-1'), @('2026-01-01', '2026-01-02'), @('--version'), @('--version', '--check')) | ForEach-Object {
+    $ck9Args = $_
+    $o = & $py.Source (Join-Path $docsCK 'build_docs.py') @ck9Args 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 2 -or (Test-Path -LiteralPath $idxCK)) { "$($ck9Args -join ' '): exit=$LASTEXITCODE $o" }
+}
+$ok = (Assert-True 'CK9 a malformed date, a second date and a --version without a value each exit 2 and write nothing' `
+    (-not $ck9Bad) ($ck9Bad -join "`n")) -and $ok
+# CK9 control + restore: the date an older wrapper still passes is accepted and ignored (a full build).
+$rCK9d = & $py.Source (Join-Path $docsCK 'build_docs.py') '2026-01-01' 2>&1 | Out-String
+$ok = (Assert-True 'CK9 a single YYYY-MM-DD argument still builds (exit 0, index.json written)' `
+    ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $idxCK)) $rCK9d) -and $ok
+
+# CK10: a bare integer in related_spec (D8) must not crash the shared assembly. The fixture index
+# is stale for the new ADR, so a clean assembly reports DRIFT (exit 1); the crash was REFUSED +
+# TypeError (exit 2).
+Write-CKDoc 'adr/0003-rel.md' "---`nid: `"0003`"`ntype: adr`ntitle: `"rel`"`nstatus: accepted`nrelated_spec: [10]`n---`n# rel`n"
+$rCK10 = Invoke-CKCheck
+$ok = (Assert-True 'CK10 related_spec: [10] assembles (DRIFT against the stale index, no REFUSED, no TypeError)' `
+    ($rCK10.Code -eq 1 -and $rCK10.Out -match '\[check\] DRIFT' -and $rCK10.Out -notmatch 'REFUSED|TypeError|Traceback') $rCK10.Out) -and $ok
+Remove-Item -LiteralPath (Join-Path $docsCK 'adr/0003-rel.md')
 
 # CK8: an empty corpus (no frontmatter'd .md anywhere in adr/ or spec/) is the same REFUSED
 # class as CK7 — exit 2, ASCII-only, never DRIFT (a caller must not try to "fix" this by
@@ -1205,6 +1233,33 @@ Write-FLSpec '0006' "implements_in: [`n  src/a.py,`n  app/[slug]`n]"
 Write-FLSpec '0007' "implements_in: [`n  `"src/a.py`",`nnote: kept`n]"
 Write-FLSpec '0008' "implements_in:   # TBD — nothing owned yet`nsuperseded_by:   # none"
 [IO.File]::WriteAllText((Join-Path $docsFL 'spec/0009-s.md'), "---`nid: `"0009`"`ntype: spec`ntitle: [WIP] gate layer`nstatus: draft`nimplements_in: [src/w.py]`ntags: [x]`n---`n# 0009`n")
+# FL11-FL16: backslash escapes in a double-quoted scalar and the
+# link-scheme filter, on the SAME build as the list shapes above. 0010 carries: a title with \" and
+# \\; a flow list and a block list whose items carry \"; \n (stays two characters — only \" and \\
+# are unescaped); an unterminated `"C:\dir\"` (keeps the old reading); and a body whose links use
+# a plain scheme, a tab-split scheme, a leading control character, data: and vbscript:.
+$flTab = "`t"
+$flCtl = [string][char]1
+$fl10 = @"
+---
+id: "0010"
+type: spec
+title: "say \"hi\" \\ done"
+status: draft
+flow: ["a \"b\"", "c"]
+blk:
+  - "x \"y\" z"   # comment after the item
+  - "w"
+raw: "a\nb"
+tail: "C:\dir\"
+tags: [x]
+---
+# 0010
+[js](javascript:x) [tab](java${flTab}script:x) [ctl](${flCtl}javascript:x) [data](data:text/html,x) [vb](VBScript:x) [ok](https://example.com/p#q)
+"@
+[IO.File]::WriteAllText((Join-Path $docsFL 'spec/0010-s.md'), ($fl10 -replace "`r`n", "`n"))
+# 0001 ADR: a bare integer in related_spec (D8) — the builder joined the list as strings.
+[IO.File]::WriteAllText((Join-Path $docsFL 'adr/0001-r.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"r`"`nstatus: accepted`nrelated_spec: [10]`nrelated_adr: [2]`n---`n# 0001`n")
 $rFL = & $py.Source (Join-Path $docsFL 'build_docs.py') 2>&1 | Out-String
 $flCode = $LASTEXITCODE
 $flJson = $null
@@ -1238,6 +1293,24 @@ $ok = (Assert-True 'FL8 a comment-only value is null, never the comment text (im
 $ok = (Assert-True 'FL9 a [-led title that is not a list keeps the keys after it' `
     ((Get-FLKey '0009' 'title') -eq '[WIP] gate layer' -and (Get-FLKey '0009' 'status') -eq 'draft' -and (Get-FLImpl '0009') -eq 'src/w.py | tags=x') `
     "got: title=$(Get-FLKey '0009' 'title') status=$(Get-FLKey '0009' 'status') impl=$(Get-FLImpl '0009')") -and $ok
+$e10 = @($flJson.spec | Where-Object { $_.id -eq '0010' })[0]
+$ok = (Assert-True 'FL11 a double-quoted title keeps \" and \\ unescaped (was cut at the first \")' `
+    ($e10.title -eq 'say "hi" \ done') "got: $($e10.title)") -and $ok
+$ok = (Assert-True 'FL12 an inline list item carrying \" is one item, unescaped' `
+    ((@($e10.flow) -join '|') -eq 'a "b"|c') "got: $(@($e10.flow) -join '|')") -and $ok
+$ok = (Assert-True 'FL13 a block list item carrying \" is one item (the trailing comment is cut after the closing quote)' `
+    ((@($e10.blk) -join '|') -eq 'x "y" z|w') "got: $(@($e10.blk) -join '|')") -and $ok
+$ok = (Assert-True 'FL14 other backslash text is unchanged: \n stays two characters, an unterminated "C:\dir\" keeps its reading' `
+    ($e10.raw -eq 'a\nb' -and $e10.tail -eq 'C:\dir\') "raw=$($e10.raw) tail=$($e10.tail)") -and $ok
+$flHtml = [IO.File]::ReadAllText((Join-Path $docsFL 'docs.html'))
+$ok = (Assert-True 'FL15 no javascript:, vbscript: or data: scheme survives as a link target, tab-split and control-led forms included' `
+    ($flHtml -notmatch '(?i)href="[^"]*(javascript|vbscript|data):' -and -not $flHtml.Contains("java${flTab}script") -and -not $flHtml.Contains("${flCtl}javascript")) `
+    "a blocked scheme reached docs.html") -and $ok
+$ok = (Assert-True 'FL16 an ordinary https link is still a link (the filter blocks schemes, not links)' `
+    ($flHtml.Contains('<a href="https://example.com/p#q">ok</a>')) 'the https link is gone') -and $ok
+$flIdxMd = [IO.File]::ReadAllText((Join-Path $docsFL 'INDEX.md'))
+$ok = (Assert-True 'FL17 a bare integer in related_spec builds and lists as text in INDEX.md (was a TypeError)' `
+    ($flCode -eq 0 -and $flIdxMd -match '0001-r\.md\)[^\n]*\| 10 \|') "exit=${flCode}: $rFL") -and $ok
 # FL5: the consumer the null crashed — verify_map over the index this builder wrote now maps the
 # changed file to every spec that lists it, whatever shape the spec used.
 $rFL5 = & $py.Source $verifyMap --repo $repoFL 'src/b.py' 2>&1 | Out-String
@@ -1363,6 +1436,39 @@ Write-NRAdr '0002' 'accepted' "narrows: [x7]`n"
 $rNR4d = Invoke-NRCheck
 $ok = (Assert-True 'NR4 an item that is not an ADR number: --check exits 2 with REFUSED, naming the file and the value' `
     ($rNR4d.Code -eq 2 -and $rNR4d.Out -match '\[check\] REFUSED' -and $rNR4d.Out -match '0002-x\.md' -and $rNR4d.Out -match 'x7' -and $rNR4d.Out.Contains((Get-NREscaped '번호가 아닙'))) $rNR4d.Out) -and $ok
+
+# --- PY1: the Python 3.9 floor, checked statically. No 3.9 interpreter is
+# guaranteed on a runner, so the case reads the syntax tree: a module that annotates with `X | Y`
+# must carry `from __future__ import annotations`, or it does not import on 3.9. One python child
+# for every file; the control file proves the detector flags a violation (and names only it).
+$pyScan = Join-Path $fx 'annotation_scan.py'
+[IO.File]::WriteAllText($pyScan, @'
+import ast, sys
+bad = []
+for p in sys.argv[1:]:
+    tree = ast.parse(open(p, encoding="utf-8").read(), p)
+    fut = any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
+              and any(a.name == "annotations" for a in n.names) for n in tree.body)
+    anns = []
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = n.args
+            anns += [x.annotation for x in a.posonlyargs + a.args + a.kwonlyargs + [y for y in (a.vararg, a.kwarg) if y]]
+            anns.append(n.returns)
+        elif isinstance(n, ast.AnnAssign):
+            anns.append(n.annotation)
+    pipe = any(isinstance(m, ast.BinOp) and isinstance(m.op, ast.BitOr)
+               for x in anns if x is not None for m in ast.walk(x))
+    if pipe and not fut:
+        bad.append(p)
+print("BAD|" + "|".join(bad))
+'@)
+$pyControl = Join-Path $fx 'annotation_control.py'
+[IO.File]::WriteAllText($pyControl, "def f(x: int | None) -> str | None:`n    return None`n")
+$pyFiles = @($pyControl) + @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'templates/docs') -Filter '*.py' | ForEach-Object { $_.FullName }) + @($verifyMap, $harnessConfigSrc)
+$rPY1 = & $py.Source $pyScan @pyFiles 2>&1 | Out-String
+$ok = (Assert-True 'PY1 every shipped docs/verify_map/harness_config module that annotates with X | Y imports annotations from __future__ (the 3.9 floor)' `
+    ($LASTEXITCODE -eq 0 -and $rPY1.Trim() -eq "BAD|$pyControl") $rPY1) -and $ok
 
 Remove-FixtureRoot $fx
 

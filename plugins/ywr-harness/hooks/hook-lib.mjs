@@ -56,6 +56,36 @@ export function gitRun(args) {
   return { absent: false, status: r.status, text: r.stdout ? r.stdout.toString('utf8') : '' }
 }
 
+// A `.git` entry that can move the work tree away from the folders above cwd: a gitfile (its git dir
+// and config live elsewhere) or a git dir whose config sets `worktree`. Unreadable counts as yes.
+function movesWorkTree(gitPath) {
+  try {
+    if (!fs.statSync(gitPath).isDirectory()) return true
+    return /^\s*worktree\s*=/mi.test(fs.readFileSync(path.join(gitPath, 'config'), 'utf8'))
+  } catch (e) { return !(e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) }
+}
+
+/**
+ * Whether the directory `marker` can exist in the work tree root or in cwd, read without git. False
+ * only when the folders from cwd upward prove it cannot: none of them holds `marker`, and nothing says
+ * that git would name a work tree outside that chain (`GIT_DIR`, `GIT_WORK_TREE`, a gitfile, a
+ * `worktree` line in a `.git/config` on the way). The walk runs from cwd as typed and from its real
+ * path. A session-start hook that needs `marker` calls it before its first git spawn, which is most of
+ * such a hook's run time. A `core.worktree` set only in the global or system config is not seen.
+ */
+export function markerAbove(cwd, marker) {
+  if (process.env.GIT_DIR || process.env.GIT_WORK_TREE) return true
+  const holds = dir => { try { return fs.statSync(path.join(dir, marker)).isDirectory() } catch { return false } }
+  const starts = [path.resolve(cwd)]
+  try { const real = fs.realpathSync(cwd); if (real !== starts[0]) starts.push(real) } catch { /* cwd missing */ }
+  for (const start of starts) {
+    for (let dir = start, up = ''; dir !== up; up = dir, dir = path.dirname(dir)) {
+      if (holds(dir) || movesWorkTree(path.join(dir, '.git'))) return true
+    }
+  }
+  return false
+}
+
 /** Synchronous sleep, for retry jitter. */
 export function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)

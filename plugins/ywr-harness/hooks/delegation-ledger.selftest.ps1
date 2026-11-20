@@ -268,6 +268,21 @@ eq('three hooks registered, no more', Object.keys(engine().hooks).sort(), ['agen
   eq('outside a .harness.json root: no write, result returned', [E.writes.length, E.disk.files.size, got === r], [0, 0, true])
 }
 
+// 5b. a repo that adopts the harness mid-session (harness-init writes .harness.json) starts recording at its
+// next loop end; an adopted root is asked once, however many loops end
+{
+  const E = engine({ root: BARE, adopted: false })
+  await loopEnd(E, 'n1')
+  const asked = []
+  E.$.fs.exists = async p => { asked.push(p); return p === `${BARE}/.harness.json` || E.disk.files.has(p) }
+  await loopEnd(E, 'n2')
+  eq('a root that gains .harness.json mid-session records from the next loop end', [E.writes.length, E.writes[0]?.[0].startsWith(`${BARE}/`), E.writes[0]?.[1].loops.map(l => l.turn_id)], [1, true, ['n2']])
+  const before = asked.filter(p => p.endsWith('.harness.json')).length
+  await loopEnd(E, 'n3')
+  await loopEnd(E, 'n4')
+  eq('an adopted root is not asked again: no .harness.json probe at the later loop ends', [before, asked.filter(p => p.endsWith('.harness.json')).length], [1, 1])
+}
+
 // 6. failures never reach the turn
 {
   const E = engine({ failWrite: 1 })

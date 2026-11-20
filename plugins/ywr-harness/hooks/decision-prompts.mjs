@@ -420,7 +420,8 @@ async function takeBaseline($, st) {
   st.baseline = { hashes, stages: Object.keys(decl.stages) }
 }
 
-// `--path-format=absolute` needs git 2.31; an older git prints the git path relative to the cwd.
+// The call passes no `--path-format=absolute`, which needs git 2.31. `--git-path` may print a path relative to
+// the cwd, so a relative answer is joined to the session cwd below.
 async function locate($, st) {
   try {
     const r = await $.process.run(['git', 'rev-parse', '--show-toplevel', '--git-path', STATE_REL], { timeoutMs: 10000 })

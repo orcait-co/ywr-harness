@@ -1440,6 +1440,15 @@ $ok = (Assert-True 'Y5 unborn HEAD exits 0 — a fresh repo is not a scope failu
 $ok = (Assert-True 'Y5 the staged file is in scope and gated' ($rY5.Out -match 'uv run ruff check app\.py') $rY5.Out) -and $ok
 $ok = (Assert-True 'Y5 the unborn state is reported, not silent' ($rY5.Out -match 'unborn HEAD') $rY5.Out) -and $ok
 $ok = (Assert-True 'Y5 no scope-FAILED marker fires' ($rY5.Out -notmatch 'scope: FAILED') $rY5.Out) -and $ok
+# Y5b: the tier stays full, and its reason names the missing commit — not a measurement fault. Y5's own
+# staged `.harness.json` makes it critical, so the size branch needs a repo with no declaration.
+$y5b = Join-Path $fxBase 'unborn-head-size'
+New-Item -ItemType Directory -Force -Path (Join-Path $y5b 'api') | Out-Null
+Set-Content -LiteralPath (Join-Path $y5b 'api/app.py') -Value 'x' -NoNewline
+Push-Location $y5b
+try { & git init -q 2>$null; & git add -A 2>$null } finally { Pop-Location }
+$rY5b = Invoke-Gates $y5b @()
+$ok = (Assert-True 'Y5b the unborn tier is full and its reason says there is no commit to count against' ($rY5b.Out -match 'review tier: full — no commit yet \(unborn HEAD\)' -and $rY5b.Out -notmatch 'could not be measured') $rY5b.Out) -and $ok
 
 # Y6: --all on an empty tree still prints the trailer facts — review-canon existence (and hooks
 # wiring where .githooks/ exists) are TREE facts a full-tree audit exists to report; the
@@ -2508,6 +2517,43 @@ bash '$anW/resolve.sh'
              $n9b.Out -match '(?m)^node version \(web\): 24 .*\.nvmrc.*web .*engines\.node 22 ' -and ([regex]::Matches($n9b.Out, '(?m)^node version \(web\): ')).Count -eq 1 -and
              $n9c.File -eq '' -and $n9d.File -eq 'web/package.json' -and $n9d.Out -match '(?m)^node version \(web\): 22\.3\.0 ') "fallback file=[$($n9.File)]`n$($n9.Out)`nrange file=[$($n9b.File)]`n$($n9b.Out)`nroot-pkg file=[$($n9c.File)]`n$($n9c.Out)`nvolta file=[$($n9d.File)]`n$($n9d.Out)") -and $ok
 }
+
+# --- AO: an explicit file is read as a path from the repo root, whatever way it is written -------
+# Group patterns are anchored to repo-root-relative POSIX paths, so `./api/app.py`, an absolute path,
+# a backslash path and a path typed from a sub-directory must all land in the group `api/app.py` does.
+# A path outside the repo has no root-relative form: it stays as given and is listed ungrouped.
+# `git diff --name-only` prints root-relative paths in every directory, so `api/app.py` given from
+# inside `api/` names no `api/api/app.py` and must keep its root reading.
+$ao = New-Repo 'explicit-paths' $CFG @('api/app.py', 'api/sub/deep.py')
+$aoDot = Invoke-Gates $ao @('./api/app.py')
+$aoAbs = Invoke-Gates $ao @((Join-Path $ao 'api/app.py'))
+$aoBack = Invoke-Gates $ao @('api\app.py')
+$ok = (Assert-True 'AO1 ./api/app.py, an absolute path and a backslash path all reach group api, none ungrouped' `
+        (($aoDot.Out -match '\[api\] 1 file\(s\)' -and $aoDot.Out -match 'ruff check app\.py' -and $aoDot.Out -notmatch 'ungrouped') -and
+         ($aoAbs.Out -match '\[api\] 1 file\(s\)' -and $aoAbs.Out -match 'ruff check app\.py' -and $aoAbs.Out -notmatch 'ungrouped') -and
+         ($aoBack.Out -match '\[api\] 1 file\(s\)' -and $aoBack.Out -notmatch 'ungrouped')) "dot:`n$($aoDot.Out)`nabs:`n$($aoAbs.Out)`nback:`n$($aoBack.Out)") -and $ok
+Push-Location (Join-Path $ao 'api')
+try { $aoSub = Invoke-Gates $ao @('app.py', 'sub/deep.py', '../api/app.py', 'api/app.py') } finally { Pop-Location }
+$ok = (Assert-True 'AO2 paths typed from a sub-directory are made root-relative, a root-relative path that names nothing from there stays as given; a repeat of one file counts once' `
+        ($aoSub.Out -match '\[api\] 2 file\(s\)' -and $aoSub.Out -match 'ruff check app\.py sub/deep\.py' -and $aoSub.Out -notmatch 'ungrouped') $aoSub.Out) -and $ok
+$aoOutside = Join-Path $fxBase 'outside-the-repo.py'
+$aoOut = Invoke-Gates $ao @($aoOutside)
+$ok = (Assert-True 'AO3 a path outside the repo does not crash: exit 0, listed ungrouped under the name given' `
+        ($aoOut.Code -eq 0 -and $aoOut.Out -notmatch 'Traceback' -and $aoOut.Out -match 'ungrouped \(1 file' -and $aoOut.Out -match 'outside-the-repo\.py') "exit=$($aoOut.Code) out=$($aoOut.Out)") -and $ok
+
+# --- AP: a mistyped declaration warns once, and names what is wrong ------------------------------
+# `gates` as a string used to warn once per character. A bad review regex used to warn once per changed
+# file, because every file compiled every pattern again.
+$cfgAP = $CFG.Replace('"gates": ["ruff", "pytest-nondb"]', '"gates": "ruff"').Replace('"harness_layer": ["^\\.harnessdir/"]', '"harness_layer": ["["]').Replace('"critical": ["^migrations/"]', '"critical": ["("]')
+$ap = New-Repo 'declaration-types' $cfgAP @('api/a.py', 'api/b.py', 'api/c.py')
+$rAP = Invoke-Gates $ap @()
+$apGateWarns = @(($rAP.Out -split "`n") | Where-Object { $_ -match 'groups\[api\]\.gates' })
+$ok = (Assert-True 'AP1 gates given as a string gives ONE warning that names the type, not one per character' `
+        ($apGateWarns.Count -eq 1 -and $apGateWarns[0] -match 'expected a list' -and $apGateWarns[0] -match 'str') "warnings: $($apGateWarns -join ' | ')`n$($rAP.Out)") -and $ok
+$apCrit = @(($rAP.Out -split "`n") | Where-Object { $_ -match 'review\.critical: not a valid regex' })
+$apLayer = @(($rAP.Out -split "`n") | Where-Object { $_ -match 'review\.harness_layer: not a valid regex' })
+$ok = (Assert-True 'AP2 a bad review.critical regex over three changed files warns once, and so does a bad harness_layer regex' `
+        ($apCrit.Count -eq 1 -and $apLayer.Count -eq 1) "critical: $($apCrit.Count) layer: $($apLayer.Count)`n$($rAP.Out)") -and $ok
 
 # --- RUN: the in-process runner prints what a child prints (ADR 0160) ----------------------------
 # Last on purpose: a state leak from any earlier driver run would show here. Each repo runs as a real

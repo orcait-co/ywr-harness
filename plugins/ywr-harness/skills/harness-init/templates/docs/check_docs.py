@@ -44,6 +44,8 @@ TOOLCHAIN placement (ywr-harness ADR 0010): scaffold-owned, re-placed verbatim
 by `/ywr-harness:harness-init` on every run — edit the template upstream,
 never this copy.
 """
+from __future__ import annotations
+
 import os
 import re
 import subprocess

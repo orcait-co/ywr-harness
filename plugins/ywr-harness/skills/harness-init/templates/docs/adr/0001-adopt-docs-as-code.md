@@ -48,7 +48,7 @@ This repo keeps two document sets.
 - **Frontmatter is the single source of truth** for status, dates and relationships. The body
   never repeats these facts. A fact in two places drifts, and the body copy goes stale without
   notice.
-- `pwsh docs/build.ps1` regenerates `index.json`, `INDEX.md` and `docs.html`. Commit the
+- `pwsh docs/build.ps1` regenerates `index.json`, `INDEX.md`, `docs.html` and `docs.artifact.html`. Commit the
   generated index with the source change. Then tooling can query decisions without reading every
   file.
 

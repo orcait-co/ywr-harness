@@ -19,8 +19,6 @@
 #
 # Copyright (c) 2026 YWR Labs Inc. All rights reserved.
 
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-
 # Patterns are deliberately written so none of them matches THIS FILE's own source — a hook that
 # flags its own addition is a hook nobody can install. The plugin's selftest asserts exactly that
 # (case: "does not flag its own source"), so the property is measured rather than assumed.
@@ -39,8 +37,21 @@ npm-token|npm_[A-Za-z0-9]{36}
 generic-assigned-secret|(secret|token|passwd|password|api_?key|access_?key)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'[:space:]]{12,}["'"'"']'
 
 # --- resolve the commit set ---------------------------------------------------------------------
+# A commit list that git failed to produce is never an empty set: an empty set passes the push, so a
+# failure there would let it through unread. Failure (non-zero exit) blocks; an empty list with exit 0
+# is a quiet pass.
+unresolved() {
+    echo "[harness] pre-push BLOCKED — the commit set for $1 could not be resolved (git rev-list failed),"
+    echo "[harness]   so no commit of it was scanned for secrets."
+    echo "[harness] Fetch the remote and push again. \`git push --no-verify\` skips this scan; the CI backstop"
+    echo "[harness]   scans the same commits."
+    exit 1
+}
+
 COMMITS=''
-while read -r _local_ref local_oid _remote_ref remote_oid; do
+# `read` returns non-zero on a last line that has no newline, with the fields already set. The second
+# test keeps that line: dropping it would pass its ref unread.
+while read -r _local_ref local_oid _remote_ref remote_oid || [ -n "$_local_ref" ]; do
     # Strip CR. git itself feeds LF-terminated lines, but anything that hands this hook CRLF (a
     # wrapper, a test harness, a Windows tool in the chain) would otherwise leave \r inside the
     # trailing field — and `git rev-list <sha>\r..<sha>` matches NOTHING, so the scan would report
@@ -54,13 +65,22 @@ while read -r _local_ref local_oid _remote_ref remote_oid; do
 
     case "$remote_oid" in
         *[!0]*)
-            # Existing remote branch: exactly what this push adds.
-            found=$(git rev-list "$remote_oid..$local_oid" 2>/dev/null)
+            # Existing remote branch: exactly what this push adds. A FAILED rev-list is not an empty
+            # one: when the remote oid is no local object (a force-push over commits that were never
+            # fetched) the list fails, and reading that as "nothing to scan" would pass the push
+            # unread. Fall back to the wider set a new branch gets, and say so.
+            if ! found=$(git rev-list "$remote_oid..$local_oid" 2>/dev/null); then
+                echo "[harness] pre-push: $remote_oid is not a local object, so the range for $_local_ref is unknown;"
+                echo "[harness]   scanning every commit of it that is not on a remote instead."
+                found=$(git rev-list "$local_oid" --not --remotes 2>/dev/null) || unresolved "$_local_ref"
+                # An empty wider list is a pass, and it must read as one: no commit was scanned.
+                [ -n "$found" ] || echo "[harness] pre-push: every commit of $_local_ref is already on a remote, so 0 commits of it were scanned."
+            fi
             ;;
         *)
             # New branch: everything not already reachable from some remote-tracking ref. Without
             # `--not --remotes` this is the whole history of the branch on its first push.
-            found=$(git rev-list "$local_oid" --not --remotes 2>/dev/null)
+            found=$(git rev-list "$local_oid" --not --remotes 2>/dev/null) || unresolved "$_local_ref"
             ;;
     esac
     [ -n "$found" ] && COMMITS="$COMMITS$found
@@ -71,6 +91,11 @@ COMMITS=$(printf '%s' "$COMMITS" | sed '/^$/d' | sort -u)
 [ -n "$COMMITS" ] || exit 0
 
 N_COMMITS=$(printf '%s\n' "$COMMITS" | sed '/^$/d' | wc -l | tr -d ' ')
+
+report_clean() {
+    echo "[harness] pre-push: no secret pattern in added lines ($N_COMMITS commit(s) scanned)."
+    exit 0
+}
 
 # --- scan added lines ----------------------------------------------------------------------------
 # `git show -U0 --format=` prints the diff alone. A merge commit prints nothing by default, which is
@@ -88,6 +113,36 @@ HITS=''
 OLD_IFS=$IFS
 IFS='
 '
+
+# Prefilter: one git process prints every commit's -U0 diff and one grep reads all of it. The loop
+# below starts about fourteen processes per commit, most of a minute for thirty commits on Windows.
+# The prefilter only ever answers "clean", and only with proof it read every commit: the header
+# lines must number $N_COMMITS, and git's own exit status must reach the stream as `harness-status 0`.
+# The count alone is not enough — a stream cut inside the last commit's diff still has every header.
+# A git that failed or lacks an option fails one of the two, so the loop runs as before. A match
+# falls through to the loop too, which builds the labelled report. Neither marker line has a leading
+# `+`, so no added line can forge one. The status is taken from the git command itself, directly
+# before the filters, because sh has no pipefail and a filter's status says nothing about git. The
+# stream goes to a file in the git dir because a large push does not fit a shell variable.
+PF=''
+GD=$(git rev-parse --git-dir 2>/dev/null) && PF="$GD/harness-pre-push.$$"
+trap 'rm -f "$PF"' EXIT
+trap 'rm -f "$PF"; exit 1' HUP INT TERM
+if [ -n "$PF" ]; then
+    { printf '%s\n' "$COMMITS" | git show --stdin --no-walk --format='harness-commit %H' -U0 --no-color --cc; echo "harness-status $?"; } 2>/dev/null |
+        grep -a -e '^harness-commit ' -e '^harness-status ' -e '^+' 2>/dev/null | grep -av -e '^+++' -e 'harness:allow-secret' > "$PF" 2>/dev/null
+    if [ "$(grep -a -c '^harness-commit ' "$PF" 2>/dev/null)" = "$N_COMMITS" ] &&
+        [ "$(grep -a -c '^harness-status 0$' "$PF" 2>/dev/null)" = 1 ]; then
+        # Every pattern as its own `-e`, for the reason the loop gives. This hook's own arguments are
+        # unused from here on, so the pattern list can ride in the positional parameters.
+        set --
+        for entry in $PATTERNS; do set -- "$@" -e "${entry#*|}"; done
+        grep -a -E -q "$@" "$PF" 2>/dev/null
+        # 1 is "no line matched". 0 is a match and 2 or more is a grep that did not run — both go to the loop.
+        [ $? -eq 1 ] && report_clean
+    fi
+    rm -f "$PF"
+fi
 for sha in $COMMITS; do
     [ -n "$sha" ] || continue
     added=$(git show --format= -U0 --no-color "$sha" 2>/dev/null | grep -a '^+' | grep -av '^+++')
@@ -132,5 +187,4 @@ if [ -n "$HITS" ]; then
     exit 1
 fi
 
-echo "[harness] pre-push: no secret pattern in added lines ($N_COMMITS commit(s) scanned)."
-exit 0
+report_clean

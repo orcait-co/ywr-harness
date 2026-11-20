@@ -70,7 +70,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, emit, sleep, psJoin } from './hook-lib.mjs'
+import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, emit, sleep, psJoin, inline } from './hook-lib.mjs'
 
 // One link, two shipped surfaces: this constant and the CHANGELOG header. manifest-gate.mjs
 // asserts the two agree, so neither can drift alone.
@@ -267,9 +267,12 @@ function main(payload) {
   const cm = /^([0-9]+)\.([0-9]+)\.([0-9]+)/.exec(currentRaw)
   if (cm) current = toVersion(cm[1], cm[2], cm[3])
   if (!current) {
-    return emit({ systemMessage: `[hook:version-announce] 이 플러그인 자체의 .claude-plugin/plugin.json을 버전으로 읽을 수 없습니다 (받은 값: '${currentRaw}') — ${path.dirname(hooksDir)} 의 설치가 손상되었습니다; 버전 안내는 OFF이며 확인되지 않았습니다.` })
+    return emit({ systemMessage: `[hook:version-announce] 이 플러그인 자체의 .claude-plugin/plugin.json을 버전으로 읽을 수 없습니다 (받은 값: '${inline(currentRaw)}') — ${inline(path.dirname(hooksDir), 300)} 의 설치가 손상되었습니다; 버전 안내는 OFF이며 확인되지 않았습니다.` })
   }
   const currentStr = current.join('.')
+  // Every value read from disk or env reaches a message through inline(): a state file with a second
+  // line must not start a line of hook output. The raw strings stay for the state write.
+  const curShown = inline(currentRaw)
 
   // --- state ------------------------------------------------------------------------------------
   let homeDir = process.env.USERPROFILE || ''
@@ -316,8 +319,8 @@ function main(payload) {
     // this protects nothing the dist README does not already carry, so a failed seed is silent
     // — and a seed lost to a concurrent first run is a failed seed (newStateExclusive).
     if (newStateExclusive(stateDir, stateFile, currentRaw)) {
-      const sys = `[hook:version-announce] ywr-harness v${currentRaw} 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 변경 이력: 플러그인의 CHANGELOG.md · 릴리스 노트 탭(가이드 개정 시 갱신) ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
-      const ctx = `The ywr-harness plugin v${currentRaw} is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ywr-harness ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the artifact release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). This welcome appears once per machine; do not repeat it unprompted.`
+      const sys = `[hook:version-announce] ywr-harness v${curShown} 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 변경 이력: 플러그인의 CHANGELOG.md · 릴리스 노트 탭(가이드 개정 시 갱신) ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
+      const ctx = `The ywr-harness plugin v${curShown} is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ywr-harness ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the artifact release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). This welcome appears once per machine; do not repeat it unprompted.`
       emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
     }
     return
@@ -344,9 +347,9 @@ function main(payload) {
   // canon actually uses — `code` and **bold** — are stripped for display, or the member reads
   // literal backticks and asterisks (review 2026-08-05, medium). The CHANGELOG itself stays
   // Markdown; only this rendering flattens it.
-  const shown = bullets.slice(0, 3).map(b => b.replace(/\*\*([^\n]+?)\*\*/g, '$1').replace(/`([^`]*)`/g, '$1'))
+  const shown = bullets.slice(0, 3).map(b => inline(b.replace(/\*\*([^\n]+?)\*\*/g, '$1').replace(/`([^`]*)`/g, '$1'), Infinity))
   const more = bullets.length - shown.length
-  let body = `[hook:version-announce] ywr-harness v${storedRaw} → v${currentRaw} 업데이트됨 (자동 업데이트).`
+  let body = `[hook:version-announce] ywr-harness v${inline(storedRaw)} → v${curShown} 업데이트됨 (자동 업데이트).`
   if (shown.length) {
     body += ' 주요 변경:\n' + shown.map(b => `  • ${b}`).join('\n')
     if (more > 0) body += `\n  • …외 ${more}건 — 전체는 플러그인의 CHANGELOG.md 에서.`
@@ -357,10 +360,10 @@ function main(payload) {
   body += `릴리스 노트 탭(가이드 개정 시 갱신 — 이 버전 항목은 CHANGELOG.md 에 먼저 실립니다): ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
 
   if (!writeState(stateDir, stateFile, currentRaw)) {
-    body += `\n(안내 기록 실패: ${stateFile} 에 쓸 수 없어 이 안내가 반복될 수 있습니다 — ${configDir} 권한을 확인하세요.)`
+    body += `\n(안내 기록 실패: ${inline(stateFile, 300)} 에 쓸 수 없어 이 안내가 반복될 수 있습니다 — ${inline(configDir, 300)} 권한을 확인하세요.)`
   }
 
-  const ctx = `The ywr-harness plugin loaded in this session is v${currentRaw}; the last version announced on this machine was v${storedRaw} (marketplace auto-update, ywr-harness ADR 0026 — an update applies at the next session start or at /reload-plugins). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). If the user asks what changed, read the CHANGELOG entry for v${currentRaw} rather than answering from memory. This announcement is once-per-version (ywr-harness ADR 0030); do not repeat it unprompted.`
+  const ctx = `The ywr-harness plugin loaded in this session is v${curShown}; the last version announced on this machine was v${inline(storedRaw)} (marketplace auto-update, ywr-harness ADR 0026 — an update applies at the next session start or at /reload-plugins). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). If the user asks what changed, read the CHANGELOG entry for v${curShown} rather than answering from memory. This announcement is once-per-version (ywr-harness ADR 0030); do not repeat it unprompted.`
   emit({ systemMessage: body, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
 }
 

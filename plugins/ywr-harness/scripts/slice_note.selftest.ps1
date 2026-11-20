@@ -120,6 +120,14 @@ $ok = (Assert-True 'N10b a record whose ts is not the shape add writes is ignore
 $r = Invoke-Note $plain @('show')
 $ok = (Assert-True 'N11 a directory outside git exits 2 with a FAILED line' ($r.Code -eq 2 -and $r.Out -match 'slice notes: FAILED — git could not resolve') "exit=$($r.Code) out=$($r.Out)") -and $ok
 
+# A git that cannot start is a git failure, not a journal fault: the child runs with a PATH holding no git.
+$noGit = Join-Path $fxBase 'no-git-on-path'
+New-Item -ItemType Directory -Force -Path $noGit | Out-Null
+$pathHeld = $env:PATH
+$env:PATH = $noGit
+try { $r = Invoke-Note $repo @('show') } finally { $env:PATH = $pathHeld }
+$ok = (Assert-True 'N19 a git that cannot start exits 2 naming git, never a journal I/O failure or a traceback' ($r.Code -eq 2 -and $r.Out -match 'slice notes: FAILED — git could not be run' -and $r.Out -notmatch 'journal I/O' -and $r.Out -notmatch 'Traceback') "exit=$($r.Code) out=$($r.Out)") -and $ok
+
 $wt = Join-Path $fxBase 'wt'
 $null = Invoke-Git $repo @('worktree', 'add', '-q', '--detach', $wt)
 $r = Invoke-Note $wt @('show')

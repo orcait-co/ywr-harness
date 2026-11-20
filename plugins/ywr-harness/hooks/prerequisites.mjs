@@ -1,7 +1,7 @@
 // Hooks module (Claude Mods; ywr-harness ADR 0142) — the PREREQUISITE check and its install command. `mods.mjs`, the
 // entry `hooks.json` names under `modules`, registers it beside the delegation ledger.
 //
-// The plugin needs three tools on PATH: `node` runs the eight settings hooks (ywr-harness ADR 0116), `pwsh` 7+ runs
+// The plugin needs three tools on PATH: `node` runs the settings hooks (ywr-harness ADR 0116), `pwsh` 7+ runs
 // the skills' scripts and every selftest, `python` 3.9+ runs the gate scripts. A settings hook cannot
 // report its own runtime's absence, so this check is a mod: the host runs a mod in an engine
 // environment of its own, with no Node (ywr-harness fact 135), and `$.process.run` reaches the host's commands.
@@ -53,12 +53,12 @@ export const TOOLS = [
   {
     name: 'node', argv: ['node', '--version'], min: null, winget: 'OpenJS.NodeJS.LTS',
     other: 'macOS: `brew install node` · Linux: the distribution package or nodejs.org',
-    uses: 'the eight ywr-harness settings hooks (session start, config change, added directory, every Agent call, every subagent stop) report a hook error',
+    uses: 'the ywr-harness settings hooks (session start, config change, added directory, every Agent call, every question, every subagent stop) report a hook error',
   },
   {
     name: 'pwsh', argv: ['pwsh', '--version'], min: [7, 0], winget: 'Microsoft.PowerShell',
     other: 'macOS: `brew install --cask powershell` · Linux: learn.microsoft.com/powershell',
-    uses: 'the harness-init and report-issue skill scripts and every plugin selftest fail',
+    uses: 'the ywr-harness:harness-init and ywr-harness:report-issue skill scripts and every plugin selftest fail',
   },
   {
     name: 'python', argv: ['python', '--version'], min: [3, 9], winget: 'Python.Python.3.13',

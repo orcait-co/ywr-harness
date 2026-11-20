@@ -74,6 +74,28 @@ $unknownDir = Join-Path $fx 'unknown-dir'             # no repo, WITH .githooks 
 New-Item -ItemType Directory -Force -Path $plain | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $unknownDir '.githooks') | Out-Null
 
+# A `node -r` preload that wraps spawnSync and logs each git call, so "spawns no git" is observed, not assumed.
+$spyLog = Join-Path $fx 'git-spy.log'
+$spyPre = Join-Path $fx 'git-spy.cjs'
+@"
+const cp = require('node:child_process'), fs = require('node:fs'), path = require('node:path')
+const real = cp.spawnSync
+cp.spawnSync = function (cmd) {
+  const base = path.basename(String(cmd)).toLowerCase()
+  if (base === 'git' || base === 'git.exe') fs.appendFileSync(process.env.YWR_SPY_LOG, 'git\n')
+  return real.apply(this, arguments)
+}
+"@ | Set-Content -LiteralPath $spyPre -Encoding utf8
+function Invoke-SpiedHook([string]$Cwd) {
+    $env:YWR_SPY_LOG = $spyLog
+    Remove-Item -LiteralPath $spyLog -Force -ErrorAction SilentlyContinue
+    try { $o = (New-Payload @{ cwd = $Cwd } | & $nodeExe -r $spyPre $hook 2>&1 | Out-String) }
+    finally { Remove-Item Env:YWR_SPY_LOG -ErrorAction SilentlyContinue }
+    $script:HookExit = $LASTEXITCODE
+    $script:GitCalls = if (Test-Path -LiteralPath $spyLog) { @(Get-Content -LiteralPath $spyLog).Count } else { 0 }
+    return $o
+}
+
 if ($gitOk) {
     $unwired = Join-Path $fx 'repo-unwired'
     $wired = Join-Path $fx 'repo-wired'
@@ -108,8 +130,9 @@ if ($gitOk) {
     $ok = (Assert-EmptyStdout 'foreign hooksPath silent' $out) -and $ok
 
     # 4. a repo with no .githooks/ has nothing to wire -> silent
-    $out = Invoke-Hook (New-Payload @{ cwd = $bare })
+    $out = Invoke-SpiedHook $bare
     $ok = (Assert-EmptyStdout 'repo without .githooks silent' $out) -and $ok
+    $ok = (Assert-True 'repo without .githooks spawns no git' ($script:GitCalls -eq 0) "$script:GitCalls git call(s)") -and $ok
 
     # 5. subdirectory cwd -> the ROOT is resolved and named; the subdir must not be mistaken
     #    for the repo (that is what rev-parse buys over a bare Join-Path on cwd)
@@ -199,6 +222,21 @@ cp.spawnSync = function (cmd, args) {
     $post = @(& git -C $foreign config --local --get core.hooksPath 2>$null)
     $ok = (Assert-True 'non-mutation: foreign value untouched' (([string]$post[0]).Trim() -eq '.husky') `
             "core.hooksPath now reads [$($post -join ' ')]") -and $ok
+
+    # 6d. where the folders above cwd cannot prove silence, the git path still runs (cases 4 and 7 assert that a
+    #     folder with no `.githooks/` on the way up spawns no git): a gitfile `.git` is not proof (its git dir is
+    #     elsewhere), and core.worktree makes git name a work tree outside the folders above cwd.
+    $gitfile = Join-Path $fx 'repo-gitfile'
+    New-Item -ItemType Directory -Force -Path $gitfile | Out-Null
+    Set-Content -LiteralPath (Join-Path $gitfile '.git') -Value 'gitdir: ./nowhere' -Encoding ascii
+    $out = Invoke-SpiedHook $gitfile
+    $ok = (Assert-EmptyStdout '6d gitfile .git without .githooks: silent' $out) -and $ok
+    $ok = (Assert-True '6d a gitfile .git is not proof: git is still asked' ($script:GitCalls -ge 1) 'no git call') -and $ok
+    $redirect = Join-Path $fx 'repo-redirect'
+    & git -c init.defaultBranch=main init -q $redirect 2>$null | Out-Null
+    & git -C $redirect config core.worktree $unwired
+    $out = Invoke-SpiedHook $redirect
+    $ok = (Assert-Nudge '6d core.worktree pointing at a repo with .githooks: git names that work tree and it nudges' $out @('repo-unwired', 'core\.hooksPath가 UNSET') @('repo-redirect', 'SCHEMA DRIFT')) -and $ok
 }
 else {
     Write-Host 'SKIP — git not on PATH; 10 git-dependent cases not run (reported, not silent)' -ForegroundColor Yellow
@@ -206,8 +244,9 @@ else {
 
 # 7. plain non-repo directory -> silent on BOTH branches (with git: rev-parse fails; without
 #    git: no .githooks at cwd), so this case runs unguarded
-$out = Invoke-Hook (New-Payload @{ cwd = $plain })
+$out = Invoke-SpiedHook $plain
 $ok = (Assert-EmptyStdout 'non-repo dir silent' $out) -and $ok
+$ok = (Assert-True 'non-repo dir spawns no git' ($script:GitCalls -eq 0) "$script:GitCalls git call(s)") -and $ok
 
 # 8. vanished cwd -> silent, and the stdout must be CLEAN (2>&1 is captured, so a stderr wall
 #    from git or Test-Path would fail the emptiness assertion — the 48c264c class)

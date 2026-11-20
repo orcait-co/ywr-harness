@@ -101,9 +101,9 @@ $e = Invoke-Line '{"model":{"display_name":"Fable 5 (preview)"},"workspace":{"cu
 $ok = (Assert-True 'E a non-context parenthetical is preserved' ($e -match 'Fable 5 \(preview\)') $e) -and $ok
 
 # --- W: the worktree segment (ADR 0059) -----------------------------------------------------------
-# workspace.git_worktree is DOC-VERIFIED as a string (the linked-worktree name), not yet
-# live-captured — which is exactly why the guard is a type check: any other shape the host might
-# actually send must vanish, never render as "[object Object]" next to the location.
+# workspace.git_worktree is a string (the linked-worktree name), doc-verified and confirmed from a
+# captured payload on 2026-08-19. The guard is still a type check: any other shape a host might
+# send must vanish, never render as "[object Object]" next to the location.
 $W = @'
 {"model":{"display_name":"Opus 5 (1M context)","id":"claude-opus-5[1m]"},
  "effort":{"level":"xhigh"},

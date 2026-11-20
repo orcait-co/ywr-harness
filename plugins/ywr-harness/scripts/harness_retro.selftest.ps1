@@ -226,6 +226,12 @@ $ok = (Assert-True 'CL6 two digests in one body sum (3 findings, 2 class lines)'
 $ok = (Assert-True 'CL7 the range reports exactly the three lacking commits' ($clHit.Count -eq 3) $rCL.Out)  -and $ok
 $rCL8 = Invoke-Retro $e2 @()
 $ok = (Assert-True 'CL8 the no-range run reads HEAD alone (cl6 fires, cl1 does not)' ($rCL8.Out -match "CLASS: commit $($clSha[5]) counts 3" -and $rCL8.Out -notmatch $clSha[0]) $rCL8.Out) -and $ok
+# CL9: a bare revision is the commits after it, the same range its file diff covers. cl1 is the revision
+# itself, so its lacking close is outside; cl3 and cl6 are inside.
+$rCL9 = Invoke-Retro $e2 @("HEAD~$($clN - 1)")
+$clHit9 = @([regex]::Matches($rCL9.Out, 'CLASS: commit ([0-9a-f]+) counts'))
+$ok = (Assert-True 'CL9 a bare revision reads only the commits after it (cl3 and cl6 fire, cl1 and older commits do not)' `
+    ($clHit9.Count -eq 2 -and $rCL9.Out -match "CLASS: commit $($clSha[2]) counts 2" -and $rCL9.Out -match "CLASS: commit $($clSha[5]) counts 3" -and $rCL9.Out -notmatch $clSha[0]) $rCL9.Out) -and $ok
 
 # --- CT: the class-line tally of --coverage (ADR 0209), on the same repo: 8 commits, 4 closes (cl1 cl2 cl3 cl6) owe
 # 2+2+2+3 = 9; class lines 3 instance, 1 BACKLOG, 1 other form (cl6 `later`) in 3 closes; short cl1 cl3 cl6, cl3 bare.

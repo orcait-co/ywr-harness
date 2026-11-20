@@ -21,7 +21,7 @@ public tracker.
 If `$ARGUMENTS` is empty, ask for one sentence or more: what is wrong or missing, what was
 expected, and (if a toolchain file was patched locally) why. Do not invent a description.
 
-## 2. Draft — nothing leaves the machine
+## 2. Draft — nothing is filed
 
 ```
 pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.ps1" -Description "<description>"

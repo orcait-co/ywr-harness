@@ -119,7 +119,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys, collator } from './hook-lib.mjs'
+import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys, collator, markerAbove } from './hook-lib.mjs'
 
 // Test-Path -PathType Container / Leaf, promoted so every failure (a root that does not exist on
 // this platform, an illegal path) reads as "not there". Leaf is a regular file: the stamp read below
@@ -626,6 +626,9 @@ function drift(payload) {
 function main(payload) {
   const cwd = netTrim(psString(getProp(payload, 'cwd')))
   if (!cwd) return drift(payload)
+  // No `scripts/harness/` from cwd upward: neither the work tree root nor cwd can pass the
+  // plausible-scaffold gate below, so the hook has nothing to say and starts no git.
+  if (!markerAbove(cwd, 'scripts/harness')) return
 
   // Resolve the work tree root from cwd so a subdirectory session still finds the repo. Without
   // git the verdict still runs — unlike the sibling, whose verdict IS git state, this verdict is

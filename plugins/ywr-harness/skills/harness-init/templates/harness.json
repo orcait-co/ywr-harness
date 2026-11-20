@@ -1,5 +1,5 @@
 {
-  "//": "ywr-harness declaration. Repo-specific values live HERE so the plugin's scripts stay identical in every repo (ywr-harness ADR 0010). Placed once by /harness-init and never overwritten — edit it freely. Every command-shaped field is a SELECTOR from a closed set defined in the plugin, never a command string: this file is in the working tree, and the scripts print commands that get run (ywr-harness ADR 0012). A gate that is this repo's own script is declared as a script gate — closed-set runner + validated repo-relative path, still never a command string (ywr-harness ADR 0024).",
+  "//": "ywr-harness declaration. Repo-specific values live HERE so the plugin's scripts stay identical in every repo (ywr-harness ADR 0010). Placed once by /ywr-harness:harness-init and never overwritten — edit it freely. Every command-shaped field is a SELECTOR from a closed set defined in the plugin, never a command string: this file is in the working tree, and the scripts print commands that get run (ywr-harness ADR 0012). A gate that is this repo's own script is declared as a script gate — closed-set runner + validated repo-relative path, still never a command string (ywr-harness ADR 0024).",
 
   "docs": {
     "index": "docs/index.json",

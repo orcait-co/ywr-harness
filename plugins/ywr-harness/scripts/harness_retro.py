@@ -298,7 +298,9 @@ def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, li
         rev_range = "HEAD^1..HEAD"
     if rev_range:
         raw = git(root, "diff", "--name-status", "-z", "-M", rev_range)
-        bodies = commit_bodies(git(root, "log", LOG_BODY_FMT, rev_range))
+        # `git log <rev>` lists the whole history behind <rev>, while `git diff <rev>` covers the
+        # commits after it: a bare revision reads its messages over `<rev>..HEAD`, the span its diff covers.
+        bodies = commit_bodies(git(root, "log", LOG_BODY_FMT, rev_range if ".." in rev_range else f"{rev_range}..HEAD"))
         if "..." in rev_range:
             a, b = rev_range.split("...", 1)
             pre = git(root, "merge-base", a, b, ok_exits=(1,)).strip()  # 1 = no common ancestor

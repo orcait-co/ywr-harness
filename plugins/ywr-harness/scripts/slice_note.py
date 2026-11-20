@@ -206,6 +206,11 @@ def note_main() -> int:
         print(f"git failed: {(e.stderr or '').strip()}", file=sys.stderr)
         hc.say("slice notes: FAILED — git could not resolve the repository, HEAD or the range (ywr-harness ADR 0172)")
         return 2
+    except OSError as e:
+        # A git that cannot start (not on PATH, repository directory unreadable) surfaces here,
+        # before any journal write; the handler in main() is for the journal alone.
+        hc.say(f"slice notes: FAILED — git could not be run: {e} (ywr-harness ADR 0172)")
+        return 2
 
     notes = read_notes(path)
     if args.cmd == "add":

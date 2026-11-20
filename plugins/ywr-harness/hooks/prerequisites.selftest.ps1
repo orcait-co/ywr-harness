@@ -134,6 +134,14 @@ eq('V11 verdictOf: a malformed outcome is unknown',
   eq('B8 noteText: first line identifies the source, then one line per tool, then the closing facts',
     [note.split('\n').length, note.split('\n')[0].startsWith('ywr-harness prerequisite check')], [1 + 3 + 1, true])
 
+  // B11. the note names no hook count (hooks.json owns it, and a number drifts) and names each skill by its
+  // namespaced name: a bare hyphenated skill name does not resolve in a session.
+  const { readdirSync } = await import('node:fs')
+  const skillNames = readdirSync(new URL('../skills/', pathToFileURL(process.argv[2])), { withFileTypes: true }).filter(d => d.isDirectory() && d.name.includes('-')).map(d => d.name)
+  const bare = skillNames.filter(n => new RegExp('(?<!ywr-harness:)(?<![A-Za-z0-9_-])' + n + '(?![A-Za-z0-9_-])').test(note))
+  eq('B11 noteText: no hook count before "settings hooks" and no bare skill name (' + skillNames.length + ' hyphenated skills checked)',
+    [/\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b[^.]{0,20}settings hooks/i.test(note), bare, skillNames.includes('harness-init')], [false, [], true])
+
   eq('B9 manualText: Windows gives one backticked winget line per tool, in order',
     M.manualText(M.needsOf([{ state: 'missing' }, { state: 'ok' }, { state: 'missing' }]), true).split('\n'),
     ['- node: `' + M.wingetArgv(T.node).join(' ') + '`', '- python: `' + M.wingetArgv(T.python).join(' ') + '`'])

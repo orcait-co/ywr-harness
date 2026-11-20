@@ -1,12 +1,13 @@
 """Shared reader for `.harness.json` — the ONE place repo-specific harness values are parsed.
 
-Imported by `verify_map.py` and `harness_gates.py`. There is deliberately one reader for one
+Imported by the harness scripts as `import harness_config as hc`; no script reads the file itself.
+There is deliberately one reader for one
 schema: two readers of the same file is the divergence this plugin exists to prevent (ywr-harness ADR 0010),
 and a validator that only some consumers apply is not a validator.
 
 ## Why selectors instead of command strings
 
-Both consumers PRINT commands that a person or an agent then runs. `.harness.json` lives in the
+The consumers that print commands PRINT them for a person or an agent to run. `.harness.json` lives in the
 working tree, so a cloned repository could otherwise supply the command that ends up executed.
 Claude Code closed the same hole in its own surface: project-scope `pluginConfigs` entries are
 ignored because those values "would flow into plugin hook commands" (plugins-reference). So:
@@ -44,7 +45,7 @@ import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------------------------
-# Encoding pin. Both consumers print `·` and `—`, and Python on Windows encodes stdout with the
+# Encoding pin. The consumers print `·` and `—`, and Python on Windows encodes stdout with the
 # console codepage — so a caller decoding as UTF-8 (every harness selftest does) receives mojibake
 # and any assertion or grep against the text silently stops matching. Fixed here rather than at
 # each call site because an agent reading the output is a caller too, and it cannot set an
@@ -1044,7 +1045,12 @@ def load(root: Path) -> tuple[dict, list[str]]:
         # under this prefix, so the prefix has to be known (and itself validated) first.
         g_strip = safe_path(g.get("strip_prefix", ""), f"groups[{name}].strip_prefix", warns)
         gates: list = []
-        for gate in g.get("gates") or []:
+        raw_gates = g.get("gates") or []
+        if not isinstance(raw_gates, list):
+            warns.append(f"groups[{name}].gates: expected a list of gate names, got "
+                         f"{type(raw_gates).__name__} — ignored")
+            raw_gates = []
+        for gate in raw_gates:
             if isinstance(gate, dict):
                 sg = script_gate(gate, name, g_strip, root, warns)
                 if sg:
@@ -1171,6 +1177,33 @@ def git_paths(root: Path, *args: str) -> list[str]:
     return [norm(p) for p in git_run(root, args[0], "-z", *args[1:]).split("\0") if p.strip()]
 
 
+def repo_relative(root: Path, raw: str) -> str:
+    """An explicit file argument as the repo-root-relative POSIX path every group pattern is written
+    against. A relative argument is read from the working directory first, as a shell would, so a
+    path typed inside a sub-directory resolves. When that reading names nothing on disk, or lands
+    outside the repo (`--repo` given from elsewhere), the argument is read from the root: that is
+    the form `git diff --name-only` prints in every directory, a deleted file included. An absolute
+    path inside the repo is cut at the root. A path outside the repo has no such form and stays as
+    given, which the emitter then lists as ungrouped. The directory part is resolved through
+    symlinks and the file itself is not: a tracked symlink names itself."""
+    p = norm(raw)
+    if not p:
+        return p
+    base = os.path.realpath(root)
+    absolute = p if os.path.isabs(p) else os.path.join(os.getcwd(), p)
+    absolute = os.path.normpath(absolute)
+    cand = os.path.join(os.path.realpath(os.path.dirname(absolute)), os.path.basename(absolute))
+    key, base_key = os.path.normcase(cand), os.path.normcase(base)
+    if key.startswith(base_key.rstrip(os.sep) + os.sep):
+        # Both keys fold case and separators identically, so the cut offset is the same in `cand`.
+        from_cwd = norm(cand[len(base_key.rstrip(os.sep)) + 1:])
+        if os.path.isabs(p) or os.path.lexists(cand):
+            return from_cwd
+        from_root = norm(os.path.normpath(p))
+        return from_cwd if from_root.startswith("..") else from_root
+    return p if os.path.isabs(p) else norm(os.path.normpath(p))
+
+
 def changed_files(root: Path, rev_range: str | None, explicit: list[str],
                   all_files: bool = False) -> tuple[list[str], dict]:
     """Return (files, provenance). Provenance is REPORTED by the caller, never dropped: a range
@@ -1188,7 +1221,7 @@ def changed_files(root: Path, rev_range: str | None, explicit: list[str],
         return files, {"source": "all", "tracked_files": len(tracked),
                        "untracked_files": len(untracked), "untracked": untracked}
     if explicit:
-        files = [norm(p) for p in explicit]
+        files = list(dict.fromkeys(repo_relative(root, p) for p in explicit))
         return files, {"source": "explicit", "explicit": len(files), "range": rev_range}
     prov: dict = {"source": "git", "range": rev_range, "range_files": None}
     files: set[str] = set()

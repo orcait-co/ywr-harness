@@ -115,6 +115,19 @@ $ok = (Assert-True 'F unparseable settings exits 1' ($rF.Code -eq 1) "exit=$($rF
 $ok = (Assert-True 'F the file is left exactly as it was' ((Get-Content -LiteralPath (Join-Path $f 'settings.json') -Raw) -eq $garbage) 'settings.json was modified') -and $ok
 $ok = (Assert-True 'F the manual fix is printed' ($rF.Out -match 'statusLine') $rF.Out) -and $ok
 
+# --- F2: settings.json that parses but is not an object — the same refusal, never a raw error ----
+# `[]` and `null` come back from ConvertFrom-Json as $null, `"x"` as a string: none can carry a key.
+# Each used to die in a raw PowerShell error with no manual snippet. Bytes are compared, not text.
+foreach ($f2 in @(@('f2-array', '[]'), @('f2-null', 'null'), @('f2-string', '"x"'))) {
+    $f2Dir = New-Dir $f2[0]
+    $f2Path = Join-Path $f2Dir 'settings.json'
+    [IO.File]::WriteAllText($f2Path, $f2[1])
+    $f2Before = [IO.File]::ReadAllBytes($f2Path)
+    $rF2 = Invoke-Install $f2Dir @()
+    $ok = (Assert-True "F2 settings.json holding $($f2[1]) exits 1, says it is not an object, and prints the manual snippet" ($rF2.Code -eq 1 -and $rF2.Out -match 'not an object' -and $rF2.Out -match 'Add this yourself' -and $rF2.Out -match '"statusLine"' -and $rF2.Out -notmatch 'Exception|At line:|CategoryInfo') "exit=$($rF2.Code) out=$($rF2.Out)") -and $ok
+    $ok = (Assert-True "F2 the $($f2[1]) file is left byte-identical" ([Linq.Enumerable]::SequenceEqual($f2Before, [IO.File]::ReadAllBytes($f2Path))) 'settings.json was modified') -and $ok
+}
+
 # --- G: dry run writes nothing -------------------------------------------------------------------
 $g = New-Dir 'dry'
 $rG = Invoke-Install $g @('-DryRun')

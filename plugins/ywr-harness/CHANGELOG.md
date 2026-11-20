@@ -12,6 +12,21 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.81.1 — 2026-11-20
+
+- `pre-push` 비밀 검사가 커밋 목록을 계산하지 못했을 때 조용히 통과하지 않습니다(ywr-harness ADR 0210). 원격 브랜치의 커밋을 fetch 하지 않은 채 force-push 하면 `git rev-list` 가 실패하는데, 지금까지는 그 push 가 검사 없이 통과했습니다. 이제 hook 은 어떤 remote 에도 없는 커밋 전체를 대신 검사하고 그 사실을 두 줄로 알립니다. 그 목록도 계산하지 못하면 push 를 막습니다. 그럴 때는 `git fetch` 뒤에 다시 push 하세요. 새 브랜치의 첫 push 에서 목록 계산이 실패해도 같이 막습니다.
+- `pre-push` 가 조용히 통과하던 경로 세 개를 더 고쳤습니다. bare repo 에서도 검사가 돕니다. 지금까지는 work tree 를 찾지 못하면 아무 줄 없이 통과했습니다. stdin 의 마지막 줄에 줄바꿈이 없어도 그 줄의 ref 를 검사합니다. 위의 넓은 검사가 빈 목록을 내면(모든 커밋이 이미 remote 에 있을 때) 통과하면서 "0 commits ... were scanned" 한 줄을 찍습니다.
+- `pre-push` 가 빨라졌습니다. 깨끗한 push 는 git 한 번과 grep 한 번으로 끝납니다. 작은 커밋 30개의 push 가 49초에서 1.6초로 줄었습니다(Windows 측정). 모든 커밋을 읽었다는 증거가 없거나 패턴이 걸리면 지금까지의 커밋별 검사를 그대로 돌립니다. 그래서 막는 조건과 보고 형식은 그대로입니다.
+- 이 버전의 hook, 스크립트, docs 빌더 수정은 TOOLCHAIN 파일에 있습니다. `/ywr-harness:harness-init` 을 다시 돌려야 repo 에 반영됩니다. 세션 시작 안내가 차이를 알려 줍니다.
+- `harness_gates.py` 와 `verify_map.py` 가 파일 인자를 repo root 기준 경로로 바꿔 읽습니다. `./CLAUDE.md`, 절대 경로, 역슬래시 경로, 하위 폴더에서 입력한 상대 경로가 이제 `ungrouped` 가 아니라 제 그룹으로 갑니다. 하위 폴더에서 준 root 기준 경로(`git diff --name-only` 의 출력)는 그대로 읽습니다. 같은 파일을 두 번 주면 한 번으로 셉니다.
+- `harness_retro.py <rev>` 처럼 범위가 아닌 revision 하나를 주면, CLASS 검사가 전체 이력이 아니라 `<rev>..HEAD` 의 커밋만 읽습니다.
+- `.harness.json` 의 `gates` 를 목록이 아닌 문자열로 쓰면 글자마다가 아니라 한 번만 경고합니다. 잘못된 `review.critical`, `review.harness_layer` 정규식도 파일마다가 아니라 한 번만 경고합니다. 커밋이 아직 없는 repo 의 review tier 줄은 이유를 `no commit yet` 으로 적습니다. `slice_note.py` 는 git 을 실행하지 못하면 journal 오류가 아니라 git 오류라고 말합니다.
+- docs 빌더(`docs/build_docs.py`)가 큰따옴표 값 안의 `\"` 와 `\\` 를 읽습니다. 제목에 `\"` 가 있으면 index 에서 제목이 잘리던 문제가 없어집니다. 빌더는 모르는 인자와 값이 없는 `--version` 을 exit 2 로 거절하고 아무 파일도 쓰지 않습니다. 지금까지는 오타 `--chek` 가 전체 빌드를 돌렸습니다. `related_spec: [10]` 같은 숫자 항목에서 멈추지 않습니다. 링크의 `data:`, `vbscript:` 와 탭으로 쪼갠 `javascript:` 를 막습니다. `docs/check_docs.py` 가 Python 3.9 에서 import 됩니다. `build.sh` 는 아무도 읽지 않던 날짜 인자를 넘기지 않습니다.
+- 세션 시작 hook 두 개(githooks 안내, scaffold 갱신 안내)가 `.githooks/` 나 `scripts/harness/` 가 없는 폴더에서는 git 을 띄우지 않고 끝납니다. 그런 폴더에서 hook 한 번이 약 230 ms 에서 약 100 ms 로 줄었습니다.
+- 버전 안내 hook 이 상태 파일에서 읽은 값을 한 줄로 펴서 출력합니다. 세션 도중 `harness-init` 으로 `.harness.json` 이 생기면, delegation ledger 가 재시작 없이 다음 턴부터 기록합니다. 질문 알림 hook 은 tool 이름의 대소문자를 가리지 않습니다.
+- status line installer 가 최상위가 객체가 아닌 `settings.json`(`[]`, `null`, `"x"`)을 만나면, PowerShell 오류 대신 직접 넣을 snippet 을 보여 주고 파일은 그대로 둡니다.
+- 문구를 바로잡았습니다. 필수 도구 안내는 hook 개수를 말하지 않고, 스킬 이름을 `ywr-harness:` 로 적습니다. `report-issue` 의 초안 단계는 "nothing leaves the machine" 대신 "nothing is filed" 라고 말합니다. 초안은 원격을 fetch 하고 열린 이슈를 검색하기 때문입니다. README 의 hook 표와 개수, 설정 경로를 고쳤습니다. ADR, spec 템플릿은 산출물 네 개와 `narrows` 키를 말하고, 예시 파일명을 ASCII 로 씁니다. 비ASCII 경로의 문서는 파일 단위 gate 가 검사하지 않습니다.
+
 ## v0.81.0 — 2026-11-16
 
 - `/ywr-harness:slice-close` 의 close record(slice 커밋 본문)에 confirmed high·medium 지적마다 `class:` 줄을 하나씩 적습니다(ywr-harness ADR 0208). 형식은 `class: <id> instance — <결정적 검사로 막을 수 없는 이유>` 또는 `class: <id> BACKLOG — <그 결함 유형을 막을 결정적 검사>` 입니다. `BACKLOG` 이면 `docs/handoff-archive/BACKLOG.md` 에도 항목을 덧붙입니다. 같은 지적의 `also_at` 위치는 한 줄을 같이 씁니다. low 에는 이 줄을 쓰지 않습니다. 지금까지는 이 판단이 스킬의 문장 하나였고, 실제 close 37건의 high·medium 108건 중 판단이 적힌 것이 0건이었습니다.

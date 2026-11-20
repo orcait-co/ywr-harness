@@ -70,7 +70,7 @@ changed them, a re-run reverts them, and the canon should hear why they were wor
 (ywr-harness ADR 0010: the fix belongs in the canon, for every repo). When the DRY RUN prints
 the block, do this BEFORE the real run:
 
-1. Draft the report (nothing leaves the machine):
+1. Draft the report (nothing is filed):
    ```
    pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.ps1" -Target <repo root> -Description "<which files were edited and why — name the files from the block, and what the member says the edit fixes>"
    ```

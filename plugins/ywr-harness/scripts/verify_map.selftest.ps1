@@ -277,6 +277,9 @@ $ok = (Assert-True 'N a sibling sharing the name prefix is NOT owned (prefix is 
 $ok = (Assert-True 'N owned files under a directory entry are not listed unmapped' ($null -ne $nUnmapped -and $nUnmapped -notmatch 'notice/service\.py|board/x\.py|legacy/y\.py') $rN.Out) -and $ok
 $ok = (Assert-True 'N a leading ./ on the entry reads the same (git never prints ./)' ($rN.Out -match 'spec 0006 — Dotted' -and $rN.Out -match 'changed: apps/api/app/legacy/y\.py') $rN.Out) -and $ok
 $ok = (Assert-True 'N an entry of / owns nothing — never the whole repo' ($rN.Out -notmatch 'spec 0005') $rN.Out) -and $ok
+# The explicit-file reader is shared with the gate emitter: a ./ prefix names the same repo path.
+$rNdot = Invoke-Map $n @('./apps/api/app/notice/service.py')
+$ok = (Assert-True 'N a ./-prefixed explicit file maps like the plain repo path' ($rNdot.Out -match 'spec 0003 — Notice' -and $rNdot.Out -match 'changed: apps/api/app/notice/service\.py' -and $rNdot.Out -notmatch 'changed: \./') $rNdot.Out) -and $ok
 
 # --- O: the docs index has three states — ABSENT (exit 0), unreadable (FAILED, exit 1) (ADR 0110) ---
 # An unreadable index used to print to stderr and exit 0, so a consumer reading stdout plus the exit

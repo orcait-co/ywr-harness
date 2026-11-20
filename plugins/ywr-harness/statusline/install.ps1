@@ -21,7 +21,8 @@
 #        anything else                 -> REFUSED, existing value reported, nothing changed
 #
 # Every other key in settings.json is preserved. Exit 0 = installed (with or without a refusal).
-# Exit 1 = the script could not be placed, or settings.json exists and does not parse.
+# Exit 1 = a CLAUDE_CONFIG_DIR that is set but relative or blank, a canon script missing beside this
+# file, a script that could not be placed, or a settings.json that exists and is not a JSON object.
 
 [CmdletBinding()]
 param(
@@ -104,6 +105,10 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 $settingsPath = Join-Path $ClaudeDir 'settings.json'
 $wanted = "node `"$dst`""
 
+function Write-ManualSnippet {
+    Write-Host "  Add this yourself:  `"statusLine`": { `"type`": `"command`", `"command`": `"$($wanted -replace '\\','\\')`" }" -ForegroundColor Yellow
+}
+
 $settings = $null
 if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
     $rawText = Get-Content -LiteralPath $settingsPath -Raw
@@ -116,7 +121,14 @@ if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
         } catch {
             # Refusing here is the point: rewriting a file we could not parse would destroy settings.
             Write-Host "  FAIL settings.json does not parse — refusing to rewrite it: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host "  Add this yourself:  `"statusLine`": { `"type`": `"command`", `"command`": `"$($wanted -replace '\\','\\')`" }" -ForegroundColor Yellow
+            Write-ManualSnippet
+            exit 1
+        }
+        # Valid JSON is not enough: `[]` and `null` come back as $null, `"x"` and `3` as scalars, and
+        # none of them can carry a statusLine key. The same refusal, the same exit.
+        if ($settings -isnot [System.Collections.IDictionary]) {
+            Write-Host "  FAIL settings.json is valid JSON but not an object — refusing to rewrite it" -ForegroundColor Red
+            Write-ManualSnippet
             exit 1
         }
     }

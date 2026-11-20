@@ -450,12 +450,10 @@ def artifact_status(root: Path, cfg: dict, warns: list[str]) -> tuple[list[str],
     return lines, checks
 
 
-def match_any(patterns: list[str], path: str, warns: list[str], field: str) -> bool:
-    for p in patterns:
-        rx = hc.compile_re(p, field, warns)
-        if rx and rx.search(path):
-            return True
-    return False
+def compile_all(patterns: list[str], warns: list[str], field: str) -> list[re.Pattern]:
+    """Each pattern compiled once, so a bad one warns once whatever the number of files it is
+    matched against. A bad pattern drops out of the list, which narrows the match; never widens it."""
+    return [rx for rx in (hc.compile_re(p, field, warns) for p in patterns) if rx]
 
 
 # --- ignored-tree claims (ywr-harness ADR 0077) ------------------------------------------------------------
@@ -889,14 +887,15 @@ def main() -> int:
     # `skip` — the exemption narrows the measure and the criticality attribution, never the
     # trust class.
     docs_only = bool(rev["docs_only"]) and all(f in docs_paths for f in files)
-    critical_all = [f for f in files if rev["critical"] and match_any(rev["critical"], f, late, "review.critical")]
+    critical_rx = compile_all(rev["critical"], late, "review.critical")
+    critical_all = [f for f in files if hc.any_match(critical_rx, f)]
     # A byte-identical copy cannot force `critical` — the source's own classification decides
     # (ywr-harness ADR 0037). Suppression is stated on the tier line below, never silent.
     critical = [f for f in critical_all if f not in derived_paths]
     crit_suppressed = [f for f in critical_all if f in derived_paths]
     code_files = [f for f in files if f not in exempt_paths]
-    harness_only = bool(rev["harness_layer"]) and bool(code_files) and all(
-        match_any(rev["harness_layer"], f, late, "review.harness_layer") for f in code_files)
+    layer_rx = compile_all(rev["harness_layer"], late, "review.harness_layer") if code_files else []
+    harness_only = bool(layer_rx) and all(hc.any_match(layer_rx, f) for f in code_files)
 
     # The declaration's criticality is COMPUTED from which keys changed (ywr-harness ADR 0038): the safe
     # keys feed reporting only; anything else — or a diff that cannot be determined — is
@@ -949,7 +948,9 @@ def main() -> int:
         sizes = (changed_lines(root, args.rev_range, lambda p: p in exempt_paths, prov["untracked"])
                  if prov.get("source") != "explicit" else None)
         if sizes is None:
-            tier, why = "full", "changed-line count could not be measured — unknown is not small"
+            tier, why = "full", ("no commit yet (unborn HEAD) — no base to count changed lines against — unknown is not small"
+                                 if prov.get("unborn_head") else
+                                 "changed-line count could not be measured — unknown is not small")
         else:
             lines, counted = sizes
             if len(code_files) <= SMALL_MAX_FILES and counted <= SMALL_MAX_LINES:

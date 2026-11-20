@@ -16,9 +16,9 @@
 ## 새 스펙 작성법
 
 ```powershell
-Copy-Item docs/spec/0000-template.md docs/spec/0003-기능이름.md
+Copy-Item docs/spec/0000-template.md docs/spec/0003-feature-name.md   # 파일명은 ASCII 로 쓴다
 # 1) frontmatter 채움(based_on_adr로 결정 연결)  2) 본문 작성  3) 해당 ADR의 related_spec에 역등록
-pwsh docs/build.ps1   # (또는 bash docs/build.sh) → index.json·docs.html·INDEX.md 재생성
+pwsh docs/build.ps1   # (또는 bash docs/build.sh) → index.json·INDEX.md·docs.html·docs.artifact.html 재생성
 ```
 
 ## 인덱스

@@ -165,6 +165,9 @@ $cases = @(
     # event names compare case-insensitively
     @{ id = 'event-lowercase'; payload = (New-Ask @((New-Q 'q')) '/work/r' @{ hook_event_name = 'pretooluse' }); platform = $win }
     @{ id = 'event-lowercase-post'; payload = (New-Ask @((New-Q 'q')) '/work/r' @{ hook_event_name = 'posttooluse' }); platform = $win }
+    # tool names compare case-insensitively
+    @{ id = 'tool-lowercase'; payload = (New-Ask @((New-Q 'q')) '/work/r' @{ tool_name = 'askuserquestion' }); platform = $win }
+    @{ id = 'tool-lowercase-post'; payload = (New-Ask @((New-Q 'q')) '/work/r' @{ tool_name = 'ASKUSERQUESTION'; hook_event_name = 'PostToolUse' }); platform = $win }
     # actions and tags
     @{ id = 'show-s1'; payload = $one; platform = $win }
     @{ id = 'clear-s1'; payload = $post; platform = $win }
@@ -424,6 +427,8 @@ Assert-Silent 'N4 notice is null for a non-object payload: string, number, array
 Assert-Action 'N5 PreToolUse gives action show, not opted out by 1, yes, empty, unset, or another variable set to 0' 'show' @('opt-1', 'opt-yes', 'opt-empty', 'opt-unset', 'opt-other-var', 'show-s1')
 Assert-Action 'N6 event names match case-insensitively (pretooluse shows, posttooluse clears)' 'show' @('event-lowercase')
 Assert-Action 'N6b posttooluse clears' 'clear' @('event-lowercase-post')
+Assert-Action 'N6c a tool name matches case-insensitively (askuserquestion shows)' 'show' @('tool-lowercase')
+Assert-Action 'N6d a tool name matches case-insensitively (ASKUSERQUESTION clears)' 'clear' @('tool-lowercase-post')
 Assert-Action 'N7 PostToolUse gives action clear, with or without a response or session' 'clear' @('clear-s1', 'clear-s2', 'clear-nosession', 'clear-bare')
 Add-Case 'N8 a clear result is exactly {action, tag}: no title or text' @(
     foreach ($i in @('clear-s1', 'clear-nosession')) {

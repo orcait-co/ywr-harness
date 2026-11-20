@@ -16,13 +16,13 @@
 // the docs:
 //
 //   model.display_name · model.id (display fallback) · effort.level
-//   workspace.current_dir
+//   workspace.current_dir · workspace.project_dir (location fallback) · cwd (last fallback)
 //   workspace.git_worktree               — the linked-worktree NAME (a string), present only
 //                                          inside a `git worktree add` checkout, absent in the
 //                                          main working tree. DOC-VERIFIED 2026-08-19 (ywr-harness ADR 0059;
 //                                          statusline docs example `"git_worktree":
-//                                          "feature-xyz"`), live confirmation queued — the only
-//                                          key here not yet read off a captured payload.
+//                                          "feature-xyz"`) and LIVE-CONFIRMED the same day on
+//                                          2.1.235 from a captured payload (ywr-harness spec 0010 §3.1).
 //   context_window.used_percentage       — context consumed
 //   context_window.context_window_size   — window size, a session constant
 //   rate_limits.{five_hour,seven_day}.used_percentage   — the ACCOUNT-WIDE windows, and ALL the

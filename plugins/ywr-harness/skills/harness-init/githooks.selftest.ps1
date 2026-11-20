@@ -129,7 +129,7 @@ function Write-File([string]$Repo, [string]$Rel, [string]$Body) {
     # -NoNewline then an explicit LF keeps the fixtures byte-predictable across platforms.
     [IO.File]::WriteAllText($full, ($Body -replace "`r`n", "`n"))
 }
-function Invoke-Hook([string]$Repo, [string]$Hook, [string]$StdIn, [string]$PathOverride = '') {
+function Invoke-Hook([string]$Repo, [string]$Hook, [string]$StdIn, [string]$PathOverride = '', [switch]$NoFinalNewline) {
     $sh = ConvertTo-ShPath $Hook
     $prevPath = $env:PATH
     Push-Location $Repo
@@ -143,7 +143,8 @@ function Invoke-Hook([string]$Repo, [string]$Hook, [string]$StdIn, [string]$Path
             # matched nothing, so the scan examined zero commits and reported a clean push. Four
             # cases went green on that. Byte-exact stdin from a file is the only faithful form.
             $stdinFile = Join-Path $fxBase ('stdin-' + [Guid]::NewGuid().ToString('N') + '.txt')
-            [IO.File]::WriteAllText($stdinFile, (($StdIn -replace "`r`n", "`n") + "`n"))
+            # -NoFinalNewline is the one caller that is not git: a tool that hands the hook an unterminated last line.
+            [IO.File]::WriteAllText($stdinFile, (($StdIn -replace "`r`n", "`n") + $(if ($NoFinalNewline) { '' } else { "`n" })))
             $out = (& $shCmd.Source -c "'$sh' < '$(ConvertTo-ShPath $stdinFile)'" 2>&1) | Out-String
         }
         else { $out = (& $shCmd.Source $sh 2>&1) | Out-String }
@@ -596,6 +597,132 @@ $ok = (Assert-True 'I3 grep treated no line as binary' ($rI3.Out -notmatch '(?i)
 $ok = (Assert-True 'I4 a NUL byte in a text diff does not hide the line' ($rI4.Code -eq 1 -and $rI4.Out -match 'aws-access-key-id' -and $rI4.Out -notmatch '(?i)binary file') "exit=$($rI4.Code) out=$($rI4.Out)") -and $ok
 # The block message must fit a hit in an earlier commit: there "amend" changes the wrong commit.
 $ok = (Assert-True 'I3 the block message names the rebase route for a non-tip commit' ($rI3.Out -match 'rebase' -and $rI3.Out -match 'later commit cannot clear') $rI3.Out) -and $ok
+
+# --- I5: a commit list git FAILED to produce is never an empty list ----------------------------------
+# A force-push over commits that exist only on the remote hands the hook a remote oid that is no local
+# object, so `git rev-list <remote>..<local>` fails. That was read as "nothing to scan" and the push
+# passed the secret scan unread. The hook now scans every commit not on a remote instead, and blocks
+# loudly when even that list cannot be made. An EMPTY list with exit 0 stays a quiet pass (I5e).
+# A loop run costs about 1.5 s per commit on Windows, so the fixtures here are as small as the claim
+# allows, and I6c reuses the secret repo.
+$i5Gone = 'ab' * 20      # a well-formed oid that no object database holds
+$i5 = New-PushRepo 'pp-unfetched'
+$i5Clean = Add-Commit $i5 'readme.md' "nothing to see`n" 'clean commit'
+$rI5b = Invoke-PrePush $i5 $i5Gone $i5Clean
+$rI5c = Invoke-PrePush $i5 $i5Gone ('cd' * 20)
+$rI5d = Invoke-PrePush $i5 ('0' * 40) ('cd' * 20)
+$rI5e1 = Invoke-PrePush $i5 $i5Clean $i5Clean
+& git -C $i5 update-ref refs/remotes/origin/main $i5Clean 2>$null
+$rI5e2 = Invoke-PrePush $i5 ('0' * 40) $i5Clean
+$i5s = New-PushRepo 'pp-unfetched-secret'
+$i5Secret = Add-Commit $i5s 'config.txt' "aws_key = $fakeKey`n" 'secret commit'
+$rI5a = Invoke-PrePush $i5s $i5Gone $i5Secret
+$ok = (Assert-True 'I5a an unknown remote oid still scans, and a secret in a commit on no remote BLOCKS' ($rI5a.Code -eq 1 -and $rI5a.Out -match 'aws-access-key-id' -and $rI5a.Out -match 'possible secret') "exit=$($rI5a.Code) out=$($rI5a.Out)") -and $ok
+$ok = (Assert-True 'I5b clean commits behind an unknown remote oid pass, and the output says the wider scan ran' ($rI5b.Code -eq 0 -and $rI5b.Out -match 'not a local object' -and $rI5b.Out -match 'scanning every commit' -and $rI5b.Out -match 'no secret pattern') "exit=$($rI5b.Code) out=$($rI5b.Out)") -and $ok
+$ok = (Assert-True 'I5c when the wider list fails too the push is BLOCKED loudly, naming the ref' ($rI5c.Code -eq 1 -and $rI5c.Out -match 'pre-push BLOCKED' -and $rI5c.Out -match 'could not be resolved' -and $rI5c.Out -match 'refs/heads/main' -and $rI5c.Out -notmatch 'no secret pattern') "exit=$($rI5c.Code) out=$($rI5c.Out)") -and $ok
+$ok = (Assert-True 'I5d a failed new-branch list is BLOCKED loudly too' ($rI5d.Code -eq 1 -and $rI5d.Out -match 'pre-push BLOCKED' -and $rI5d.Out -match 'could not be resolved' -and $rI5d.Out -notmatch 'no secret pattern') "exit=$($rI5d.Code) out=$($rI5d.Out)") -and $ok
+$ok = (Assert-True 'I5e an EMPTY list with exit 0 is still a quiet pass, on an existing branch and on a new one' ($rI5e1.Code -eq 0 -and $rI5e1.Out.Trim() -eq '' -and $rI5e2.Code -eq 0 -and $rI5e2.Out.Trim() -eq '') "existing: exit=$($rI5e1.Code) out=$($rI5e1.Out) new: exit=$($rI5e2.Code) out=$($rI5e2.Out)") -and $ok
+
+# --- I7: three more ways a push used to pass with nothing read, or to read as scanned when it was not ---
+# I7a: `git rev-parse --show-toplevel` fails in a bare repository, and a guard on it ended the hook in
+# a silent exit 0, although commit lists and diffs read fine there. I7b: a last stdin line with no
+# newline was dropped by `read`, so its ref went unread. I7c: after the wider scan is announced, an
+# empty list (every commit already on a remote, as $i5 is since the update-ref above) must say that
+# 0 commits were scanned instead of ending silently. All three are clean pushes: no loop run.
+$i7Bare = Join-Path $fxBase 'pp-bare.git'
+& git clone -q --bare $i5 $i7Bare 2>$null
+$rI7a = Invoke-PrePush $i7Bare ('0' * 40) $i5Clean
+$ok = (Assert-True 'I7a a push from a bare repository is scanned, not passed in silence' ($rI7a.Code -eq 0 -and $rI7a.Out -match 'commit\(s\) scanned\)') "exit=$($rI7a.Code) out=$($rI7a.Out)") -and $ok
+$i7 = New-PushRepo 'pp-last-line'
+$i7Tip = Add-Commit $i7 'readme.md' "nothing to see`n" 'clean commit'
+$rI7b = Invoke-Hook $i7 $prePush "refs/heads/main $i7Tip refs/heads/main $('0' * 40)" '' -NoFinalNewline
+$ok = (Assert-True 'I7b a last stdin line with no newline is still read: its commit is scanned' ($rI7b.Code -eq 0 -and $rI7b.Out -match 'commit\(s\) scanned\)') "exit=$($rI7b.Code) out=$($rI7b.Out)") -and $ok
+$rI7c = Invoke-PrePush $i5 $i5Gone $i5Clean
+$ok = (Assert-True 'I7c an empty wider scan passes and says that 0 commits were scanned' ($rI7c.Code -eq 0 -and $rI7c.Out -match 'scanning every commit' -and $rI7c.Out -match '0 commits of it were scanned' -and $rI7c.Out -notmatch 'no secret pattern') "exit=$($rI7c.Code) out=$($rI7c.Out)") -and $ok
+
+# --- I6: the one-pass prefilter answers "clean" only with proof it read every commit ------------------
+# The per-commit loop started about fourteen processes per commit. The prefilter reads every diff with
+# one `git show --stdin` and one grep, and falls to the unchanged loop on a match or when its header
+# count does not equal the commit count. A `git` shim logs each `git show` call, so "one call" proves the
+# prefilter ran and "one call per commit" proves the loop did. The shim's mode breaks the one-pass read:
+# `empty` prints nothing and exits 0 (the header count is short), `cut` stops the stream after the last
+# header and exits 141 like a git killed by a broken pipe (the count is full, only the status gives it away).
+$shimDir = Join-Path $fxBase 'pp-shim'
+New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
+$shimGit = Join-Path $shimDir 'git'
+$shimBody = @"
+#!/bin/sh
+if [ "`$1" = show ]; then
+    echo "`$*" >> "`$HARNESS_SHIM_LOG"
+    case "`$*" in *--stdin*)
+        case "`$HARNESS_SHIM_MODE" in
+            empty) cat > /dev/null; exit 0 ;;
+            cut) '$(ConvertTo-ShPath (Get-Command git).Source)' "`$@" | head -n 6; exit 141 ;;
+        esac ;;
+    esac
+fi
+exec '$(ConvertTo-ShPath (Get-Command git).Source)' "`$@"
+"@
+# The suite file is CRLF; a CR in an sh script breaks its shebang.
+[IO.File]::WriteAllText($shimGit, ($shimBody -replace "`r", ''), [Text.UTF8Encoding]::new($false))
+if (-not $IsWindows) { & chmod +x $shimGit }
+function Invoke-PrePushShim([string]$Repo, [string]$Base, [string]$Tip, [string]$Mode) {
+    $log = Join-Path $fxBase ('shim-' + [Guid]::NewGuid().ToString('N') + '.log')
+    $prevLog = $env:HARNESS_SHIM_LOG; $prevMode = $env:HARNESS_SHIM_MODE
+    try {
+        $env:HARNESS_SHIM_LOG = ConvertTo-ShPath $log; $env:HARNESS_SHIM_MODE = $Mode
+        # The shim dir goes first, ahead of the toolchain dirs Invoke-Hook would otherwise prepend.
+        $p = (@($shimDir) + $shExtraPath + @($env:PATH)) -join [IO.Path]::PathSeparator
+        $r = Invoke-Hook $Repo $prePush "refs/heads/main $Tip refs/heads/main $Base" $p
+    } finally { $env:HARNESS_SHIM_LOG = $prevLog; $env:HARNESS_SHIM_MODE = $prevMode }
+    $r.Shows = if (Test-Path -LiteralPath $log) { @([IO.File]::ReadAllLines($log)).Count } else { 0 }
+    return $r
+}
+# A history with a root commit, normal commits and a merge. The merge itself adds $MergeLine (an evil
+# merge: the line is in neither parent); $Marked is a secret-shaped line with the allow marker;
+# $SideLine is the side branch's file; $WithLast adds a commit after the merge. The ids land in $script:Mr.
+function New-MergeRepo([string]$Name, [string]$MergeLine, [string]$Marked, [string]$SideLine, [bool]$WithLast) {
+    $r = New-PushRepo $Name
+    $mainBranch = (& git -C $r symbolic-ref --short HEAD 2>$null).Trim()
+    $first = Add-Commit $r 'a.txt' "one`ntwo`n" 'first'
+    if ($Marked) { $null = Add-Commit $r 'doc.md' "example only: $Marked   harness:allow-secret`n" 'documented' }
+    & git -C $r checkout -q -b side 2>$null
+    $side = Add-Commit $r 's.txt' "$SideLine`n" 'side'
+    & git -C $r checkout -q $mainBranch 2>$null
+    $null = Add-Commit $r 'm.txt' "main`n" 'main'
+    & git -C $r merge --no-ff --no-commit side 2>&1 | Out-Null
+    [IO.File]::AppendAllText((Join-Path $r 'a.txt'), "$MergeLine`n")
+    & git -C $r add -A 2>$null
+    & git -C $r commit -q -m 'merge' 2>$null
+    $merge = (& git -C $r rev-parse HEAD 2>$null).Trim()
+    $tip = if ($WithLast) { Add-Commit $r 'z.txt' "last`n" 'last' } else { $merge }
+    $script:Mr = @{ Base = $first; Side = $side; Merge = $merge; Tip = $tip }
+    return $tip
+}
+$zero40 = '0' * 40
+$i6Tip = New-MergeRepo 'pp-fast-clean' 'plain merge line' $fakeKey 'side' $true
+$i6 = Join-Path $fxBase 'pp-fast-clean'
+$i6N = [int](& git -C $i6 rev-list --count $i6Tip 2>$null)
+$i6Marked = (& git -C $i6 log --format=%H -S'harness:allow-secret' 2>$null | Out-String)
+$rI6a = Invoke-PrePushShim $i6 $zero40 $i6Tip ''
+$ok = (Assert-True 'I6a a clean push of a root commit, normal commits and a merge passes on ONE git show call' ($rI6a.Code -eq 0 -and $rI6a.Shows -eq 1 -and $rI6a.Out -match "\($i6N commit\(s\) scanned\)" -and $i6N -ge 6) "exit=$($rI6a.Code) shows=$($rI6a.Shows) n=$i6N out=$($rI6a.Out)") -and $ok
+$ok = (Assert-True 'I6d a marker-exempt secret line is still exempt in the prefilter (and the fixture does hold one)' ($rI6a.Code -eq 0 -and $rI6a.Shows -eq 1 -and $i6Marked.Trim() -ne '') "exit=$($rI6a.Code) shows=$($rI6a.Shows) marked=$i6Marked out=$($rI6a.Out)") -and $ok
+# A one-pass read that breaks must never read as clean: the secret in $i5s is still found, by the loop.
+$i5sShort = (& git -C $i5s rev-parse --short $i5Secret 2>$null).Trim()
+foreach ($m in @('empty', 'cut')) {
+    $rI6c = Invoke-PrePushShim $i5s $zero40 $i5Secret $m
+    $ok = (Assert-True "I6c a one-pass read that is '$m' still BLOCKS the secret: the loop runs and reports it" ($rI6c.Code -eq 1 -and $rI6c.Shows -gt 1 -and $rI6c.Out -match "\[aws-access-key-id\] in $i5sShort") "exit=$($rI6c.Code) shows=$($rI6c.Shows) out=$($rI6c.Out)") -and $ok
+}
+# Two hits in a three-commit range, one on a side commit and one that only the merge adds: the report
+# names each of those commits once and not the commit between them.
+$null = New-MergeRepo 'pp-fast-secret' "evil = '$fakeKey'" '' "aws_key = $fakeKey" $false
+$i6b = Join-Path $fxBase 'pp-fast-secret'
+$i6bSide = (& git -C $i6b rev-parse --short $script:Mr.Side 2>$null).Trim()
+$i6bMerge = (& git -C $i6b rev-parse --short $script:Mr.Merge 2>$null).Trim()
+$rI6b = Invoke-PrePushShim $i6b $script:Mr.Base $script:Mr.Tip ''
+$i6bHits = @($rI6b.Out -split "`n" | Where-Object { $_ -match '^\s+\[[a-z-]+\] in ' } | ForEach-Object { $_.TrimEnd() } | Sort-Object)
+$i6bWant = @("  [aws-access-key-id] in $i6bSide", "  [aws-access-key-id] in $i6bMerge" | Sort-Object)
+$ok = (Assert-True 'I6b hits on a side commit and on a merge are each labelled with their own commit, and no other' ($rI6b.Code -eq 1 -and "$i6bHits" -eq "$i6bWant" -and $rI6b.Out -match 'across 3 commit\(s\)' -and $rI6b.Out -match "      \+aws_key = $fakeKey") "exit=$($rI6b.Code) hits=$($i6bHits -join '|') want=$($i6bWant -join '|') out=$($rI6b.Out)") -and $ok
 
 # --- SS: the vendored CI's secret-scan step drives THIS pre-push over the run's range ------------
 # Dist issue #6 moved the step's three workflow values out of its run: text into env: (the file's

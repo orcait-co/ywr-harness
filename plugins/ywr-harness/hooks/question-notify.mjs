@@ -67,7 +67,7 @@ export function tagOf(sessionId) {
 // tag }` at PostToolUse, or null when the hook stays silent.
 export function notice(payload, env = process.env, platform = process.platform) {
   if (platform !== 'win32' || optedOut(env[OPT_OUT]) || !isObject(payload)) return null
-  if (psString(getProp(payload, 'tool_name')) !== 'AskUserQuestion') return null
+  if (!ieq(psString(getProp(payload, 'tool_name')), 'AskUserQuestion')) return null
   const event = psString(getProp(payload, 'hook_event_name'))
   const tag = tagOf(psString(getProp(payload, 'session_id')))
   if (ieq(event, 'PostToolUse')) return { action: 'clear', tag }

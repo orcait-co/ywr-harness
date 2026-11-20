@@ -7,7 +7,9 @@
 # Two modes, and the split IS the contract:
 #
 #   DRAFT (default)        gather the report, write it to ONE scratch file, print where it is and
-#                          the exact command that files it. Nothing leaves the machine.
+#                          the exact command that files it. Nothing is filed. The draft can make read-only
+#                          network calls: the dry run fetches the repo's own remotes, and with
+#                          toolchain drift `gh` searches the open reports for the fingerprint.
 #   FILE  (-File -BodyPath) file THAT file — the one the member has read — as an issue on the
 #                          public dist repo. The body is never regenerated here: what was shown
 #                          is what is filed.
@@ -43,7 +45,7 @@ param(
     [string]$Title = '',
     # Repo to report ABOUT (any path inside it). Defaults to the current directory.
     [string]$Target = '.',
-    # FILE mode: file the body at -BodyPath. Without this switch nothing leaves the machine.
+    # FILE mode: file the body at -BodyPath. Without this switch nothing is filed.
     [switch]$File,
     # FILE mode: the body file DRAFT wrote (first line `<!-- title: … -->`). Required with -File.
     [string]$BodyPath = '',

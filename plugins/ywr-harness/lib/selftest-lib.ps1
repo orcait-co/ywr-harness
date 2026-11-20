@@ -17,8 +17,8 @@
 # parameter and no guard at all.
 #
 # Dot-source it; do not run it:
-#     . (Join-Path $PSScriptRoot '../../scripts/ci/selftest-lib.ps1')   # from .claude/hooks/
-#     . (Join-Path $PSScriptRoot 'selftest-lib.ps1')                    # from scripts/ci/
+#     . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')      # from hooks/, scripts/, statusline/
+#     . (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # from skills/<name>/
 # Dot-sourcing executes in the CALLER's scope, so a wrapper defined in the caller keeps
 # writing $script:LastFails into the caller's own script scope — verified with a probe,
 # not assumed, because the META cases in every caller read that variable back.
@@ -29,20 +29,16 @@
 # not the call shape. `Assert-True` is the exception and is shared whole: its three copies were
 # identical apart from a contract divergence that failed open.
 #
-# The MustMatch/MustNotMatch DISCIPLINE is still not in scope for helpers with no such pair —
-# hooks/subagent-telemetry.selftest.ps1 (Pass/Fail calls), scripts/ci-local and
-# scripts/ci/resolve-base (Assert-True over booleans), and
-# scripts/ci/harness-pins.selftest.ps1, which is MustMatch-only ON PURPOSE and says so
-# in its own comment. Folding those in would mean inventing negatives for assertions
-# that do not have any. They dot-source this file regardless — subagent-telemetry and
-# harness-pins for the FIXTURE half, ci-local and resolve-base for Assert-True and the
-# decoding pin. Sharing a helper is not the same as adopting the
-# discipline, and the two are deliberately independent.
+# The MustMatch/MustNotMatch DISCIPLINE is not in scope for a suite with no such pair: one that
+# asserts through Pass/Fail calls or through Assert-True over booleans. Folding those in would
+# mean inventing negatives for assertions that do not have any. Such a suite dot-sources this
+# file regardless, for the fixture half, Assert-True and the decoding pin. Sharing a helper is
+# not the same as adopting the discipline, and the two are deliberately independent.
 #
-# scripts/ci/selftest-lib.selftest.ps1 keeps its OWN boolean assert (Assert-Bootstrap) rather
-# than calling the shared one: it is testing this file, and an assertion helper that asserts
-# itself passes vacuously when it breaks. Same reason its cases compare exact failure arrays
-# instead of using the guard they exercise.
+# This file has no selftest in this plugin (README, "Declared coverage debt"). A selftest of it
+# keeps its OWN boolean assert rather than calling the shared one: an assertion helper that
+# asserts itself passes vacuously when it breaks. For the same reason its cases compare exact
+# failure arrays instead of using the guard they exercise.
 
 Set-StrictMode -Off
 
@@ -311,15 +307,15 @@ function Assert-True {
 }
 
 # --- node dependency and Inline() parity (ADR 0116) ---------------------------------------------
-# The Node hooks (hooks/*.mjs) and the suites that exercise them need `node`. The pwsh Linux image
-# ships WITHOUT node, so a hard failure there would report Linux breakage that does not exist; CI's
+# The Node hooks (hooks/*.mjs) and the suites that exercise them need `node`. A stock pwsh Linux
+# image ships WITHOUT node, so a hard failure there would report Linux breakage that does not exist; CI's
 # ubuntu runner has node, so absence THERE means the gate stopped running and must be loud. Local
 # absence is a reported skip, never a silent one. `$env:CI`, like every sibling suite: GitHub Actions
 # sets it and so does any other runner a consumer's CI uses.
 function Resolve-NodeVerdict([bool]$NodePresent, [bool]$OnCi) {
     if ($NodePresent) { return @{ Verdict = 'run'; Message = '' } }
     if ($OnCi) { return @{ Verdict = 'fail'; Message = 'node absent on CI — a missing interpreter is not a pass' } }
-    return @{ Verdict = 'skip'; Message = 'node absent (reported, not silent) — CI ubuntu runs this suite; the pwsh Linux image has no node' }
+    return @{ Verdict = 'skip'; Message = 'node absent (reported, not silent) — CI ubuntu runs this suite' }
 }
 
 # The node-dependent suite's opening move: returns $true when the suite may run. A skip prints its

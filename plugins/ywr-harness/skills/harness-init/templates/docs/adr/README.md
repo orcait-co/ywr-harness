@@ -8,15 +8,17 @@
 1. **append-only** — 한번 `Accepted`된 ADR의 맥락·결정 본문은 **고치지 않는다**.
 2. 결정이 바뀌면 → **새 ADR**을 쓰고, 옛 ADR의 상태만 `Superseded`(+`superseded_by: NNNN`)로 바꾼다.
    (옛 결정을 지우면 "왜 바뀌었는지"의 역사가 사라진다. 그게 ADR의 존재 이유다.)
+   결정의 일부만 바뀌면 → 새 ADR의 frontmatter에 `narrows: [NNNN]`을 적는다. 옛 ADR은 `accepted`로 남고,
+   옛 ADR 쪽의 역방향 표시는 빌더가 만든다.
 3. ADR은 **롤백하지 않는다** (스펙만 git으로 롤백). 되돌림도 supersede로 기록한다.
 4. 번호는 `0001`부터 **독립적으로 증가**시킨다. `0000`은 템플릿(빌드 스캔에서 제외).
 
 ## 새 ADR 작성법
 
 ```powershell
-Copy-Item docs/adr/0000-template.md docs/adr/0003-새-결정-제목.md
+Copy-Item docs/adr/0000-template.md docs/adr/0003-new-decision-title.md   # 파일명은 ASCII 로 쓴다
 # 1) YAML frontmatter 채움(id·status·관계·tags)  2) 본문 산문 작성  3) 관련 스펙과 양방향 연결
-pwsh docs/build.ps1   # (또는 bash docs/build.sh) → index.json·docs.html·INDEX.md 재생성
+pwsh docs/build.ps1   # (또는 bash docs/build.sh) → index.json·INDEX.md·docs.html·docs.artifact.html 재생성
 ```
 
 상태/날짜/관계는 **frontmatter가 단일 진실원**이다(본문 중복 금지 → 드리프트 방지).

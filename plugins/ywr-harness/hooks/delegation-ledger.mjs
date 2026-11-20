@@ -1,6 +1,6 @@
 // Hooks module (Claude Mods, Claude Code 2.1.287+; ywr-harness ADR 0117, ywr-harness ADR 0118) — the OBSERVE-ONLY per-request
-// delegation ledger. `mods.mjs`, the entry `hooks.json` names under `modules`, registers it (alone
-// since ywr-harness ADR 0140); the settings hooks beside it are unaffected.
+// delegation ledger. `mods.mjs`, the entry `hooks.json` names under `modules`, registers it
+// with the prerequisites and decision-prompts modules; the settings hooks beside it are unaffected.
 //
 // What it records, per finished model loop (the main loop's turn, or one run of a subagent's loop):
 // every request the loop made (`turn.step`: the model the engine resolved, the effort it sends, the
@@ -243,12 +243,15 @@ export function createSessionLog({ maxLoops = MAX_LOOPS, maxBytes = MAX_FILE_BYT
 // --- the engine half ---------------------------------------------------------------------------
 // Declared at the top of the file: the engine follows `$` only into such functions.
 
-// The project root to write under, or null where the root holds no `.harness.json`. `adopted`
-// caches the answer per root (a `/cd` or worktree move changes the root mid-session).
+// The project root to write under, or null where the root holds no `.harness.json`. `adopted` caches
+// a root that holds it (a `/cd` or worktree move changes the root mid-session). A root without it is
+// asked again at the next loop end, because `harness-init` can add the file while the session runs.
 async function target($, adopted) {
   const root = await $.session.root()
-  if (!adopted.has(root)) adopted.set(root, await $.fs.exists(`${root}/.harness.json`))
-  return adopted.get(root) ? root : null
+  if (adopted.has(root)) return root
+  if (!(await $.fs.exists(`${root}/.harness.json`))) return null
+  adopted.set(root, true)
+  return root
 }
 
 async function statOf($, path) {
@@ -314,7 +317,7 @@ async function flush($, s, root, iso) {
 
 export function register(on) {
   const ledger = createLedger()
-  const adopted = new Map()    // project root -> whether it holds .harness.json
+  const adopted = new Map()    // project roots known to hold .harness.json
   const sessions = new Map()   // session id -> { id, log, root, slot, seen, mark, chain }
   const sessionOf = id => {
     let s = sessions.get(id)

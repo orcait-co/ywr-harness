@@ -21,6 +21,11 @@
 //      plugin.json, or the artifact link diverging between the CHANGELOG and the announce hook.
 //      The hook degrades gracefully on member machines, so only this gate makes the defect loud.
 //
+// Those four are the manifest core, not the whole gate. It also checks namespacing, vendored and
+// dogfood identity, hook banner interpolation, release lockstep, the eval suite structure, canon
+// references, the canon stack and the git boundary, and it reports coverage. Spec 0008 §3.2, §3.5
+// and §3.8 list every check class.
+//
 // Port contract (ADR 0141 Decision 2): every PASS / FAIL / skip line keeps the pwsh gate's text,
 // because the selftest cases and release.ps1 match that text. The pwsh semantics the cases rest on
 // are kept on purpose and marked where they are not JavaScript's defaults: `-match`, `-eq`, `-in` and

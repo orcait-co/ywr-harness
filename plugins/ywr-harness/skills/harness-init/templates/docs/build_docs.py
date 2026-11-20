@@ -16,7 +16,7 @@ docs-as-code 생성기 — docs/adr/*.md + docs/spec/*.md (YAML frontmatter + �
   - 0000-template.md 는 스캔에서 제외.
 
 사용:
-  python docs/build_docs.py [YYYY-MM-DD]   (또는 pwsh docs/build.ps1 / bash docs/build.sh)
+  python docs/build_docs.py   (또는 pwsh docs/build.ps1 / bash docs/build.sh)
   python docs/build_docs.py --customer [--version <라벨>]   (고객 배포용 표면만 생성)
   python docs/build_docs.py --check   (아무 것도 쓰지 않고 생성 표면의 drift만 확인;
                                         docs/check_docs.py 래퍼가 이 모드를 감싼다. --customer 와는
@@ -25,6 +25,7 @@ docs-as-code 생성기 — docs/adr/*.md + docs/spec/*.md (YAML frontmatter + �
                                         일치 · 1=DRIFT 또는 MISSING(커밋 대상 표면 부재) ·
                                         2=REFUSED(오용, 또는 조립 자체가 거부하는 코퍼스/선언 —
                                         재빌드로 고쳐지지 않는 결함이라 drift 와 구분한다))
+  모르는 인자는 쓰기 전에 exit 2 로 거부한다. 옛 래퍼가 넘기던 YYYY-MM-DD 인자 하나는 받아서 무시한다.
 
 브랜딩(선택):
   상단 제목의 정식 소스는 .harness.json 의 docs.site_title 선언이다 — 레포별 값은 선언 파일에
@@ -271,8 +272,11 @@ def _block_items(lines, i):
         end = j
         text = (im.group(1) or "").strip()
         q = text[:1]
-        if q in ('"', "'") and text.find(q, 1) != -1:
-            text = text[:text.find(q, 1) + 1]   # 인용 스칼라 — 닫는 따옴표 뒤는 주석
+        qe = _dq_end(text) if q == '"' else -1
+        if qe == -1 and q in ('"', "'"):
+            qe = text.find(q, 1)
+        if qe != -1:
+            text = text[:qe + 1]                # 인용 스칼라 — 닫는 따옴표 뒤는 주석
         else:
             text = _cut_comment(text)           # `- # 주석` 은 빈 항목
         item = _parse_item(text)
@@ -300,11 +304,32 @@ def _flow_lines(lines, i, head):
     return None, i
 
 
+def _dq_end(s):
+    # 큰따옴표 스칼라(s[0] == '"')의 닫는 따옴표 위치 — `\"` 와 `\\` 는 건너뛴다. 없으면 -1.
+    i = 1
+    while i < len(s):
+        if s[i] == "\\":
+            i += 2
+            continue
+        if s[i] == '"':
+            return i
+        i += 1
+    return -1
+
+
+def _dq_unescape(body):
+    # 큰따옴표 스칼라 안에서 `\"` → `"`, `\\` → `\` 만 푼다. 다른 `\x` 는 두 글자 그대로 둔다
+    # (기존 파싱 결과 유지 — 경로 같은 값이 조용히 바뀌지 않도록).
+    return re.sub(r'\\(["\\])', r"\1", body)
+
+
 def _parse_item(item):
     # 리스트 항목 규칙(한 줄·블록·여러 줄 모양 공용). 빈 항목은 None(건너뜀).
     item = item.strip()
     if item == "":
         return None
+    if item[:1] == '"' and len(item) > 1 and _dq_end(item) == len(item) - 1:
+        return _dq_unescape(item[1:-1])         # 끝까지 한 개의 인용 — 이스케이프를 푼다
     quoted = item[:1] in ('"', "'")
     item = item.strip('"').strip("'")
     # 따옴표 없는 순수 정수만 int로 (따옴표가 있으면 id 문자열로 보존: "0001")
@@ -315,6 +340,9 @@ def _parse_value(v):
     # 따옴표로 시작하면 인용 문자열로 보존 (예: id "0001")
     if v.startswith('"') or v.startswith("'"):
         q = v[0]
+        end = _dq_end(v) if q == '"' else -1
+        if end != -1:
+            return _dq_unescape(v[1:end])
         end = v.find(q, 1)
         if end != -1:
             return v[1:end]
@@ -353,8 +381,10 @@ def inline(text):
 
     def _link(m):
         href = m.group(2)
-        # 신뢰 못 할 스킴은 무력화 (이미 esc 통과한 텍스트라 따옴표는 안전)
-        if re.match(r"\s*javascript:", href, re.I):
+        # 신뢰 못 할 스킴은 무력화 (이미 esc 통과한 텍스트라 따옴표는 안전). 브라우저는 URL 에서
+        # 탭·CR·LF 를 어디서든 지우고 선두의 제어문자·공백을 벗긴 뒤 스킴을 읽는다 — 같은 정규화 후 비교.
+        probe = re.sub(r"[\t\r\n]", "", href).lstrip("".join(map(chr, range(33))))
+        if re.match(r"\s*(?:javascript|vbscript|data):", probe, re.I):
             href = "#"
         return '<a href="%s">%s</a>' % (href, m.group(1))
 
@@ -717,7 +747,7 @@ def build_index_md(adrs, specs):
     L.append("| # | 제목 | 상태 | 날짜 | 관련 스펙 |")
     L.append("|---|---|---|---|---|")
     for e in adrs:
-        spec = ", ".join((e.get("related_spec") or [])) or "—"
+        spec = ", ".join(map(str, e.get("related_spec") or [])) or "—"
         status = STATUS_LABEL.get(e.get("status"), e.get("status") or "—")
         if e.get("_narrowed_by"):   # ywr-harness ADR 0196 — 좁혀진 ADR 만 상태 칸이 바뀐다
             status += " · narrowed by " + ", ".join("#%s" % _adr_num(i) for i in e["_narrowed_by"])
@@ -2119,7 +2149,6 @@ def _repo_root():
 # 존재를 전제한다. 부재는 MISSING(실패 집계, exit 1) — 삭제된 커밋 표면을 조용히 통과시키지
 # 않는다. OPTIONAL: 템플릿이 gitignore 하는 렌더 — 부재는 ABSENT(스킵).
 REQUIRED_OUTPUTS = (OUT_JSON, OUT_INDEX_MD, OUT_PROJECTS)
-OPTIONAL_OUTPUTS = (OUT_HTML, OUT_ARTIFACT, OUT_CUSTOMER_ARTIFACT)
 
 
 def _assemble():
@@ -2184,7 +2213,7 @@ def _run_check():
     REFUSED 로 본다 — 둘 다 "이 코퍼스/선언으로는 애초에 빌드가 안 된다"는 같은 사실이다.
 
     표면은 REQUIRED(위 REQUIRED_OUTPUTS — index.json·INDEX.md·선언시 PROJECTS.md, 커밋을
-    요구하는 표면)와 OPTIONAL(OPTIONAL_OUTPUTS — 템플릿이 gitignore 하는 렌더)로 나뉜다.
+    요구하는 표면)와 OPTIONAL(그 밖의 표면 — 템플릿이 gitignore 하는 렌더)로 나뉜다.
     REQUIRED 표면의 부재는 MISSING 으로 찍고 실패 집계에 더한다(exit 1); OPTIONAL 표면의
     부재는 ABSENT 로 건너뛴다.
 
@@ -2242,14 +2271,32 @@ def _run_check():
 # --------------------------------------------------------------- main
 def main():
     # 단순 sys.argv 스캔 — argparse 불필요(플래그 3종 + 값 1개뿐, 파일 전체가 stdlib 미니멀 스타일).
+    # 모르는 인자는 무엇이든 쓰기 전에 exit 2 로 거부한다: 오타 `--chek` 가 조용히 전체 쓰기
+    # 빌드가 되면 검사를 요청한 호출자가 파일을 덮어쓴다.
     argv = sys.argv[1:]
-    customer_mode = "--customer" in argv
-    check_mode = "--check" in argv
+    customer_mode = check_mode = False
     version = None
-    if "--version" in argv:
-        vi = argv.index("--version")
-        if vi + 1 < len(argv):
-            version = argv[vi + 1]
+    date_seen = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        i += 1
+        if a == "--customer":
+            customer_mode = True
+        elif a == "--check":
+            check_mode = True
+        elif a == "--version":
+            if i >= len(argv) or argv[i].startswith("-"):
+                print("[build] refused: --version needs a value (--version <label>)")
+                sys.exit(2)
+            version = argv[i]
+            i += 1
+        elif re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", a) and not date_seen:
+            date_seen = True   # 옛 래퍼가 넘기던 날짜 — 읽지 않는다
+        else:
+            print("[build] refused: unknown argument %s (known: --customer, --check, --version <label>)"
+                  % ascii(a))
+            sys.exit(2)
 
     # --check 는 legacy --customer 표면(docs/customer.html)과 병용 불가: 그 표면은
     # date.today() 를 헤더에 품어서 바이트 비교가 절대 성립하지 않는다. exit 2 —

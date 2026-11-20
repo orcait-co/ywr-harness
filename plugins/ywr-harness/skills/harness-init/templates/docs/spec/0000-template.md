@@ -2,7 +2,7 @@
   스펙(Spec)은 "지금 시스템이 어떻게 동작하는가/해야 하는가"를 적는 살아있는(living) 문서다.
   - ADR과 반대로 자유롭게 갱신한다(git 히스토리가 변경 추적·롤백을 담당).
   - "왜 이렇게 정했나"는 적지 않는다 → frontmatter based_on_adr로 가리킨다.
-  - 새 스펙: 이 파일을 docs/spec/NNNN-kebab-이름.md 로 복사 → frontmatter 채움 → 빌드 실행.
+  - 새 스펙: 이 파일을 docs/spec/NNNN-kebab-name.md 로 복사(파일명은 ASCII 로 쓴다) → frontmatter 채움 → 빌드 실행.
   - 상태/근거 ADR/구현위치는 frontmatter가 단일 진실원이다(본문 중복 금지).
 -->
 ---

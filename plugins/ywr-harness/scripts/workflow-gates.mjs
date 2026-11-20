@@ -27,7 +27,7 @@
 // flag that switches an arm off — an escape hatch here is how the behavioral arm would quietly
 // stop running.
 //
-// Usage: node scripts/ci/workflow-gates.mjs [--root <dir>]
+// Usage: node scripts/workflow-gates.mjs [--root <dir>] [--dir <corpus dir>]
 // Exit 0 = green · 1 = parse failure, failing selftest, missing corpus, or vacuous corpus.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
