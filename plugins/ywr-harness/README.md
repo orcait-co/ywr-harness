@@ -253,6 +253,49 @@ different states, and rate-limit keys are legitimately absent on a session's fir
 the first API response. Context and quota use different threshold curves: 50% context is ordinary
 working state, 50% of a rate limit is already worth watching.
 
+### Windows: a session that stops responding
+
+One member PC had whole sessions stop: no screen update, no tool result, no reply (dist issue #17,
+Claude Code 2.1.325). One stop has a debug log. The `claude --debug` log reads `[event-loop-stall]
+blocked for 212132ms`. The member relays, with no record of it, that a status-line process had
+every thread suspended and that the stop ended when that process ran again. The cause is **not
+proven**. The member suspects endpoint security software that hooks process creation.
+
+The points below are the canon's reading of that one report. They are an inference, not a
+measurement.
+
+- **A change to the script is unlikely to end it.** A suspended process runs no code, so no line
+  of `harness-statusline.js` can end the stop. The report does not say whether the process was
+  suspended at its start or later. The log reads `could not be started (ENOMEM)`. That may fit a
+  stop at process start, and the canon cannot explain the code.
+- **Every process that Claude Code starts may carry the risk**: a hook, a Bash tool command, an
+  MCP server. The member also found a suspended `bash` of the Bash tool. The status line starts a
+  process after each reply, also in a session that runs no command. On Windows with Git Bash,
+  Claude Code runs the status line through Git Bash.
+- **To start fewer processes, switch the status line off.** Delete the `statusLine` key from
+  `settings.json` in your config dir. On Claude Code 2.1.327 or later you can type `/statusline
+  delete` instead. An earlier version writes to `~/.claude/settings.json` when `CLAUDE_CONFIG_DIR`
+  names another folder. The command asks Claude to make the edit, so use it before a stop, not
+  during one. Run the installer again to switch the line on. This lowers the risk and does not
+  remove it.
+- **Do not resume a suspended process by hand.** A security product can hold a process on purpose,
+  and a resume goes around that check. Do not end the process either until the administrator of
+  that product answers. Nobody tested what such a product does when its held process is ended.
+  Give the administrator the `[event-loop-stall]` line and the output of the command below.
+
+From a second terminal, this read-only command lists each `node` or `bash` process whose every
+thread is suspended. It changes nothing. It was tested once, in PowerShell 7, on a `node` process
+that the test itself had suspended.
+
+```
+Get-Process node, bash -ErrorAction SilentlyContinue | Where-Object { $_.Threads.Count -gt 0 -and -not ($_.Threads | Where-Object { $_.ThreadState -ne 'Wait' -or $_.WaitReason -ne 'Suspended' }) } | Select-Object Id, ProcessName, StartTime
+```
+
+Three more stops on that PC have no record of their cause. Claude Code 2.1.330 fixes two other
+causes of a session that stops for minutes, so update first. A public report on the Claude
+desktop app (anthropics/claude-code#111408) measures a process start that blocks the main thread
+for about 3.5 s under another security product. It is context, not proof of this cause.
+
 ## Upstream reports (`report-issue` skill)
 
 `/ywr-harness:report-issue <description>` — send a defect or request to the canon (ADR 0064). The canon
