@@ -256,18 +256,30 @@ working state, 50% of a rate limit is already worth watching.
 ### Windows: a session that stops responding
 
 One member PC had whole sessions stop: no screen update, no tool result, no reply (dist issue #17,
-Claude Code 2.1.325). One stop has a debug log. The `claude --debug` log reads `[event-loop-stall]
-blocked for 212132ms`. The member relays, with no record of it, that a status-line process had
-every thread suspended and that the stop ended when that process ran again. The cause is **not
-proven**. The member suspects endpoint security software that hooks process creation.
+Claude Code 2.1.325). One stop has a record: the stopped session's `claude --debug` log and the
+commands of a second session, with their output and timestamps. The two agree.
+
+- The stopped session sent an API request and logged nothing more. A status-line process started
+  in the same second.
+- About two minutes later that process had one thread. The thread was suspended, and the process
+  had used no CPU time. The canon reads this as a process suspended from its start. That is an
+  inference.
+- The member then made the process run again by hand, before the canon advised against it. About
+  3 s after that, the log read `could not be started (ENOMEM)`, and the stop ended.
+- At about the same time the log reads `[event-loop-stall] blocked for 212132ms`. That line also
+  carries the log's `[likely sleep/wake]` tag, which is a heuristic.
+
+The cause is **not proven**. The member suspects endpoint security software that hooks process
+creation. A file of that software changed before three stops that day. That timing match is weak,
+and the logs of that software are encrypted.
 
 The points below are the canon's reading of that one report. They are an inference, not a
 measurement.
 
 - **A change to the script is unlikely to end it.** A suspended process runs no code, so no line
-  of `harness-statusline.js` can end the stop. The report does not say whether the process was
-  suspended at its start or later. The log reads `could not be started (ENOMEM)`. That may fit a
-  stop at process start, and the canon cannot explain the code.
+  of `harness-statusline.js` can end the stop. In the recorded stop the process had used no CPU
+  time before the resume. The `ENOMEM` text fits a stop at process start, and the canon cannot
+  explain the code.
 - **Every process that Claude Code starts may carry the risk**: a hook, a Bash tool command, an
   MCP server. The member also found a suspended `bash` of the Bash tool. The status line starts a
   process after each reply, also in a session that runs no command. On Windows with Git Bash,

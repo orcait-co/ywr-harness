@@ -387,42 +387,95 @@ process.stdout.write(String(m.newStateExclusive(process.argv[3], process.argv[4]
     #     state AND says nothing about a failed record; a hold that outlives the retries keeps the
     #     visible may-repeat note and the old state. The hold opens BEFORE the hook starts, so the
     #     rename's first attempt lands inside it. Other platforms rename over an open file: SKIP.
-    function Invoke-HookWhileLocked([int]$HoldMs) {
+    #     No case rests on wall-clock (O190: a 130 ms hold against 40-200 ms of retry sleeps failed a
+    #     tag CI). A preload wraps fs.renameSync for the state file only and logs each attempt. With
+    #     -Handshake, the first failed attempt signals the suite and waits for its release marker; the
+    #     suite releases the hold first, so the retry after it lands. Without it the hold lasts until
+    #     the hook exits, so every retry fails. The 60 s bounds are hang guards, never a race window.
+    $lockDir = Join-Path $fx 'lock8g'
+    New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
+    $lockPreload = Join-Path $lockDir 'rename-gate.cjs'
+    $lockSignal = Join-Path $lockDir 'first-fail'
+    $lockRelease = Join-Path $lockDir 'released'
+    $lockLog = Join-Path $lockDir 'renames.log'
+    Set-Content -LiteralPath $lockPreload -Encoding utf8 -Value @'
+const fs = require('fs')
+const path = require('path')
+const real = fs.renameSync
+const e = process.env
+const norm = p => path.resolve(String(p)).toLowerCase()
+const target = norm(e.SSVA_LOCK_TARGET)
+let signalled = false
+fs.renameSync = function (from, to) {
+  if (norm(to) !== target) return real.apply(this, arguments)
+  try { real.apply(this, arguments) } catch (err) {
+    fs.appendFileSync(e.SSVA_LOCK_LOG, 'fail ' + (err && err.code) + '\n')
+    if (e.SSVA_LOCK_HANDSHAKE === '1' && !signalled) {
+      signalled = true
+      fs.writeFileSync(e.SSVA_LOCK_SIGNAL, '')
+      const cell = new Int32Array(new SharedArrayBuffer(4))
+      const end = Date.now() + 60000
+      while (!fs.existsSync(e.SSVA_LOCK_RELEASE) && Date.now() < end) Atomics.wait(cell, 0, 0, 5)
+    }
+    throw err
+  }
+  fs.appendFileSync(e.SSVA_LOCK_LOG, 'ok\n')
+}
+'@
+    function Invoke-HookWhileLocked([switch]$Handshake) {
+        foreach ($f in @($lockSignal, $lockRelease, $lockLog)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
         $lock = [IO.File]::Open($stateFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-        $sw = [Diagnostics.Stopwatch]::StartNew()
         try {
             $psi = [System.Diagnostics.ProcessStartInfo]::new($nodeExe)
-            $psi.ArgumentList.Add($hook)
+            foreach ($a in @('--require', $lockPreload, $hook)) { $psi.ArgumentList.Add($a) }
+            $psi.Environment['SSVA_LOCK_TARGET'] = $stateFile
+            $psi.Environment['SSVA_LOCK_LOG'] = $lockLog
+            $psi.Environment['SSVA_LOCK_SIGNAL'] = $lockSignal
+            $psi.Environment['SSVA_LOCK_RELEASE'] = $lockRelease
+            $psi.Environment['SSVA_LOCK_HANDSHAKE'] = $(if ($Handshake) { '1' } else { '0' })
             $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
             $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
             $psi.UseShellExecute = $false
             $p = [System.Diagnostics.Process]::Start($psi)
             $outTask = $p.StandardOutput.ReadToEndAsync(); $errTask = $p.StandardError.ReadToEndAsync()
             $p.StandardInput.Write((New-Payload)); $p.StandardInput.Close()
-            while ($sw.ElapsedMilliseconds -lt $HoldMs -and -not $p.HasExited) { Start-Sleep -Milliseconds 5 }
-            if ($sw.ElapsedMilliseconds -lt $HoldMs) { Start-Sleep -Milliseconds ($HoldMs - [int]$sw.ElapsedMilliseconds) }
+            if ($Handshake) {
+                $sw = [Diagnostics.Stopwatch]::StartNew()
+                while (-not (Test-Path -LiteralPath $lockSignal) -and -not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 60) { Start-Sleep -Milliseconds 5 }
+            }
+            else { [void]$p.WaitForExit(60000) }
         }
-        finally { $lock.Dispose() }
+        finally {
+            $lock.Dispose()
+            if ($Handshake) { New-Item -ItemType File -Force -Path $lockRelease | Out-Null }
+        }
         [void]$p.WaitForExit(60000)
         $script:HookExit = $p.ExitCode
+        $script:RenameLog = @(if (Test-Path -LiteralPath $lockLog) { Get-Content -LiteralPath $lockLog })
         return $outTask.Result
     }
     if (-not $IsWindows) {
-        Write-Host 'SKIP [8g]: a rename over an open file only fails on Windows (2 cases)' -ForegroundColor Yellow
+        Write-Host 'SKIP [8g, 8h]: a rename over an open file only fails on Windows (8g: 2 cases, 8h: 2 landState cases)' -ForegroundColor Yellow
     }
     else {
         Set-State '2.4.0'
-        $out = Invoke-HookWhileLocked 130
+        $out = Invoke-HookWhileLocked -Handshake
         $ok = (Assert-Announce 'transient lock on the state file: retried, announces with no failed-record note' $out `
                 @('v2\.4\.0 → v2\.5\.0') @('기록 실패', '반복될 수 있습니다')) -and $ok
+        $ok = (Assert-True 'transient lock: the first rename failed under the hold, a retry landed' `
+                ($RenameLog.Count -ge 2 -and $RenameLog[0] -match '^fail (EPERM|EACCES|EBUSY)$' -and $RenameLog[-1] -eq 'ok') `
+                "rename log: [$($RenameLog -join ' | ')] (want a failed first attempt, then ok)") -and $ok
         $ok = (Assert-True 'transient lock: the state landed' ((Get-State) -eq '2.5.0') "state reads [$(Get-State)] (want 2.5.0)") -and $ok
         $tmpLeft = @(Get-ChildItem -LiteralPath (Split-Path $stateFile -Parent) -Filter '*.tmp' -Force)
         $ok = (Assert-True 'transient lock: no temp file left behind' ($tmpLeft.Count -eq 0) "left: $($tmpLeft.Name -join ', ')") -and $ok
 
         Set-State '2.4.0'
-        $out = Invoke-HookWhileLocked 2500
+        $out = Invoke-HookWhileLocked
         $ok = (Assert-Announce 'lock outliving the retries: announces WITH the may-repeat note' $out `
                 @('v2\.4\.0 → v2\.5\.0', '기록 실패', '반복될 수 있습니다') @('버전으로 읽을 수 없습니다')) -and $ok
+        $ok = (Assert-True 'lock outliving the retries: all 5 renames failed' `
+                ($RenameLog.Count -eq 5 -and @($RenameLog | Where-Object { $_ -notmatch '^fail (EPERM|EACCES|EBUSY)$' }).Count -eq 0) `
+                "rename log: [$($RenameLog -join ' | ')] (want 5 failed attempts, landState's cap)") -and $ok
         $ok = (Assert-True 'lock outliving the retries: state untouched' ((Get-State) -eq '2.4.0') "state reads [$(Get-State)] (want 2.4.0)") -and $ok
         $tmpLeft = @(Get-ChildItem -LiteralPath (Split-Path $stateFile -Parent) -Filter '*.tmp' -Force)
         $ok = (Assert-True 'lock outliving the retries: no temp file left behind' ($tmpLeft.Count -eq 0) "left: $($tmpLeft.Name -join ', ')") -and $ok
