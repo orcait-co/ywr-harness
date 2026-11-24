@@ -101,6 +101,12 @@ report_clean() {
 # `git show -U0 --format=` prints the diff alone. A merge commit prints nothing by default, which is
 # correct: a merge introduces no new content of its own.
 #
+# The file header of a diff is `+++ b/<path>`, `+++ "b/<path>"` for a quoted path, or `+++ /dev/null`.
+# An added line whose text starts with `++` also prints as `+++`, so a filter on `^+++` alone drops that
+# line unread. The filters drop only the three header forms, and `/dev/null` only as the whole line.
+# The prefixes are fixed on the command line, because the diff.noprefix and diff.mnemonicPrefix
+# settings change them.
+#
 # The scan runs in the C locale, and every grep in it takes `-a`. Under a UTF-8 locale (every Linux
 # CI runner) GNU grep treats a line that is not valid UTF-8 as binary and DROPS it from its output,
 # printing only "binary file matches" on stderr — such a line (a CP949 fixture, say) never reaches the
@@ -129,8 +135,9 @@ GD=$(git rev-parse --git-dir 2>/dev/null) && PF="$GD/harness-pre-push.$$"
 trap 'rm -f "$PF"' EXIT
 trap 'rm -f "$PF"; exit 1' HUP INT TERM
 if [ -n "$PF" ]; then
-    { printf '%s\n' "$COMMITS" | git show --stdin --no-walk --format='harness-commit %H' -U0 --no-color --cc; echo "harness-status $?"; } 2>/dev/null |
-        grep -a -e '^harness-commit ' -e '^harness-status ' -e '^+' 2>/dev/null | grep -av -e '^+++' -e 'harness:allow-secret' > "$PF" 2>/dev/null
+    { printf '%s\n' "$COMMITS" | git show --stdin --no-walk --format='harness-commit %H' -U0 --no-color --cc --src-prefix=a/ --dst-prefix=b/; echo "harness-status $?"; } 2>/dev/null |
+        grep -a -e '^harness-commit ' -e '^harness-status ' -e '^+' 2>/dev/null |
+        grep -av -e '^+++ b/' -e '^+++ "b/' -e '^+++ /dev/null$' -e 'harness:allow-secret' > "$PF" 2>/dev/null
     if [ "$(grep -a -c '^harness-commit ' "$PF" 2>/dev/null)" = "$N_COMMITS" ] &&
         [ "$(grep -a -c '^harness-status 0$' "$PF" 2>/dev/null)" = 1 ]; then
         # Every pattern as its own `-e`, for the reason the loop gives. This hook's own arguments are
@@ -143,9 +150,22 @@ if [ -n "$PF" ]; then
     fi
     rm -f "$PF"
 fi
+# A commit whose diff git could not print was not scanned, so it blocks the push like a failed commit
+# list does. An empty diff is no proof: a missing blob prints nothing and exits 128. git's exit status
+# reaches the filter as the last line, `harness-status N`, which no added line can forge, because
+# every added line starts with `+`.
+UNREAD=''
 for sha in $COMMITS; do
     [ -n "$sha" ] || continue
-    added=$(git show --format= -U0 --no-color "$sha" 2>/dev/null | grep -a '^+' | grep -av '^+++')
+    added=$({ git show --format= -U0 --no-color --src-prefix=a/ --dst-prefix=b/ "$sha" 2>/dev/null; echo "harness-status $?"; } |
+        grep -a -e '^+' -e '^harness-status ' | grep -av -e '^+++ b/' -e '^+++ "b/' -e '^+++ /dev/null$')
+    case "$added" in
+        'harness-status 0'|*'
+harness-status 0') ;;
+        *) UNREAD="$UNREAD  $sha
+"; continue ;;
+    esac
+    added=$(printf '%s\n' "$added" | grep -av '^harness-status ')
     [ -n "$added" ] || continue
     # Exempt lines carrying the marker BEFORE matching, so an allowed line cannot trip a pattern.
     added=$(printf '%s\n' "$added" | grep -av 'harness:allow-secret')
@@ -184,7 +204,14 @@ if [ -n "$HITS" ]; then
     echo "[harness]   when you write it, and the push is never blocked."
     echo "[harness] If it is real: the secret has NOT left this machine. Rewrite the commit AND rotate"
     echo "[harness]   the credential — a rewritten local commit does not un-leak a key you already used."
-    exit 1
 fi
+if [ -n "$UNREAD" ]; then
+    echo "[harness] pre-push BLOCKED — git could not print the diff of these commits (git show failed),"
+    echo "[harness]   so they were not scanned for secrets:"
+    printf '%s' "$UNREAD"
+    echo "[harness] Repair the repository (\`git fsck\` names the damage; a partial clone needs its remote), then push."
+    echo "[harness]   \`git push --no-verify\` skips this scan; the CI backstop scans the same commits."
+fi
+[ -z "$HITS" ] && [ -z "$UNREAD" ] || exit 1
 
 report_clean

@@ -87,9 +87,12 @@ jobs:
       # 강등보다 더 많이 스캔한다 — 통일이 강한 쪽을 약화시키는 방향이다.
       # core.hooksPath 는 클론별 수동 배선이라(ywr-harness ADR 0015) 배선 안 된 클론의 푸시는 로컬 스캔이 0회다;
       # 여기가 커버리지의 바닥이다. PR: base 를 해석 못 하면 이 스텝은 실패다 — 스캔이 돌지 않은
-      # 머지는 통과가 아니다. push: before 가 0(브랜치 생성)이거나 도달 불가(force push)면 훅의
-      # new-branch 분기로 떨어져 리모트에 없는 커밋을 스캔한다. 훅은 스캔한 커밋 수를 출력하고,
-      # 범위에 커밋이 0개면 조용히 exit 0 하므로 아래서 빈 출력을 보고로 바꾼다(무음 아님).
+      # 머지는 통과가 아니다. push: before 가 0(브랜치 생성·dispatch)이거나 도달 불가(force push)면 이
+      # 런의 push 범위를 알 수 없다. 그때 훅은 어떤 리모트 추적 ref 에도 없는 커밋을 스캔하는데,
+      # fetch-depth 0 체크아웃은 origin/<branch> 가 HEAD 를 쥐고 있어 보통 0개다. 그래서 그 경우를
+      # ::warning:: 으로 런 요약에 남긴다 — 커버리지는 PR 런이 맡는다(ywr-harness ADR 0213).
+      # 훅은 스캔한 커밋 수를 출력하고, 범위에 커밋이 0개면 조용히 exit 0 하므로 아래서 빈 출력을
+      # 보고로 바꾼다(무음 아님).
       # 값은 env 로만 받는다 — 이 파일의 규칙(표현식을 run: 텍스트에 전개하지 않는다)이 이 스텝에도
       # 적용된다(semgrep 의 run-shell-injection 규칙이 그 패턴을 잡는다). 변수 이름은 resolve-base.sh 의 env 계약
       # (EVENT_NAME · BASE_REF · EVENT_BEFORE)과 같다 — 한 값에 한 이름.
@@ -115,6 +118,7 @@ jobs:
               *[!0]* ) git cat-file -e "$BASE^{commit}" 2>/dev/null || BASE=$ZERO ;;
               * ) BASE=$ZERO ;;
             esac
+            [ "$BASE" != "$ZERO" ] || echo "::warning::secret scan: 이 런의 push 범위를 알 수 없습니다(브랜치 생성·force push·dispatch) — 어떤 리모트에도 없는 커밋만 스캔하며, 체크아웃에서는 보통 0개입니다. PR 런이 커밋을 스캔합니다(ywr-harness ADR 0213)."
           fi
           # HEAD 를 먼저, 실패는 실패로: 인라인 $(git rev-parse HEAD) 가 실패하면 빈 문자열이
           # 끼어들어 stdin 이 3토큰이 되고, 훅은 4필드 계약이 깨진 채 조용히 0커밋을 스캔한다.

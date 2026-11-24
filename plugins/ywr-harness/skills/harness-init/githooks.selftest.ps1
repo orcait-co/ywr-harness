@@ -724,6 +724,35 @@ $i6bHits = @($rI6b.Out -split "`n" | Where-Object { $_ -match '^\s+\[[a-z-]+\] i
 $i6bWant = @("  [aws-access-key-id] in $i6bSide", "  [aws-access-key-id] in $i6bMerge" | Sort-Object)
 $ok = (Assert-True 'I6b hits on a side commit and on a merge are each labelled with their own commit, and no other' ($rI6b.Code -eq 1 -and "$i6bHits" -eq "$i6bWant" -and $rI6b.Out -match 'across 3 commit\(s\)' -and $rI6b.Out -match "      \+aws_key = $fakeKey") "exit=$($rI6b.Code) hits=$($i6bHits -join '|') want=$($i6bWant -join '|') out=$($rI6b.Out)") -and $ok
 
+# --- I8: a commit whose diff git cannot print blocks the push (ADR 0213, owner 2026-11-24) --------
+# A deleted loose blob makes `git show` print nothing and exit 128. Before ADR 0213 the loop read the
+# empty output as "no added line" and reported the commit as scanned. -Force: git writes loose objects
+# read-only on Windows, and the removal is asserted, because a silenced failure would pass I8a unread.
+function Remove-Blob([string]$Repo, [string]$Spec) {
+    $oid = (& git -C $Repo rev-parse $Spec 2>$null).Trim()
+    $f = Join-Path $Repo ".git/objects/$($oid.Substring(0, 2))/$($oid.Substring(2))"
+    Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+    return -not (Test-Path -LiteralPath $f)
+}
+# Every commit is made before the blob goes: a commit made after it either writes the blob again or,
+# when git finds the index entry stat-clean, fails with "invalid object" (seen 1 run in 8 on Windows).
+$i8 = New-PushRepo 'pp-unread'
+$i8Base = Add-Commit $i8 'base.txt' "base`n" 'base'
+$i8Tip = Add-Commit $i8 'lost.txt' "clean but unreadable`n" 'lost blob'
+# The hit line starts with `++` (case I9 below), so one push also covers the header filter.
+$i8bHit = Add-Commit $i8 'key.txt' "++aws_key = $fakeKey`n" 'secret after the lost blob'
+$i8Gone = Remove-Blob $i8 "$i8Tip`:lost.txt"
+$rI8a = Invoke-PrePush $i8 $i8Base $i8Tip
+$ok = (Assert-True 'I8a a commit whose git show fails BLOCKS the push and is named, never counted as scanned' ($i8Gone -and $rI8a.Code -eq 1 -and $rI8a.Out -match 'could not print the diff' -and $rI8a.Out -match "  $i8Tip" -and $rI8a.Out -notmatch 'commit\(s\) scanned') "gone=$i8Gone exit=$($rI8a.Code) out=$($rI8a.Out)") -and $ok
+# I8b: a hit in a readable commit is still reported beside the unread one, so one push shows both.
+$rI8b = Invoke-PrePush $i8 $i8Base $i8bHit
+# I9 reads the same run (review of 2026-11-24, medium). An added line whose text starts with `++`
+# prints as `+++`, the start of a diff file header. A filter on `^+++` alone dropped that line from
+# the prefilter and from the loop, and the push passed with the secret. The run shares the I8 repo to
+# save one per-commit loop, about 1.5 s on Windows.
+$ok = (Assert-True 'I9 an added line that starts with ++ reaches the patterns and BLOCKS' ($rI8b.Code -eq 1 -and $rI8b.Out -match '\[aws-access-key-id\] in ' -and $rI8b.Out -match "      \+\+\+aws_key = $fakeKey") "exit=$($rI8b.Code) out=$($rI8b.Out)") -and $ok
+$ok = (Assert-True 'I8b a hit in a readable commit is reported beside the unread commit, and the push blocks' ($i8Gone -and $rI8b.Code -eq 1 -and $rI8b.Out -match '\[aws-access-key-id\] in ' -and $rI8b.Out -match "  $i8Tip" -and $rI8b.Out -match 'could not print the diff') "exit=$($rI8b.Code) out=$($rI8b.Out)") -and $ok
+
 # --- SS: the vendored CI's secret-scan step drives THIS pre-push over the run's range ------------
 # Dist issue #6 moved the step's three workflow values out of its run: text into env: (the file's
 # own env-only rule). ci-enabled-plugins WS1 proves no `${{` is left in run: text; this proves the
@@ -792,9 +821,9 @@ if ($null -ne $ssBody -and @($ssCtx | Where-Object { -not $ssEnv.ContainsKey($_)
     Copy-Item -LiteralPath $prePush -Destination (Join-Path $ss '.githooks/pre-push') -Force
     $zero = '0' * 40
     $rS1 = Invoke-SecretScanStep $ss @{ 'github.event_name' = 'push'; 'github.base_ref' = ''; 'github.event.before' = $ssOld }
-    $ok = (Assert-True 'SS1 push: the before SHA reaches the step through env: — only the range is scanned' ($rS1.Code -eq 0 -and $rS1.Out -match '\(1 commit\(s\) scanned\)') "exit=$($rS1.Code) out=$($rS1.Out)") -and $ok
+    $ok = (Assert-True 'SS1 push: the before SHA reaches the step through env: — only the range is scanned, with no unknown-range warning' ($rS1.Code -eq 0 -and $rS1.Out -match '\(1 commit\(s\) scanned\)' -and $rS1.Out -notmatch '::warning::') "exit=$($rS1.Code) out=$($rS1.Out)") -and $ok
     $rS1c = Invoke-SecretScanStep $ss @{ 'github.event_name' = 'push'; 'github.base_ref' = ''; 'github.event.before' = $zero }
-    $ok = (Assert-True 'SS1c control: a ZERO before (branch creation) scans the history and BLOCKS on the older secret' ($rS1c.Code -eq 1 -and $rS1c.Out -match 'aws-access-key-id') "exit=$($rS1c.Code) out=$($rS1c.Out)") -and $ok
+    $ok = (Assert-True 'SS1c control: a ZERO before (branch creation) warns that the push range is unknown (ADR 0213), scans the history and BLOCKS on the older secret' ($rS1c.Code -eq 1 -and $rS1c.Out -match '::warning::secret scan: ' -and $rS1c.Out -match 'aws-access-key-id') "exit=$($rS1c.Code) out=$($rS1c.Out)") -and $ok
     # The PR refs are remote-tracking refs, created only NOW: the ZERO path above scans
     # `--not --remotes`, and an origin/main at the old commit would have hidden the control's secret.
     # A real PR checkout has BOTH: the base (origin/<base_ref>) and the PR head itself
