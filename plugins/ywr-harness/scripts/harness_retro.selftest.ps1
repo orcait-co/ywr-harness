@@ -208,7 +208,9 @@ $rCL = Invoke-Retro $e2 @()
 $ok = (Assert-True 'CL1 a body with a digest and no class line gives no finding' ($rCL.Code -eq 0 -and $rCL.Out.Trim() -eq '') "exit=$($rCL.Code) out=$($rCL.Out)") -and $ok
 $rCL2 = Invoke-Retro $e2 @('--coverage')
 $ok = (Assert-True 'CL2 --coverage prints no class-line tally and still prints the ignore register' ($rCL2.Code -eq 0 -and $rCL2.Out -notmatch 'class lines' -and $rCL2.Out -match 'ignore register') "exit=$($rCL2.Code) out=$($rCL2.Out)") -and $ok
-$rCL3 = Invoke-Retro $e2 @('--class-message', (Join-Path $e2 'cl1.txt'))
+# The call has the older hook's shape: the message file alone, no --repo.
+$rCL3 = @{ Out = (& $py.Source $retro '--class-message' (Join-Path $e2 'cl1.txt') 2>&1 | Out-String) }
+$rCL3.Code = $LASTEXITCODE
 $ok = (Assert-True 'CL3 --class-message is accepted and ignored: exit 0, silent, so an older commit-msg hook never refuses a message' ($rCL3.Code -eq 0 -and [string]::IsNullOrWhiteSpace($rCL3.Out)) "exit=$($rCL3.Code) out=$($rCL3.Out)") -and $ok
 # CL9: a bare revision is the commits after it, the same span its file diff covers. On the E repo the feat commit is
 # HEAD~1 after one more commit: given HEAD~1, the subjects stop short of the feat commit, so FEAT is silent; given
@@ -221,6 +223,11 @@ $ok = (Assert-True 'CL9 a bare revision reads only the commits after it (HEAD~1 
     ($rCL9.Out -notmatch 'FEAT:' -and $rCL9b.Out -match 'FEAT:') "HEAD~1: $($rCL9.Out) | HEAD~2: $($rCL9b.Out)") -and $ok
 $rCL4 = Invoke-Retro $e2 @('--coverage', '--class-message', (Join-Path $e2 'cl1.txt'))
 $ok = (Assert-True 'CL4 --class-message with another mode is refused, exit 2, so a coverage run never ends silent' ($rCL4.Code -eq 2 -and $rCL4.Out -match 'takes no other argument') "exit=$($rCL4.Code) out=$($rCL4.Out)") -and $ok
+# The refusal text says "no other argument", so --repo is refused too (dist #18). An older commit-msg hook passes the
+# message file alone, so this refuses no hook call. The call names --repo itself, so it does not rest on Invoke-Retro.
+$rCL4b = @{ Out = (& $py.Source $retro '--class-message' (Join-Path $e2 'cl1.txt') '--repo' $e2 2>&1 | Out-String) }
+$rCL4b.Code = $LASTEXITCODE
+$ok = (Assert-True 'CL4b --class-message with --repo is refused, exit 2' ($rCL4b.Code -eq 2 -and $rCL4b.Out -match 'takes no other argument') "exit=$($rCL4b.Code) out=$($rCL4b.Out)") -and $ok
 
 # --- F: UNMAPPED — added in-scope file no spec owns ----------------------------------------------
 $f = New-Repo 'unmapped' $CFG

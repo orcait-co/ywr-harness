@@ -606,6 +606,27 @@ $out = Invoke-Hook (New-Payload @{ cwd = $cp })
 $j3t = $null; try { $j3t = ConvertFrom-Json $out.Trim() } catch { }
 $ok = (Assert-True '3d code in .claude/CLAUDE.md imports nothing: the canon line and part' `
         ($null -ne $j3t -and ([string]$j3t.systemMessage) -match 'review canon `REVIEW\.md`' -and ([string]$j3t.hookSpecificOutput.additionalContext).Contains("`n`nReview canon import (ywr-harness ADR 0215, ywr-harness ADR 0217): ")) $out) -and $ok
+# A fenced block ends the paragraph before it, so an indented line right after the closing fence is code with no
+# blank line between (dist #18). Mutation anchor: a closing fence that leaves the blank state alone keeps the line.
+Set-Content -LiteralPath (Join-Path $cp '.claude/CLAUDE.md') -Value ("para text`n" + '```' + "`ncode`n" + '```' + "`n    @../REVIEW.md`n")
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$j3f = $null; try { $j3f = ConvertFrom-Json $out.Trim() } catch { }
+$ok = (Assert-True '3d an indented line right after a closing fence imports nothing: the canon line and part' `
+        ($null -ne $j3f -and ([string]$j3f.systemMessage) -match 'review canon `REVIEW\.md`' -and ([string]$j3f.hookSpecificOutput.additionalContext).Contains("`n`nReview canon import (ywr-harness ADR 0215, ywr-harness ADR 0217): ")) $out) -and $ok
+# An ATX heading, a setext underline and a thematic break at column 0 end the paragraph too (fact 256). Mutation
+# anchor: dropping any one of the three keeps its line, and the hook prints the rule only.
+Set-Content -LiteralPath (Join-Path $cp '.claude/CLAUDE.md') -Value ("# Head`n    @../REVIEW.md`n`nSetext`n===`n    @../REVIEW.md`n`n***`n    @../REVIEW.md`n")
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$j3h = $null; try { $j3h = ConvertFrom-Json $out.Trim() } catch { }
+$ok = (Assert-True '3d an indented line right after a heading, a setext underline or a thematic break imports nothing: the canon line and part' `
+        ($null -ne $j3h -and ([string]$j3h.systemMessage) -match 'review canon `REVIEW\.md`' -and ([string]$j3h.hookSpecificOutput.additionalContext).Contains("`n`nReview canon import (ywr-harness ADR 0215, ywr-harness ADR 0217): ")) $out) -and $ok
+# Inside a list item the closing fence is indented, and the next indented line is item text that the host loads
+# (fact 256). Mutation anchor: a closing fence that ends the paragraph at any indent drops the line.
+Set-Content -LiteralPath (Join-Path $cp '.claude/CLAUDE.md') -Value ("- item`n  " + '```' + "`n  x`n  " + '```' + "`n    @../REVIEW.md`n")
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3d an indented line after a fence inside a list item imports: the rule only' $out) -and $ok
+# The next case proves the CLAUDE.local.md import alone, so this file must import nothing again.
+Set-Content -LiteralPath (Join-Path $cp '.claude/CLAUDE.md') -Value 'No import here.'
 # An import in CLAUDE.local.md counts: the session loads it.
 Set-Content -LiteralPath (Join-Path $cp 'CLAUDE.local.md') -Value 'Mine: @REVIEW.md'
 $out = Invoke-Hook (New-Payload @{ cwd = $cp })

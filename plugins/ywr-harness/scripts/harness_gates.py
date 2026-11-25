@@ -585,6 +585,8 @@ def ignored_claims(root: Path, cfg: dict, warns: list[str]) -> list[str]:
 IMPORT_FILES = ("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md")
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _INDENTED = re.compile(r"^(?: {4}|\t)")
+_CLOSER = re.compile(r"^(?:#{1,6}(?:[ \t]|$)|([-*_])(?:[ \t]*\1){2,}[ \t]*$)")
+_SETEXT = re.compile(r"^=+[ \t]*$")
 _SPAN = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)", re.S)
 _IMPORT = re.compile(r"(?:^|(?<=\s))@((?:\\ |\S)+)")
 _BOM = chr(0xFEFF)
@@ -596,9 +598,14 @@ def import_text(text: str) -> str:
     A probe on host 2.1.331 (ywr-harness fact 250) loaded no import from a fenced code block, an
     indented code block or a code span. A fence closes only on its own character, at least as
     long, with nothing after it, so a `~~~` line inside a backtick fence stays code. An indented
-    line is code after a blank line; a list item's indented paragraph reads as code here too, which
-    errs toward NOT IMPORTED. A code span can cross a line break, so spans are removed per paragraph.
-    The session-start scaffold nudge has the same reader in Node; keep the two in step."""
+    line is code after a blank line. It is code too after a column-0 closing fence, ATX heading,
+    thematic break or setext underline, because each of them ends the paragraph before it
+    (ywr-harness fact 256). The same block indented by one to three spaces can sit inside a list
+    item, where the next indented line is item text. The reader tracks no list, so it leaves the
+    state alone after an indented block. A list item's indented paragraph after a blank line reads
+    as code here, which errs toward NOT IMPORTED. A code span can cross a line break, so spans are
+    removed per paragraph. The session-start scaffold nudge has the same reader in Node; keep the
+    two in step."""
     kept = []
     fence = ""
     blank = True
@@ -608,6 +615,8 @@ def import_text(text: str) -> str:
         if fence:
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
                 fence = ""
+                if line[:1] in "`~":
+                    blank, indented = True, False
             kept.append("")
             continue
         if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
@@ -622,7 +631,8 @@ def import_text(text: str) -> str:
             indented = True
             kept.append("")
             continue
-        blank = indented = False
+        closes = _CLOSER.match(line) or (_SETEXT.match(line) and not blank and not indented)
+        blank, indented = bool(closes), False
         kept.append(line)
     return "\n\n".join(_SPAN.sub(" ", p) for p in re.split(r"\n[ \t]*\n", "\n".join(kept)))
 

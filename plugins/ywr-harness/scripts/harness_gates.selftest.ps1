@@ -417,6 +417,22 @@ $ok = (Assert-True 'I2 no CLAUDE.md: the canon line says NOT IMPORTED' ($rCi.Out
 Set-Content -LiteralPath (Join-Path $ci 'CLAUDE.md') -Value ("# x`nWrite ``@REVIEW.md`` to import.`n`nA span ``starts`n@REVIEW.md ends`` here.`n`n" + '```md' + "`n~~~`n@REVIEW.md`n" + '```' + "`n`nCode:`n`n    @REVIEW.md`n") -NoNewline
 $rCi = Invoke-Gates $ci @()
 $ok = (Assert-True 'I2 code spans, a span over two lines, a ~~~ line in a backtick fence and an indented block import nothing' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(NOT IMPORTED') $rCi.Out) -and $ok
+# A fenced block ends the paragraph before it, so an indented line right after the closing fence is code with no
+# blank line between (dist #18). Mutation anchor: a closing fence that leaves the blank state alone keeps the line.
+Set-Content -LiteralPath (Join-Path $ci 'CLAUDE.md') -Value ("para text`n" + '```' + "`ncode`n" + '```' + "`n    @REVIEW.md`n") -NoNewline
+$rCi = Invoke-Gates $ci @()
+$ok = (Assert-True 'I2 an indented line right after a closing fence imports nothing' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(NOT IMPORTED') $rCi.Out) -and $ok
+# An ATX heading, a setext underline and a thematic break at column 0 end the paragraph too (fact 256). Mutation
+# anchor: dropping any one of the three keeps its line, and the canon line says imported.
+Set-Content -LiteralPath (Join-Path $ci 'CLAUDE.md') -Value ("# Head`n    @REVIEW.md`n`nSetext`n===`n    @REVIEW.md`n`n***`n    @REVIEW.md`n") -NoNewline
+$rCi = Invoke-Gates $ci @()
+$ok = (Assert-True 'I2 an indented line right after a heading, a setext underline or a thematic break imports nothing' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(NOT IMPORTED') $rCi.Out) -and $ok
+# Inside a list item the closing fence is indented, and the next indented line is item text that the host loads
+# (fact 256). Mutation anchor: a closing fence that ends the paragraph at any indent drops the line.
+Set-Content -LiteralPath (Join-Path $ci 'CLAUDE.md') -Value ("- item`n  " + '```' + "`n  x`n  " + '```' + "`n    @REVIEW.md`n") -NoNewline
+$rCi = Invoke-Gates $ci @()
+$ok = (Assert-True 'I2 an indented line after a fence inside a list item imports' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(imported by CLAUDE\.md\)') $rCi.Out) -and $ok
+Remove-Item -LiteralPath (Join-Path $ci 'CLAUDE.md') -Force
 Set-Content -LiteralPath (Join-Path $ci 'CLAUDE.local.md') -Value 'Mine: @REVIEW.md' -NoNewline
 $rCi = Invoke-Gates $ci @()
 $ok = (Assert-True 'I2 an import in CLAUDE.local.md counts' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(imported by CLAUDE\.local\.md\)') $rCi.Out) -and $ok

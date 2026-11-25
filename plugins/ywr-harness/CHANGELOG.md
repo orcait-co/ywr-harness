@@ -12,6 +12,11 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.82.2 — 2026-11-25
+
+- `harness_gates.py` 의 `review canon:` 줄과 세션 시작 scaffold 안내가, 0열에서 시작하는 닫는 코드 펜스, `#` 헤딩, `***`/`---` 구분선, `===` 밑줄 바로 다음 줄에 4칸 들여 쓴 `@path` 를 이제 import 로 세지 않습니다(dist #18). 이 줄들은 그 앞의 문단을 끝내므로, 빈 줄이 없어도 다음 줄은 들여쓰기 코드 블록이고 Claude Code 2.1.332 는 그 import 를 로드하지 않습니다(probe 로 확인). 전에는 이 줄을 import 로 읽어 `(imported by CLAUDE.md)` 를 출력했습니다. 이제는 `(NOT IMPORTED …)` 가 붙으니, 그 `@path` 줄을 들여쓰기 없이 다시 쓰세요. 리스트 항목 안의 펜스 뒤에 오는 들여쓴 줄은 항목 본문이라 지금처럼 import 로 셉니다.
+- `harness_retro.py --class-message` 에 `--repo` 를 함께 주면 다시 "takes no other argument" 로 거부합니다(dist #18). 남아 있는 `.githooks/commit-msg` hook 은 메시지 파일만 넘기므로 영향이 없습니다.
+
 ## v0.82.1 — 2026-11-25
 
 - `subagent-telemetry` hook 을 지웠습니다(ywr-harness ADR 0219). 이 hook 은 서브에이전트가 끝날 때마다 `.claude/telemetry/subagent-stops.jsonl` 에 한 줄을 남겼지만, v0.82.0 에서 그 기록을 읽던 eval case 가 빠진 뒤로 이 파일을 읽는 곳이 없습니다. 이제 플러그인은 `SubagentStop` 이벤트에 hook 을 등록하지 않고, `/reload-plugins` 의 hook 수는 11 에서 10 으로 줄어듭니다.

@@ -261,6 +261,8 @@ const CANON_LEGACY = 'REVIEW.md'
 const IMPORT_FILES = [...CLAUDE_FILES, 'CLAUDE.local.md']
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 const INDENTED = /^(?: {4}|\t)/
+const CLOSER = /^(?:#{1,6}(?:[ \t]|$)|([-*_])(?:[ \t]*\1){2,}[ \t]*$)/
+const SETEXT = /^=+[ \t]*$/
 const SPAN = /(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g
 const IMPORT = /(?:^|(?<=\s))@((?:\\ |\S)+)/g
 // The emitter's safe_path rejects these and falls back to the default; the hook does the same.
@@ -283,9 +285,12 @@ function declaredCanon(text, root) {
 
 // The text of a memory file with its code removed, as Claude Code reads it for imports. A probe on host 2.1.331
 // (ywr-harness fact 250) loaded no import from a fenced code block, an indented code block or a code span. A fence closes
-// only on its own character, at least as long, with nothing after it. An indented line is code after a blank line; a
-// list item's indented paragraph reads as code here too, which errs toward a missing import. A code span can cross a
-// line break, so spans are removed per paragraph.
+// only on its own character, at least as long, with nothing after it. An indented line is code after a blank line. It
+// is code too after a column-0 closing fence, ATX heading, thematic break or setext underline, because each of them ends
+// the paragraph before it (ywr-harness fact 256). The same block indented by one to three spaces can sit inside a list
+// item, where the next indented line is item text. The reader tracks no list, so it leaves the state alone after an
+// indented block. A list item's indented paragraph after a blank line reads as code here, which errs toward a missing
+// import. A code span can cross a line break, so spans are removed per paragraph.
 function importText(text) {
   const kept = []
   let fence = ''
@@ -294,14 +299,18 @@ function importText(text) {
   for (const line of text.split(/\r\n|\r|\n/)) {
     const m = FENCE.exec(line)
     if (fence) {
-      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !m[2].trim()) fence = ''
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !m[2].trim()) {
+        fence = ''
+        if (line[0] === '`' || line[0] === '~') { blank = true; indented = false }
+      }
       kept.push('')
       continue
     }
     if (m && !(m[1][0] === '`' && m[2].includes('`'))) { fence = m[1]; kept.push(''); continue }
     if (!line.trim()) { blank = true; kept.push(''); continue }
     if (INDENTED.test(line) && (blank || indented)) { indented = true; kept.push(''); continue }
-    blank = indented = false
+    blank = CLOSER.test(line) || (SETEXT.test(line) && !blank && !indented)
+    indented = false
     kept.push(line)
   }
   return kept.join('\n').split(/\n[ \t]*\n/).map(p => p.replace(SPAN, ' ')).join('\n\n')

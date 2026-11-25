@@ -811,7 +811,7 @@ def main() -> int:
     ap.add_argument("--class-message", dest="class_message", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.class_message is not None:
-        if args.coverage or args.delegations or args.range is not None:
+        if args.coverage or args.delegations or args.range is not None or args.repo is not None:
             ap.error("--class-message takes no other argument")
         return 0
     # The skip hatch belongs to the per-commit run (ywr-harness ADR 0120): an explicit --delegations request is
