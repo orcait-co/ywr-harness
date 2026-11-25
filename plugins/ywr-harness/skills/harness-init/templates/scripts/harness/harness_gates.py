@@ -30,9 +30,9 @@ still never a repo-supplied string.
 
 ## Why the tier is computed here and not judged in prose
 
-Review proportionality has a cheap wrong answer in both directions: a full multi-lens review on a
-docs-only diff burns tokens, and a `small` tier on a diff that touches a critical surface buys a
-weaker review exactly where it matters. The inputs (file count, changed lines, which surfaces
+Review proportionality has a cheap wrong answer in both directions: a `/code-review` run on a
+docs-only diff burns tokens, and a skipped review on a diff that touches a critical surface leaves
+the riskiest change unread. The inputs (file count, changed lines, which surfaces
 matched) are mechanical, so they are computed and PRINTED WITH THE REASON — a tier a reader cannot
 audit is a tier nobody can correct.
 """
@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -192,7 +193,7 @@ def exec_bit_gap(root: Path) -> str:
     import os
     if os.name != "posix":
         return ""
-    bad = [h for h in ("pre-commit", "pre-push", "post-commit", "commit-msg")
+    bad = [h for h in ("pre-commit", "pre-push", "post-commit")
            if (root / ".githooks" / h).is_file()
            and not os.access(root / ".githooks" / h, os.X_OK)]
     if not bad:
@@ -581,12 +582,122 @@ def ignored_claims(root: Path, cfg: dict, warns: list[str]) -> list[str]:
     return [head] + lines
 
 
+IMPORT_FILES = ("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_INDENTED = re.compile(r"^(?: {4}|\t)")
+_SPAN = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)", re.S)
+_IMPORT = re.compile(r"(?:^|(?<=\s))@((?:\\ |\S)+)")
+_BOM = chr(0xFEFF)
+
+
+def import_text(text: str) -> str:
+    """The text of a memory file with its code removed, as Claude Code reads it for imports.
+
+    A probe on host 2.1.331 (ywr-harness fact 250) loaded no import from a fenced code block, an
+    indented code block or a code span. A fence closes only on its own character, at least as
+    long, with nothing after it, so a `~~~` line inside a backtick fence stays code. An indented
+    line is code after a blank line; a list item's indented paragraph reads as code here too, which
+    errs toward NOT IMPORTED. A code span can cross a line break, so spans are removed per paragraph.
+    The session-start scaffold nudge has the same reader in Node; keep the two in step."""
+    kept = []
+    fence = ""
+    blank = True
+    indented = False
+    for line in re.split(r"\r\n|\r|\n", text):
+        m = _FENCE.match(line)
+        if fence:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
+                fence = ""
+            kept.append("")
+            continue
+        if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+            fence = m.group(1)
+            kept.append("")
+            continue
+        if not line.strip():
+            blank = True
+            kept.append("")
+            continue
+        if _INDENTED.match(line) and (blank or indented):
+            indented = True
+            kept.append("")
+            continue
+        blank = indented = False
+        kept.append(line)
+    return "\n\n".join(_SPAN.sub(" ", p) for p in re.split(r"\n[ \t]*\n", "\n".join(kept)))
+
+
+def _norm_target(p: str) -> str:
+    # Windows paths ignore case, and the probe loaded `@C4.MD` for c4.md there; normcase folds case
+    # on Windows only.
+    return os.path.normcase(os.path.abspath(p))
+
+
+def canon_importer(root: Path, canon: str) -> str:
+    """The first of IMPORT_FILES that imports `canon`, or '' (ywr-harness ADR 0215).
+
+    `/code-review` reads CLAUDE.md, never a separate canon file, so a canon outside the memory files
+    reaches the slice review only through an `@<path>` import (ywr-harness ADR 0217). A token counts when it starts a line or follows whitespace, after
+    import_text removed the code. A backslash-escaped space belongs to the token. A relative token
+    resolves against the folder of the file that holds it, `~/` against the home folder, and an
+    absolute token stands as written. An ancestor CLAUDE.md above the repo root is not read."""
+    want = _norm_target(os.path.join(str(root), canon))
+    for rel in IMPORT_FILES:
+        try:
+            text = (root / rel).read_bytes().decode("utf-8", "replace").lstrip(_BOM)
+        except OSError:
+            continue
+        folder = os.path.join(str(root), posixpath.dirname(rel))
+        for tok in _IMPORT.findall(import_text(text)):
+            tok = tok.replace("\\ ", " ")
+            if tok == "~" or tok.startswith("~/"):
+                tok = os.path.expanduser(tok)
+            if _norm_target(os.path.join(folder, tok)) == want:
+                return rel
+    return ""
+
+
+_CANON_HEADING = re.compile(r"^ {0,3}#{1,6}[ 	]+Review canon[ 	]*(?:#+[ 	]*)?$", re.I | re.M)
+
+
+def memory_canon(root: Path, canon: str) -> bool:
+    """True when `canon` is one of IMPORT_FILES, a memory file the session loads at its start
+    (ywr-harness ADR 0217). Such a canon needs no import."""
+    want = _norm_target(os.path.join(str(root), canon))
+    return any(_norm_target(os.path.join(str(root), rel)) == want for rel in IMPORT_FILES)
+
+
+def canon_heading(root: Path, canon: str) -> bool:
+    """True when the memory-file canon has an ATX heading `Review canon` outside code
+    (ywr-harness ADR 0217). The heading marks the section that holds the review invariants. The
+    check reads the heading only, so a section that lost its rules still passes."""
+    try:
+        text = (root / canon).read_bytes().decode("utf-8", "replace").lstrip(_BOM)
+    except OSError:
+        return False
+    return bool(_CANON_HEADING.search(import_text(text)))
+
+
 def emit_tail(root: Path, cfg: dict, warns: list[str], late: list[str]) -> int:
     """The common trailer after the tier line — review canon, handoff, hooks, queued warnings.
     Shared by the per-slice path and the full-tree audit path (ywr-harness ADR 0041) so the two can never
     disagree on what a run reports after its verdict."""
-    hc.say(f"review canon: {cfg['review_canon']}" + ("" if (root / cfg["review_canon"]).exists()
-           else "   (NOT FOUND — invariants must come from somewhere; the close cannot cite a missing file)"))
+    canon = cfg["review_canon"]
+    if not (root / canon).exists():
+        state = "   (NOT FOUND — invariants must come from somewhere; the close cannot cite a missing file)"
+    elif memory_canon(root, canon):
+        # A memory file loads at session start, so it needs no import. A missing heading only warns:
+        # a renamed heading must not stop a close whose rules did not change (ywr-harness ADR 0217).
+        state = ("   (loaded at session start)" if canon_heading(root, canon) else
+                 "   (loaded at session start, NO HEADING — no ATX heading 'Review canon' outside code, "
+                 "so the review may run without the canon — ywr-harness ADR 0217)")
+    else:
+        # The importing file name is fixed text, never a repo value, so the line stays one line.
+        importer = canon_importer(root, canon)
+        state = (f"   (imported by {importer})" if importer else
+                 "   (NOT IMPORTED — no @<path> line for it in CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md; "
+                 "/code-review reads the canon only through that import — ywr-harness ADR 0215, ywr-harness ADR 0217)")
+    hc.say(f"review canon: {canon}{state}")
     if cfg["handoff"]:
         # A trailing '/' declares a per-work-line directory (ywr-harness ADR 0040); annotated here so the
         # close instruction "update the handoff the emitter named" is unambiguous where it is read.
@@ -700,8 +811,9 @@ def main() -> int:
     # Built-in claims (ywr-harness ADR 0044): scaffold-placed paths no declared group matched. Declared
     # groups win by construction — only leftovers are consulted — and the claim is REPORTED
     # below, never silent: an absorbed file that printed nowhere would read as coverage.
-    scaffold_claimed = sorted(leftover & hc.SCAFFOLD_CLAIMS)
-    ungrouped = sorted(leftover - hc.SCAFFOLD_CLAIMS)
+    builtin = hc.SCAFFOLD_CLAIMS | hc.RETIRED_SCAFFOLD_CLAIMS
+    scaffold_claimed = sorted(leftover & builtin)
+    ungrouped = sorted(leftover - builtin)
 
     hc.say("gates:")
     emitted = 0

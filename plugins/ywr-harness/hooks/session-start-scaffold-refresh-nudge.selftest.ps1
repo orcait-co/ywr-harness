@@ -84,8 +84,8 @@ $ruleMark = 'Slice notes \(ywr-harness ADR 0172\)'   # a regex for a MustNotMatc
 # The slice rules (ADR 0183), copied VERBATIM as a pin: the head line, then one line per rule, joined by LF.
 $sliceHead = 'ywr-harness slice rules for this repo (ywr-harness ADR 0183). The org guide states the general rules; this repo''s CLAUDE.md states its own facts.'
 $sliceRuleLines = @(
-    '- Review: before a slice closes, run `Workflow({name: ''ywr-harness:adversarial-review'', args: {scope: {files, context, invariants, gates_passed}}})`. `/ywr-harness:slice-close` builds the call. `scope` is an object; a string scope loses sharding, the out-of-scope bucket and the gate check of skeptic #2. Put house review angles in `args.lensExtra`, never a redefined lens set. The review invariants are in the file that `.harness.json` `review.canon` names, `REVIEW.md` at the repo root by default; replace the harness-init starter there with this repo''s own invariants (ywr-harness ADR 0054).'
-    '- The review runs once per slice. A fix diff for its confirmed high and medium findings closes with re-run gates and one fix check per finding. A confirmed low gets no fix check: the close record lists it (ywr-harness ADR 0206). No fix gets a re-review. When a fix needs more review, record an open item: `python scripts/harness/slice_note.py add risk "open item: review <files and lines> of the <id> fix; <why>"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).'
+    '- Review: before a slice closes, run `/code-review` through the Skill tool: `medium` for a small tier and for a full tier (ywr-harness ADR 0215, ywr-harness ADR 0218). `/ywr-harness:slice-close` makes the call. Every finding gets a bucket: fixed, valid with no action, or false on reading. The review invariants are in the file that `.harness.json` `review.canon` names: the `## Review canon` section of `CLAUDE.md` in a new scaffold, where this repo''s own invariants replace the harness-init starters (ywr-harness ADR 0217).'
+    '- The review runs once per slice. Every finding gets one of three buckets. The severity limits the bucket: an `important`, `pre_existing` or ungraded finding ends fixed or false on reading, only a `nit` whose fix would change a design or a coverage ends valid with no action with an open item, and a fix that rests on an untested host behaviour gets a probe first; when the owner defers that probe, the finding ends valid with no action as an owner decision, with an open item (ywr-harness ADR 0216). A fix closes with re-run gates over its own files, and every fixed finding except a `nit` gets one fix check (ywr-harness ADR 0215). No fix gets a re-review. When a fix needs more review, record an open item: `python scripts/harness/slice_note.py add risk "open item: review <files and lines> of the <file:line> fix; <why>"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).'
     '- The close: `/ywr-harness:slice-close` writes the handoff and the one commit. The person types it, or the main session calls it; a subagent never calls it (ywr-harness ADR 0201). The session prepares the close: it runs every command that `python scripts/harness/harness_gates.py` printed, the review with its fix checks, and verify. It writes no handoff and makes no commit itself. Its ready report ends with the line that `python scripts/harness/harness_gates.py --tree` printed after the final edit. After the report the session asks each open owner question with AskUserQuestion, then calls the skill. The close reuses the report only while it is verbatim in the same session and that line is unchanged; a new session or a compaction summary runs the full close (ywr-harness ADR 0105).'
     '- Handoff: the `handoff` key in `.harness.json` names the resume file. A value that ends in `/` names a directory with one resume file per work line, named after the work line, never after a person. The close that supersedes a `## Current state` section moves it to `docs/handoff-archive/<same filename>`, newest first (ywr-harness ADR 0040).'
     '- Artifacts: a claude.ai Artifact that this repo publishes has the title `<repo-name> · <purpose>` and is declared under `artifacts` in `.harness.json`; CI then fails when the README lacks its link. A generated Artifact also declares its committed `source` file and a `check` drift gate, and `/ywr-harness:artifact-publish` republishes it with one confirmation, never headless (ywr-harness ADR 0032, ywr-harness ADR 0068).'
@@ -421,6 +421,9 @@ foreach ($row in $retiredRows) {
     foreach ($f in $row.files) {
         # .claude/CLAUDE.md is no placement; its seed text is CLAUDE.md's.
         $placed = Join-Path $base $(if ($f -eq '.claude/CLAUDE.md') { 'CLAUDE.md' } else { $f })
+        # REVIEW.md is the one retired file: no scaffold places it any more, but a repo that older scaffolds seeded keeps it
+        # and an import can load it as the review canon, so the hook still scans it for retired text.
+        if ($f -eq 'REVIEW.md' -and -not (Test-Path -LiteralPath $placed -PathType Leaf)) { continue }
         if (-not (Test-Path -LiteralPath $placed -PathType Leaf)) { $tableFails += "${f}: the real init.ps1 places no such seed"; continue }
         if ((Get-Squashed ([IO.File]::ReadAllText($placed))).Contains($row.phrase)) { $tableFails += "$($row.phrase): the current seed $f holds it" }
     }
@@ -436,21 +439,31 @@ $tagVers = if ($gitOk) { @(& git -C $canonRoot tag --list 'ywr-harness--v*' 2>$n
 if ($tagVers.Count -lt 2) {
     Write-Host 'SKIP [3b each row version against the release tags]: no ywr-harness--v* release tags in this checkout' -ForegroundColor Yellow
 } else {
+    # A row of the version that plugin.json names, before its tag exists, reads that release's seed from the working tree.
+    $curVer = (Get-Content -LiteralPath (Join-Path $canonRoot 'plugins/ywr-harness/.claude-plugin/plugin.json') -Raw | ConvertFrom-Json).version
     $specs = [Collections.Generic.List[object]]::new()
     foreach ($row in $retiredRows) {
         $prev = @($tagVers | Where-Object { [version]$_ -lt [version]$row.version }) | Select-Object -Last 1
+        $untagged = ($row.version -eq $curVer) -and ($tagVers -notcontains $row.version)
         foreach ($f in $row.files) {
             $tmpl = 'plugins/ywr-harness/skills/harness-init/templates/' + $(if ($f -eq '.claude/CLAUDE.md') { 'CLAUDE.md' } else { $f })
-            $specs.Add(@{ phrase = $row.phrase; file = $f; at = "ywr-harness--v$($row.version):$tmpl"; before = $(if ($prev) { "ywr-harness--v${prev}:$tmpl" } else { '' }) })
+            $at = if ($untagged) { "WT:$tmpl" } else { "ywr-harness--v$($row.version):$tmpl" }
+            $specs.Add(@{ phrase = $row.phrase; file = $f; at = $at; before = $(if ($prev) { "ywr-harness--v${prev}:$tmpl" } else { '' }) })
         }
     }
     $histCode = @'
 const { execFileSync } = require('child_process')
+const fs = require('fs')
+const path = require('path')
 const [root, json] = process.argv.slice(1)
 const specs = JSON.parse(json)
-const names = [...new Set(specs.flatMap(s => [s.at, s.before]).filter(Boolean))]
-const out = execFileSync('git', ['-C', root, 'cat-file', '--batch'], { input: names.join('\n') + '\n', maxBuffer: 1 << 26 })
 const text = {}
+for (const s of specs) if (s.at.startsWith('WT:')) {
+  const p = path.join(root, s.at.slice(3))
+  text[s.at] = fs.existsSync(p) ? fs.readFileSync(p, 'utf8').replace(/\s+/g, ' ') : null
+}
+const names = [...new Set(specs.flatMap(s => [s.at, s.before]).filter(n => n && !n.startsWith('WT:')))]
+const out = execFileSync('git', ['-C', root, 'cat-file', '--batch'], { input: names.join('\n') + '\n', maxBuffer: 1 << 26 })
 let i = 0
 for (const n of names) {
   const nl = out.indexOf(10, i)
@@ -463,7 +476,9 @@ for (const n of names) {
 }
 const fails = []
 for (const s of specs) {
-  if (text[s.at] === undefined || text[s.at] === null) fails.push(`${s.phrase} @ ${s.file}: no seed at ${s.at}`)
+  // The REVIEW.md seed left the scaffold, so the release that removed it has no seed to lack the phrase; the release
+  // before must still hold it.
+  if (text[s.at] === undefined || text[s.at] === null) { if (s.file !== 'REVIEW.md') fails.push(`${s.phrase} @ ${s.file}: no seed at ${s.at}`) }
   else if (text[s.at].includes(s.phrase)) fails.push(`${s.phrase} @ ${s.file}: the seed of its release still holds it (${s.at})`)
   if (!s.before) fails.push(`${s.phrase} @ ${s.file}: no release before its version`)
   else if (!text[s.before] || !text[s.before].includes(s.phrase)) fails.push(`${s.phrase} @ ${s.file}: the seed of the release before does not hold it (${s.before})`)
@@ -517,7 +532,10 @@ $ok = (Assert-True '3b drift and retired text: two banner lines in that order, t
         "sys: [$($j3c.systemMessage)]") -and $ok
 # Restore the copy for the 3a cases below.
 Copy-Item -LiteralPath (Join-Path $fresh 'docs/build.sh') -Destination (Join-Path $cp 'docs/build.sh') -Force
-foreach ($f in $retFiles.Keys) { if (Test-Path -LiteralPath (Join-Path $fresh $f)) { Copy-Item -LiteralPath (Join-Path $fresh $f) -Destination (Join-Path $cp $f) -Force } }
+foreach ($f in $retFiles.Keys) {
+    if (Test-Path -LiteralPath (Join-Path $fresh $f)) { Copy-Item -LiteralPath (Join-Path $fresh $f) -Destination (Join-Path $cp $f) -Force }
+    elseif (Test-Path -LiteralPath (Join-Path $cp $f)) { Remove-Item -LiteralPath (Join-Path $cp $f) -Force }   # a retired file that no scaffold places
+}
 Remove-Item -LiteralPath (Join-Path $cp '.claude') -Recurse -Force
 
 Set-CopyClaude '- Notes: `python scripts/harness/slice_note.py add <decision|rejected|owner|fact|risk> "x"`'
@@ -537,20 +555,84 @@ $ok = (Assert-True '3a the new-wording-only case: CLAUDE.md holds no owner-typed
     ((-not ([IO.File]::ReadAllText($cpClaude)).Contains('owner-typed')) -and ($out -notmatch 'The close: `/ywr-harness:slice-close`') -and ($out -match 'The review runs once per slice')) 'the premise of the new-wording case does not hold') -and $ok
 Remove-Item -LiteralPath (Join-Path $cp '.claude') -Recurse -Force
 
-Set-CopyClaude 'Run ywr-harness:adversarial-review on PRs. We call slice_note.py add by hand.'
+Set-CopyClaude 'Run /code-review on PRs. We call slice_note.py add by hand.'
 $out = Invoke-Hook (New-Payload @{ cwd = $cp })
-$ok = (Assert-RuleOnly '3a a bare mention of the workflow and the command is no copy: the full text' $out) -and $ok
+$ok = (Assert-RuleOnly '3a a bare mention of the review command is no copy: the full text' $out) -and $ok
 
 Set-CopyClaude 'Our REVIEW.md follows ywr-harness ADR 0054; see also ywr-harness ADR 0028, 0040, 0072, 0105, 0032, 0068 and ywr-harness ADR 0172.'
 $out = Invoke-Hook (New-Payload @{ cwd = $cp })
 $ok = (Assert-RuleOnly '3a ADR citations alone are no copy: the full text' $out) -and $ok
 
+# 3d. The review canon (ADR 0215, ADR 0217), on the same copy. The seed declares the canon `CLAUDE.md`, a memory file
+#     that the session loads at its start, so it needs no import: the rule only, even beside a root REVIEW.md that the
+#     declaration does not name. The import cases below run on the legacy shape, a repo that older scaffolds seeded: a
+#     root REVIEW.md that `.harness.json` declares as the canon. A CLAUDE.md that is a folder is no copy and imports
+#     nothing: the full rule text, then the canon part, and one Korean line that names the canon. The last two cases
+#     leave the canon undeclared: a root REVIEW.md then takes the default, and without it the default is CLAUDE.md.
+$hjPath = Join-Path $cp '.harness.json'
+$hjText = [IO.File]::ReadAllText($hjPath)
+function Set-CopyCanon($Canon) {
+    $h = $hjText | ConvertFrom-Json -AsHashtable
+    if (-not $h.ContainsKey('review')) { $h['review'] = @{} }
+    if ($null -eq $Canon) { $h['review'].Remove('canon') } else { $h['review']['canon'] = $Canon }
+    [IO.File]::WriteAllText($hjPath, ($h | ConvertTo-Json -Depth 20))
+}
+Set-Content -LiteralPath (Join-Path $cp 'REVIEW.md') -Value "# Review canon`n`n1. An invariant.`n"
+Set-CopyClaude ''
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-True '3d fixture: the seed declares canon CLAUDE.md and imports nothing' `
+        ($hjText -match '"canon":\s*"CLAUDE\.md"' -and $seedText -notmatch '(^|\s)@\S') 'the seed no longer declares a memory-file canon or holds an @ import') -and $ok
+$ok = (Assert-RuleOnly '3d a canon in CLAUDE.md needs no import, a root REVIEW.md the declaration does not name is not checked: the rule only' $out) -and $ok
+Set-CopyCanon 'REVIEW.md'
 Remove-Item -LiteralPath $cpClaude -Force
 New-Item -ItemType Directory -Force -Path $cpClaude | Out-Null
 $out = Invoke-Hook (New-Payload @{ cwd = $cp })
-$ok = (Assert-RuleOnly '3a a CLAUDE.md that is no file is no copy: the full text, exit 0' $out) -and $ok
+$canonFails = @()
+if ($script:HookExit -ne 0) { $canonFails += "exit $script:HookExit" }
+try {
+    $j3d = ConvertFrom-Json $out.Trim()
+    $sys3d = [string]$j3d.systemMessage; $ctx3d = [string]$j3d.hookSpecificOutput.additionalContext
+    if ($sys3d -notmatch '^\[hook:scaffold-refresh-nudge\] .+review canon `REVIEW\.md`.+ywr-harness ADR 0215' -or $sys3d.Contains("`n")) { $canonFails += "systemMessage is not one canon line: [$sys3d]" }
+    if (-not $sys3d.Contains('`## Review canon`') -or -not $sys3d.Contains('ywr-harness ADR 0217')) { $canonFails += "systemMessage does not name the `## Review canon` section and ywr-harness ADR 0217: [$sys3d]" }
+    if (-not $ctx3d.StartsWith($ruleText + "`n`nReview canon import (ywr-harness ADR 0215, ywr-harness ADR 0217): ")) { $canonFails += "additionalContext is not the full rule, then the canon part: [$ctx3d]" }
+    if (-not $ctx3d.Contains('## Review canon') -or -not $ctx3d.Contains('review.canon')) { $canonFails += "additionalContext does not name the section and the review.canon move: [$ctx3d]" }
+} catch { $canonFails += 'stdout is not valid JSON' }
+$ok = (Write-CaseVerdict -Name '3d a CLAUDE.md that is no file imports nothing: the full rule, the canon part last, one Korean line, exit 0' -Fail $canonFails -Detail $out) -and $ok
+# Each trap loaded nothing on host 2.1.331 (fact 250): a span over two lines, a ~~~ line inside a backtick
+# fence, an indented block after a blank line. The same canon part follows.
+New-Item -ItemType Directory -Force -Path (Join-Path $cp '.claude') | Out-Null
+Set-Content -LiteralPath (Join-Path $cp '.claude/CLAUDE.md') -Value ("A span ``starts`n@../REVIEW.md ends`` here.`n`n" + '```md' + "`n~~~`n@../REVIEW.md`n" + '```' + "`n`nCode:`n`n    @../REVIEW.md`n")
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$j3t = $null; try { $j3t = ConvertFrom-Json $out.Trim() } catch { }
+$ok = (Assert-True '3d code in .claude/CLAUDE.md imports nothing: the canon line and part' `
+        ($null -ne $j3t -and ([string]$j3t.systemMessage) -match 'review canon `REVIEW\.md`' -and ([string]$j3t.hookSpecificOutput.additionalContext).Contains("`n`nReview canon import (ywr-harness ADR 0215, ywr-harness ADR 0217): ")) $out) -and $ok
+# An import in CLAUDE.local.md counts: the session loads it.
+Set-Content -LiteralPath (Join-Path $cp 'CLAUDE.local.md') -Value 'Mine: @REVIEW.md'
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3d CLAUDE.local.md imports @REVIEW.md: the rule only' $out) -and $ok
+Remove-Item -LiteralPath (Join-Path $cp 'CLAUDE.local.md') -Force
+# The import resolves against the importing file: `@../REVIEW.md` in .claude/CLAUDE.md is the root canon.
+Set-Content -LiteralPath (Join-Path $cp '.claude/CLAUDE.md') -Value 'Invariants: @../REVIEW.md'
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3d .claude/CLAUDE.md imports @../REVIEW.md: the rule only' $out) -and $ok
+Remove-Item -LiteralPath (Join-Path $cp '.claude') -Recurse -Force
+# A declared canon that does not exist is not checked: the emitter names it NOT FOUND instead.
+Set-CopyCanon 'docs/NO-SUCH-CANON.md'
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3d a declared canon that does not exist: the rule only' $out) -and $ok
 Remove-Item -LiteralPath $cpClaude -Recurse -Force
 Set-CopyClaude ''
+# No `review.canon` and a root REVIEW.md that nothing imports: the default is that file, so the canon line names it.
+Set-CopyCanon $null
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$j3u = $null; try { $j3u = ConvertFrom-Json $out.Trim() } catch { }
+$ok = (Assert-True '3d an undeclared canon beside a root REVIEW.md that nothing imports: the canon line and part name REVIEW.md' `
+        ($null -ne $j3u -and ([string]$j3u.systemMessage) -match 'review canon `REVIEW\.md`' -and ([string]$j3u.hookSpecificOutput.additionalContext).Contains('the review canon `REVIEW.md` that .harness.json names')) $out) -and $ok
+# No `review.canon` and no REVIEW.md: the default is CLAUDE.md, a memory file, so the rule only.
+Remove-Item -LiteralPath (Join-Path $cp 'REVIEW.md') -Force
+$out = Invoke-Hook (New-Payload @{ cwd = $cp })
+$ok = (Assert-RuleOnly '3d an undeclared canon and no REVIEW.md: the default is CLAUDE.md, the rule only' $out) -and $ok
+[IO.File]::WriteAllText($hjPath, $hjText)
 
 Remove-Item -LiteralPath (Join-Path $cp '.harness.json') -Force
 $out = Invoke-Hook (New-Payload @{ cwd = $cp })

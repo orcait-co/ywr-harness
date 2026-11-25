@@ -1,6 +1,6 @@
 # YWR Labs Harness (plugin)
 
-Portable Claude Code platform guards plus the adversarial code-review standard. Everything here
+Portable Claude Code platform guards plus the slice-close review standard. Everything here
 is coupled to Claude Code's own hook payloads and runtime behavior — not to any repo's tech
 stack, directory layout, or conventions. That is why it ships as a plugin: the knowledge is
 identical in every repo, so it should be maintained in one place and consumed, not re-derived.
@@ -25,11 +25,11 @@ Plugin components resolve as `ywr-harness:<name>`. A bare name does not resolve:
 
 ```
 /ywr-harness:verify   /ywr-harness:slice-close   /ywr-harness:harness-init   /ywr-harness:report-issue   /ywr-harness:artifact-publish   /ywr-harness:setup   /ywr-harness:update   /ywr-harness:auto
-Workflow({name: 'ywr-harness:adversarial-review', args: {...}})
 ```
 
 This is enforced — `manifest-gate.mjs` fails on a shipped instruction that names a component
-bare, in either the `Workflow({name: ...})` or the backticked-slash form. The gate exists because
+bare, in the backticked-slash form or, for a shipped workflow, the `Workflow({name: ...})` form. The plugin ships no
+workflow now (ADR 0215). The gate exists because
 a live session found exactly that defect in shipped text while every selftest passed: the suite
 calls the scripts directly and never goes through the host's component registry.
 
@@ -37,7 +37,7 @@ calls the scripts directly and never goes through the host's component registry.
 
 | Hook | Event | Contract |
 |---|---|---|
-| `agent-model-warn.mjs` | `PreToolUse` (matcher `Agent`) | Warn-only (ADR 0086). Speaks exactly when an Agent-tool spawn passes an explicit `model` naming the opus or fable family (`opus`, `fable`, or a full id such as `claude-opus-5-5`): the member sees a Korean banner, the model gets the harness rule (ADR 0109; the org guide carried it until v1.19, ADR 0144) — implementation and research workers run sonnet in every session, so the Agent-tool route is `ywr-harness:worker` with no per-call model; mechanical work runs haiku; no ywr-harness worker or review stage runs opus or fable (ADR 0197); any other opus/fable worker needs a demonstrable reason in the spawn's description; a per-call model overrides a pinned agent's frontmatter; ultracode does not lift the pins (ADR 0108). Never returns a permission decision, never blocks, and is silent on an omitted model — it names per-call overrides only; an unpinned type such as `general-purpose` spawned without a model inherits the session model, which the org guide's explicit-model rule governs, not this hook. No `subagent_type` is exempt: no plugin agent pins opus. The hook cannot see the session model. |
+| `agent-model-warn.mjs` | `PreToolUse` (matcher `Agent`) | Warn-only (ADR 0086). Speaks exactly when an Agent-tool spawn passes an explicit `model` naming the opus or fable family (`opus`, `fable`, or a full id such as `claude-opus-5-5`): the member sees a Korean banner, the model gets the harness rule (ADR 0109; the org guide carried it until v1.19, ADR 0144) — implementation and research workers run sonnet in every session, so the Agent-tool route is `ywr-harness:worker` with no per-call model; mechanical work runs haiku; no ywr-harness agent pin runs opus or fable; the slice-close review is the built-in `/code-review` on the session model, and its fix-check legs run on `ywr-harness:worker` (ADR 0215); any other opus/fable worker needs a demonstrable reason in the spawn's description; a per-call model overrides a pinned agent's frontmatter; ultracode does not lift the pins (ADR 0108). Never returns a permission decision, never blocks, and is silent on an omitted model — it names per-call overrides only; an unpinned type such as `general-purpose` spawned without a model inherits the session model, which the org guide's explicit-model rule governs, not this hook. No `subagent_type` is exempt: no plugin agent pins opus. The hook cannot see the session model. |
 | `config-change-audit.mjs` | `ConfigChange` | Visibility only. Surfaces mid-session permission/hook self-modification. Never blocks. |
 | `directory-added-guard.mjs` | `DirectoryAdded` | Visibility only by construction — the event carries no decision control and fires after the permission refresh. Its banner never reaches you: an `/add-dir` message is next-turn context for CLAUDE, an SDK `register_repo_root` one goes to the debug log. So it is English and tells the model that the added tree is editable and not to be assumed covered by this project's gates, which surfaces it contributes (`.claude/skills`, `.claude/commands`, `.claude/agents`, the two settings keys), and whether its instruction files (`CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules`, `CLAUDE.local.md`) are in context — and asks it to tell you in one sentence (ADR 0097). It speaks on every mid-session add whose payload parses; an unusable `directory` gets a SCHEMA DRIFT banner instead. |
 | `question-notify.mjs` | `PreToolUse` and `PostToolUse` (matcher `AskUserQuestion`) | Notification only (ADR 0202). On Windows, `PreToolUse` shows a toast while the model waits for your answer; the toast takes no focus and stays until you answer or dismiss it. `PostToolUse` removes the toast of the same session. Both events are registered `async`, so the question dialog never waits for the hook. It writes nothing on stdout and never decides. Silent off Windows, without `powershell.exe` under `SystemRoot`, and when `YWR_HARNESS_QUESTION_NOTIFY` is `0`, `false`, `no` or `off`. |
@@ -86,8 +86,10 @@ as an ordinary skill and Claude does the same steps.
 turns it on for this checkout only: the state lives under the git directory, so nothing is committed
 and other clones stay off. `/ywr-harness:auto off` and `status` do the rest; no command runs a model
 turn. While it is on, and `.harness.json` declares `decision_prompts`, the module adds the declared
-`.md` prompt to Claude's input at three stages: the adversarial-review call (`review-start`), its
-digest notification (`review-digest`) and the `harness_gates.py --tree` run (`ready-report`). An
+`.md` prompt to Claude's input at two stages: the `/code-review` Skill call of the slice close
+(`review-start`) and the `harness_gates.py --tree` run (`ready-report`). The `review-start` stage data is
+the review level, so its side check has little to judge. A `.harness.json` that still declares
+`review-digest` gets a problem line in `status`: ywr-harness ADR 0215 retired that stage. An
 entry with `"check": true` also asks one `sonnet` model call about that stage's data and adds the
 answer beside the prompt; the stage waits for it (about 1 s measured, 30 s at most). While the switch
 is on, Claude and its subagents cannot edit `.harness.json` or a declared prompt file with the edit
@@ -103,20 +105,20 @@ module needs Claude Code 2.1.287+ with mods allowed:
 
 ```json
 { "decision_prompts": {
-    "review-digest": { "prompt": "docs/prompts/review-digest.md", "check": true },
+    "review-start": { "prompt": "docs/prompts/review-start.md" },
     "ready-report":  { "prompt": "docs/prompts/ready-report.md" } } }
 ```
 
 Start with `check` off: the side check's answers were measured on three gate runs only, and a wrong
 answer lands at the decision point. Turn it on per stage once you have read its answers on real slices.
 
-`/ywr-harness:harness-init` seeds both stages (ADR 0180). It places `docs/prompts/review-digest.md` and
+`/ywr-harness:harness-init` seeds both stages (ADR 0180). It places `docs/prompts/review-start.md` and
 `docs/prompts/ready-report.md` when they are absent and never overwrites them, and the `.harness.json`
 template declares both with no `check`. The template's `review.docs_only` excludes `docs/prompts/`, so a
 change to a prompt file alone is never review-exempt. A repository that has run `harness-init` before
-gets the two files and a drift note about the missing declaration on a re-run; its own `.harness.json`
+gets the files and a drift note about the missing declaration on a re-run; its own `.harness.json`
 and `review.docs_only` stay as they are. With no stage declared, `status`, `on` and `off` print the declaration shape and
-say that `harness-init` places the two files.
+say that `harness-init` places the prompt files.
 
 While the switch is on, each detected stage appends one JSON line to `auto-stages.jsonl` beside the
 switch file in the git directory: `{at, stage, outcome, check, ms}`. `outcome` is `added`,
@@ -136,45 +138,47 @@ member-installed plugin, which that stage would need (fact 177).
 does not register it, so no line shows (ADR 0140): its "run again" after every test or script run
 confused more than it helped. The file stays for a redesign.
 
-## Adversarial review (workflow)
+## Slice-close review (`/code-review`)
 
-`workflows/adversarial-review.js` — lens finders → semantic dedupe → severity-gated skeptic
-verification. Invoke it as a workflow, or by name from the skill listing (a workflow's
-`meta.whenToUse` is what surfaces there; there is no separate skill file).
+`/ywr-harness:slice-close` runs the review with the built-in `/code-review` command, through the Skill
+tool, on the session model (ADR 0215). The plugin ships no review workflow and no reviewer agent. A
+member who still calls `Workflow({name: 'ywr-harness:adversarial-review'})` gets an error and uses
+`/ywr-harness:slice-close` instead.
 
-```
-Workflow({ name: 'ywr-harness:adversarial-review', args: { scope: {
-  files: [<the emitter's file list>], context: '<what the slice does>',
-  invariants: [<from REVIEW.md>], gates_passed: '<the gate commands and results, verbatim>' } } })
-```
+The emitter tier decides whether the review runs. Both review tiers run `medium`, because `medium`
+found every seed that `high` found on two seeded fixtures and ran faster in every pair (ADR 0218):
 
-Every session runs the same pinned workers (ADR 0197). The workflow ignores `sessionModel`, which
-ADR 0099 used for an Opus-session mode. A call that still passes it gets one `[retired]` log line, and `stats.worker_pins.ignored` lists the key.
-
-`scope` is an object. A string scope still runs, but it loses sharding, the out-of-scope bucket,
-and skeptic #2's check against `gates_passed`, without saying so.
-
-Lens defaults are deliberately repo-agnostic. Two knobs keep them that way:
-
-| arg | Effect |
+| Tier | Review |
 |---|---|
-| `lensExtra` | A house-specific angle appended to **every** lens prompt. Use this for repo vocabulary — how tenancy isolation is implemented, naming rules, a particular determinism boundary. |
-| `lenses` | Full override, `[{key, prompt}]`. An array with no valid entry throws: zero lenses is not a review. |
+| `skip` | None. Deterministic gates suffice. |
+| `small` | `/code-review medium` |
+| `full` | `/code-review medium` (ADR 0218) |
 
-Prefer `lensExtra`. Redefining the lens set to add one angle means later improvements to the
-canonical defaults never reach that repo — the same outcome as a local fork.
+The close record states the level, the item count and the usage line of the review's task notification:
+the duration, the tool uses and the tokens. When the count equals a known cap, the record says that the
+cap can hide findings.
 
-`root` is optional. When omitted the "repo root" line is dropped from the prompts entirely and
-agents use the session's working directory; baking one repo's absolute path in as a default
-would be knowledge that is false everywhere else.
+Every finding gets one of three buckets (ADR 0163): fixed, valid with no action, or false on reading. The
+grade of the command (`important`, `pre_existing` or `nit`) goes in the record and limits the bucket (ADR
+0216). An `important`, `pre_existing` or ungraded finding ends fixed or false on reading. Only a `nit`
+whose fix would change a design or a coverage ends valid with no action, with an open item. A fix that
+rests on an untested host behaviour gets a probe first. When the owner defers that probe, the finding
+ends valid, no action as the owner's decision, with an open item. Every fixed finding except a `nit` gets
+a fix check on `ywr-harness:worker`. A leg holds at most four findings, and a fix on a declared critical
+surface gets its own leg. A fixed `nit` goes through the fix gates and gets no leg. A fix gets no
+re-review in its slice (ADR 0200).
 
-The scope block cites the consuming repo's own root `REVIEW.md`, seeded by
-`/ywr-harness:harness-init` (ADR 0054). The plugin's `REVIEW.md` is the canon repo's own review
-invariants, not a shared canon.
+The command reads `CLAUDE.md` and the files that it imports (ADR 0215). A consuming repo keeps its
+review invariants in the `## Review canon` section of its `CLAUDE.md`, which `/ywr-harness:harness-init`
+seeds (ADR 0217). A repo whose canon is still a separate `REVIEW.md` imports that file from `CLAUDE.md`
+until it moves the canon. The plugin ships no review canon.
+
+The workflow corpus gate stays for a repo's own workflows: `node scripts/workflow-gates.mjs --dir
+.claude/workflows`.
 
 ## Local execution layer (git hooks)
 
-`/ywr-harness:harness-init` places four hooks into a consuming repo and wires `core.hooksPath`
+`/ywr-harness:harness-init` places three hooks into a consuming repo and wires `core.hooksPath`
 **conditionally** — set when unset, left alone (byte-identical) when it already names `.githooks`
 in any spelling — the literal, `./`, an absolute path, the MSYS `/c/…` form, a `~/` value, or a
 link's real target — refused when it points anywhere else, and a worktree-scoped value that
@@ -184,8 +188,7 @@ outranks the local one is reported as such (ADR 0015).
 |---|---|---|
 | `.githooks/pre-commit` | staged files | Runs the emitter's **file-scoped** gates. Whole-program gates (tests, typecheck) are deferred to CI and the deferral is reported. A failing gate blocks the commit. |
 | `.githooks/pre-push` | added lines of the pushed range | Regex secret scan. Pre-existing secrets outside the range are not re-flagged; a false positive is exempted per line with `harness:allow-secret`. |
-| `.githooks/commit-msg` | the commit message | Refuses a message whose review digest `confirmed N (hX mY lZ)` counts more high and medium findings than it has `class:` lines (ADR 0208). A message with no `confirmed <number>` token starts no Python. A digest with no Python or no `scripts/harness/harness_retro.py` is refused, never passed unchecked. `git commit --no-verify` is the only bypass. |
-| `.githooks/post-commit` | the commit just made | Slice retro gate (ADR 0017) — seven deterministic docs-drift checks plus SIZE and CLASS, zero tokens, silent when clean. Advisory: it never blocks. CLASS reports the same class-line gap as `commit-msg`, for a commit made with `--no-verify`. |
+| `.githooks/post-commit` | the commit just made | Slice retro gate (ADR 0017) — seven deterministic docs-drift checks plus SIZE, zero tokens, silent when clean. Advisory: it never blocks. |
 
 `post-commit` is placed under a third mode, **GUARDED**: written when absent, refreshed when the
 existing file carries the `ywr-harness:post-commit` marker, **refused** otherwise. It is the one
@@ -199,7 +202,7 @@ from the `retro` block in `.harness.json`. **An empty list disables the checks i
 
 ```
 python scripts/harness/harness_retro.py main~3..HEAD   # whole slice — absorbs mid-slice splits
-python scripts/harness/harness_retro.py --coverage     # unowned files + dead implements_in + class-line tally
+python scripts/harness/harness_retro.py --coverage     # unowned files + dead implements_in
 SLICE_RETRO=0 git commit ...                           # skip once
 ```
 
@@ -348,10 +351,12 @@ It never runs the scaffold refresh itself — the byte comparison alone cannot p
 stays ambiguous), and an automatic re-run could revert a working tree deliberately newer than
 the installed plugin (ADR 0034).
 
-## CI-invoked assets
+## Gate assets
 
-`scripts/workflow-gates.mjs` (parse + behavioral gate over a workflow corpus; `--dir` selects
-the corpus, default `.claude/workflows`) and `scripts/resolve-base.sh` (CI diff-range base
+`scripts/workflow-gates.mjs` is the workflow corpus gate (parse + behavioral gate over a workflow
+corpus; `--dir` selects the corpus, default `.claude/workflows`). The plugin runner, locally and in
+CI, calls it only when the plugin ships a `workflows/` directory, and the plugin ships none (ADR 0215).
+A repo runs it on its own workflows. CI invokes `scripts/resolve-base.sh` (CI diff-range base
 resolution — since ADR 0043 vendored by the scaffold as `scripts/harness/resolve-base.sh` and
 invoked by the vendored workflow to resolve the PR base once, `MODE=blocking`).
 `lib/selftest-lib.ps1` is the shared assertion core the selftests dot-source — dot-source it,
@@ -360,8 +365,8 @@ do not run it.
 ## Prerequisites
 
 - `node` — runs every hook in the table above (`hooks/*.mjs`, with the shared `hooks/hook-lib.mjs`; Node
-  costs ~70 ms per hook call against ~780 ms for pwsh, ADR 0116) and the gates
-  `scripts/workflow-gates.mjs` and the workflow corpus gate. Absent `node`: those hooks cannot
+  costs ~70 ms per hook call against ~780 ms for pwsh, ADR 0116), `manifest-gate.mjs` and the
+  workflow corpus gate `scripts/workflow-gates.mjs`. Absent `node`: those hooks cannot
   start on a member machine — the host reports a hook error and never a blocked call, since no
   hook can block; the suites report a skip locally and a hard failure on CI, where they must
   actually run.
@@ -369,9 +374,8 @@ do not run it.
   selftest. No hook runs on it.
 - `python` 3.9+ (stdlib only) — every gate script under `scripts/` requires it:
   `harness_gates.py` (invoked by the `pre-commit` hook), `harness_retro.py` (by the
-  `post-commit` hook), `verify_map.py` (by `ywr-harness:verify`), `slice_note.py` (by the session, the
-  `session-start-slice-notes.mjs` hook and `/ywr-harness:slice-close`), and `fix_proof.py` (by
-  `/ywr-harness:slice-close`, plugin-only — the scaffold does not vendor it, ADR 0169).
+  `post-commit` hook), `verify_map.py` (by `ywr-harness:verify`), and `slice_note.py` (by the session, the
+  `session-start-slice-notes.mjs` hook and `/ywr-harness:slice-close`).
 
 The prerequisite check (`hooks/prerequisites.mjs`, above) names any of the three that is missing
 or too old at each session start, and `/ywr-harness:setup` installs them on your command.
@@ -381,8 +385,8 @@ so nothing here may assume Windows.
 
 ## Gates
 
-`selftest.ps1` is the single entry point — the manifest/wiring gate, the workflow corpus gate,
-then every shipped PowerShell selftest:
+`selftest.ps1` is the single entry point — the manifest/wiring gate, the workflow corpus gate (one line
+here, because the plugin ships no workflow), then every shipped PowerShell selftest:
 
 ```
 pwsh -NoProfile -File ./selftest.ps1
@@ -413,9 +417,7 @@ caught.
 selftests above are hermetic — they call the scripts and never the host — each eval case runs a
 fresh, isolated `claude -p` child with ONLY this plugin loaded and grades what came out: a
 SessionStart hook's `additionalContext` reaching the model, `ywr-harness:verify` triggering on
-natural phrasing, the six `disable-model-invocation` skills staying uninvoked, and
-`ywr-harness:reviewer` resolving by its namespaced name with a `SubagentStop` ledger line behind
-it. Every case pins `model:` to one worker model alias (`opus`, ADR 0103/0107), and `manifest-gate.mjs`
+natural phrasing, and the six `disable-model-invocation` skills staying uninvoked. Every case pins `model:` to one worker model alias (`opus`, ADR 0103/0107), and `manifest-gate.mjs`
 refuses a case that does not (or that carries an unknown frontmatter key or grader type — refusals the
 runner would otherwise deliver only after the paid run). The runner forwards most `ANTHROPIC_*` and
 `CLAUDE_CODE_*` variables, so an `ANTHROPIC_DEFAULT_*_MODEL`, a `CLAUDE_CODE_SUBAGENT_MODEL`, a `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`, a full-id
@@ -436,7 +438,7 @@ claude plugin eval ywr-harness@ywrlabs                          # the INSTALLED 
 
 Every run is a paid model call on the operator's own plan. Native Windows has no sandbox backend,
 so cases that would grant `Bash` are refused there — the suite is read-only cases only, and the
-shell-needing skills, the review workflow, the `DirectoryAdded`/`ConfigChange` hooks and the two
+shell-needing skills, the `DirectoryAdded`/`ConfigChange` hooks and the two
 scaffold nudges are NOT in it (their selftests and hand runs stay the verification). Results land
 in `evals/results/` and are never committed. The suite is run by hand at each compat sweep
 (spec 0012) and before a release; the ledger of what it measured is spec 0014.

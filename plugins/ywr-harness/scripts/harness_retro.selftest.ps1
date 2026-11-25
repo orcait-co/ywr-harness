@@ -200,172 +200,27 @@ Commit $e2 'feat: something with docs'
 $rE2 = Invoke-Retro $e2 @()
 $ok = (Assert-True 'E2 FEAT is SILENT when docs moved too' ($rE2.Out -notmatch 'FEAT:') $rE2.Out) -and $ok
 
-# --- CL: CLASS — a close body owes one `class:` line per confirmed high or medium finding (ADR 0208) ---
-# Piggybacks on the E2 repo: six commits, then ONE range run (a retro run costs ~0.5 s) and ONE HEAD run.
-# The check is always on (no declaration). The range run prints one CLASS line per lacking commit, with its sha.
-$clMsg = @(
-    "chore: cl1`n`nReview: confirmed 3 (h0 m2 l1) · multi_lens 4`n`nclass: A instance - one-off",
-    "chore: cl2`n`nReview: confirmed 3 (h0 m2 l1)`n`n- class: A instance - one-off`n  class: B BACKLOG - docs gate",
-    "chore: cl3`n`nreview wf_9: confirmed 5 (h1`n m1 l3) · skeptic 2",
-    "chore: cl4 no digest`n`nconfirmed findings are discussed in prose; no class lines needed",
-    "chore: cl5`n`nReview: confirmed 2 (h0 m0 l2)",
-    "chore: cl6`n`nReview: confirmed 2 (h1 m0 l1)`nFix check: confirmed 4 (h0 m2 l2)`n`nclass: A instance - r`nclass: B later - r"
-)
-$clN = 0
-foreach ($m in $clMsg) { $clN++; Write-F $e2 "cl$clN.txt" "x`n"; Commit $e2 $m }
-$clSha = @(& git -C $e2 log --format=%h --reverse "HEAD~$clN..HEAD")
-$rCL = Invoke-Retro $e2 @("HEAD~$clN..HEAD")
-$clHit = @([regex]::Matches($rCL.Out, 'CLASS: commit ([0-9a-f]+) counts (\d+) confirmed high or medium finding\(s\) but has (\d+) class line\(s\)'))
-$clGot = ($clHit | ForEach-Object { "$($_.Groups[1].Value):$($_.Groups[2].Value):$($_.Groups[3].Value)" }) -join ' '
-$ok = (Assert-True 'CL1 CLASS fires: sum 2, one class line, names the sha, the sum and the count (and ADR 0208)' ($clGot -match "$($clSha[0]):2:1" -and $rCL.Out -match 'ADR 0208') "$clGot :: $($rCL.Out)") -and $ok
-$ok = (Assert-True 'CL2 CLASS is SILENT with one class line per finding (bullet and indent forms count)' ($rCL.Out -notmatch $clSha[1]) $rCL.Out) -and $ok
-$ok = (Assert-True 'CL3 a digest wrapped inside the parentheses still counts (sum 2, no class line)' ($clGot -match "$($clSha[2]):2:0") $clGot) -and $ok
-$ok = (Assert-True 'CL4 a body with no digest gives no CLASS finding' ($rCL.Out -notmatch $clSha[3]) $rCL.Out) -and $ok
-$ok = (Assert-True 'CL5 h+m = 0 gives no CLASS finding' ($rCL.Out -notmatch $clSha[4]) $rCL.Out) -and $ok
-$ok = (Assert-True 'CL6 two digests in one body sum (3 findings, 2 class lines)' ($clGot -match "$($clSha[5]):3:2") $clGot) -and $ok
-$ok = (Assert-True 'CL7 the range reports exactly the three lacking commits' ($clHit.Count -eq 3) $rCL.Out)  -and $ok
-$rCL8 = Invoke-Retro $e2 @()
-$ok = (Assert-True 'CL8 the no-range run reads HEAD alone (cl6 fires, cl1 does not)' ($rCL8.Out -match "CLASS: commit $($clSha[5]) counts 3" -and $rCL8.Out -notmatch $clSha[0]) $rCL8.Out) -and $ok
-# CL9: a bare revision is the commits after it, the same range its file diff covers. cl1 is the revision
-# itself, so its lacking close is outside; cl3 and cl6 are inside.
-$rCL9 = Invoke-Retro $e2 @("HEAD~$($clN - 1)")
-$clHit9 = @([regex]::Matches($rCL9.Out, 'CLASS: commit ([0-9a-f]+) counts'))
-$ok = (Assert-True 'CL9 a bare revision reads only the commits after it (cl3 and cl6 fire, cl1 and older commits do not)' `
-    ($clHit9.Count -eq 2 -and $rCL9.Out -match "CLASS: commit $($clSha[2]) counts 2" -and $rCL9.Out -match "CLASS: commit $($clSha[5]) counts 3" -and $rCL9.Out -notmatch $clSha[0]) $rCL9.Out) -and $ok
-
-# --- CT: the class-line tally of --coverage (ADR 0209), on the same repo: 8 commits, 4 closes (cl1 cl2 cl3 cl6) owe
-# 2+2+2+3 = 9; class lines 3 instance, 1 BACKLOG, 1 other form (cl6 `later`) in 3 closes; short cl1 cl3 cl6, cl3 bare.
-$rCT = Invoke-Retro $e2 @('--coverage')
-$ok = (Assert-True 'CT1 --coverage tallies the class lines of every close in a short history (all 8 commits)' `
-    ($rCT.Out -match 'class lines \(ywr-harness ADR 0208\) in all 8 commit\(s\):' -and $rCT.Out -match 'closes with a review digest: 4, owing 9 high or medium' `
-        -and $rCT.Out -match 'class lines: 3 instance, 1 BACKLOG, 1 in another form, in 3 close\(s\)' -and $rCT.Out -match 'closes short of class lines: 3, of which 1 have none') $rCT.Out) -and $ok
-# CT2: the cap and the no-digest line, through the module (a 201-commit fixture would cost seconds).
-$ctCode = @'
-import sys; sys.path.insert(0, sys.argv[1]); import harness_retro as r
-r.CLASS_TALLY_CAP = 2
-d = ("a", "Review: confirmed 1 (h1 m0 l0)\nclass: X instance - r\n")
-print("\n".join(r.class_tally([d, d, d])))
-print("\n".join(r.class_tally([("b", "chore: plain\n")])))
-'@
-$ctOut = & $py.Source -c $ctCode (Split-Path -Parent $retro) 2>&1 | Out-String
-$ok = (Assert-True 'CT2 a history past the cap names the cap and counts only the capped commits; no digest prints one none line' `
-    ($ctOut -match 'in the last 2 commits \(the read cap; older commits not read\):' -and $ctOut -match 'closes with a review digest: 2, owing 2' `
-        -and $ctOut -match 'no review digest in all 1 commit\(s\)') $ctOut) -and $ok
-$ctEmpty = Join-Path $fxBase 'ct-empty'
-New-Item -ItemType Directory -Force -Path $ctEmpty | Out-Null
-& git -C $ctEmpty init -q 2>$null
-Write-F $ctEmpty '.harness.json' $CFG
-$rCT3 = Invoke-Retro $ctEmpty @('--coverage')
-$ok = (Assert-True 'CT3 a repo with no commit prints the no-commit tally line and exits 0' ($rCT3.Code -eq 0 -and $rCT3.Out -match 'class lines \(ywr-harness ADR 0208\): no commit yet') "exit=$($rCT3.Code) out=$($rCT3.Out)") -and $ok
-
-# --- CM: --class-message — the commit-msg hook's mode (ADR 0208). One message file in, exit 1 on a shortfall. ---
-# No fixture repo: the mode reads the file alone. CM6 runs it with git OFF the PATH and outside any repository, which is
-# how the spec's "no git process" claim is measured rather than asserted.
-# A message that would pass reads git config (ADR 0209), so each call runs in $script:cmCwd (the fixture root unless a
-# case names a repo) with the system config off and an empty global config: the runner's own config never decides a case.
-$cmCwd = $fxBase
-$cmGlobal = Join-Path $fxBase 'cm-empty-global.gitconfig'
-[IO.File]::WriteAllText($cmGlobal, '')
-function Invoke-ClassMsg([string]$Name, [string]$Body, [string[]]$Extra = @(), [string]$PathOverride = '') {
-    $f = Join-Path $fxBase "msg-$Name.txt"
-    [IO.File]::WriteAllText($f, ($Body -replace "`r`n", "`n"))
-    $prevPath = $env:PATH; $prevNoSys = $env:GIT_CONFIG_NOSYSTEM; $prevGlobal = $env:GIT_CONFIG_GLOBAL
-    Push-Location $script:cmCwd
-    try {
-        $env:GIT_CONFIG_NOSYSTEM = '1'; $env:GIT_CONFIG_GLOBAL = $cmGlobal
-        if ($PathOverride) { $env:PATH = $PathOverride }
-        $a = @($retro, '--class-message', $f) + $Extra
-        $out = & $py.Source @a 2>&1 | Out-String
-        return @{ Out = $out; Code = $LASTEXITCODE }
-    } finally { $env:PATH = $prevPath; $env:GIT_CONFIG_NOSYSTEM = $prevNoSys; $env:GIT_CONFIG_GLOBAL = $prevGlobal; Pop-Location }
-}
-$cmDigest = "fix: x`n`nReview: confirmed 3 (h1 m1 l1)`n"
-$rCM1 = Invoke-ClassMsg 'short' ($cmDigest + "`nclass: A instance - one-off`n")
-$ok = (Assert-True 'CM1 two owed findings and one class line: exit 1, the refusal names ADR 0208, both line forms and --no-verify' `
-    ($rCM1.Code -eq 1 -and $rCM1.Out -match 'REFUSED' -and $rCM1.Out -match 'counts 2 confirmed' -and $rCM1.Out -match 'has 1 class line' -and $rCM1.Out -match 'ADR 0208' `
-        -and $rCM1.Out -match 'class: <id> instance' -and $rCM1.Out -match 'class: <id> BACKLOG' -and $rCM1.Out -match 'git commit --no-verify') "exit=$($rCM1.Code) out=$($rCM1.Out)") -and $ok
-$rCM2 = Invoke-ClassMsg 'enough' ($cmDigest + "`nclass: A instance - one-off`n- class: B BACKLOG - docs gate`n")
-$ok = (Assert-True 'CM2 one class line per finding: exit 0 and silent' ($rCM2.Code -eq 0 -and $rCM2.Out.Trim() -eq '') "exit=$($rCM2.Code) out=$($rCM2.Out)") -and $ok
-# CM3: git commit -m/-F keeps a `#` line in the stored message (cleanup=whitespace), and the post-commit retro counts it,
-# so this check counts it too. Reading it as a comment would let a digest on a `#`-leading line pass unchecked (F1).
-$rCM3 = Invoke-ClassMsg 'comment' ("fix: x`n`n#181 Review: confirmed 3 (h1 m2 l0)`n#class: A`n")
-$ok = (Assert-True 'CM3 a digest on a # line COUNTS (the line is kept in the stored message): exit 1, counts 3, has 0 class lines' `
-    ($rCM3.Code -eq 1 -and $rCM3.Out -match 'counts 3 confirmed' -and $rCM3.Out -match 'has 0 class line') "exit=$($rCM3.Code) out=$($rCM3.Out)") -and $ok
-$rCM3b = Invoke-ClassMsg 'comment-ok' ("fix: x`n`n#181 Review: confirmed 1 (h1 m0 l0)`nclass: A instance - one-off`n")
-$ok = (Assert-True 'CM3 control: a digest on a # line plus its class line passes: exit 0, silent' ($rCM3b.Code -eq 0 -and $rCM3b.Out.Trim() -eq '') "exit=$($rCM3b.Code) out=$($rCM3b.Out)") -and $ok
-$rCM4 = Invoke-ClassMsg 'scissors' ("fix: x`n`n# ------------------------ >8 ------------------------`ndiff --git a/f b/f`n+Review: confirmed 9 (h5 m4 l0)`n")
-$ok = (Assert-True 'CM4 a digest below a # scissors line COUNTS (the mode counts the whole file): exit 1, counts 9' ($rCM4.Code -eq 1 -and $rCM4.Out -match 'counts 9 confirmed') "exit=$($rCM4.Code) out=$($rCM4.Out)") -and $ok
-# CM4b: the marker is core.commentChar, so any one character is a scissors line; none of them cuts anything. Trailing
-# whitespace and CRLF do not change the count.
-# The file is written with CRLF here on purpose (Invoke-ClassMsg folds CRLF to LF, so this case writes its own file).
-$cm4bFile = Join-Path $fxBase 'msg-scissors-semi.txt'
-[IO.File]::WriteAllText($cm4bFile, "fix: x`r`n`r`n; ------------------------ >8 ------------------------  `r`ndiff --git a/f b/f`r`n+Review: confirmed 9 (h5 m4 l0)`r`n")
-$cm4bOut = & $py.Source $retro '--class-message' $cm4bFile 2>&1 | Out-String
-$ok = (Assert-True 'CM4b a digest below a ; scissors line with trailing spaces and CRLF endings COUNTS: exit 1, counts 9' ($LASTEXITCODE -eq 1 -and $cm4bOut -match 'counts 9 confirmed') "exit=$LASTEXITCODE out=$cm4bOut") -and $ok
-# CM4c/CM4d (F1-3d8a2118): a scissors line ABOVE a short digest. `git commit -m`/`-F` keep the line, the post-commit retro
-# counts the whole stored body, so a cut here would pass what the retro reports. `#` and `- ` markers both count.
-$rCM4c = Invoke-ClassMsg 'scissors-above' ("fix: x`n`n# ------------------------ >8 ------------------------`nReview: confirmed 3 (h1 m2 l0)`n")
-$ok = (Assert-True 'CM4c a # scissors line ABOVE a short digest does not hide it: exit 1, counts 3, has 0 class lines' ($rCM4c.Code -eq 1 -and $rCM4c.Out -match 'counts 3 confirmed' -and $rCM4c.Out -match 'has 0 class line') "exit=$($rCM4c.Code) out=$($rCM4c.Out)") -and $ok
-$rCM4d = Invoke-ClassMsg 'scissors-dash' ("fix: x`n`n- ------------------------ >8 ------------------------`nReview: confirmed 3 (h1 m2 l0)`n")
-$ok = (Assert-True 'CM4d a "- " scissors line ABOVE a short digest does not hide it: exit 1, counts 3' ($rCM4d.Code -eq 1 -and $rCM4d.Out -match 'counts 3 confirmed') "exit=$($rCM4d.Code) out=$($rCM4d.Out)") -and $ok
-# CM4e/CM4f (F1-3d8a2118 re-check): an editor commit with -v puts git's diff below the scissors line, and git drops it
-# at cleanup. Class lines there must not pay for a digest above it; class lines above it still count.
-$rCM4e = Invoke-ClassMsg 'verbose-diff' ("fix: x`n`nReview: confirmed 2 (h1 m1 l0)`n# ------------------------ >8 ------------------------`ndiff --git a/doc.md b/doc.md`n class: x instance - r`n - class: y instance - r`n")
-$ok = (Assert-True 'CM4e class lines only in a -v diff below the scissors line do not count: exit 1, has 0 class lines' ($rCM4e.Code -eq 1 -and $rCM4e.Out -match 'counts 2 confirmed' -and $rCM4e.Out -match 'has 0 class line') "exit=$($rCM4e.Code) out=$($rCM4e.Out)") -and $ok
-$rCM4f = Invoke-ClassMsg 'above-scissors' ("fix: x`n`nReview: confirmed 2 (h1 m1 l0)`nclass: F1 instance - r`nclass: F2 instance - r`n; ------------------------ >8 ------------------------`ndiff text`n")
-$ok = (Assert-True 'CM4f two class lines above a ; scissors line pay for the digest: exit 0' ($rCM4f.Code -eq 0) "exit=$($rCM4f.Code) out=$($rCM4f.Out)") -and $ok
-$rCM5 = Invoke-ClassMsg 'combo' $cmDigest @('--coverage')
-$ok = (Assert-True 'CM5 --class-message does not combine with another mode: argparse error, exit 2' ($rCM5.Code -eq 2 -and $rCM5.Out -match 'takes no other argument') "exit=$($rCM5.Code) out=$($rCM5.Out)") -and $ok
-# CM6/CM11 (F5): PATH is one empty directory, as in case Q. Python's own directory is no narrowing: stock Ubuntu puts git
-# beside it in /usr/bin (fact 42). The absence is asserted before either case is read.
-$cmNoGitDir = Join-Path $fxBase 'cm-nogit'
-New-Item -ItemType Directory -Force -Path $cmNoGitDir | Out-Null
-$cmEmptyPath = Join-Path $fxBase 'cm-empty-path'
-New-Item -ItemType Directory -Force -Path $cmEmptyPath | Out-Null
-$cmSavedPath = $env:PATH
-try { $env:PATH = $cmEmptyPath; $cmGitGone = -not (Get-Command git -ErrorAction SilentlyContinue) } finally { $env:PATH = $cmSavedPath }
-$ok = (Assert-True 'CM6/CM11 fixture: git is not resolvable on the narrowed PATH' $cmGitGone "PATH=$cmEmptyPath") -and $ok
-$cmCwd = $cmNoGitDir
-try { $rCM6 = Invoke-ClassMsg 'nogit' $cmDigest @() $cmEmptyPath } finally { $cmCwd = $fxBase }
-$ok = (Assert-True 'CM6 with git off the PATH and outside a repository the mode still decides (exit 1): it starts no git process' `
-    ($rCM6.Code -eq 1 -and $rCM6.Out -match 'counts 2 confirmed') "exit=$($rCM6.Code) out=$($rCM6.Out)") -and $ok
-# CM7..CM11 (O183, ADR 0209): a message that would pass reads core.commentChar/commentString. A class line that starts
-# with that string is not counted (git's cleanup can drop it), and the scissors line of that exact string cuts too.
-$cmTwo = "fix: x`n`nReview: confirmed 2 (h1 m1 l0)`n"
-$cmCwd = $cmNoGitDir
-try { $rCM11 = Invoke-ClassMsg 'nogit-pass' ($cmTwo + "class: A instance - r`nclass: B instance - r`n") @() $cmEmptyPath } finally { $cmCwd = $fxBase }
-$ok = (Assert-True 'CM11 a message that would pass with git off the PATH REFUSES: the comment string is unknown (exit 1, ADR 0209, --no-verify)' `
-    ($rCM11.Code -eq 1 -and $rCM11.Out -match 'REFUSED' -and $rCM11.Out -match 'git config could not be read' -and $rCM11.Out -match '0209' -and $rCM11.Out -match '--no-verify') "exit=$($rCM11.Code) out=$($rCM11.Out)") -and $ok
-# CM12 (F3): git present, but `git config` exits 128 on a malformed local config. That is a failed read too: REFUSED.
-$cmBad = New-Repo 'cm-badcfg' ''
-Add-Content -LiteralPath (Join-Path $cmBad '.git/config') -Value "[core`n" -NoNewline
-$cmCwd = $cmBad
-try { $rCM12 = Invoke-ClassMsg 'badcfg' ($cmTwo + "class: A instance - r`nclass: B instance - r`n") } finally { $cmCwd = $fxBase }
-$ok = (Assert-True 'CM12 a would-pass message in a repo whose config git cannot parse REFUSES (exit 1, git config could not be read)' `
-    ($rCM12.Code -eq 1 -and $rCM12.Out -match 'git config could not be read') "exit=$($rCM12.Code) out=$($rCM12.Out)") -and $ok
-$cmCfg = New-Repo 'cm-cfg' ''
-$cmCwd = $cmCfg
-try {
-    & git -C $cmCfg config core.commentChar '-' 2>$null
-    $rCM7 = Invoke-ClassMsg 'dash' ($cmTwo + "- class: A instance - r`n- class: B instance - r`n")
-    $rCM7b = Invoke-ClassMsg 'dash-ok' ($cmTwo + "class: A instance - r`nclass: B instance - r`n")
-    & git -C $cmCfg config core.commentChar 'c' 2>$null
-    $rCM8 = Invoke-ClassMsg 'c' ($cmTwo + "class: A instance - r`nclass: B instance - r`n")
-    $rCM8b = Invoke-ClassMsg 'c-ok' ($cmTwo + " class: A instance - r`n class: B instance - r`n")
-    & git -C $cmCfg config core.commentChar 'auto' 2>$null
-    $rCM10 = Invoke-ClassMsg 'auto' ($cmTwo + "- class: A instance - r`n* class: B instance - r`n")
-    & git -C $cmCfg config --unset core.commentChar 2>$null
-    & git -C $cmCfg config core.commentString '// ' 2>$null
-    $rCM9 = Invoke-ClassMsg 'spaced' ($cmTwo + "class: A instance - r`n//  ------------------------ >8 ------------------------`ndiff --git a/d b/d`n class: B instance - r`n")
-} finally { $cmCwd = $fxBase }
-$ok = (Assert-True 'CM7 core.commentChar - : two "- class:" lines do not count: exit 1, has 0, names the comment string' `
-    ($rCM7.Code -eq 1 -and $rCM7.Out -match 'has 0 class line' -and $rCM7.Out -match 'comment string `-`') "exit=$($rCM7.Code) out=$($rCM7.Out)") -and $ok
-$ok = (Assert-True 'CM7 control: the same lines without the bullet pass: exit 0, silent' ($rCM7b.Code -eq 0 -and $rCM7b.Out.Trim() -eq '') "exit=$($rCM7b.Code) out=$($rCM7b.Out)") -and $ok
-$ok = (Assert-True 'CM8 core.commentChar c : class lines at the line start do not count: exit 1, has 0' ($rCM8.Code -eq 1 -and $rCM8.Out -match 'has 0 class line') "exit=$($rCM8.Code) out=$($rCM8.Out)") -and $ok
-$ok = (Assert-True 'CM8 control: indented class lines (git keeps them) pass: exit 0' ($rCM8b.Code -eq 0) "exit=$($rCM8b.Code) out=$($rCM8b.Out)") -and $ok
-$ok = (Assert-True 'CM9 core.commentString "// " : its scissors line cuts, so a class line in the -v diff below does not count: exit 1, has 1, names the string' `
-    ($rCM9.Code -eq 1 -and $rCM9.Out -match 'has 1 class line' -and $rCM9.Out -match 'comment string `// `') "exit=$($rCM9.Code) out=$($rCM9.Out)") -and $ok
-$ok = (Assert-True 'CM10 core.commentChar auto strips no class line: "- class:" and "* class:" count, exit 0' ($rCM10.Code -eq 0) "exit=$($rCM10.Code) out=$($rCM10.Out)") -and $ok
+# --- CL: no class check (ywr-harness ADR 0215). Piggybacks on the E2 repo: a close body whose digest counts findings and
+# holds no class line draws no finding, and --coverage prints no class tally. The retro run costs ~0.5 s each.
+Write-F $e2 'cl1.txt' "x`n"
+Commit $e2 "chore: cl1`n`nReview: confirmed 3 (h0 m2 l1)"
+$rCL = Invoke-Retro $e2 @()
+$ok = (Assert-True 'CL1 a body with a digest and no class line gives no finding' ($rCL.Code -eq 0 -and $rCL.Out.Trim() -eq '') "exit=$($rCL.Code) out=$($rCL.Out)") -and $ok
+$rCL2 = Invoke-Retro $e2 @('--coverage')
+$ok = (Assert-True 'CL2 --coverage prints no class-line tally and still prints the ignore register' ($rCL2.Code -eq 0 -and $rCL2.Out -notmatch 'class lines' -and $rCL2.Out -match 'ignore register') "exit=$($rCL2.Code) out=$($rCL2.Out)") -and $ok
+$rCL3 = Invoke-Retro $e2 @('--class-message', (Join-Path $e2 'cl1.txt'))
+$ok = (Assert-True 'CL3 --class-message is accepted and ignored: exit 0, silent, so an older commit-msg hook never refuses a message' ($rCL3.Code -eq 0 -and [string]::IsNullOrWhiteSpace($rCL3.Out)) "exit=$($rCL3.Code) out=$($rCL3.Out)") -and $ok
+# CL9: a bare revision is the commits after it, the same span its file diff covers. On the E repo the feat commit is
+# HEAD~1 after one more commit: given HEAD~1, the subjects stop short of the feat commit, so FEAT is silent; given
+# HEAD~2 (the seed), the span holds it and FEAT fires. Mutation anchor: reading `git log <rev>` whole fires both.
+Write-F $e 'other2.txt' "y`n"
+Commit $e 'chore: after the feat'
+$rCL9 = Invoke-Retro $e @('HEAD~1')
+$rCL9b = Invoke-Retro $e @('HEAD~2')
+$ok = (Assert-True 'CL9 a bare revision reads only the commits after it (HEAD~1 leaves the feat commit out, HEAD~2 holds it)' `
+    ($rCL9.Out -notmatch 'FEAT:' -and $rCL9b.Out -match 'FEAT:') "HEAD~1: $($rCL9.Out) | HEAD~2: $($rCL9b.Out)") -and $ok
+$rCL4 = Invoke-Retro $e2 @('--coverage', '--class-message', (Join-Path $e2 'cl1.txt'))
+$ok = (Assert-True 'CL4 --class-message with another mode is refused, exit 2, so a coverage run never ends silent' ($rCL4.Code -eq 2 -and $rCL4.Out -match 'takes no other argument') "exit=$($rCL4.Code) out=$($rCL4.Out)") -and $ok
 
 # --- F: UNMAPPED — added in-scope file no spec owns ----------------------------------------------
 $f = New-Repo 'unmapped' $CFG

@@ -144,7 +144,7 @@ try {
             @('was added as a working directory') `
             @('enabledPlugins', 'extraKnownMarketplaces', 'Loaded from it', 'UNKNOWN')) -and $ok
 
-    # 7. an unparseable settings file is UNKNOWN, never silently absent (REVIEW.md #4)
+    # 7. an unparseable settings file is UNKNOWN, never silently absent (the canon review invariant 4)
     $out = Invoke-Hook (New-Payload @{ directory = $broken; source = 'slash_command' })
     $ok = (Assert-SystemMessage 'unparseable settings reports unknown' $out `
             @('UNKNOWN, not absent', 'settings\.json') `

@@ -3,22 +3,19 @@
 # and .claude/workflows/ now routes to the scripts group that owns it.
 #
 # Two arms:
-#   live      the real repo corpus — exit 0, and the known workflow file must appear by name so a
-#             silently shrinking corpus is visible. Counts are printed, NOT asserted exactly:
-#             adding a second workflow is legitimate growth, removing the only one is not.
 #   fixture   temp trees driving every terminal branch, including the clean cases. Without those
 #             the arm could be green by rejecting everything (vacuous-pass discipline).
+#   counts    a fixture corpus of two workflows: both must appear by name and in the summary
+#             counts, so a silently shrinking corpus is visible.
+# The plugin ships no workflow of its own (ywr-harness ADR 0215), so no live corpus arm exists.
 #
 # Usage: pwsh plugins/ywr-harness/scripts/workflow-gates.selftest.ps1  (exit 0 = all green). ~3 s.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 $gate = Join-Path $PSScriptRoot 'workflow-gates.mjs'
-# The LIVE corpus here is this plugin's own workflows/ (plugin root = one level up from scripts/),
-# not a repo's .claude/workflows — the gate takes the corpus dir as an option for exactly this
-# reason. The fixtures below deliberately keep using .claude/workflows, so the default path stays
-# exercised too: if only the option were tested, the default could rot unnoticed in consumers.
-$liveRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$liveDir = 'workflows'
+# The fixtures below use .claude/workflows, the default corpus path of a consuming repo, and the
+# `--dir` option is exercised by case A. If only the option were tested, the default could rot
+# unnoticed in consumers.
 
 # Terminal branches of the node dependency, all three asserted below (M1-M3). The pwsh Linux
 # image ships WITHOUT node, so a hard failure there would report Linux breakage that
@@ -89,13 +86,19 @@ $failSelftest = "console.log('fixture selftest is meant to fail');`nprocess.exit
 
 $ok = $true
 
-# A live: the real corpus. Negatives pin that no arm reported a failure and that the vacuity
-# guards stayed quiet — a green run whose counts came from an empty glob is the class this gate
-# is built to refuse.
-$ok = (Assert-Case 'A live corpus' (Invoke-Gate $liveRoot $liveDir) 0 `
-        @('ok — parsed workflows/adversarial-review\.js',
-        'ok — selftest passed workflows/adversarial-review\.selftest\.mjs',
-        'green — [1-9][0-9]* workflow script\(s\) parsed, [1-9][0-9]* selftest file\(s\) passed') `
+# A counts: a two-workflow corpus under a non-default `--dir`. Negatives pin that no arm reported
+# a failure and that the vacuity guards stayed quiet — a green run whose counts came from an empty
+# glob is the class this gate is built to refuse.
+$fxCounts = Join-Path $fxBase 'counts'
+New-Item -ItemType Directory -Force (Join-Path $fxCounts 'flows') | Out-Null
+foreach ($n in @('one', 'two')) {
+    [IO.File]::WriteAllText((Join-Path $fxCounts "flows/$n.js"), $legal)
+    [IO.File]::WriteAllText((Join-Path $fxCounts "flows/$n.selftest.mjs"), $passSelftest)
+}
+$ok = (Assert-Case 'A counts, --dir corpus' (Invoke-Gate $fxCounts 'flows') 0 `
+        @('ok — parsed flows/one\.js', 'ok — parsed flows/two\.js',
+        'ok — selftest passed flows/one\.selftest\.mjs', 'ok — selftest passed flows/two\.selftest\.mjs',
+        'green — 2 workflow script\(s\) parsed, 2 selftest file\(s\) passed') `
         @('FAIL —', 'vacuous')) -and $ok
 
 # B a syntax error is caught and named. Negatives: a parse failure must not coexist with a green
@@ -112,13 +115,13 @@ $ok = (Assert-Case 'C legal shape clean' (Invoke-Gate $fxLegal) 0 `
 
 # D why this gate is not a `node --check` wrapper, MEASURED rather than argued (2026-07-25, node
 # v24.14.0): the `export` line makes the file module-detected and NOT syntax-checked, so --check
-# exits 0 on the same broken file case B rejects — proven on the real adversarial-review.js with
+# exits 0 on the same broken file case B rejects — proven on a real workflow with
 # an unbalanced paren injected mid-file, not only on this fixture. The failure mode once worried
 # about was the opposite direction (a false alarm on a valid file); the direction that matters is
 # the silent pass.
 # Re-measured 2026-10-06 on node v24.21.0 (Linux parity image): --check now syntax-checks the file and
 # rejects case B's — and rejects case C's legal file too ("Illegal return statement": a workflow body is
-# a function body, its top-level `return` is not module syntax), the real adversarial-review.js
+# a function body, its top-level `return` is not module syntax), a real workflow
 # included. Either direction makes --check unusable, so both are a PASS — the second only on that
 # exact error. A node whose --check accepts C, or rejects it for any other reason, WARNs rather than
 # fails — the trigger to re-verify the reasoning above, not a defect signal.

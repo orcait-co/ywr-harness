@@ -23,7 +23,7 @@ function Split-Agent([string]$Text) {
 
 # Every agent file and its decided pin. An agents/*.md missing here fails A0 — deciding its pin is
 # part of adding it.
-$pins = [ordered]@{ 'worker' = 'sonnet/high'; 'verifier' = 'sonnet/medium'; 'mech' = 'haiku/low'; 'reviewer' = 'sonnet/medium' }
+$pins = [ordered]@{ 'worker' = 'sonnet/high'; 'verifier' = 'sonnet/medium'; 'mech' = 'haiku/low' }
 
 $ok = $true
 $agents = @{}

@@ -296,11 +296,14 @@ Try-Case 'event-with-no-handlers' {
 
 # The defect a live session found and the whole suite had missed: every selftest calls the scripts
 # directly, so nothing went through the host's component registry, where a bare name does not
-# resolve. Both forms are pinned — the runtime-fatal one and the copy-paste one.
+# resolve. Both forms are pinned — the runtime-fatal one and the copy-paste one. The plugin ships no
+# workflow (ywr-harness ADR 0215), so the case adds a fixture workflow for the bare call to name.
 Try-Case 'bare-workflow-call' {
     param($d)
+    New-Item -ItemType Directory -Force (Join-Path $d 'workflows') | Out-Null
+    Set-Content -LiteralPath (Join-Path $d 'workflows/fixture-flow.js') -Value '// fixture'
     $p = Join-Path $d 'README.md'
-    Add-Content -LiteralPath $p -Value "`nRun it: Workflow({name: 'adversarial-review', args: {}})`n"
+    Add-Content -LiteralPath $p -Value "`nRun it: Workflow({name: 'fixture-flow', args: {}})`n"
 }
 
 Try-Case 'bare-skill-slash' {
@@ -580,12 +583,12 @@ Record 'placement-skip-cache-shape' ($g.Code -eq 0 -and $out -match 'dogfood pla
 # `--audit-paths` (ADR 0186): the prompt-audit surface, read by the canon release preflight. A path on
 # stdin comes back iff it is on the surface; the mode checks nothing and exits 0. The input holds a path
 # of each kind on and off the surface, a selftest file, a mixed-case path and a Windows separator.
-$apIn = @('REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-digest.md',
-    'workflows/adversarial-review.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\verify\SKILL.md',
-    'hooks/hooks.json', 'hooks/slice-status.test.ts', 'hooks/x.selftest.mjs', 'scripts/fix_proof.py', 'CHANGELOG.md', 'README.md',
+$apIn = @('REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-start.md',
+    'workflows/fixture-flow.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\verify\SKILL.md',
+    'hooks/hooks.json', 'hooks/slice-status.test.ts', 'hooks/x.selftest.mjs', 'scripts/slice_note.py', 'CHANGELOG.md', 'README.md',
     'skills/harness-init/init.ps1', 'lib/selftest-lib.ps1', 'agents/sub/deep.md')
-$apWant = @('REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-digest.md',
-    'workflows/adversarial-review.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\verify\SKILL.md')
+$apWant = @('REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-start.md',
+    'workflows/fixture-flow.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\verify\SKILL.md')
 $psi = [Diagnostics.ProcessStartInfo]::new($nodeExe)
 foreach ($a in @((Join-Path $src 'manifest-gate.mjs'), '--audit-paths')) { $psi.ArgumentList.Add($a) }
 $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
@@ -902,7 +905,7 @@ if (-not $gitHere -or -not $realAdrDir -or -not (Test-Path -LiteralPath $realAdr
     Record 'adr-ref-skip-not-git' ($g.rc -eq 0 -and $g.out -match 'adr references: skipped — the canon shape is not inside a git work tree' -and $g.out -notmatch 'adr references: \d+ reference') "exit=$($g.rc)"
     Record 'stack-skip-not-git' ($g.out -match 'stack and git boundary: skipped — the canon shape is not inside a git work tree' -and $g.out -notmatch 'zero-install stack: \d+') "exit=$($g.rc)"
 
-    # --- canon zero-install stack and git boundary (REVIEW.md invariants 1 and 9, ADR 0158) ----------
+    # --- canon zero-install stack and git boundary (review canon invariants 1 and 9, ADR 0158) ------
     # The same git fixture. The adr-ref control run above passed both checks; each batch below adds
     # files that the check must name line by line, beside lines it must leave alone, so one gate run
     # proves every branch of its batch. The fixture text is assembled here: this suite is a .ps1

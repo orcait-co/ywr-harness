@@ -189,8 +189,6 @@ $TOOLCHAIN = [ordered]@{
     # hook that stops being the same gate everywhere, which is the divergence ywr-harness ADR 0010 forbids.
     'githooks/pre-commit'                    = '.githooks/pre-commit'
     'githooks/pre-push'                      = '.githooks/pre-push'
-    # Refuses a close record that owes `class:` lines and lacks them (ywr-harness ADR 0208).
-    'githooks/commit-msg'                    = '.githooks/commit-msg'
 }
 # Paths whose $TOOLCHAIN entry was added to this scaffold AFTER repos could already be stamped by
 # an earlier plugin version. The ywr-harness ADR 0055 first-run collision guard below is scoped to the REPO's
@@ -210,7 +208,6 @@ $TOOLCHAIN = [ordered]@{
 $INTRODUCED_IN = [ordered]@{
     'docs/check_docs.py' = '0.47.0'
     'scripts/harness/slice_note.py' = '0.69.14'
-    '.githooks/commit-msg' = '0.81.0'
 }
 # GUARDED — the third mode, and it exists for exactly one file. `post-commit` is a filename repos
 # commonly already use (this canon's own repo uses it to republish the docs artifact), so blind
@@ -224,16 +221,15 @@ $GUARDED = [ordered]@{
     'githooks/post-commit' = '.githooks/post-commit'
 }
 $SEED = [ordered]@{
+    # CLAUDE.md also holds the starter review canon in its `## Review canon` section (ywr-harness ADR 0217):
+    # every session loads the file, so /code-review reads the invariants with no import. A REVIEW.md
+    # that an older scaffold placed stays where it is, because a re-run never deletes a file.
     'CLAUDE.md'     = 'CLAUDE.md'
     'gitattributes' = '.gitattributes'
     # Root ignore (ywr-harness ADR 0053): makes the shipped claims true at placement — the html surfaces
     # stay out of the first commit, the telemetry ledger's "(gitignored)" header holds, and
     # CLAUDE.md's ".env is gitignored" line is true. What a repo ignores is its decision → SEED.
     'gitignore'     = '.gitignore'
-    # Starter review canon (ywr-harness ADR 0054): the emitter's default review.canon points at the repo
-    # root, and the first slice close hard-stops on NOT FOUND — house invariants are repo-owned
-    # decisions, so the container+format is seeded once and the content is theirs.
-    'REVIEW.md'     = 'REVIEW.md'
     # The UNMAPPED exemption list, which doubles as the repo's visible spec-debt register. A SEED
     # for the same reason .harness.json is one: its whole content is decisions only this repo has.
     'githooks/slice-retro-ignore' = '.githooks/slice-retro-ignore'
@@ -243,7 +239,7 @@ $SEED = [ordered]@{
     'harness.json'  = '.harness.json'
     # The stage prompts that the template's `decision_prompts` declares for the /ywr-harness:auto switch
     # (ywr-harness ADR 0180). SEED: a repo rewrites them for its own rules, and they do nothing while the switch is off.
-    'docs/prompts/review-digest.md' = 'docs/prompts/review-digest.md'
+    'docs/prompts/review-start.md' = 'docs/prompts/review-start.md'
     'docs/prompts/ready-report.md'  = 'docs/prompts/ready-report.md'
 }
 # Placed ONLY when docs/adr/ holds no record yet. Two reasons, both load-bearing:
@@ -638,9 +634,9 @@ if ($existingRecords.Count -eq 0 -and $foreignRecords.Count -eq 0) {
 #                    and arrays are leaves — their content (groups, items) is repo-specific by
 #                    design and must not be compared.
 #   line-based    -> template lines (trimmed, non-empty, non-#) absent here; count + first one.
-# CLAUDE.md and REVIEW.md are deliberately absent: both are placeholder prose a repo rewrites
-# wholesale (ywr-harness ADR 0054 for the latter), so every template line would read as "missing" forever —
-# a permanent-noise note is worse than none.
+# CLAUDE.md is deliberately absent: it is placeholder prose a repo rewrites wholesale, its review
+# canon section included, so every template line would read as "missing" forever — a
+# permanent-noise note is worse than none.
 # Read-only by construction; an unparseable seed is a reported probe skip, never fatal.
 $DRIFT_SEEDS = @('harness.json', 'gitattributes', 'gitignore', 'githooks/slice-retro-ignore')
 $seedRelByDest = @{}
@@ -1068,7 +1064,7 @@ if ($firstRunRefused.Count -or $introducedRefused.Count) {
 # machine that ran the scaffold and nothing else. The clone that never ran it is caught by the
 # `hooks:` line harness_gates.py prints — that report, not this block, is what closes the gap.
 $HOOKS_DIR = '.githooks'
-$hookFiles = @('.githooks/pre-commit', '.githooks/pre-push', '.githooks/post-commit', '.githooks/commit-msg')
+$hookFiles = @('.githooks/pre-commit', '.githooks/pre-push', '.githooks/post-commit')
 
 if (-not $DryRun -and -not $IsWindows) {
     # The placement write does not carry an executable bit, and git will not run a non-executable

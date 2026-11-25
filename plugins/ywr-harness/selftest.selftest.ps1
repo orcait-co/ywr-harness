@@ -409,6 +409,7 @@ Set-ASleep $true
 $g1 = Invoke-RunnerFresh $fxRunner @('-Jobs', '3')
 $ok = (Assert-Case 'G1 concurrent run: exit 1 naming the failed suite; failed body in full, passing suites one line each, SKIP line kept with Korean intact' $g1 1 `
     @([regex]::Escape($summary), 'FAIL — b-fail\.selftest\.ps1', 'jobs=3\b', 'PASS  stub manifest gate',
+        'workflow-gates\.mjs: this plugin ships no workflow, so the corpus gate has nothing to run',
         '(?m)^--- b-fail\.selftest\.ps1 FAIL \(exit 1, 1 PASS lines', '(?m)^PASS \[b one\]', '(?m)^FAIL \[b two\]: broken on purpose', 'b stderr line',
         '(?m)^ok   a-slow\.selftest\.ps1 \(1 PASS lines, ', '(?m)^ok   c-pass\.selftest\.ps1 \(2 PASS lines, ',
         ('(?m)^SKIP \[a skip ' + [regex]::Escape($ko) + '\] reported, not silent'), '(?m)^timing: suites wall-clock ') `

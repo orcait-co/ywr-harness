@@ -38,32 +38,38 @@ $ok = (Assert-True 'T1 every SKILL.md trigger names a reference.md section, ever
 $ok = (Assert-Text 'T2 SKILL.md names the reference file by its plugin path, and the rare-case detail stays out of it' $skill `
         @([regex]::Escape('${CLAUDE_PLUGIN_ROOT}/skills/slice-close/reference.md')) `
         @('git diff --name-only <old-base> <new-base>', 'did not re-confirm', 'min\(4, ceil')) -and $ok
-$ok = (Assert-Text 'T3 reference.md carries the moved detail (rebase overlap command, ignored-tree forms, shard partition)' $ref `
-        @('git diff --name-only <old-base> <new-base>', 'review basis: reviewed at <sha>, rebased onto <sha>, overlap: none', 'did not re-confirm', 'none checked', 'exact partition of `files`') `
-        @('`/slice-close`', '`/verify`', "Workflow\(\{\s*name:\s*'adversarial-review'", '(?m)^## Ultracode')) -and $ok
+$ok = (Assert-Text 'T3 reference.md carries the moved detail (rebase overlap command, ignored-tree forms), and no workflow or shard text' $ref `
+        @('git -c core\.quotepath=false diff --name-only <old-base> <new-base>', 'review basis: reviewed at <sha>, rebased onto <sha>, overlap: none', 'did not re-confirm', 'none checked', 'A `small` or `full` tier runs `medium` \(ywr-harness ADR 0218\), with the files\s+as a path target', [regex]::Escape("Skill({skill: 'code-review', args: 'medium <file> <file> ...'})"), 'facts 251 and 255', 'When any listed path holds a space, a quote, a backslash, a control character or a non-ASCII\s+character, starts with `-`, holds only digits, names a branch or a level such as `high`, or no\s+longer exists in the tree, use the stage-2 call with no target for the whole re-arm', 'Nobody probed many\s+files', 'Record the\s+level, the item count, the usage line and the cap note of stage 2', 'the changed files as its path target') `
+        @('`/slice-close`', '`/verify`', "Workflow\(\{\s*name:\s*'(ywr-harness:)?adversarial-review'", '(?m)^## Ultracode', '(?m)^## Shards', '(?m)^## Old-digest', 'stage-2\s+scope object')) -and $ok
 
 # --- C: the ADR 0090 contract lines -----------------------------------------------------------------
 $ok = (Assert-Text 'C1 stage 1: the range goes straight to the emitter, whose scope: FAILED is the range check (ADR 0041)' $skill `
         @('pass it to `--range` as given', 'the emitter is the\s+range check \(ywr-harness ADR 0041\)', 'scope: FAILED') `
         @('Sanity-check it first', 'git rev-parse')) -and $ok
-$ok = (Assert-Text 'C2 stage 2 scope: exclusions named, lockstep noted, ~8 counts what remains, no ultracode/effort/sessionModel slot (ADR 0108, ADR 0197)' $skill `
-        @("the emitter's file list minus the exclusions", 'drift gate passed', 'declared handoff', 'lockstep: manifest-gate PASS', 'more than ~8 files remain after\s+the exclusions', 'recall lever', 'ultracode does not\s+change them \(ywr-harness ADR 0108\)', 'same pins \(ywr-harness ADR 0197\)', 'Do not pass `sessionModel`', 'stats\.worker_pins') `
-        @("files: \[<the emitter's file list>\]", 'for round-trip-bound finders only', '(?m)^\s+(ultracode|effort|sessionModel):')) -and $ok
-$ok = (Assert-Text 'C3 disposition: also_at sites and 1-1 split rejections are the closer''s to read' $skill `
-        @('also_at', 'rejected\[\]', 'split 1\u20131', 'rejected_count') `
-        @('Then judge each one \*instance vs class\*')) -and $ok
+# C2: the review is /code-review at `medium` for both review tiers (ADR 0215, ADR 0218). What can regress silently is
+# the workflow call back in the table, a level other than `medium`, a target or findings cap the close never chose, or a
+# close that reads the canon file as if the command did.
+$ok = (Assert-Text 'C2 stage 2: /code-review through the Skill tool, small and full run medium (ADR 0218), no target, default cap, the canon through CLAUDE.md' $skill `
+        @([regex]::Escape("| ``small`` | ``Skill({skill: 'code-review', args: 'medium'})`` |"), [regex]::Escape("| ``full`` | ``Skill({skill: 'code-review', args: 'medium'})`` |"), 'at `medium` for both review tiers \(ywr-harness ADR 0218\)', 'built-in `/code-review` command \(ywr-harness ADR 0215\)', 'with no target', 'Pass no `--max-findings`', [regex]::Escape('`git log --oneline origin/HEAD..HEAD`'), 'record that the commit list and the review''s base are unknown', 'Wait for its task notification', 'reaches the command only through `CLAUDE\.md`', 'never a separate canon file', '\*\*`\(loaded at session start\)`\*\*', '\*\*`NO HEADING`\*\*', '\*\*`\(imported by <file>\)`\*\*', '\*\*`NOT IMPORTED`\*\*', '\*\*`NOT FOUND`\*\*', 'Do not move the canon into `CLAUDE\.md` unasked', 'Record the level and the item count', 'the\s+cap can hide findings', '\*\*Record the usage line too\*\*: the duration, the tool uses and the tokens', 'When the notification carries no usage line, record that') `
+        @('imports the file that the emitter printed as', 'Workflow\(\{', 'adversarial-review', 'sessionModel', 'stats\.worker_pins', 'gates_passed', "shards: 'auto'", 'lensExtra')) -and $ok
+# C3: every finding gets a bucket (ADR 0215 decision 5), and the severity limits the bucket (ADR 0216). What can
+# regress silently is a severity filter that lists nit findings instead of dispositioning them, an important finding
+# deferred to an open item, or a fix on an untested host behaviour without a probe.
+$ok = (Assert-Text 'C3 disposition: every finding a bucket per site, the severity recorded and limiting the bucket, important never deferred, a nit open item only for a design or coverage change, probe first' $skill `
+        @('every finding ends in exactly one of three buckets', '`important`, `pre_existing`, `nit` or none', 'it limits the buckets \(ywr-harness ADR 0216\)', 'a bucket per site', 'only for a `nit` whose fix would change a design or a coverage', 'An `important` finding, a `pre_existing` finding and a finding with no severity end fixed or false on\s+reading\. Never valid, no action', '\*\*Probe first\*\*', 'probe on the real use path before the fix', 'ask the owner with AskUserQuestion\s+before the fix') `
+        @('(?i)\bnits?\b[^.]{0,40}(are|is) listed', '(?i)lows are listed', 'every confirmed \*\*high or medium\*\* finding ends', 'No rule reads it', 'whatever its severity')) -and $ok
 $ok = (Assert-Text 'C4 fix gates: the emitter over the fix''s own files, suite-level iteration' $skill `
         @([regex]::Escape('harness_gates.py" <every file the fix touched>'), 'never a default run', 'own test file\s+directly') `
         @('re-run the emitter over the fix diff')) -and $ok
-$ok = (Assert-Text 'C5 fix checks: batched legs, at most 4, per-finding verdicts, critical gets its own, the pinned worker under ultracode too' $skill `
-        @('ywr-harness ADR 0090', '\*\*batched\*\*', 'at most 4 findings per leg', 'leg of its own for a fix that touches a declared\s+critical surface', '\*\*per finding\*\* exactly `fixed: true\|false`', 'ultracode or not, ywr-harness ADR 0108') `
-        @('spawn ONE skeptic leg', 'For a \*\*high or medium\*\* finding', '`general-purpose` under ultracode')) -and $ok
+$ok = (Assert-Text 'C5 fix checks: every fixed finding but a nit, batched legs, at most 4, per-finding verdicts, critical gets its own, the pinned worker under ultracode too' $skill `
+        @('ywr-harness ADR 0090', 'every fixed finding except a `nit` goes to a\s+skeptic leg', '\*\*batched\*\*', 'at most 4 findings per leg', 'leg of its own for a fix that touches a declared critical surface', '\*\*per finding\*\* exactly `fixed: true\|false`', 'ultracode or not, ywr-harness ADR 0108', 'A fixed `nit` goes through the gates of step 1 and gets no leg') `
+        @('spawn ONE skeptic leg', '\*\*High and medium\*\* findings go to skeptic legs', '`general-purpose` under ultracode', '(?i)a fixed `?nit`? gets a (fix check|leg)')) -and $ok
 $ok = (Assert-Text 'C6 stage 3: mapper first, no run: line means no verify spawn and a verbatim scope statement' $skill `
         @([regex]::Escape('scripts/verify_map.py" [--range <a>..<b>]'), 'No `run:` line', 'do \*\*not\*\*\s+invoke the verify skill', 'scope statement, \*\*not\*\* a pass', '/ywr-harness:verify <a>\.\.<b>') `
         @('(?m)^Invoke `/ywr-harness:verify`')) -and $ok
 $ok = (Assert-Text 'C7 stage 5: one commit, record in the body, handoff names the commit carrying it, no no-change commit' $skill `
-        @('\*\*ONE commit\*\*', 'message body', 'at most 72 characters', 'the commit carrying this handoff', [regex]::Escape('git log -1 --format=%h -- <handoff>'), 'Delete DONE items', 'never gets a commit', 'harness_retro\.py') `
-        @('(?m)^- Commit\. State in the close:', 'kept for the lettering')) -and $ok
+        @('\*\*ONE commit\*\*', 'message body', 'at most 72 characters', 'the commit carrying this handoff', [regex]::Escape('git log -1 --format=%h -- <handoff>'), 'Delete DONE items', 'never gets a commit', 'harness_retro\.py', 'the emitter''s `review canon:` line, and\s+whether the canon, its import or its section changed during this session') `
+        @('(?m)^- Commit\. State in the close:', 'kept for the lettering', 'whether this session started with that import')) -and $ok
 $ok = (Assert-Text 'C8 ADR 0072 rule stays named in SKILL.md in one line' $skill `
         @('re-arms it only over the overlap \(ywr-harness ADR 0072\)', 'hand-resolved conflict', 'review basis:') `
         @('\(in the reviewed scope or\s+not')) -and $ok
@@ -82,7 +88,7 @@ $ok = (Assert-Text 'C9 verify procedure: range goes to the mapper as given, no o
 # never re-arms the review. The negatives are the loosened rules a rewrite could slip in beside the
 # required lines (review 2026-09-28, low: presence alone let a contradicting sentence pass).
 $ok = (Assert-Text 'C10 prepared close: reuse only on an identical --tree line, verbatim in this session, with the emitter re-run; a change re-runs stages 1+3 and re-arms the review over the changed files' $ref `
-        @([regex]::Escape('scripts/harness_gates.py" --tree'), 'verbatim in THIS session', 'is no report: run every stage', 'tree: FAILED` \u2192 nothing is reused', 'run the emitter itself again', 'Re-run none of the printed commands,\s+the review or verify', 'The `gates:` window differs', 'prepared: reused at <the tree line>', 'Run stages 1 and 3 in full', [regex]::Escape('git diff --name-only <report tree id> <fresh tree id>'), 'review basis: prepared at', 'writes no handoff and makes no commit') `
+        @([regex]::Escape('scripts/harness_gates.py" --tree'), 'verbatim in THIS session', 'is no report: run every stage', 'tree: FAILED` \u2192 nothing is reused', 'run the emitter itself again', 'Re-run none of the printed commands,\s+the review or verify', 'The `gates:` window differs', 'prepared: reused at <the tree line>', 'Run stages 1 and 3 in full', [regex]::Escape('git -c core.quotepath=false diff --name-only <report tree id> <fresh tree id>'), 'review basis: prepared at', 'writes no handoff and makes no commit') `
         @('(?i)(paraphrase|summary)[^.]{0,40}(is enough|suffices|counts as (a|the) report)', '(?i)another session[^.]{0,40}(may|can) be reused', '(?i)the tree line alone', '(?i)owner-typed')) -and $ok
 $ok = (Assert-Text 'C10 SKILL.md states who runs the close, asks open owner questions first, and records a reused preparation' $skill `
         @('\*\*The person or the main session runs it\*\* \(ywr-harness ADR 0201\)', 'every owner question of the slice has an answer', 'refuses a call from a subagent', 'prepared: reused at') `
@@ -94,40 +100,20 @@ $ok = (Assert-Text 'C10 SKILL.md description (frontmatter): the main session cal
         @('^description: ', 'the person types it, or the main session calls it after its ready report', 'once every owner question of the slice has an answer', 'A subagent never calls it\.') `
         @('(?i)owner-typed')) -and $ok
 
-# C11: the three disposition buckets and the lens-agreement signal (ADR 0163, pstack candidate 9). What
+# C11: the three disposition buckets (ADR 0163, pstack candidate 9). What
 # can regress silently is a "valid, no action" with no record behind it, a "false on reading" with no
 # quoted line, or the old two-way wording that let a true claim close on a bare reason.
-$ok = (Assert-Text 'C11 disposition: three buckets, no-action names its record, false-on-reading quotes the code, lenses and multi_lens read' $skill `
-        @('ends in exactly one of three buckets', '\*\*fixed\*\*', '\*\*valid, no action\*\*', 'names the record that keeps it', 'A true claim with no record is not this bucket', '\*\*false on reading\*\*', 'quotes the line or guard', 'finding''s `lenses`', '`multi_lens`', 'count per bucket') `
+$ok = (Assert-Text 'C11 disposition: three buckets, no-action names its record, false-on-reading quotes the code' $skill `
+        @('ends in exactly one of three buckets', '\*\*fixed\*\*', '\*\*valid, no action\*\*', 'names the record that keeps it', 'A true claim with no record is not this bucket', '\*\*false on reading\*\*', 'quotes the line or guard', 'count per bucket') `
         @('every confirmed finding is fixed or gets an explicit reason')) -and $ok
-# C11b: ADR 0206 narrows the buckets to high and medium. What can regress silently is a low back in a
-# bucket (the old "every confirmed finding ends in" wording), a fixed low that needs a reading again, or
-# the low list sent to the handoff as next-slice work (the owner's answer of 2026-11-16).
-$ok = (Assert-Text 'C11b lows: listed with id, title, file:line and also_at count, a fixed mark and no fix check; the list stays in the close record; buckets for high and medium only' $skill `
-        @('\*\*Lows are listed, not dispositioned\*\* \(ywr-harness ADR 0206\)', 'its `id`, title, `file:line` and the count of its `also_at` sites', 'Mark a low\s+`fixed` when you fixed it anyway at every site', '`fixed in part` with the fixed sites named', 'fix gates of step 1 below', 'no fix check and no written reading', 'Mark it\s+`unverified` when the review did; a low can carry both marks', 'no handoff item, no open item, no `BACKLOG\.md` entry and no next-slice candidate', 'each high or medium fix passed to an open item', 'every confirmed \*\*high or medium\*\* finding ends in exactly one of three buckets', 'A low gets no fix check \(ywr-harness ADR 0206\)', 'the low list of stage 2', 'A confirmed high or medium marked `unverified: true`') `
-        @('every confirmed finding ends in exactly one', 'A low closes on the closer''s own reading', '(?i)\blows?\b[^.]{0,60}(becomes?|goes to|is) (a|an) (handoff )?open item', '(?i)\blows?\b[^.]{0,60}(append|add)[^.]{0,20}BACKLOG','Judge each finding \*instance vs class\*', '(?m)^A confirmed finding marked `unverified')) -and $ok
-# C11c: ADR 0208 makes the class judgment a close-record line. What can regress silently is the judgment
-# back to a trailing sentence that no record field holds (0 of 108 findings got one), a line per also_at
-# site, a class line demanded of a low, or the line dropped from the stage-5 commit body list.
-$ok = (Assert-Text 'C11c class line: one per high or medium finding, two forms, BACKLOG append, the retro reports a gap, no line for a low, listed in the commit body' $skill `
-        @('\*\*Class line\*\* \(ywr-harness ADR 0208\)', 'every high or medium finding the digest counts gets ONE line', 'its `also_at` sites share it', [regex]::Escape('`class: <id> instance — <why no deterministic check can own this defect>`'), [regex]::Escape('`class: <id> BACKLOG — <the deterministic owner that would retire the class>`'), 'append the entry to `docs/handoff-archive/BACKLOG\.md`', 'The commit-msg hook refuses a commit whose\s+class lines are fewer', 'the slice retro reports one that\s+got past the hook', 'A low gets no class line\.', 'the class line of each high and medium finding;') `
-        @('(?i)each `also_at` site gets its own class line', '(?i)each (confirmed )?low gets (a|one) class line', 'Judge each high and medium finding \*instance vs class\*: a class belongs')) -and $ok
-
-# C12: the fix proof (ADR 0169, pstack candidate 7). What can regress silently is a key set the closer
-# chooses (leaving one high out passed), a waiver the session accepts itself (a reason alone passed),
-# the stop turned advisory, the "before" run taken after the edit, or the skeptic leg dropped as if the
-# proof replaced it. ADR 0173 adds exit 2's stop and the old-digest route (dist issue #11: no rule for
-# exit 2 left a second full review as the only way through); its keys come from the count, never the closer.
-$ok = (Assert-Text 'C12 fix proof: the digest picks the keys, check takes it verbatim, exit 1 stops, exit 3 goes to the owner, the leg stays' $skill `
-        @('Fix proof for every high the digest names\*\* \(ywr-harness ADR 0169\)', '\*\*The review picks the keys, not the closer\*\*', '`high_ids`', 'nothing can be left out', [regex]::Escape('scripts/fix_proof.py" run <id> -- <command>'), [regex]::Escape('scripts/fix_proof.py" check --digest "<the digest line, verbatim>"'), '\*\*Before\s+editing a fix\*\*', 'SAME argv', 'names its bucket', '\*\*valid, no action\*\* or \*\*false on\s+reading\*\*', '`R<n>-', 'not every vote refuted', 'fingerprint ties an\s+id to its finding', 'A run that changes the tree', 'cannot count', 'Any non-zero exit is\s+a failing half', '\*\*Exit 1\*\*[^.]*the close stops', '\*\*Exit 3\*\*', 'the session never accepts its own\s+waiver', 'ask the owner about each\s+waived key', 'stop\s+on any refusal', 'never\s+the closer''s own\s+line', 'The skeptic leg above\s+still runs', 'the owner''s answer on each waiver', '\*\*Exit 2\*\*', 'the close stops until a fixed input', '\*\*→ A digest with no `high_ids`, or a result with only `rejected_count`:\s+`reference\.md` §Old-digest\.\*\*') `
-        @('(?i)one key of your own', '(?i)pass one key[^.]{0,40}per (confirmed )?high','(?i)exit 2[^.]{0,40}(proceed|continue|goes on)', '(?i)re-run the full review', '(?i)check <every fixed high key>','(?i)a waiver passes', '(?i)check[^.]{0,40}is advisory', '(?i)instead of the skeptic leg', '(?i)after editing the fix, run a command', '(?i)key each high in the fixed bucket', '(?i)false on reading[^.]{0,40}no proof', '(?i)only exit 1 counts', '(?i)split 1.1 \(`R<n>`\)')) -and $ok
-# ADR 0173's old-digest route moved to reference.md §Old-digest (plugin 0.73.1, prompt-audit M6).
-$ok = (Assert-Text 'C12 reference.md §Old-digest: check names the H<n> keys of an old digest, and the owner answers its rejected findings' $ref `
-        @('## Old-digest','A review run on a plugin older than ywr-harness ADR 0169 prints no `high_ids`', 'names the keys itself', '`H<n>` is the n-th high in the\s+review''s `confirmed` list', 'The closer never names that set', '`h0` and `rejected 0`\s+there is no key', 'The owner then answers the old digest''s rejected findings', 'only `rejected_count`, and no `rejected\[\]` list') `
-        @('(?i)the closer names the (H<n> )?keys', '(?i)a second full review is (needed|required)')) -and $ok
-$ok = (Assert-Text 'C12 the prepared report carries the fix-proof output and its waivers for the owner' $ref `
-        @('the `fix_proof.py check` output \(an exit 3 lists the waivers the owner must answer, and a digest\s+older than ywr-harness ADR 0169', 'rejected finding''s severity, title and votes from the review''s return\)') `
-        @('(?i)fix proof[^.]{0,40}re-run on reuse', '(?i)the session accepts')) -and $ok
+# C11b: ADR 0215 retires the low list, the class line and the fix proof. What can regress silently is one of
+# them back in the skill or the stage-5 record list, or the prepared report still asking for proof output.
+$ok = (Assert-Text 'C11b no low list, no class line, no class tally, no fix proof in the skill; the record carries level, count and buckets' $skill `
+        @('the level, the item count, the usage line and the cap note of stage 2', 'each finding''s severity and bucket', 'each fix passed to an open item or `none`') `
+        @('fix_proof', '(?i)class line', '(?i)class tally', 'high_ids', '(?i)lows are listed', 'the low list of stage 2', 'commit-msg hook', '`--coverage`')) -and $ok
+$ok = (Assert-Text 'C12 the prepared report carries the level, the item count, the usage line, every bucket and every fix verdict, and no fix-proof output' $ref `
+        @('the review''s level, item count and usage line, every\s+finding''s severity and bucket, every fix verdict') `
+        @('fix_proof', 'digest', '(?i)waiver')) -and $ok
 
 # --- META: the assertion guard must be able to fail -----------------------------------------------
 $accepted = Assert-Text 'META probe' 'meta probe' @('meta probe') @() 6>$null

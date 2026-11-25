@@ -9,8 +9,8 @@
     {
       "name": "ywr-harness",
       "source": "./plugins/ywr-harness",
-      "description": "Claude Code platform guards, the adversarial code-review standard, and a docs-as-code scaffold — portable across repos and stacks",
-      "version": "0.81.5"
+      "description": "Claude Code platform guards, a slice close built on /code-review, and a docs-as-code scaffold — portable across repos and stacks",
+      "version": "0.82.0"
     }
   ]
 }

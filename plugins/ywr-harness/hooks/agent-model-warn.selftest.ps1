@@ -68,10 +68,11 @@ function Assert-Silent([string]$Name, [string]$Out) {
 
 $ok = $true
 # the harness rule (ADR 0109; the org guide carried it until v1.19, ADR 0144): implementation/research workers sonnet in every session via
-# ywr-harness:worker, mechanical work haiku, no ywr-harness worker or review stage on opus or fable (ADR 0197)
+# ywr-harness:worker, mechanical work haiku, no ywr-harness agent pin on opus or fable; the slice-close review is
+# /code-review on the session model and its fix-check legs run on ywr-harness:worker (ADR 0215)
 $warnCore = @('\[hook:agent-model\]', 'ywr-harness rule: implementation', 'ywr-harness 규칙: 구현', 'description', 'demonstrably', 'implementation and research workers run on ''sonnet'' in every session',
-    'subagent_type ''ywr-harness:worker'' with NO per-call model', 'No ywr-harness pin uses opus or fable, review stages included', 'mechanical work runs on ''haiku''',
-    '구현·조사 워커는 어느 세션이든 sonnet', '호출별 model 없이 ywr-harness:worker 를', '고정값은 리뷰 단계까지 어느 것도 opus·fable 을 쓰지 않습니다', 'cannot see the session model', 'overrides a pinned agent', 'Nothing was blocked',
+    'subagent_type ''ywr-harness:worker'' with NO per-call model', 'No ywr-harness agent pin uses opus or fable\.', 'The slice-close review is the built-in /code-review on the session model, and its fix-check legs run on ywr-harness:worker', 'mechanical work runs on ''haiku''',
+    '구현·조사 워커는 어느 세션이든 sonnet', '호출별 model 없이 ywr-harness:worker 를', '에이전트 고정값은 어느 것도 opus·fable 을 쓰지 않습니다', 'slice close 의 리뷰는 세션 모델로 도는 /code-review 이고, 그 fix check 는 ywr-harness:worker 가 맡습니다', 'cannot see the session model', 'overrides a pinned agent', 'Nothing was blocked',
     # the rules the removed decision numbers used to stand for, stated on both surfaces; ultracode
     # no longer lifts a pin, and both surfaces say so (ADR 0108)
     'ultracode 가 켜져 있어도 이 고정은 그대로', 'Ultracode does not lift these pins', '판단할 수 없어 차단하지 않았습니다', 'judge the stated reason')
@@ -79,7 +80,7 @@ $warnCore = @('\[hook:agent-model\]', 'ywr-harness rule: implementation', 'ywr-h
 # W1. the dist #5 shape: general-purpose + explicit opus alias -> warns on both surfaces
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; model = 'opus'; description = 'find endpoints'; prompt = 'Find all API endpoints' })
 $ok = (Assert-Warn 'W1 explicit opus alias warns (systemMessage + additionalContext)' $out `
-        (@("모델을 'opus' 로 명시", 'subagent_type: general-purpose', "requested model 'opus'") + $warnCore) @('SCHEMA DRIFT', 'worker-opus', 'Org guide', '조직 가이드', 'on an Opus session', 'Opus 세션', 'Opus at effort low')) -and $ok   # the retired review rule (ADR 0197) stays out
+        (@("모델을 'opus' 로 명시", 'subagent_type: general-purpose', "requested model 'opus'") + $warnCore) @('SCHEMA DRIFT', 'worker-opus', 'Org guide', '조직 가이드', 'on an Opus session', 'Opus 세션', 'Opus at effort low', 'review stages included', '리뷰 단계까지')) -and $ok   # the retired review rules (ADR 0197, ADR 0215) stay out
 
 # W2. a full model id names the family too
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'general-purpose'; model = 'claude-opus-5-5'; description = 'd'; prompt = 'p' })
@@ -180,14 +181,14 @@ $ok = (Assert-Silent 'S7 opus in description/prompt only is byte-silent' $out) -
 $effortCore = @('\[hook:agent-model\]', "effort 를 '", 'Ultracode does not lift these pins', 'ultracode 가 켜져 있어도 이 고정은 그대로', 'Nothing was blocked', '판단할 수 없어 차단하지 않았습니다',
     '호출별 effort 는 고정\(pinned\)된 에이전트의 frontmatter effort 보다 우선', 'ywr-harness:worker·verifier·mech 의 고정이 이 호출에는 적용되지 않습니다',
     'overrides a pinned agent''s frontmatter effort', 'ywr-harness:worker / ywr-harness:verifier / ywr-harness:mech pins do not apply to this call',
-    'ywr-harness rule: worker effort', 'ywr-harness 규칙은 워커 effort', '기계적 작업은 low, 구현·조사는 high', 'skeptic·judge 단계는 꼭 필요할 때만', 'mechanical work low, implementation and research high', 'genuinely needed',
+    'ywr-harness rule: worker effort', 'ywr-harness 규칙은 워커 effort', '기계적 작업은 low, 검증 절차는 medium, 구현·조사는 high 입니다', 'mechanical work low, a verification procedure medium, implementation and research high',
     'never ''xhigh'' or ''max''', 'xhigh·max 는 쓰지 않습니다', 'deep-work session levels')
 
 # E1. effort xhigh alone (model sonnet, as in the probe) speaks on both channels and names the effort
 $out = Invoke-Hook (New-Payload @{ description = 'probe two'; subagent_type = 'general-purpose'; model = 'sonnet'; effort = 'xhigh'; run_in_background = $false })
 $ok = (Assert-Warn 'E1 effort xhigh alone warns (systemMessage + additionalContext)' $out `
         (@("effort 를 'xhigh' 로 지정", 'subagent_type: general-purpose', "set effort 'xhigh' \(subagent_type 'general-purpose'\)") + $effortCore) `
-        @('SCHEMA DRIFT', '모델을 ', 'requested model', 'sonnet', 'implementation and research workers run on', 'Org guide', '조직 가이드')) -and $ok
+        @('SCHEMA DRIFT', '모델을 ', 'requested model', 'sonnet', 'implementation and research workers run on', 'Org guide', '조직 가이드', 'skeptic', 'judge stage', 'genuinely needed')) -and $ok
 
 # E2. edge spaces and any case still match; the value renders as the call gave it (trimmed)
 $out = Invoke-Hook (New-Payload @{ subagent_type = 'ywr-harness:worker'; effort = ' MAX '; description = 'd'; prompt = 'p' })
@@ -241,7 +242,7 @@ $ok = (Assert-Silent 'E8b effort "xhigh" + U+2028 + injected text is byte-silent
 # W9. NO type is exempt (ADR 0109 retired the only opus-pinned agent): the retired
 #     ywr-harness:worker-opus name, and every other type, warns on an opus-family model — alias,
 #     full id, any case. A leftover exemption for the old name would be byte-silent here.
-foreach ($t in @('ywr-harness:worker-opus', 'ywr-harness:worker', 'ywr-harness:reviewer', 'Plan')) {
+foreach ($t in @('ywr-harness:worker-opus', 'ywr-harness:worker', 'ywr-harness:verifier', 'Plan')) {
     foreach ($mdl in @('opus', 'claude-opus-5-5', 'Opus')) {
         $out = Invoke-Hook (New-Payload @{ subagent_type = $t; model = $mdl; description = 'd'; prompt = 'p' })
         $ok = (Assert-Warn "W9 subagent_type '$t' + model '$mdl' warns (no exempt type)" $out @("requested model '$mdl'", "subagent_type: $([regex]::Escape($t))\)") @('SCHEMA DRIFT')) -and $ok

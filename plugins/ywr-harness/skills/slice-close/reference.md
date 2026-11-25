@@ -24,28 +24,6 @@ line in the close record exactly as printed, whichever form it takes:
 - **No line at all** — the line rides the trailer, so an EMPTY per-slice scope prints no trailer and
   no report (the same as `hooks:`). Audit a clean tree with `--all`.
 
-## Shards
-
-Sharding buys recall, not time (ywr-harness ADR 0070, ywr-harness ADR 0090):
-
-- ywr-harness ADR 0070 measured it on a 5-file scope. With the other two scope habits the finders finished in 2
-  requests each and the rest of their time was output generation. Sharding then cut no time and
-  cost +69% tokens, because more finders produce more raw findings and more skeptic legs.
-- ywr-harness ADR 0090 records 5 full-tier sharded runs against 18 unsharded ones, over different scopes (not a
-  paired comparison): $6.73 against $2.45 per run, 570 s against 412 s, 10.4 against 6.1 confirmed
-  findings, precision 0.69 against 0.87 (the one small-tier sharded run: $1.99, 283 s, 8 confirmed,
-  precision 1.00 — one run, not a rate). The extra confirmed findings are the reason to shard a
-  dense or critical scope. The price is the reason not to shard anything else.
-- Count only the files that stay in `files` after the stage-2 exclusions. An excluded file costs
-  no finder anything, so it must not buy a shard.
-- `shards: 'auto'` makes `min(4, ceil(files/4))` shards, cut along the order of `files`. That is
-  why coupled files sit next to each other.
-- When the coupling is known, pass explicit groups instead: `shards: [[…], […]]`. The groups must
-  be an exact partition of `files`; a missing, extra or duplicated file throws and is named.
-- `shards` on a string scope throws. It is never a silent unsharded run.
-- The ~10-requests trigger is about time: finders that make many round-trips are waiting, not
-  generating, and a shard gives each one fewer files to wait on.
-
 ## Rebase
 
 A rebase or merge after the review re-arms it only over the overlap (ywr-harness ADR 0072). This applies when
@@ -55,18 +33,34 @@ the slice is rebased onto, or merges, a base that other commits advanced after t
 2. Compute the overlap with the merge-base from before and after the rebase:
 
    ```
-   git diff --name-only <old-base> <new-base> -- <every file in the reviewed scope>
+   git -c core.quotepath=false diff --name-only <old-base> <new-base> -- <every file in the reviewed scope>
    ```
+
+   Keep `core.quotepath=false`: git's default prints a non-ASCII path as a quoted octal escape,
+   which names no file.
 
 3. **Empty output and no hand-resolved conflict** → the review stands. Record
    `review basis: reviewed at <sha>, rebased onto <sha>, overlap: none` in the close record, with
    the command quoted.
-4. **Any listed file, or any file whose conflict was resolved by hand** → run ONE review over
+4. **Any listed file, or any file whose conflict was resolved by hand** → run ONE review again over
    exactly those files. This includes a hand-resolved file outside the reviewed scope, because
-   resolved conflict text is code nobody reviewed. Use the stage-2 scope object, with a `context`
-   that names the incoming range, and take the tier from the emitter run over that scope. That
-   review becomes the slice's review. Its fix diffs close under the stage-2 rule, and a later
-   rebase applies this section again.
+   resolved conflict text is code nobody reviewed. Run the emitter over exactly those files. A `skip`
+   tier needs no review. A `small` or `full` tier runs `medium` (ywr-harness ADR 0218), with the files
+   as a path target: `Skill({skill: 'code-review', args: 'medium <file> <file> ...'})`. Two probes,
+   recorded as ywr-harness facts 251 and 255, gave the command three files at `high` and at `medium`.
+   Each reviewed each named file, whether the file was tracked, untracked or only committed, and no
+   other file. Each also reported a defect in an unchanged line of a named file. Nobody probed many files, a hand-resolved conflict file or a repeat run.
+   When any listed path holds a space, a quote, a backslash, a control character or a non-ASCII
+   character, starts with `-`, holds only digits, names a branch or a level such as `high`, or no
+   longer exists in the tree, use the stage-2 call with no target for the whole re-arm instead. git still quotes a path with a quote, a backslash or a
+   control character under `core.quotepath=false`. The command
+   can read such an argument as something other than a path, and nobody probed those. That call
+   reviews the whole slice, so its findings can name other files too.
+   A whole-file read also returns findings in code that the incoming commits did not touch, often
+   graded `pre_existing`. Every finding gets a bucket under the stage-2 severity rule. Record the
+   level, the item count, the usage line and the cap note of stage 2: a count at a known cap can hide the finding
+   that the re-arm is for. The review becomes the slice's review. Its fix diffs close under the
+   stage-2 rule, and a later rebase applies this section again.
 
 The overlap is file-level on purpose. A foreign change to an unrelated function in a reviewed file
 re-arms the review too. That is the cheaper error.
@@ -75,11 +69,9 @@ re-arms the review too. That is the cheaper error.
 
 The stages before the close are ordinary session work (ywr-harness ADR 0105). A session may run stages
 1–3 before the close runs, typed by the owner or called by the main session (ywr-harness ADR 0201), and end with a ready report: the emitter's
-output and the result of every command it printed, the review's `digest` and every fix verdict,
-the `fix_proof.py check` output (an exit 3 lists the waivers the owner must answer, and a digest
-older than ywr-harness ADR 0169 — the check prints only its rejected count, so the report also quotes each
-rejected finding's severity, title and votes from the review's return), the verify
-verdict, and LAST the line `harness_gates.py --tree` printed after the final edit.
+output and the result of every command it printed, the review's level, item count and usage line, every
+finding's severity and bucket, every fix verdict, the verify verdict, and LAST the line
+`harness_gates.py --tree` printed after the final edit.
 It writes no handoff and makes no commit. Reuse needs those lines verbatim in THIS session's context.
 A summary left by compaction, or a report from another session, is no report: run every stage.
 The report is the session's own record, trusted as a close record is. The snapshot proves only
@@ -105,12 +97,12 @@ that the tree did not change after it.
    results were for the old tree. The review stands only over what did not change. Name what did:
 
    ```
-   git diff --name-only <report tree id> <fresh tree id>
+   git -c core.quotepath=false diff --name-only <report tree id> <fresh tree id>
    ```
 
    An empty list (HEAD moved, content equal) keeps the review standing. Any listed file re-arms it
-   over exactly those files, as a rebase overlap does (§Rebase step 4: ONE review, the stage-2
-   scope object, the tier from the emitter run over that scope). Record
+   as a rebase overlap does (§Rebase step 4: ONE review, the changed files as its path target under
+   that step's fallback, the tier from the emitter run over the changed files). Record
    `review basis: prepared at <report tree id>, changed since: <files | none>`.
 
 The snapshot is the working tree in its STAGED form: tracked content plus untracked, non-ignored
@@ -119,15 +111,3 @@ Edits under assume-unchanged or skip-worktree count, because the snapshot clears
 index copy. It cannot see a byte change that staging normalizes away (a CRLF-only edit), a
 submodule's uncommitted work, an ignored file (a build output), a tool version or a database. When
 a gate reads one of those, run that gate again.
-
-## Old-digest
-
-A review run on a plugin older than ywr-harness ADR 0169 prints no `high_ids` (ywr-harness ADR 0173).
-`check` then reads the old line's counts and names the keys itself: `H<n>` is the n-th high in the
-review's `confirmed` list, in its order. The closer never names that set. With `h0` and `rejected 0`
-there is no key. A `rejected` count above 0 makes `check` exit 3, because the line shows no rejected
-severity. The owner then answers the old digest's rejected findings: quote each one's severity, title
-and votes from the review's return in that question. A second full review is not needed for this.
-
-A result with only `rejected_count`, and no `rejected[]` list, comes from an older workflow. Record
-in the close that its 1–1 splits went unread.

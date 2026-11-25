@@ -530,6 +530,9 @@ if (-not (Test-Path -LiteralPath $gate)) {
 
 # --- workflow corpus gate (JS side) --------------------------------------------------------
 # Two arms: every workflows/*.js compiles, and every workflows/*.selftest.mjs exits 0.
+# The plugin ships no workflow (ywr-harness ADR 0215), so with no workflows/ directory the gate has
+# nothing to run and the runner says so in one line. A repo's own workflows go through
+# `node scripts/workflow-gates.mjs --dir .claude/workflows` (spec 0011).
 # `node --check` is not a substitute for the parse arm — a file carrying `export` is
 # module-detected and NOT syntax-checked, so --check exits 0 on any content after it.
 $wfGate = Join-Path $PSScriptRoot 'scripts/workflow-gates.mjs'
@@ -546,6 +549,8 @@ if ((Test-Path -LiteralPath $wfGate) -and (Test-Path -LiteralPath $wfDir)) {
 } elseif (Test-Path -LiteralPath $wfDir) {
     Write-Host 'FAIL — workflows/ exists but scripts/workflow-gates.mjs is missing: the corpus would be gated by nothing' -ForegroundColor Red
     $failed += 'workflow-gates.mjs (missing, corpus present)'
+} else {
+    Write-Host '--- workflow-gates.mjs: this plugin ships no workflow, so the corpus gate has nothing to run' -ForegroundColor Cyan
 }
 
 # --- shipped PowerShell selftests (concurrent, ADR 0088) ------------------------------------

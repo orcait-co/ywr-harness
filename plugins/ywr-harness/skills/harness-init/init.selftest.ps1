@@ -102,8 +102,8 @@ $EXPECT = @(
     'docs/spec/README.md', 'docs/spec/0000-template.md',
     'docs/build.ps1', 'docs/build.sh', 'docs/build_docs.py', 'docs/check_docs.py',
     'CLAUDE.md', '.gitattributes', '.harness.json',
-    # Root ignore seed (ADR 0053) + starter review canon seed (ADR 0054).
-    '.gitignore', 'REVIEW.md',
+    # Root ignore seed (ADR 0053). No REVIEW.md: the starter review canon is a section of the seed CLAUDE.md (ADR 0217).
+    '.gitignore',
     'docs/adr/0001-adopt-docs-as-code.md',  # corpus seed — without it the builder has nothing to index
     # Vendored so a consuming repo's CI needs no access to the private canon (ADR 0014).
     'scripts/harness/harness_config.py', 'scripts/harness/harness_gates.py',
@@ -113,13 +113,13 @@ $EXPECT = @(
     'scripts/harness/resolve-base.sh',
     # Local execution layer (ADR 0015). Placement is asserted here; the WIRING branches are cases
     # K-O, and the hooks' own behaviour is githooks.selftest.ps1.
-    '.githooks/pre-commit', '.githooks/pre-push', '.githooks/commit-msg',
+    '.githooks/pre-commit', '.githooks/pre-push',
     # Slice retro gate (ADR 0017). post-commit is GUARDED rather than TOOLCHAIN — cases Q1/Q2.
     'scripts/harness/harness_retro.py', '.githooks/post-commit', '.githooks/slice-retro-ignore',
     # Session-time decision notes (ADR 0172), named from the seeded CLAUDE.md.
     'scripts/harness/slice_note.py',
     # Stage prompts of the /ywr-harness:auto switch, declared by the template (ADR 0180).
-    'docs/prompts/review-digest.md', 'docs/prompts/ready-report.md'
+    'docs/prompts/review-start.md', 'docs/prompts/ready-report.md'
 )
 $EXPECT_N = $EXPECT.Count
 
@@ -130,6 +130,13 @@ $missing = @($EXPECT | Where-Object { -not (Test-Path -LiteralPath (Join-Path $a
 $ok = (Assert-True 'A exit 0 on an empty directory' ($rA.Code -eq 0) "exit=$($rA.Code) out=$($rA.Out)") -and $ok
 $ok = (Assert-True "A all $EXPECT_N files placed" ($missing.Count -eq 0) "missing: $($missing -join ', ')") -and $ok
 $ok = (Assert-True "A reports created=$EXPECT_N" ($rA.Out -match "created=$EXPECT_N\b") $rA.Out) -and $ok
+# ADR 0217: the review canon is a section of the placed CLAUDE.md, the placed .harness.json declares that file as the
+# canon, and no REVIEW.md is placed.
+$aClaude = Get-Content -LiteralPath (Join-Path $a 'CLAUDE.md') -Raw
+$aDecl = Get-Content -LiteralPath (Join-Path $a '.harness.json') -Raw | ConvertFrom-Json
+$ok = (Assert-True 'A no REVIEW.md is placed; the canon is a CLAUDE.md section that .harness.json declares' `
+        (-not (Test-Path -LiteralPath (Join-Path $a 'REVIEW.md')) -and $aClaude -match '(?m)^## Review canon\s*$' -and $aDecl.review.canon -eq 'CLAUDE.md') `
+        "REVIEW.md exists: $(Test-Path -LiteralPath (Join-Path $a 'REVIEW.md')); canon=$($aDecl.review.canon)") -and $ok
 $ok = (Assert-True 'A reports the hook wiring outcome' ($rA.Out -match 'hooks: ') $rA.Out) -and $ok
 # ADR 0042: every successful run stamps which plugin version scaffolded the repo. Compared
 # against plugin.json directly — a stamp that drifted from the manifest would misdirect the
@@ -190,14 +197,15 @@ New-Item -ItemType Directory -Force -Path (Join-Path $d 'docs/prompts') | Out-Nu
 Set-Content -LiteralPath (Join-Path $d 'docs/prompts/ready-report.md') -Value $minePrompt -NoNewline
 $rD = Invoke-Init @('-Target', $d)
 $after = Get-Content -LiteralPath (Join-Path $d 'CLAUDE.md') -Raw
-$ok = (Assert-True 'D existing seeds reported preserved' ($rD.Out -match 'preserved=3\b') $rD.Out) -and $ok
+$ok = (Assert-True 'D existing seeds reported preserved' ($rD.Out -match 'preserved=2\b') $rD.Out) -and $ok
 $ok = (Assert-True 'D existing seed is byte-identical afterwards' ($after -eq $mine) 'CLAUDE.md was modified') -and $ok
-$ok = (Assert-True 'D existing REVIEW.md is byte-identical afterwards (ADR 0054 — SEED)' `
+# A REVIEW.md that an older scaffold seeded is no scaffold claim any more (ADR 0217): the run neither counts nor touches it.
+$ok = (Assert-True 'D an existing REVIEW.md is byte-identical afterwards and not counted as a preserved seed (ADR 0217)' `
         ((Get-Content -LiteralPath (Join-Path $d 'REVIEW.md') -Raw) -eq $mineReview) 'REVIEW.md was modified') -and $ok
 $ok = (Assert-True 'D preserved seed still warns the reader' ($rD.Out -match 'never clobber') $rD.Out) -and $ok
-# CLAUDE.md and REVIEW.md are deliberately OUTSIDE the drift probe (ADR 0051/0054): both are
-# placeholder prose a repo rewrites wholesale, so a note would be permanent noise. These seeds
-# share zero lines with their templates — a note here means the exclusion regressed.
+# CLAUDE.md is deliberately OUTSIDE the drift probe (ADR 0051): it is placeholder prose a repo
+# rewrites wholesale, so a note would be permanent noise. The seed shares zero lines with its
+# template, and the run reads no REVIEW.md — a note here means the exclusion regressed.
 $ok = (Assert-True 'D rewritten CLAUDE.md/REVIEW.md never carry a drift note' ($rD.Out -notmatch 'this seed lacks') $rD.Out) -and $ok
 
 # --- D2: the stage prompt seeds (ADR 0180) ---------------------------------------------------
@@ -209,11 +217,11 @@ $ok = (Assert-True 'D rewritten CLAUDE.md/REVIEW.md never carry a drift note' ($
 $ok = (Assert-True 'D2 an existing stage prompt is byte-identical afterwards (ADR 0180 - SEED)' `
         ((Get-Content -LiteralPath (Join-Path $d 'docs/prompts/ready-report.md') -Raw) -eq $minePrompt) 'ready-report.md was modified') -and $ok
 $ok = (Assert-True 'D2 the absent stage prompt is placed, equal to its template' `
-        ((Get-Content -LiteralPath (Join-Path $d 'docs/prompts/review-digest.md') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/prompts/review-digest.md') -Raw)) 'review-digest.md missing or differs') -and $ok
+        ((Get-Content -LiteralPath (Join-Path $d 'docs/prompts/review-start.md') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/prompts/review-start.md') -Raw)) 'review-start.md missing or differs') -and $ok
 $tplDecl = Get-Content -LiteralPath (Join-Path $d '.harness.json') -Raw | ConvertFrom-Json
 $stages = @($tplDecl.decision_prompts.PSObject.Properties.Name)
-$ok = (Assert-True 'D2 the placed .harness.json declares review-digest and ready-report with their seed paths and no check' `
-        ($stages.Count -eq 2 -and $tplDecl.decision_prompts.'review-digest'.prompt -ceq 'docs/prompts/review-digest.md' -and
+$ok = (Assert-True 'D2 the placed .harness.json declares review-start and ready-report with their seed paths and no check' `
+        ($stages.Count -eq 2 -and $tplDecl.decision_prompts.'review-start'.prompt -ceq 'docs/prompts/review-start.md' -and
         $tplDecl.decision_prompts.'ready-report'.prompt -ceq 'docs/prompts/ready-report.md' -and
         @($tplDecl.decision_prompts.PSObject.Properties | Where-Object { $_.Value.PSObject.Properties.Name -contains 'check' }).Count -eq 0) "stages=$($stages -join ',')") -and $ok
 $docsOnly = @($tplDecl.review.docs_only | ForEach-Object { [regex]::new('\A(?:' + $_ + ')') })
@@ -400,7 +408,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Host 'SKIP [K exec bit] Windows — git invokes hooks through sh regardless of the mode bit' -ForegroundColor Yellow
     } else {
         try {
-            $noExec = @('.githooks/pre-commit', '.githooks/pre-push', '.githooks/commit-msg') | Where-Object {
+            $noExec = @('.githooks/pre-commit', '.githooks/pre-push') | Where-Object {
                 ([IO.File]::GetUnixFileMode((Join-Path $k $_)) -band [IO.UnixFileMode]::UserExecute) -eq 0
             }
             $ok = (Assert-True 'K placed hooks are executable' ($noExec.Count -eq 0) "not executable: $($noExec -join ', ')") -and $ok
@@ -1100,7 +1108,7 @@ $t9Tmpl = [regex]::Escape('(template: ["^docs/(?!prompts/)(?!.*\\.(py|ps1|sh)$)"
 function New-T9Seed([string]$Name, [object[]]$DocsOnly) {
     return New-T8Seed $Name ({ param($d) $d.review.docs_only = $DocsOnly }.GetNewClosure())
 }
-# 10 = the 8 placed paths the old value exempts, plus AGENTS.md and docs/tools/gen.py. GOAL.md is
+# 9 = the 7 placed paths the old value exempts, plus AGENTS.md and docs/tools/gen.py. GOAL.md is
 # exempt on both sides, so it is not counted.
 $t9a = New-T9Seed 'seed-docs-only-old' @('^docs/', '^[^/]*\.md$')
 [IO.File]::WriteAllText((Join-Path $t9a 'AGENTS.md'), "# agents`n")
@@ -1110,8 +1118,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $t9a 'docs/tools') | Out-Nu
 $rT9a = Invoke-Init @('-Target', $t9a, '-DryRun')
 $t9aLine = (($rT9a.Out -split "`n") | Where-Object { $_ -match '= \.harness\.json ' }) -join ' '
 $ok = (Assert-True 'T9a the old docs_only value names the count, the first paths and the template value' `
-    ($rT9a.Code -eq 0 -and $t9aLine -match ('\(existing seed preserved — review\.docs_only exempts 10 probed path\(s\) the template reviews: ' +
-        'docs/build\.ps1, docs/build\.sh, docs/build_docs\.py, docs/check_docs\.py, CLAUDE\.md, REVIEW\.md, \+4 more ' + $t9Tmpl + '\)')) `
+    ($rT9a.Code -eq 0 -and $t9aLine -match ('\(existing seed preserved — review\.docs_only exempts 9 probed path\(s\) the template reviews: ' +
+        'docs/build\.ps1, docs/build\.sh, docs/build_docs\.py, docs/check_docs\.py, CLAUDE\.md, docs/prompts/review-start\.md, \+3 more ' + $t9Tmpl + '\)')) `
     "exit=$($rT9a.Code) line=$t9aLine") -and $ok
 $t9aProbe = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'init.ps1') -Raw
 $ok = (Assert-True 'T9a the probe holds no copy of the template exclusions' ($t9aProbe -notmatch 'CLAUDE\|AGENTS') 'init.ps1 names the exclusion regex') -and $ok
@@ -1120,13 +1128,15 @@ $ok = (Assert-True 'T9b a template-complete seed gets no docs_only note' ($rT4.O
 # T9c: one seed for the pattern forms. `prompts/` is unanchored and matches mid-path, as the emitter's
 # rx.search does. A Python named group converts. A .NET-refused pattern and a non-string item are
 # named as not compared, and the other patterns still compare. A real root file follows the placed
-# paths in the displayed list.
+# paths in the displayed list. REVIEW.md is a real file here, as in a repo that an older scaffold seeded:
+# no scaffold places it any more (ADR 0217), and the probe still lists it as a real root file.
 $t9c = New-T9Seed 'seed-docs-only-forms' @('prompts/', '^(?P<n>CLAUDE)\.md$', '^zz*+', 5, '^(REVIEW|AGENTS)\.md$')
 [IO.File]::WriteAllText((Join-Path $t9c 'AGENTS.md'), "# agents`n")
+[IO.File]::WriteAllText((Join-Path $t9c 'REVIEW.md'), "# review`n")
 $rT9c = Invoke-Init @('-Target', $t9c, '-DryRun')
 $ok = (Assert-True 'T9c unanchored and named-group patterns compare; a refused pattern and a non-string item are not compared' `
-    ($rT9c.Code -eq 0 -and $rT9c.Out -match ('review\.docs_only exempts 5 probed path\(s\) the template reviews: CLAUDE\.md, REVIEW\.md, ' +
-        'docs/prompts/review-digest\.md, docs/prompts/ready-report\.md, AGENTS\.md \(template: [^;]*\); review\.docs_only: 2 pattern\(s\) \.NET cannot read, not compared')) $rT9c.Out) -and $ok
+    ($rT9c.Code -eq 0 -and $rT9c.Out -match ('review\.docs_only exempts 5 probed path\(s\) the template reviews: CLAUDE\.md, ' +
+        'docs/prompts/review-start\.md, docs/prompts/ready-report\.md, AGENTS\.md, REVIEW\.md \(template: [^;]*\); review\.docs_only: 2 pattern\(s\) \.NET cannot read, not compared')) $rT9c.Out) -and $ok
 $ok = (Assert-True 'T9f a non-list docs_only is named as not compared, the run exits 0' `
     ($rT8d.Code -eq 0 -and $rT8d.Out -match '; review\.docs_only is not a list, not compared\)') "exit=$($rT8d.Code) out=$($rT8d.Out)") -and $ok
 $ok = (Assert-True 'T9g a throwing probe is a reported skip, the run exits 0 and still stamps' `
@@ -1153,20 +1163,12 @@ $u = New-Target 'first-run-collision'
 New-Item -ItemType Directory -Force -Path (Join-Path $u 'docs') | Out-Null
 $ownDocs = "# my own docs index — not the canon's`n"
 Set-Content -LiteralPath (Join-Path $u 'docs/README.md') -Value $ownDocs -NoNewline
-# F12 (ADR 0208): a repo's own commit-msg hook (husky, commitlint) sits at the path this scaffold now places as TOOLCHAIN.
-# The first-run guard must leave it alone; the seed rides this run, so it costs no extra init run.
-$ownCommitMsg = "#!/bin/sh`n# my own commit-msg (commitlint), not the canon's`n"
-New-Item -ItemType Directory -Force -Path (Join-Path $u '.githooks') | Out-Null
-Set-Content -LiteralPath (Join-Path $u '.githooks/commit-msg') -Value $ownCommitMsg -NoNewline
 $rU1 = Invoke-Init @('-Target', $u)
 $ok = (Assert-True 'U1 first-run collision refuses, run exits 0' `
     ($rU1.Code -eq 0 -and $rU1.Out -match 'docs/README\.md REFUSED — first run found an existing file at this TOOLCHAIN path') "exit=$($rU1.Code) out=$($rU1.Out)") -and $ok
 $ok = (Assert-True 'U1 the colliding file survives byte-identical' `
     ((Get-Content -LiteralPath (Join-Path $u 'docs/README.md') -Raw) -eq $ownDocs) 'first run overwrote a pre-existing file') -and $ok
-$ok = (Assert-True 'U1 refusal is counted (docs/README.md and the foreign commit-msg)' ($rU1.Out -match 'refused=2') $rU1.Out) -and $ok
-$ok = (Assert-True 'U1 a foreign .githooks/commit-msg is REFUSED on the first run, never overwritten' `
-    ($rU1.Out -match '\.githooks/commit-msg REFUSED — first run found an existing file at this TOOLCHAIN path' -and
-     (Get-Content -LiteralPath (Join-Path $u '.githooks/commit-msg') -Raw) -eq $ownCommitMsg) "out=$($rU1.Out)") -and $ok
+$ok = (Assert-True 'U1 refusal is counted (docs/README.md)' ($rU1.Out -match 'refused=1') $rU1.Out) -and $ok
 $ok = (Assert-True 'U1 the stamp is withheld while refusals stand' `
     ((-not (Test-Path -LiteralPath (Join-Path $u '.harness-version') -PathType Leaf)) -and $rU1.Out -match 'stamp: NOT written') $rU1.Out) -and $ok
 $ok = (Assert-True 'U1 never labeled as a canon refresh' ($rU1.Out -notmatch 'docs/README\.md \(toolchain refreshed') $rU1.Out) -and $ok
@@ -1185,7 +1187,7 @@ $ok = (Assert-True 'U3 dry run shows the refusal too' ($rU3.Out -match 'REFUSED 
 # U4: -Force replaces, labeled truthfully (never "refreshed"), and the run then stamps.
 $rU4 = Invoke-Init @('-Target', $u, '-Force')
 $ok = (Assert-True 'U4 -Force replaces with the truthful label' `
-    ($rU4.Code -eq 0 -and $rU4.Out -match 'docs/README\.md \(REPLACED a pre-existing non-canon file under -Force' -and $rU4.Out -match 'replaced=2') "exit=$($rU4.Code) out=$($rU4.Out)") -and $ok
+    ($rU4.Code -eq 0 -and $rU4.Out -match 'docs/README\.md \(REPLACED a pre-existing non-canon file under -Force' -and $rU4.Out -match 'replaced=1') "exit=$($rU4.Code) out=$($rU4.Out)") -and $ok
 $ok = (Assert-True 'U4 the canon copy is placed' `
     ((Get-Content -LiteralPath (Join-Path $u 'docs/README.md') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/README.md') -Raw)) 'forced run did not place the canon copy') -and $ok
 $ok = (Assert-True 'U4 the stamp is written once resolved' `
@@ -1209,15 +1211,11 @@ if ($IsWindows) {
     New-Item -ItemType Directory -Force -Path (Join-Path $u6 '.githooks') | Out-Null
     Set-Content -LiteralPath (Join-Path $u6 '.githooks/pre-commit') -Value "#!/bin/sh`n# my experiment, deliberately not executable`n" -NoNewline
     Set-Content -LiteralPath (Join-Path $u6 '.githooks/post-commit') -Value "#!/bin/sh`n# my own post-commit, no marker`n" -NoNewline
-    $u6Foreign = "#!/bin/sh`n# my own commit-msg (commitlint), deliberately not executable`n"
-    Set-Content -LiteralPath (Join-Path $u6 '.githooks/commit-msg') -Value $u6Foreign -NoNewline
     $rU6 = Invoke-Init @('-Target', $u6)
-    $execRefused = @('.githooks/pre-commit', '.githooks/post-commit', '.githooks/commit-msg') | Where-Object {
+    $execRefused = @('.githooks/pre-commit', '.githooks/post-commit') | Where-Object {
         ([IO.File]::GetUnixFileMode((Join-Path $u6 $_)) -band [IO.UnixFileMode]::UserExecute) -ne 0
     }
     $ok = (Assert-True 'U6 refused hooks stay non-executable' ($execRefused.Count -eq 0) "chmod +x landed on: $($execRefused -join ', ') out=$($rU6.Out)") -and $ok
-    $ok = (Assert-True 'U6 a foreign commit-msg stays byte-identical (F12)' `
-        ((Get-Content -LiteralPath (Join-Path $u6 '.githooks/commit-msg') -Raw) -eq $u6Foreign) $rU6.Out) -and $ok
     $ok = (Assert-True 'U6 a hook this run PLACED is still made executable' `
         (([IO.File]::GetUnixFileMode((Join-Path $u6 '.githooks/pre-push')) -band [IO.UnixFileMode]::UserExecute) -ne 0) $rU6.Out) -and $ok
 }
@@ -1247,12 +1245,6 @@ Set-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Value $aaForeign 
 # check_docs.py — proving the guard is scoped per path, not per repo.
 $aaBuilder = Join-Path $aa 'docs/build_docs.py'
 Set-Content -LiteralPath $aaBuilder -Value '# locally hacked, old-path file' -NoNewline
-# F12 (ADR 0208): .githooks/commit-msg is an $INTRODUCED_IN path (0.81.0). A repo stamped 0.46.0 that already has its own
-# commit-msg hook (husky, commitlint) meets the same first-appearance guard as check_docs.py. The seed rides this
-# run, so it costs no extra init run.
-$aaCommitMsg = Join-Path $aa '.githooks/commit-msg'
-$aaOwnCommitMsg = "#!/bin/sh`n# my own commit-msg (commitlint), not the canon's`n"
-Set-Content -LiteralPath $aaCommitMsg -Value $aaOwnCommitMsg -NoNewline
 
 # AA1: re-run without -Force refuses, names both versions, leaves the foreign file untouched, and
 # still refreshes the old-path file in the same run.
@@ -1269,12 +1261,7 @@ $ok = (Assert-True 'AA1 init.ps1 carries an $INTRODUCED_IN entry for docs/check_
 $aaIntroduced = if ($aaIntroducedM.Success) { $aaIntroducedM.Groups[1].Value } else { 'NO-ENTRY-PARSED' }
 $ok = (Assert-True 'AA1 the introducing version is named' ($rAA1.Out -match "new in $([regex]::Escape($aaIntroduced))") "want 'new in $aaIntroduced' in: $($rAA1.Out)") -and $ok
 $ok = (Assert-True 'AA1 the repo''s stamped version is named' ($rAA1.Out -match 'stamped 0\.46\.0') $rAA1.Out) -and $ok
-$ok = (Assert-True 'AA1 refused is counted (check_docs.py and the foreign commit-msg)' ($rAA1.Out -match 'refused=2') $rAA1.Out) -and $ok
-$ok = (Assert-True 'AA1 init.ps1 carries an $INTRODUCED_IN entry for .githooks/commit-msg' `
-    ((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'init.ps1') -Raw) -match "'\.githooks/commit-msg'\s*=\s*'\d+\.\d+\.\d+'") 'no entry — the guard under test has no version to name') -and $ok
-$ok = (Assert-True 'AA1 a foreign .githooks/commit-msg is REFUSED as new in this version and its bytes are unchanged (F12)' `
-    ($rAA1.Out -match '\.githooks/commit-msg REFUSED — this TOOLCHAIN path is new in' -and
-     (Get-Content -LiteralPath $aaCommitMsg -Raw) -eq $aaOwnCommitMsg) "out=$($rAA1.Out)") -and $ok
+$ok = (Assert-True 'AA1 refused is counted (check_docs.py)' ($rAA1.Out -match 'refused=1') $rAA1.Out) -and $ok
 $ok = (Assert-True 'AA1 the foreign bytes are unchanged on disk' `
     ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Raw) -eq $aaForeign) 'foreign check_docs.py was overwritten') -and $ok
 $ok = (Assert-True 'AA1 the stamp is untouched (still the pre-refusal value)' `
@@ -1287,9 +1274,7 @@ $ok = (Assert-True 'AA1 an OLD-path file still refreshes in the same run (guard 
 $rAA2 = Invoke-Init @('-Target', $aa, '-Force')
 $ok = (Assert-True 'AA2 -Force replaces, run exits 0' ($rAA2.Code -eq 0) "exit=$($rAA2.Code)") -and $ok
 $ok = (Assert-True 'AA2 the truthful REPLACED label is used' ($rAA2.Out -match 'docs/check_docs\.py \(REPLACED') $rAA2.Out) -and $ok
-$ok = (Assert-True 'AA2 replaced is counted' ($rAA2.Out -match 'replaced=2') $rAA2.Out) -and $ok
-$ok = (Assert-True 'AA2 -Force places the canon commit-msg over the foreign one' `
-    ((Get-Content -LiteralPath $aaCommitMsg -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'githooks/commit-msg') -Raw)) 'forced run did not place the canon commit-msg') -and $ok
+$ok = (Assert-True 'AA2 replaced is counted' ($rAA2.Out -match 'replaced=1') $rAA2.Out) -and $ok
 $ok = (Assert-True 'AA2 the canon copy is placed' `
     ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/check_docs.py') -Raw)) 'forced run did not place the canon copy') -and $ok
 $ok = (Assert-True 'AA2 the stamp advances once resolved' `

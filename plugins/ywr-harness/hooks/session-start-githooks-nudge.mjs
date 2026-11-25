@@ -12,8 +12,8 @@
 //
 // Payload and output contract, verified against the official hooks reference 2026-08-05
 // (code.claude.com/docs/en/hooks.md — read RAW; a summarized read of the same page reported the
-// matcher as absent and the slice review's raw grep showed the opposite, the exact class
-// REVIEW.md's raw-source rule exists for):
+// matcher as absent and a grep of the raw page showed the opposite, so a field's absence is
+// claimed only from the raw page):
 //   cwd    : working directory of this firing (one per firing; the event fires at startup and
 //            AGAIN on resume/clear/compact/fork — not once per session)
 //   source : startup | resume | clear | compact | fork — the event supports a matcher on this

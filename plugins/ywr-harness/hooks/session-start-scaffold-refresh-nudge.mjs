@@ -101,10 +101,17 @@
 // characters and the rule about 600, so the sum stays far under it.
 //
 // Retired seed text (ywr-harness ADR 0207, narrows ywr-harness ADR 0033 and ywr-harness ADR 0183): after the scaffold gate, the hook reads
-// CLAUDE.md, .claude/CLAUDE.md, REVIEW.md and the two docs/prompts seeds, and looks for the phrases of RETIRED_SEED.
+// CLAUDE.md, .claude/CLAUDE.md, REVIEW.md and the docs/prompts/ready-report.md seed, and looks for the phrases of RETIRED_SEED.
 // A hit gives a Korean systemMessage that names each file and phrase, and an English part at the end of the rule
 // text. It rides every source and every branch that carries the rule text, a no-drift start included, until a
 // member edits the file. The cost is up to three more small file reads; no process, no git call.
+//
+// Review canon import (ywr-harness ADR 0215, ywr-harness ADR 0217): where `.harness.json` is a file and the review
+// canon it names exists, the hook checks the canon. A canon in CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md loads at
+// session start and passes. For a canon in any other file, the hook checks that one of those files imports it with
+// an `@<path>` line. A missing import gives a Korean systemMessage line that names the canon and the two remedies,
+// and an English part after the retired-text part. It rides the same sources and branches as the retired-text line,
+// until a member adds the line or moves the canon.
 //
 // The two JSON FILES it reads (the plugin manifest, the installed-plugins registry) go through hook-lib's
 // parseJsonLoose — the leniency PowerShell 7's ConvertFrom-Json had (comments, trailing commas, ...);
@@ -117,6 +124,7 @@
 // `-c core.quotepath=false`, a BYTES pipe, one explicit UTF-8 decode, no shell. The hook never
 // exits the process: it returns, so stdout drains and the exit code stays 0.
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys, collator, markerAbove } from './hook-lib.mjs'
@@ -148,12 +156,12 @@ const SLICE_RULES = [
   {
     id: 'review',
     copy: ['args.lensExtra'],
-    text: '- Review: before a slice closes, run `Workflow({name: \'ywr-harness:adversarial-review\', args: {scope: {files, context, invariants, gates_passed}}})`. `/ywr-harness:slice-close` builds the call. `scope` is an object; a string scope loses sharding, the out-of-scope bucket and the gate check of skeptic #2. Put house review angles in `args.lensExtra`, never a redefined lens set. The review invariants are in the file that `.harness.json` `review.canon` names, `REVIEW.md` at the repo root by default; replace the harness-init starter there with this repo\'s own invariants (ywr-harness ADR 0054).',
+    text: '- Review: before a slice closes, run `/code-review` through the Skill tool: `medium` for a small tier and for a full tier (ywr-harness ADR 0215, ywr-harness ADR 0218). `/ywr-harness:slice-close` makes the call. Every finding gets a bucket: fixed, valid with no action, or false on reading. The review invariants are in the file that `.harness.json` `review.canon` names: the `## Review canon` section of `CLAUDE.md` in a new scaffold, where this repo\'s own invariants replace the harness-init starters (ywr-harness ADR 0217).',
   },
   {
     id: 'once',
     copy: ['review basis:', 'bounded re-review'],
-    text: '- The review runs once per slice. A fix diff for its confirmed high and medium findings closes with re-run gates and one fix check per finding. A confirmed low gets no fix check: the close record lists it (ywr-harness ADR 0206). No fix gets a re-review. When a fix needs more review, record an open item: `python scripts/harness/slice_note.py add risk \"open item: review <files and lines> of the <id> fix; <why>\"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).',
+    text: '- The review runs once per slice. Every finding gets one of three buckets. The severity limits the bucket: an `important`, `pre_existing` or ungraded finding ends fixed or false on reading, only a `nit` whose fix would change a design or a coverage ends valid with no action with an open item, and a fix that rests on an untested host behaviour gets a probe first; when the owner defers that probe, the finding ends valid with no action as an owner decision, with an open item (ywr-harness ADR 0216). A fix closes with re-run gates over its own files, and every fixed finding except a `nit` gets one fix check (ywr-harness ADR 0215). No fix gets a re-review. When a fix needs more review, record an open item: `python scripts/harness/slice_note.py add risk \"open item: review <files and lines> of the <file:line> fix; <why>\"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).',
   },
   {
     id: 'close',
@@ -186,21 +194,24 @@ const COPY_NOTE = 'This repo\'s CLAUDE.md or .claude/CLAUDE.md holds its own cop
 // states that rule (narrows ywr-harness ADR 0183 decision 9). Matching is case-sensitive on text whose whitespace
 // runs are collapsed to one space, so a wrapped line still matches. A new retirement adds rows here.
 const CLAUDE_FILES = ['CLAUDE.md', '.claude/CLAUDE.md']
-const DIGEST = 'docs/prompts/review-digest.md'
 const READY = 'docs/prompts/ready-report.md'
 // The CLAUDE.md seed dropped its slice-rule bullets in 0.72.0 (ywr-harness ADR 0183), before the rule itself changed, so
 // its rows carry 0.72.0 and the ADR that later changed the rule.
+// The seed docs/prompts/review-digest.md left the scaffold in ywr-harness ADR 0215, so its three rows left this table:
+// a row names a file that the real init.ps1 places. REVIEW.md is the one exception: the scaffold no longer places it
+// (ywr-harness ADR 0217), but a repo whose review.canon names it still loads it into every review through an import,
+// so its rows stay. Its current text is the `## Review canon` section of the CLAUDE.md seed.
 const RETIRED_SEED = [
   { phrase: 'bounded re-review', files: CLAUDE_FILES, rule: 'once', version: '0.72.0', adr: '0200' },
   { phrase: 'The close is owner-typed', files: CLAUDE_FILES, rule: 'close', version: '0.72.0', adr: '0201' },
-  { phrase: 'bounded re-review', files: [DIGEST, READY], version: '0.77.0', adr: '0200' },
+  { phrase: 'bounded re-review', files: [READY], version: '0.77.0', adr: '0200' },
   { phrase: 'The owner types `/ywr-harness:slice-close`', files: [READY], version: '0.78.0', adr: '0201' },
   { phrase: 'A deny or a host refusal is final', files: [READY], version: '0.78.0', adr: '0201' },
   { phrase: 'asked again at the close', files: [READY], version: '0.78.0', adr: '0201' },
   { phrase: 'every confirmed finding has a disposition', files: [READY], version: '0.79.0', adr: '0206' },
-  { phrase: 'Each confirmed finding', files: [DIGEST], version: '0.79.0', adr: '0206' },
-  { phrase: '`unverified_by_death`), not confirmed', files: [DIGEST], version: '0.79.0', adr: '0206' },
   { phrase: 'For every confirmed finding, judge', files: ['REVIEW.md'], version: '0.79.0', adr: '0206' },
+  { phrase: 'fix_proof.py check', files: [READY], version: '0.82.0', adr: '0215' },
+  { phrase: 'one `class:` line per finding', files: ['REVIEW.md'], version: '0.82.0', adr: '0215' },
 ]
 
 // Whitespace runs to one space: the form both a phrase and a file text are compared in.
@@ -222,10 +233,114 @@ function findRetired(texts) {
 // The two surfaces of a retired-text finding: a Korean line for the person, an English part for the model.
 function retiredText(hits, rootShow, templatesShow) {
   if (!hits.length) return { sys: '', ctx: '' }
-  // The list is whole: the table names five files, so no cap applies.
+  // The list is whole: the table names four files, so no cap applies.
   const list = hits.map(h => `${h.file} (${h.rows.map(r => `\`${r.phrase}\`: v${r.version}, ywr-harness ADR ${r.adr}`).join('; ')})`).join(', ')
-  const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: seed 파일 ${hits.length}개에 이후 릴리스가 바꾼 ywr-harness 규칙 문구가 남아 있습니다 — ${list}. /ywr-harness:harness-init은 seed 파일을 덮어쓰지 않으므로 직접 고쳐야 합니다. 현재 문구는 설치된 플러그인의 같은 이름 seed 템플릿에 있습니다: ${templatesShow}. 고칠 때까지 세션을 시작할 때마다 알립니다 (ywr-harness ADR 0207). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
-  const ctx = `Retired seed text (ywr-harness ADR 0207): these repo files still hold the text of a ywr-harness rule that a later release changed: ${list}. The version is the release whose seed dropped the text, and the ADR states the current rule. /ywr-harness:harness-init never overwrites a seed file. Where such a file disagrees with the current rule, follow the current rule: the slice rules of this context where they state it, else the ADR. The current seed text is in the installed plugin at ${templatesShow}. Do not edit these files unasked; the person decides the wording.`
+  // The scaffold places no REVIEW.md, so its current text is in the CLAUDE.md seed (ywr-harness ADR 0217).
+  const review = hits.some(h => h.file === 'REVIEW.md')
+  const reviewSys = review ? ' REVIEW.md의 현재 문구는 seed 템플릿 CLAUDE.md의 `## Review canon` 섹션에 있습니다 (ywr-harness ADR 0217).' : ''
+  const reviewCtx = review ? ' The scaffold places no REVIEW.md any more: its current text is the `## Review canon` section of the CLAUDE.md seed (ywr-harness ADR 0217).' : ''
+  const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: seed 파일 ${hits.length}개에 이후 릴리스가 바꾼 ywr-harness 규칙 문구가 남아 있습니다 — ${list}. /ywr-harness:harness-init은 seed 파일을 덮어쓰지 않으므로 직접 고쳐야 합니다. 현재 문구는 설치된 플러그인의 같은 이름 seed 템플릿에 있습니다: ${templatesShow}.${reviewSys} 고칠 때까지 세션을 시작할 때마다 알립니다 (ywr-harness ADR 0207). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
+  const ctx = `Retired seed text (ywr-harness ADR 0207): these repo files still hold the text of a ywr-harness rule that a later release changed: ${list}. The version is the release whose seed dropped the text, and the ADR states the current rule. /ywr-harness:harness-init never overwrites a seed file. Where such a file disagrees with the current rule, follow the current rule: the slice rules of this context where they state it, else the ADR. The current seed text is in the installed plugin at ${templatesShow}.${reviewCtx} Do not edit these files unasked; the person decides the wording.`
+  return { sys, ctx }
+}
+
+// The review canon import (ywr-harness ADR 0215, ywr-harness ADR 0217). `/code-review` reads CLAUDE.md and never a separate
+// canon file, so a canon outside the memory files reaches the slice review only through an `@<path>` import, and
+// harness-init never adds one to an existing CLAUDE.md.
+// The rule is the emitter's (harness_gates.py canon_importer); keep the two in step. Claude Code reads an import
+// anywhere in the text but skips code spans and fenced code blocks, so the check drops both first. A token then
+// counts when it starts a line or follows whitespace. A relative token resolves against the folder of the file that
+// holds it.
+// An undeclared canon is CLAUDE.md. A root REVIEW.md, the file that older scaffolds seeded, takes its place, so that the
+// hook asks for its import instead of passing while no review reads it (ywr-harness ADR 0217). The emitter's
+// harness_config.load has the same default.
+const CANON_DEFAULT = 'CLAUDE.md'
+const CANON_LEGACY = 'REVIEW.md'
+// The files whose imports the session loads from the repo root. CLAUDE.local.md is read for the import only, never for
+// the copy markers or the retired-text scan. An ancestor CLAUDE.md above the repo root is not read.
+const IMPORT_FILES = [...CLAUDE_FILES, 'CLAUDE.local.md']
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+const INDENTED = /^(?: {4}|\t)/
+const SPAN = /(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g
+const IMPORT = /(?:^|(?<=\s))@((?:\\ |\S)+)/g
+// The emitter's safe_path rejects these and falls back to the default; the hook does the same.
+const CANON_UNSAFE = /[;&|`$<>\n\r"']|\.\./
+
+// The canon path that `.harness.json` declares, '' when the hook does not check. A value that is no string is not
+// checked: the emitter turns it into text, and the hook would name a different file.
+function declaredCanon(text, root) {
+  let cfg
+  try { cfg = parseJsonLoose(text) } catch { return '' }
+  if (!isObject(cfg)) return ''
+  const rev = getProp(cfg, 'review')
+  const v = isObject(rev) ? getProp(rev, 'canon') : undefined
+  const fallback = isFile(path.join(root, CANON_LEGACY)) ? CANON_LEGACY : CANON_DEFAULT
+  if (!v) return fallback
+  if (typeof v !== 'string') return ''
+  const canon = v.replace(/\\/g, '/').trim()
+  return canon && !CANON_UNSAFE.test(canon) ? canon : fallback
+}
+
+// The text of a memory file with its code removed, as Claude Code reads it for imports. A probe on host 2.1.331
+// (ywr-harness fact 250) loaded no import from a fenced code block, an indented code block or a code span. A fence closes
+// only on its own character, at least as long, with nothing after it. An indented line is code after a blank line; a
+// list item's indented paragraph reads as code here too, which errs toward a missing import. A code span can cross a
+// line break, so spans are removed per paragraph.
+function importText(text) {
+  const kept = []
+  let fence = ''
+  let blank = true
+  let indented = false
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    const m = FENCE.exec(line)
+    if (fence) {
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !m[2].trim()) fence = ''
+      kept.push('')
+      continue
+    }
+    if (m && !(m[1][0] === '`' && m[2].includes('`'))) { fence = m[1]; kept.push(''); continue }
+    if (!line.trim()) { blank = true; kept.push(''); continue }
+    if (INDENTED.test(line) && (blank || indented)) { indented = true; kept.push(''); continue }
+    blank = indented = false
+    kept.push(line)
+  }
+  return kept.join('\n').split(/\n[ \t]*\n/).map(p => p.replace(SPAN, ' ')).join('\n\n')
+}
+
+// Windows paths ignore case, and the probe loaded `@C4.MD` for c4.md there.
+const normTarget = p => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p))
+
+// The first of IMPORT_FILES whose text imports `canon`, or ''. A token counts when it starts a line or follows
+// whitespace, after importText removed the code. A backslash-escaped space belongs to the token. A relative token
+// resolves against the folder of the file that holds it, `~/` against the home folder, and an absolute token stands
+// as written. The rule is the emitter's (harness_gates.py canon_importer); keep the two in step.
+function canonImporter(root, texts, canon) {
+  const want = normTarget(path.resolve(root, canon))
+  for (const rel of IMPORT_FILES) {
+    const folder = path.join(root, path.posix.dirname(rel))
+    for (const m of importText(texts.get(rel) || '').matchAll(IMPORT)) {
+      let tok = m[1].replace(/\\ /g, ' ')
+      if (tok === '~' || tok.startsWith('~/')) tok = path.join(os.homedir(), tok.slice(1))
+      if (normTarget(path.resolve(folder, tok)) === want) return rel
+    }
+  }
+  return ''
+}
+
+// True when `canon` is one of IMPORT_FILES, a memory file the session loads at its start, so it needs no import
+// (ywr-harness ADR 0217). The rule is the emitter's (harness_gates.py memory_canon); keep the two in step.
+function memoryCanon(root, canon) {
+  const want = normTarget(path.resolve(root, canon))
+  return IMPORT_FILES.some(rel => normTarget(path.resolve(root, rel)) === want)
+}
+
+// The two surfaces of a missing import: a Korean line for the person, an English part for the model. The import
+// line escapes each space with a backslash, the form Claude Code reads as one path.
+function canonText(canon, rootShow) {
+  const c = inline(canon, 200)
+  const line = `@${c.replace(/ /g, '\\ ')}`
+  const sys = `[hook:scaffold-refresh-nudge] ${rootShow}: CLAUDE.md, .claude/CLAUDE.md, CLAUDE.local.md 어디에도 review canon \`${c}\`의 \`@\` import가 없습니다. slice-close 리뷰인 /code-review는 CLAUDE.md만 읽으므로, 이대로면 이 저장소의 리뷰 불변식 없이 리뷰합니다. 권장: \`${c}\`의 내용을 CLAUDE.md의 \`## Review canon\` 섹션으로 옮기고, .harness.json의 review.canon을 \`CLAUDE.md\`로 바꾼 뒤 \`${c}\`를 지우세요 (ywr-harness ADR 0217). 또는 CLAUDE.md에 \`${line}\` 줄을 추가하세요. /ywr-harness:harness-init은 기존 파일을 덮어쓰지 않습니다. 고칠 때까지 세션을 시작할 때마다 알립니다 (ywr-harness ADR 0215). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0033).`
+  const ctx = `Review canon import (ywr-harness ADR 0215, ywr-harness ADR 0217): neither CLAUDE.md, .claude/CLAUDE.md nor CLAUDE.local.md imports the review canon \`${c}\` that .harness.json names. /code-review, the slice-close review, reads CLAUDE.md and never a separate canon file, so a review in this repo runs without its invariants. The recommended fix moves the content of \`${c}\` into a \`## Review canon\` section of CLAUDE.md, sets review.canon in .harness.json to \`CLAUDE.md\` and deletes \`${c}\`. The smaller fix is one \`${line}\` line in CLAUDE.md. The session that prepares a slice close adds that line before it calls /code-review, by stage 2 of /ywr-harness:slice-close. Any other session does not edit CLAUDE.md or move the canon unasked; the person decides.`
   return { sys, ctx }
 }
 
@@ -708,21 +823,45 @@ function main(payload) {
   const retired = retiredText(hits, rootShow, inline(templatesDir, 300))
   const restate = new Set(hits.filter(h => CLAUDE_FILES.includes(h.file)).flatMap(h => h.rows.map(r => r.rule)).filter(Boolean))
 
+  // The review canon import (ywr-harness ADR 0215): checked only where `.harness.json` is a file and the canon file
+  // it names exists, because an import of a missing file reviews nothing either. The cost is up to two more small
+  // file reads and two stats; no process, no git call.
+  const harnessJson = isFile(path.join(root, '.harness.json'))
+  let canonNote = { sys: '', ctx: '' }
+  if (harnessJson) {
+    let canon = ''
+    try { canon = declaredCanon(readText(path.join(root, '.harness.json')), root) } catch { canon = '' }
+    if (canon && isFile(path.resolve(root, canon)) && !memoryCanon(root, canon)) {
+      const texts = new Map(raw)
+      if (!texts.has('CLAUDE.local.md')) {
+        let t = ''
+        try { if (isFile(path.join(root, 'CLAUDE.local.md'))) t = readText(path.join(root, 'CLAUDE.local.md')) } catch { t = '' }
+        texts.set('CLAUDE.local.md', t)
+      }
+      if (!canonImporter(root, texts, canon)) canonNote = canonText(canon, rootShow)
+    }
+  }
+  // The person-facing lines and the model parts of the two seed findings, retired text first.
+  const notes = {
+    sys: [retired.sys, canonNote.sys].filter(Boolean).join('\n'),
+    ctx: [retired.ctx, canonNote.ctx].filter(Boolean).join('\n\n'),
+  }
+
   // The rule text (ywr-harness ADR 0183): the slice rules where `.harness.json` is a file, the slice-note rule (ywr-harness ADR 0172)
   // where the vendored script is a file. A part the repo's own CLAUDE.md already copies is left out, and the
   // copy note says so: a session never loads one rule twice. A copy that holds retired text is no copy, and the
-  // retired-text part comes last (ywr-harness ADR 0207). '' = no rule text.
+  // retired-text part and the canon-import part come last (ywr-harness ADR 0207, ywr-harness ADR 0215). '' = no rule text.
   const rule = ruleText({
-    harnessJson: isFile(path.join(root, '.harness.json')),
+    harnessJson,
     sliceNote: isFile(path.join(root, 'scripts/harness/slice_note.py')),
     claudeMd: CLAUDE_FILES.map(rel => raw.get(rel)).join('\n'),
     restate,
-    retiredCtx: retired.ctx,
+    retiredCtx: notes.ctx,
   })
   // ctx plus the rule text, a blank line between; ctx alone when the rule text is empty.
   const withRule = ctx => (rule ? ctx + '\n\n' + rule : ctx)
-  // A drift banner plus the retired-text line, a newline between (ywr-harness ADR 0207).
-  const withRetired = sys => (retired.sys ? sys + '\n' + retired.sys : sys)
+  // A drift banner plus the seed-finding lines, a newline between (ywr-harness ADR 0207, ywr-harness ADR 0215).
+  const withRetired = sys => (notes.sys ? sys + '\n' + notes.sys : sys)
 
   // EOL-insensitive comparable text: Latin1 maps bytes 1:1 to chars (byte-faithful both ways), so
   // this is a byte comparison modulo 0x0D, not a decode — a real encoding or BOM change still
@@ -751,8 +890,9 @@ function main(payload) {
 
   if (!drifted.length) {
     // No drift: the rule is the whole output, no systemMessage (a person has nothing to act on) — unless a seed
-    // file holds retired text, which the person must edit (ywr-harness ADR 0207).
-    if (retired.sys) emit({ systemMessage: retired.sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rule } })
+    // file holds retired text or CLAUDE.md lacks the canon import, which the person must edit (ywr-harness ADR 0207,
+    // ywr-harness ADR 0215).
+    if (notes.sys) emit({ systemMessage: notes.sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rule } })
     else if (rule) emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rule } })
     return
   }

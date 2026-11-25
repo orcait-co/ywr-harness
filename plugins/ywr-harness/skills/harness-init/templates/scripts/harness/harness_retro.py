@@ -1,9 +1,7 @@
 """Slice retro gate — a zero-token deterministic retrospective, run from `post-commit`.
 
 Seven checks, plus SIZE, which reports an in-scope file that crosses 1,000 lines in the checked
-range (ywr-harness ADR 0171), and CLASS, which reports a commit body with fewer `class:` lines than
-the high and medium findings its review digest counts (ywr-harness ADR 0208). CLASS needs no
-declaration and is always on. Everything else repo-specific comes from `.harness.json`.
+range (ywr-harness ADR 0171). Everything repo-specific comes from `.harness.json`.
 
 ## Why Python and not POSIX sh
 
@@ -22,11 +20,8 @@ the author and their own history. The one exception: a git failure prints a
   python harness_retro.py                  # the commit just made (HEAD); a merge commit
                                            # resolves as HEAD^1..HEAD (first-parent, ywr-harness ADR 0043)
   python harness_retro.py main~3..HEAD     # a whole slice — absorbs mid-slice false positives
-  python harness_retro.py --coverage       # full unowned / dead-mapping / large-file audit, and the
-                                           # class-line tally of recent closes (ywr-harness ADR 0209)
+  python harness_retro.py --coverage       # full unowned / dead-mapping / large-file audit
   python harness_retro.py --delegations    # the delegation ledger's report (ywr-harness ADR 0120/0171)
-  python harness_retro.py --class-message <file>   # the commit-msg hook (ywr-harness ADR 0208): the ONE
-                                           # blocking mode — exit 1 when the message owes `class:` lines
   SLICE_RETRO=0 git commit ...             # skip once
 
 A check whose declaration is empty is DISABLED, and the disablement is reported under --coverage.
@@ -275,11 +270,8 @@ def commit_bodies(raw: str) -> list[tuple[str, str]]:
     return out
 
 
-def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, list[str]]], list[str], str, str,
-                                                              list[tuple[str, str]]]:
-    """(changes, subjects, pre, post, bodies). `bodies` is [(short sha, message)] of the range's commits,
-    read by the same one `git log` call as the subjects (CLASS, ywr-harness ADR 0208: no extra git
-    spawn). `changes` is [(status, [paths])] — rename lines carry two.
+def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, list[str]]], list[str], str, str]:
+    """(changes, subjects, pre, post). `changes` is [(status, [paths])] — rename lines carry two.
 
     A merge commit is a RANGE in disguise (ywr-harness ADR 0043): `diff-tree` without `-m` prints
     NOTHING for one, so treating it as a plain commit would run every check over an empty change
@@ -317,7 +309,7 @@ def resolve_range(root: Path, rev_range: str | None) -> tuple[list[tuple[str, li
         post = "HEAD"
     # A subject is the message's first paragraph on one line, as `%s` gives it.
     subjects = [" ".join(m.split("\n\n", 1)[0].split()) for _, m in bodies]
-    return name_status_z(raw), [s for s in subjects if s], pre, post, bodies
+    return name_status_z(raw), [s for s in subjects if s], pre, post
 
 
 SIZE_LIMIT = 1000
@@ -427,159 +419,8 @@ def size_crossings(root: Path, cand: list[str], pre: str, post: str,
     return [(x, after[x]) for x in hit if before.get(x, 0) < SIZE_LIMIT]
 
 
-# CLASS (ywr-harness ADR 0208): a close record owes one `class:` line per confirmed high or medium
-# finding. The digest prefix varies (`Review:`, `digest:`, `review wf_...:`) and a line break can fall
-# inside the parentheses, so the body's whitespace is normalised before the digest match.
-_CLASS_DIGEST_RX = re.compile(r"confirmed\s+\d+\s*\(\s*h(\d+)\s+m(\d+)\s+l\d+\s*\)")
-_CLASS_LINE_RX = re.compile(r"^[ \t]*(?:[-*][ \t]+)?class:", re.M)
-# A scissors line with any comment string (git 2.45+ allows more than one character). Only the hook's mode
-# uses it, to stop counting class lines there: see `class_message`.
-_CLASS_SCISSORS_RX = re.compile(r"^\S+ -{24} >8 -{24}[ \t\r]*$", re.M)
-
-
-def _class_counts(body: str) -> tuple[int, int]:
-    """(findings owed, class lines present) for one message. The one place the two regexes are applied."""
-    need = sum(int(h) + int(m) for h, m in _CLASS_DIGEST_RX.findall(" ".join(body.split())))
-    return need, len(_CLASS_LINE_RX.findall(body)) if need else 0
-
-
-def class_findings(bodies: list[tuple[str, str]]) -> list[str]:
-    """One CLASS finding per commit whose message counts more high and medium findings than it has
-    `class:` lines. `bodies` comes from `resolve_range`: the range's own commits, one `git log` call."""
-    out: list[str] = []
-    for sha, body in bodies:
-        need, have = _class_counts(body)
-        if need and have < need:
-            out.append(f"CLASS: commit {sha.strip()} counts {need} confirmed high or medium finding(s) but has "
-                       f"{have} class line(s) — ywr-harness ADR 0208: one `class: <id> instance — <reason>` or "
-                       "`class: <id> BACKLOG — <owner>` line per finding")
-    return out
-
-
-def comment_strings(cwd: Path) -> list[str]:
-    """The comment strings that git's cleanup may strip, from ONE `git config` read (ywr-harness ADR 0209).
-    Git 2.45+ reads `core.commentChar` and `core.commentString` as one setting, and the last value wins;
-    an older git reads `core.commentChar` only. Both candidates are returned, so a mismatch between the
-    two readings can only over-refuse. `auto` is skipped: git then picks a character from
-    `#;@!$%^&|:`, and none of them starts a class line. No setting returns [] (git's `#` never starts
-    one either). A git failure raises; the caller refuses."""
-    raw = git(cwd, "config", "-z", "--get-regexp", r"^core\.comment(char|string)$", ok_exits=(1,))
-    last_any = last_char = ""
-    for rec in raw.split("\0"):
-        key, sep, val = rec.partition("\n")
-        if not sep:
-            continue  # a valueless key: git refuses it as a comment string anyway
-        last_any = val
-        if key.lower() == "core.commentchar":
-            last_char = val
-    return sorted({v for v in (last_any, last_char) if v and v.lower() != "auto"})
-
-
-def class_message(path: str) -> int:
-    """The `commit-msg` hook's mode (ywr-harness ADR 0208): read ONE message file and refuse a shortfall.
-    It counts digests in the WHOLE file and class lines only above the first scissors line. Git stores at
-    most the whole file, so the digests counted here are never fewer than the stored ones. Above the
-    scissors line git's cleanup drops comment lines, and below it an editor commit's `-v` diff is
-    dropped. A configured comment string can start a class line (`-`, `*`, `c`, a space), so a message
-    that would pass reads it (ywr-harness ADR 0209): a class line that starts with it is not counted,
-    and the scissors line of that exact string cuts too. The class lines counted here are therefore
-    never more than the stored ones, and a pass here implies a pass of the post-commit retro. Every
-    error is an over-refusal (`-v` diff text, a `-F` body with class lines under a scissors-shaped
-    line, or a `-m`/`-F` body whose class lines start with the comment string, which that cleanup
-    keeps). `--no-verify` bypasses. Exit 1 prints the refusal; exit 0 prints nothing. A git process
-    starts only on that would-pass path: a refusal and a digest-free message need the file alone."""
-    with open(path, encoding="utf-8", errors="replace", newline="") as fh:
-        raw = fh.read()
-    need, _ = _class_counts(raw)
-    if not need:
-        return 0
-    cut = _CLASS_SCISSORS_RX.search(raw)
-    end = cut.start() if cut else len(raw)
-    starts = [m.start() for m in _CLASS_LINE_RX.finditer(raw, 0, end)]
-    dropped: list[str] = []
-    if len(starts) >= need:
-        try:
-            strings = comment_strings(Path.cwd())
-        except (subprocess.CalledProcessError, OSError) as e:
-            why = (getattr(e, "stderr", "") or str(e)).strip().splitlines()
-            print(f"[harness] commit-msg: REFUSED — git config could not be read ({why[0] if why else 'no detail'}), "
-                  "so the comment string that git strips is unknown and the class lines cannot be checked "
-                  "(ywr-harness ADR 0208/0209). Fix the tool, or commit with --no-verify.")
-            return 1
-        for s in strings:
-            m = re.compile(r"^" + re.escape(s) + r" -{24} >8 -{24}[ \t\r]*$", re.M).search(raw)
-            if m and m.start() < end:
-                if any(m.start() <= p < end for p in starts) and s not in dropped:
-                    dropped.append(s)  # its scissors line removed class lines: the refusal names it too
-                end = m.start()
-        kept = []
-        for p in starts:
-            if p >= end:
-                continue
-            hit = next((s for s in strings if raw.startswith(s, p)), None)
-            if hit is None:
-                kept.append(p)
-            elif hit not in dropped:
-                dropped.append(hit)
-        starts = kept
-    have = len(starts)
-    if have >= need:
-        return 0
-    print(f"[harness] commit-msg: REFUSED — this message counts {need} confirmed high or medium finding(s) in its "
-          f"review digest but has {have} class line(s) (ywr-harness ADR 0208).")
-    print("[harness]   Add one line per finding: `class: <id> instance — <reason>` or "
-          "`class: <id> BACKLOG — <owner>`.")
-    if dropped:
-        shown = ", ".join(f"`{s}`" for s in dropped)
-        print(f"[harness]   Lines that start with the comment string {shown} (core.commentChar or core.commentString), "
-              "or that follow its scissors line, are not counted, because git's cleanup can drop them "
-              "(ywr-harness ADR 0209).")
-    print("[harness]   The only bypass is `git commit --no-verify`; the post-commit retro still reports the gap.")
-    return 1
-
-
-# The class-line tally of `--coverage` (ywr-harness ADR 0209): the forms of ywr-harness ADR 0208, matched exactly.
-CLASS_TALLY_CAP = 200
-_CLASS_FORM_RX = re.compile(r"^[ \t]*(?:[-*][ \t]+)?class:[ \t]*\S+[ \t]+(instance|BACKLOG)\b", re.M)
-
-
-def class_tally_read(root: Path) -> list[tuple[str, str]]:
-    """The messages of the last CLASS_TALLY_CAP + 1 commits from HEAD, one `git log` call. The extra
-    commit only tells the report whether the cap cut the history."""
-    return commit_bodies(git(root, "log", f"-{CLASS_TALLY_CAP + 1}", LOG_BODY_FMT))
-
-
-def class_tally(bodies: list[tuple[str, str]]) -> list[str]:
-    """The report lines of the tally. A close is a message whose digests count high or medium findings."""
-    capped = len(bodies) > CLASS_TALLY_CAP
-    bodies = bodies[:CLASS_TALLY_CAP]
-    span = (f"the last {CLASS_TALLY_CAP} commits (the read cap; older commits not read)" if capped
-            else f"all {len(bodies)} commit(s)")
-    closes = owed = with_lines = short = bare = inst = backlog = other = 0
-    for _, body in bodies:
-        need, have = _class_counts(body)
-        if not need:
-            continue
-        forms = _CLASS_FORM_RX.findall(body)
-        closes += 1
-        owed += need
-        inst += forms.count("instance")
-        backlog += forms.count("BACKLOG")
-        other += have - len(forms)
-        with_lines += 1 if have else 0
-        if have < need:
-            short += 1
-            bare += 0 if have else 1
-    if not closes:
-        return [f"-- class lines (ywr-harness ADR 0208): no review digest in {span}"]
-    return [f"-- class lines (ywr-harness ADR 0208) in {span}:",
-            f"   closes with a review digest: {closes}, owing {owed} high or medium finding(s)",
-            f"   class lines: {inst} instance, {backlog} BACKLOG, {other} in another form, in {with_lines} close(s)",
-            f"   closes short of class lines: {short}, of which {bare} have none"]
-
-
 def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | None) -> list[str]:
-    changes, subjects, pre, post, bodies = resolve_range(root, rev_range)
+    changes, subjects, pre, post = resolve_range(root, rev_range)
     if not changes:
         return []
 
@@ -674,27 +515,13 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
         for x, n in size_crossings(root, cand, pre, post, renamed):
             f.append(f"SIZE: {x} crossed {SIZE_LIMIT:,} lines (now {n:,}) — consider splitting it")
 
-    # 9) CLASS — a close record with fewer `class:` lines than the high and medium findings of its review
-    #    digest (ywr-harness ADR 0208). Always on, no declaration.
-    f.extend(class_findings(bodies))
-
     return f
 
 
 def coverage(root: Path, cfg: dict, warns: list[str]) -> int:
     print("[slice-retro] coverage report")
     has_head = bool(git(root, "rev-parse", "-q", "--verify", "HEAD", ok_exits=(1,)).strip())
-    # The class-line tally's one `git log` (ywr-harness ADR 0209) runs on a worker thread beside the
-    # ls-files and git grep calls below, so the report's wall-clock does not grow by a git spawn. The
-    # import is local: the per-commit run and the commit-msg hook never pay for it.
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        tally = pool.submit(class_tally_read, root) if has_head else None
-        rc = _coverage_body(root, cfg, warns, has_head)
-        tally_lines = class_tally(tally.result()) if tally else [
-            "-- class lines (ywr-harness ADR 0208): no commit yet"]
-    for line in tally_lines:
-        print(line)
+    rc = _coverage_body(root, cfg, warns, has_head)
     print(f"-- ignore register: {cfg['retro_ignore_file']}"
           + ("" if (root / cfg["retro_ignore_file"]).is_file() else "   (absent — nothing is exempt)"))
     for w in warns:
@@ -978,17 +805,15 @@ def main() -> int:
     ap.add_argument("--repo", dest="repo", default=None)
     ap.add_argument("--coverage", action="store_true")
     ap.add_argument("--delegations", action="store_true")
-    ap.add_argument("--class-message", dest="class_message", default=None, metavar="FILE",
-                    help="commit-msg mode (ywr-harness ADR 0208): exit 1 when FILE owes class lines it lacks; "
-                         "digests are counted in the whole file, class lines only above the first scissors "
-                         "line, so any error is an over-refusal; --no-verify bypasses")
     ap.add_argument("range", nargs="?", default=None)
+    # Accepted and ignored. A commit-msg hook that an older scaffold placed still calls this mode, and an
+    # unknown flag would make that hook refuse every message holding the word "confirmed" (ywr-harness ADR 0215).
+    ap.add_argument("--class-message", dest="class_message", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.class_message is not None:
-        if args.coverage or args.delegations or args.range or args.repo:
+        if args.coverage or args.delegations or args.range is not None:
             ap.error("--class-message takes no other argument")
-        # Before the SLICE_RETRO hatch: that variable skips the post-commit retro, never this refusal.
-        return class_message(args.class_message)
+        return 0
     # The skip hatch belongs to the per-commit run (ywr-harness ADR 0120): an explicit --delegations request is
     # never silenced by it. Read after parsing, so an abbreviated flag (`--deleg`) is the same request.
     if os.environ.get("SLICE_RETRO") == "0" and not args.delegations:

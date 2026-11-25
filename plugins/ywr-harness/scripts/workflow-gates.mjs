@@ -8,7 +8,7 @@
 //               reason is the opposite of what was once assumed (that `node --check` FAILS on the
 //               file): measured 2026-07-25 on node v24.14.0, an `export` line makes the file
 //               module-detected and NOT syntax-checked, so --check exits 0 for any content after
-//               it — including the real adversarial-review.js with an unbalanced paren injected
+//               it — including a real workflow with an unbalanced paren injected
 //               mid-file. On this class (every workflow carries `export const meta`) --check is
 //               vacuous, not noisy.
 //               So the `export` keyword is stripped and the body compiled inside an async wrapper
@@ -37,9 +37,9 @@ import { spawnSync } from 'node:child_process';
 const argv = process.argv.slice(2);
 const optIdx = argv.indexOf('--root');
 const root = resolve(optIdx >= 0 && argv[optIdx + 1] ? argv[optIdx + 1] : '.');
-// The corpus directory is an option, not a constant: this gate now ships inside a plugin whose
-// own workflows live at `workflows/` (plugin root), while a consuming repo keeps them under
-// `.claude/workflows`. Hardcoding either one leaves the other gated by nothing while the summary
+// The corpus directory is an option, not a constant: the plugin ships no workflow now, while a
+// consuming repo keeps its own under `.claude/workflows`. A caller whose corpus sits elsewhere
+// passes `--dir`. A fixed path would leave that corpus gated by nothing while the summary
 // still prints a green count — the exact failure the other arms of this file exist to prevent.
 const dirIdx = argv.indexOf('--dir');
 const REL = dirIdx >= 0 && argv[dirIdx + 1] ? argv[dirIdx + 1] : '.claude/workflows';

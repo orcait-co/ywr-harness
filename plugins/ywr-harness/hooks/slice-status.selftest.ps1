@@ -321,7 +321,7 @@ const TREE = 'python scripts/harness/harness_gates.py --tree'
   // ADR 0140: the status line is off; the entry registers the ledger, the prerequisite check (ADR 0142) and
   // the decision prompts (ADR 0175). The one tool.call hook is decision-prompts.mjs's, not the status line's.
   eq('mods.mjs registers the ledger, the prerequisite check and the decision prompts, each hook once (the status line is unregistered)',
-    evs.slice().sort(), ['agent.spawn', 'command.run', 'command.run', 'session.append', 'session.start', 'tool.call', 'turn.complete', 'turn.start', 'turn.step', 'ui.render'])
+    evs.slice().sort(), ['agent.spawn', 'command.run', 'command.run', 'session.start', 'tool.call', 'turn.complete', 'turn.start', 'turn.step', 'ui.render'])
   eq('...and none of the status line\'s own hooks (session.measure, session.end)', evs.filter(ev => ['session.measure', 'session.end'].includes(ev)), [])
 }
 

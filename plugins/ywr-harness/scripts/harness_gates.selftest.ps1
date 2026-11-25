@@ -405,6 +405,98 @@ Set-Content -LiteralPath (Join-Path $a 'REVIEW.md') -Value '# invariants' -NoNew
 $rI = Invoke-Gates $a @()
 $ok = (Assert-True 'I present review canon is not flagged' ($rI.Out -notmatch 'NOT FOUND') $rI.Out) -and $ok
 
+# --- I2: the canon line says whether CLAUDE.md imports the canon (ywr-harness ADR 0215) ----------------
+# /code-review reads CLAUDE.md and never the canon file, so a canon without an @-import is a review without it.
+# Claude Code skips code spans and fenced blocks and resolves a relative import against the importing file.
+$ci = New-Repo 'canon-import' $CFG @('api/app.py')
+Set-Content -LiteralPath (Join-Path $ci 'REVIEW.md') -Value '# invariants' -NoNewline
+$rCi = Invoke-Gates $ci @()
+$ok = (Assert-True 'I2 no CLAUDE.md: the canon line says NOT IMPORTED' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(NOT IMPORTED') $rCi.Out) -and $ok
+# Each trap below loaded nothing on host 2.1.331 (fact 250): a code span, a span over two lines, a ~~~ line
+# inside a backtick fence, and an indented code block after a blank line.
+Set-Content -LiteralPath (Join-Path $ci 'CLAUDE.md') -Value ("# x`nWrite ``@REVIEW.md`` to import.`n`nA span ``starts`n@REVIEW.md ends`` here.`n`n" + '```md' + "`n~~~`n@REVIEW.md`n" + '```' + "`n`nCode:`n`n    @REVIEW.md`n") -NoNewline
+$rCi = Invoke-Gates $ci @()
+$ok = (Assert-True 'I2 code spans, a span over two lines, a ~~~ line in a backtick fence and an indented block import nothing' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(NOT IMPORTED') $rCi.Out) -and $ok
+Set-Content -LiteralPath (Join-Path $ci 'CLAUDE.local.md') -Value 'Mine: @REVIEW.md' -NoNewline
+$rCi = Invoke-Gates $ci @()
+$ok = (Assert-True 'I2 an import in CLAUDE.local.md counts' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(imported by CLAUDE\.local\.md\)') $rCi.Out) -and $ok
+Remove-Item -LiteralPath (Join-Path $ci 'CLAUDE.local.md') -Force
+if ($IsWindows) {
+    # Windows paths ignore case, and the probe loaded @C4.MD for c4.md there.
+    Set-Content -LiteralPath (Join-Path $ci 'CLAUDE.local.md') -Value 'Mine: @review.md' -NoNewline
+    $rCi = Invoke-Gates $ci @()
+    $ok = (Assert-True 'I2 Windows: @review.md imports REVIEW.md' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(imported by CLAUDE\.local\.md\)') $rCi.Out) -and $ok
+    Remove-Item -LiteralPath (Join-Path $ci 'CLAUDE.local.md') -Force
+}
+New-Item -ItemType Directory -Force -Path (Join-Path $ci '.claude') | Out-Null
+Set-Content -LiteralPath (Join-Path $ci '.claude/CLAUDE.md') -Value "See @REVIEW.md here." -NoNewline
+$rCi = Invoke-Gates $ci @()
+$ok = (Assert-True 'I2 .claude/CLAUDE.md resolves @REVIEW.md to .claude/REVIEW.md, no import' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(NOT IMPORTED') $rCi.Out) -and $ok
+Set-Content -LiteralPath (Join-Path $ci '.claude/CLAUDE.md') -Value "See @../REVIEW.md here." -NoNewline
+$rCi = Invoke-Gates $ci @()
+$ok = (Assert-True 'I2 .claude/CLAUDE.md imports with @../REVIEW.md mid-sentence' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(imported by \.claude/CLAUDE\.md\)') $rCi.Out) -and $ok
+Set-Content -LiteralPath (Join-Path $ci 'CLAUDE.md') -Value "# x`n`n@./REVIEW.md`n" -NoNewline
+$rCi = Invoke-Gates $ci @()
+$ok = (Assert-True 'I2 CLAUDE.md wins and @./REVIEW.md counts' ($rCi.Out -match 'review canon: REVIEW\.md\s+\(imported by CLAUDE\.md\)') $rCi.Out) -and $ok
+# A canon path with a space: Claude Code reads `@docs/my\ canon.md` as one path, and an absolute token stands as written.
+$cs = New-Repo 'canon-import-space' ($CFG -replace '"canon": "REVIEW.md"', '"canon": "docs/my canon.md"') @('api/app.py')
+New-Item -ItemType Directory -Force -Path (Join-Path $cs 'docs') | Out-Null
+Set-Content -LiteralPath (Join-Path $cs 'docs/my canon.md') -Value '# invariants' -NoNewline
+Set-Content -LiteralPath (Join-Path $cs 'CLAUDE.md') -Value "@docs/my canon.md`n" -NoNewline
+$rCs = Invoke-Gates $cs @()
+$ok = (Assert-True 'I2 an unescaped space ends the token: NOT IMPORTED' ($rCs.Out -match 'review canon: docs/my canon\.md\s+\(NOT IMPORTED') $rCs.Out) -and $ok
+Set-Content -LiteralPath (Join-Path $cs 'CLAUDE.md') -Value "@docs/my\ canon.md`n" -NoNewline
+$rCs = Invoke-Gates $cs @()
+$ok = (Assert-True 'I2 an escaped space keeps the token whole: imported' ($rCs.Out -match 'review canon: docs/my canon\.md\s+\(imported by CLAUDE\.md\)') $rCs.Out) -and $ok
+# Concatenated, not Join-Path: PowerShell on Linux turns the escaping backslash into a separator.
+Set-Content -LiteralPath (Join-Path $cs 'CLAUDE.md') -Value ('@' + ($cs -replace '\\', '/') + '/docs/my\ canon.md' + "`n") -NoNewline
+$rCs = Invoke-Gates $cs @()
+$ok = (Assert-True 'I2 an absolute token stands as written: imported' ($rCs.Out -match 'review canon: docs/my canon\.md\s+\(imported by CLAUDE\.md\)') $rCs.Out) -and $ok
+
+# --- I3: the canon is a section of a memory file (ywr-harness ADR 0217) --------------------------------
+# CLAUDE.md, .claude/CLAUDE.md and CLAUDE.local.md load at session start, so a canon in one of them needs no import.
+# The line warns when the file has no ATX heading `Review canon` outside code. An undeclared canon is CLAUDE.md, or
+# the root REVIEW.md when that file exists (the file that older scaffolds seeded), which then needs an import.
+$cmCfg = $CFG -replace '"canon": "REVIEW.md"', '"canon": "CLAUDE.md"'
+$cm = New-Repo 'canon-memory' $cmCfg @('api/app.py')
+$cmSession = 'review canon: CLAUDE\.md\s+\(loaded at session start\)'
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 a declared memory-file canon that does not exist is NOT FOUND' ($rCm.Out -match 'review canon: CLAUDE\.md\s+\(NOT FOUND') $rCm.Out) -and $ok
+Set-Content -LiteralPath (Join-Path $cm 'CLAUDE.md') -Value "# x`n`n## Review canon`n`n1. An invariant.`n" -NoNewline
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 a memory-file canon with the heading needs no import: loaded at session start' ($rCm.Out -match $cmSession -and $rCm.Out -notmatch 'NO HEADING|NOT IMPORTED') $rCm.Out) -and $ok
+Set-Content -LiteralPath (Join-Path $cm 'CLAUDE.md') -Value "# x`n`nRules without the section.`n" -NoNewline
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 a memory-file canon without the heading: NO HEADING, a warning on the canon line, not NOT FOUND' ($rCm.Out -match ($cmSession.Replace('\)', ', NO HEADING')) -and $rCm.Out -match "no ATX heading 'Review canon' outside code" -and $rCm.Out -match 'ywr-harness ADR 0217' -and $rCm.Out -notmatch 'NOT FOUND') $rCm.Out) -and $ok
+# Code never counts: a fenced block, a ~~~ fence, an indented block, a span, a heading with no space after the hashes.
+Set-Content -LiteralPath (Join-Path $cm 'CLAUDE.md') -Value ("# x`n`n" + '```md' + "`n## Review canon`n" + '```' + "`n`n~~~`n## Review canon`n~~~`n`nCode:`n`n    ## Review canon`n`nA span ``## Review canon`` here.`n`n#Review canon`n") -NoNewline
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 the heading only inside code, or with no space after the hashes, is NO HEADING' ($rCm.Out -match 'review canon: CLAUDE\.md\s+\(loaded at session start, NO HEADING') $rCm.Out) -and $ok
+Set-Content -LiteralPath (Join-Path $cm 'CLAUDE.md') -Value "# x`n`n### review CANON ###`n" -NoNewline
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 the heading is case-insensitive, any level, with closing hashes' ($rCm.Out -match $cmSession -and $rCm.Out -notmatch 'NO HEADING') $rCm.Out) -and $ok
+# A declared canon beats a root REVIEW.md: the declaration names the file, so REVIEW.md is not consulted.
+Set-Content -LiteralPath (Join-Path $cm 'REVIEW.md') -Value '# legacy invariants' -NoNewline
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 a declared CLAUDE.md canon stays the canon beside a root REVIEW.md' ($rCm.Out -match $cmSession) $rCm.Out) -and $ok
+# .claude/CLAUDE.md as the declared canon passes as a memory file.
+New-Item -ItemType Directory -Force -Path (Join-Path $cm '.claude') | Out-Null
+Set-Content -LiteralPath (Join-Path $cm '.claude/CLAUDE.md') -Value "## Review canon`n" -NoNewline
+Set-Content -LiteralPath (Join-Path $cm '.harness.json') -Value ($CFG -replace '"canon": "REVIEW.md"', '"canon": ".claude/CLAUDE.md"') -NoNewline
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 .claude/CLAUDE.md as the declared canon passes as a memory file' ($rCm.Out -match 'review canon: \.claude/CLAUDE\.md\s+\(loaded at session start\)') $rCm.Out) -and $ok
+# An undeclared canon: the root REVIEW.md when it exists, and then it needs an import like any other file.
+Set-Content -LiteralPath (Join-Path $cm '.harness.json') -Value ($CFG -replace '"canon": "REVIEW.md",\s*', '') -NoNewline
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 an undeclared canon beside a root REVIEW.md is REVIEW.md, NOT IMPORTED' ($rCm.Out -match 'review canon: REVIEW\.md\s+\(NOT IMPORTED' -and $rCm.Out -match 'ywr-harness ADR 0217') $rCm.Out) -and $ok
+Set-Content -LiteralPath (Join-Path $cm 'CLAUDE.md') -Value "# x`n`n@REVIEW.md`n" -NoNewline
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 an undeclared canon that resolves to REVIEW.md passes through its import' ($rCm.Out -match 'review canon: REVIEW\.md\s+\(imported by CLAUDE\.md\)') $rCm.Out) -and $ok
+Remove-Item -LiteralPath (Join-Path $cm 'REVIEW.md') -Force
+Set-Content -LiteralPath (Join-Path $cm 'CLAUDE.md') -Value "## Review canon`n" -NoNewline
+$rCm = Invoke-Gates $cm @()
+$ok = (Assert-True 'I3 an undeclared canon and no REVIEW.md: the default is CLAUDE.md, loaded at session start' ($rCm.Out -match $cmSession) $rCm.Out) -and $ok
+
 # --- J: non-ASCII output survives a hostile console codepage ------------------------------------
 $prevIo = $env:PYTHONIOENCODING
 $env:PYTHONIOENCODING = 'cp1252'
@@ -1521,6 +1613,13 @@ $metaCfg = '{ "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer"
 $z2 = New-Repo 'scaffold-claim-declared' $metaCfg @('.harness-version')
 $rZ2 = Invoke-Gates $z2 @()
 $ok = (Assert-True 'Z2 a declared group WINS over the built-in claim' ($rZ2.Out -match '\[meta\] 1 file' -and $rZ2.Out -notmatch 'scaffold-claimed') $rZ2.Out) -and $ok
+
+# Z5: a path that an older scaffold placed and the current one retired stays claimed built-in, so a repo
+# that still tracks it passes its partition audit (ywr-harness ADR 0215). Mutation anchor: dropping the
+# retired set moves both paths into ungrouped.
+$z5 = New-Repo 'scaffold-claim-retired' $CFG @('.githooks/commit-msg', 'docs/prompts/review-digest.md')
+$rZ5 = Invoke-Gates $z5 @()
+$ok = (Assert-True 'Z5 retired scaffold paths stay claimed built-in, nothing ungrouped' ($rZ5.Out -match 'scaffold-claimed \(2 file\(s\)' -and $rZ5.Out -match '(?m)^  \.githooks/commit-msg\s*$' -and $rZ5.Out -match '(?m)^  docs/prompts/review-digest\.md\s*$' -and $rZ5.Out -notmatch 'ungrouped \(') $rZ5.Out) -and $ok
 
 # Z3: the claim composes with --all (CI's push-run partition audit is where the pre-0044 failure
 # actually landed): the tracked, unchanged .harness.json is in the full-tree scope, claimed

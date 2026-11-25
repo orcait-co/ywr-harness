@@ -31,7 +31,7 @@
 // existing — a `.claude/settings.json` holding only hooks or permissions contributes
 // nothing, and claiming otherwise would be the same existence-vs-selection confusion
 // this slice exists to retire. An unparseable settings file is reported as unknown,
-// never as absent (REVIEW.md #4).
+// never as absent (the canon review invariant 4).
 //
 // Payload-authored text is echoed through inline() (hook-lib.mjs: C0, DEL, U+0085 NEL,
 // U+2028/U+2029 and the backtick become a space, then a hard cap), so a hostile value cannot forge

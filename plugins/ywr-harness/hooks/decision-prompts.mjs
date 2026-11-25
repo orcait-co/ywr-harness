@@ -1,22 +1,22 @@
-// Hooks module (Claude Mods; ywr-harness ADR 0174, narrowed by ywr-harness ADR 0175) — the AUTO switch and its stage prompts.
+// Hooks module (Claude Mods; ywr-harness ADR 0174, narrowed by ywr-harness ADR 0175 and ywr-harness ADR 0215) — the AUTO switch and its stage prompts.
 // `mods.mjs`, the entry `hooks.json` names under `modules`, registers it beside the ledger and the
 // prerequisite check.
 //
 // While `/ywr-harness:auto on` holds in this checkout AND `.harness.json` declares `decision_prompts`, the
-// module adds the repo's own prompt to the model's input at three slice stages, and with `check: true`
+// module adds the repo's own prompt to the model's input at two slice stages, and with `check: true`
 // it also asks one side-check model call and adds its answer beside the prompt:
 //
-// - `review-start`: a main-loop Workflow call that names `ywr-harness:adversarial-review`.
-// - `review-digest`: the main-loop `session.append` row of door `delivery` or `prompt`, origin kind
-//   `task-notification`, whose text holds the digest's fixed words (`DIGEST_MARKS`, ywr-harness ADR 0175 Decision 2,
-//   ywr-harness ADR 0187). A workflow that ends during a turn arrives on `delivery`; one that ends while the session is
-//   idle opens a new turn on `prompt` (ywr-harness fact 192). The user's own prompt can hold the same words, so
-//   the origin is part of the check.
+// - `review-start`: a main-loop Skill call of the built-in `/code-review` (`isReviewCall`, ywr-harness ADR 0215
+//   Decision 10). The stage data is the call's args, which hold the review level. The review runs as a
+//   background agent, and its findings reach the session as a later notification. The module adds nothing at
+//   that notification.
 // - `ready-report`: a main-loop shell call whose last step is `harness_gates.py --tree` (`isTreeRun` of
 //   `slice-status.mjs`, which stays unregistered — ywr-harness ADR 0140; this module imports its pure half only).
 //
 // `slice-close` is not a stage: its detector needs `skill.prompt`, and the built-in guard
 // `cc-plugin-sec-default` skips a user-tier plugin's `skill.prompt` and `classic.*` hooks (ywr-harness ADR 0175).
+// `review-digest` is not a stage either: ywr-harness ADR 0215 retired it with the review workflow. A
+// `.harness.json` that still declares it gets a problem line that names `review-start`, never a silent ignore.
 //
 // The subagent deny (ywr-harness ADR 0201) is no stage either: no prompt file, no side check, no stage log. A close
 // writes the handoff and one commit, so only the main loop may run it. The `tool.call` hook answers a Skill call of
@@ -33,7 +33,7 @@
 // `CHECK_WAIT_MS` (ywr-harness ADR 0175 Decisions 5, 7 and 9). The side check is `$.model.complete` on the `sonnet` alias at
 // effort low, NOT `$.model.fork`: a fork continued the main task, tried tools and held the stage 8–11 s,
 // where the completion answered from the stage data in about 1 s (ywr-harness fact 178). Its prompt is `FRAME`, the
-// prompt file and the stage's own data; it reads no conversation. A call or row with an `agentId` (a
+// prompt file and the stage's own data; it reads no conversation. A call with an `agentId` (a
 // subagent) never starts a stage, and one side check runs at a time.
 //
 // The edit guard (ywr-harness ADR 0175 Decision 13) covers the main loop and every subagent. While the switch is on,
@@ -77,8 +77,8 @@
 import { isTreeRun } from './slice-status.mjs'
 
 export const COMMAND = 'ywr-harness:auto'
-export const STAGES = ['review-start', 'review-digest', 'ready-report']
-export const REVIEW_WORKFLOW = 'ywr-harness:adversarial-review'
+export const STAGES = ['review-start', 'ready-report']
+export const REVIEW_SKILL = 'code-review'    // the built-in command that the slice close calls (ywr-harness ADR 0215)
 export const STATE_REL = 'ywr-harness/auto.json'
 export const LOG_FILE = 'auto-stages.jsonl'   // beside the switch file
 export const LOG_MAX = 200                    // lines the stage log keeps
@@ -90,8 +90,6 @@ export const CHECK_EFFORT = 'low'
 export const CHECK_MAX_TOKENS = 1024
 export const PROMPT_MAX = 16000 // characters of one prompt file the model reads
 export const DATA_MAX = 6000    // characters of stage data in the side-check prompt
-export const DIGEST_MARKS = ['· multi_lens ', 'full lists follow (confirmed']
-export const DIGEST_DOORS = ['delivery', 'prompt'] // mid-turn, idle (ywr-harness ADR 0187)
 export const SHELL_TOOLS = ['Bash', 'PowerShell']
 export const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit']
 export const FRAME =
@@ -114,6 +112,13 @@ export function safePromptPath(p) {
   return p
 }
 
+// A name that is no stage, with the problem line it gets instead of the unknown-stage one.
+export const NOT_STAGES = {
+  'slice-close': 'decision_prompts.slice-close: not a stage (ywr-harness ADR 0175: the guard skips skill.prompt) — ignored',
+  'review-digest': 'decision_prompts.review-digest: the stage retired in ywr-harness ADR 0215; declare review-start for the ' +
+    '/code-review call instead — ignored',
+}
+
 // `decision_prompts` of a parsed `.harness.json`: `{ stages: { <stage>: { prompt, check } }, problems }`.
 // A bad entry is dropped and named; it never turns a stage on.
 export function parseDecl(raw) {
@@ -127,8 +132,8 @@ export function parseDecl(raw) {
   }
   for (const [name, entry] of Object.entries(d)) {
     if (!STAGES.includes(name)) {
-      out.problems.push(name === 'slice-close'
-        ? 'decision_prompts.slice-close: not a stage (ywr-harness ADR 0175: the guard skips skill.prompt) — ignored'
+      out.problems.push(Object.hasOwn(NOT_STAGES, name)
+        ? NOT_STAGES[name]
         : `decision_prompts.${name}: unknown stage (known: ${STAGES.join(', ')}) — ignored`)
       continue
     }
@@ -164,49 +169,31 @@ export function switchText(on, at) {
   return JSON.stringify({ on, at }) + '\n'
 }
 
+// The skill names that reach the review: `code-review`, which the host can also spell with one leading slash.
+// The match ignores case and edge spaces, as `CLOSE_NAME` does. A plugin-prefixed name is another skill.
+export const REVIEW_NAME = /^\/?code-review$/i
+
+// A Skill call of the built-in review command.
+export function isReviewCall(e) {
+  return !!e && e.tool === 'Skill' && typeof e.skill === 'string' && REVIEW_NAME.test(e.skill.trim())
+}
+
 // The stage a main-loop tool call starts, or null.
 export function stageOfToolCall(e) {
   if (!e || e.agentId !== undefined) return null
-  if (e.tool === 'Workflow' && e.name === REVIEW_WORKFLOW) return 'review-start'
+  if (isReviewCall(e)) return 'review-start'
   if (SHELL_TOOLS.includes(e.tool) && isTreeRun(e.command)) return 'ready-report'
   return null
 }
 
-// A row's text blocks joined (the digest row carries one text block, ywr-harness fact 177).
-export function rowText(message) {
-  const content = message && Array.isArray(message.content) ? message.content : []
-  return content.map(b => (b && b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join('\n')
-}
-
-export function isDigestRow(e) {
-  if (!e || e.agentId !== undefined || !DIGEST_DOORS.includes(e.door)) return false
-  if (!e.origin || e.origin.kind !== 'task-notification') return false
-  const text = rowText(e.message)
-  return DIGEST_MARKS.every(m => text.includes(m))
-}
-
-// The row with `extra` after its last text block; the other blocks untouched. Null when it has none.
-export function appendToRow(message, extra) {
-  const content = message && Array.isArray(message.content) ? message.content : []
-  let last = -1
-  content.forEach((b, i) => { if (b && b.type === 'text' && typeof b.text === 'string') last = i })
-  if (last < 0) return null
-  return { ...message, content: content.map((b, i) => (i === last ? { ...b, text: b.text + '\n\n' + extra } : b)) }
-}
-
-// The digest line out of a notification's text: the line holding the first mark.
-export function digestLine(text) {
-  const line = String(text ?? '').split(/\r?\n/).find(l => l.includes(DIGEST_MARKS[0]))
-  return line ? line.trim() : ''
-}
-
-// What the side check reads about the stage: the review call's arguments, the digest line, or the gate output.
+// What the side check reads about the stage: the review call's args (the level), or the gate output.
 export function stageData(stage, e, r) {
   let data = ''
   if (stage === 'review-start') {
-    try { data = JSON.stringify(e && e.args !== undefined ? e.args : null) } catch { data = '' }
-  } else if (stage === 'review-digest') data = digestLine(rowText(e && e.message))
-  else if (stage === 'ready-report') data = r && typeof r.text === 'string' ? r.text : ''
+    const args = e ? e.args : undefined
+    if (typeof args === 'string') data = args.trim()
+    else if (args !== undefined && args !== null) { try { data = JSON.stringify(args) } catch { data = '' } }
+  } else if (stage === 'ready-report') data = r && typeof r.text === 'string' ? r.text : ''
   return cut(String(data ?? ''), DATA_MAX)
 }
 
@@ -326,7 +313,7 @@ export function statusText(st, changed = null, baseLine = null, lastStage = '') 
   } else {
     lines.push('.harness.json 에 decision_prompts 선언이 없어 켜져 있어도 아무 일도 하지 않습니다.')
     lines.push(`선언 형식 (stage: ${STAGES.join(' | ')}): ${DECL_SHAPE}`)
-    lines.push('/ywr-harness:harness-init 을 실행하면 docs/prompts/review-digest.md 와 docs/prompts/ready-report.md 를 놓습니다 (이미 있는 파일은 그대로 둡니다).')
+    lines.push('/ywr-harness:harness-init 을 실행하면 docs/prompts/review-start.md 와 docs/prompts/ready-report.md 를 놓습니다 (이미 있는 파일은 그대로 둡니다).')
   }
   for (const p of st.decl.problems) lines.push(`! ${p}`)
   if (lastStage) lines.push(`최근 stage: ${lastStage}`)
@@ -572,17 +559,6 @@ export function register(on) {
     let texts = []
     try { texts = await stageTexts($, st, stage, e, r) } catch { texts = [] }
     return texts.length ? { ...r, context: [...(r.context || []), ...texts] } : r
-  })
-
-  on('session.append', { door: DIGEST_DOORS }, async ($, e, next) => {
-    if (!isDigestRow(e)) return next(e)
-    let message = null
-    try {
-      await ensure($, st)
-      const texts = st.root ? await stageTexts($, st, 'review-digest', e, null) : []
-      if (texts.length) message = appendToRow(e.message, texts.join('\n\n'))
-    } catch { message = null /* the row goes on as it came */ }
-    return next(message ? { ...e, message } : e)
   })
 
   on('command.run', { command: COMMAND }, async ($, e) => {

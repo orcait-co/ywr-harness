@@ -18,8 +18,9 @@
 // picks the model of an unpinned type. The prose states the harness rule of ywr-harness ADR 0109, which no longer
 // depends on the session model: implementation and research workers run sonnet in every session
 // (the Agent-tool route is `ywr-harness:worker` with no per-call model), mechanical work haiku, no
-// ywr-harness worker or review stage on opus or fable (ywr-harness ADR 0197 retired the Opus-session review
-// branch), and any other opus/fable worker names its reason in the description.
+// ywr-harness agent pin on opus or fable, and any other opus/fable worker names its reason in the
+// description. The slice-close review is the built-in `/code-review` on the session model, not an agent
+// pin, and its fix-check legs run on `ywr-harness:worker` (ywr-harness ADR 0215).
 // EFFORT clause (ywr-harness ADR 0127): since Claude Code 2.1.292 the Agent tool takes a per-call `effort`, and it
 // overrides a pinned agent's frontmatter effort as `model` overrides the model pin (measured: the
 // worker pinned high ran at low when the call said low). The pins were written to keep the deep-work
@@ -108,21 +109,21 @@ function main(payload) {
   if (modelHit) {
     sysParts.push(`Agent 호출이 모델을 '${mShow}' 로 명시했습니다 (subagent_type: ${type}). ` +
       'ywr-harness 규칙: 구현·조사 워커는 어느 세션이든 sonnet 입니다 — Agent 호출이라면 호출별 model 없이 ywr-harness:worker 를 쓰세요. ' +
-      '기계적 작업은 haiku 이고, ywr-harness 의 고정값은 리뷰 단계까지 어느 것도 opus·fable 을 쓰지 않습니다. 고정값 밖에서 opus·fable 워커를 띄우는 것은 그 모델이 꼭 필요한 작업일 때만이며, 그 이유를 호출의 description 에 적습니다. ' +
+      '기계적 작업은 haiku 이고, ywr-harness 의 에이전트 고정값은 어느 것도 opus·fable 을 쓰지 않습니다. slice close 의 리뷰는 세션 모델로 도는 /code-review 이고, 그 fix check 는 ywr-harness:worker 가 맡습니다. 고정값 밖에서 opus·fable 워커를 띄우는 것은 그 모델이 꼭 필요한 작업일 때만이며, 그 이유를 호출의 description 에 적습니다. ' +
       '호출별 model 은 고정(pinned)된 에이전트의 frontmatter 모델보다 우선합니다. ')
     ctxParts.push(`This Agent spawn requested model '${mShow}' (subagent_type '${type}'), an opus/fable-family model. ` +
       "ywr-harness rule: implementation and research workers run on 'sonnet' in every session — for an Agent-tool spawn that route is subagent_type 'ywr-harness:worker' with NO per-call model; mechanical work runs on 'haiku'. " +
-      "No ywr-harness pin uses opus or fable, review stages included. An opus or fable worker outside those pins is only for a task that demonstrably needs that model, with the reason in the spawn's description. " +
+      "No ywr-harness agent pin uses opus or fable. The slice-close review is the built-in /code-review on the session model, and its fix-check legs run on ywr-harness:worker. An opus or fable worker outside those pins is only for a task that demonstrably needs that model, with the reason in the spawn's description. " +
       "A per-call model overrides a pinned agent's frontmatter model, so the ywr-harness:worker / ywr-harness:mech pins do not apply to this call. ")
   }
   if (effortHit) {
     sysParts.push(`Agent 호출이 effort 를 '${eShow}' 로 지정했습니다${modelHit ? '' : ` (subagent_type: ${type})`}. ` +
       '호출별 effort 는 고정(pinned)된 에이전트의 frontmatter effort 보다 우선하므로 ywr-harness:worker·verifier·mech 의 고정이 이 호출에는 적용되지 않습니다. ' +
-      'ywr-harness 규칙은 워커 effort 를 역할별로 정합니다 — 기계적 작업은 low, 구현·조사는 high 이고, skeptic·judge 단계는 꼭 필요할 때만 올립니다. ' +
+      'ywr-harness 규칙은 워커 effort 를 역할별로 정합니다 — 기계적 작업은 low, 검증 절차는 medium, 구현·조사는 high 입니다. ' +
       '호출별 effort 는 그 역할의 수준이어야 하며 xhigh·max 는 쓰지 않습니다 — 이 둘은 고정이 워커에게서 떼어 놓는 deep-work 세션 수준입니다. ')
     ctxParts.push(`This Agent spawn set effort '${eShow}'${modelHit ? '' : ` (subagent_type '${type}')`}. ` +
       "A per-call effort overrides a pinned agent's frontmatter effort, so the ywr-harness:worker / ywr-harness:verifier / ywr-harness:mech pins do not apply to this call. " +
-      'ywr-harness rule: worker effort follows the role — mechanical work low, implementation and research high, and skeptic or judge stages are raised only when genuinely needed. ' +
+      'ywr-harness rule: worker effort follows the role — mechanical work low, a verification procedure medium, implementation and research high. ' +
       "A per-call effort should be the role's level, never 'xhigh' or 'max': those are the deep-work session levels the pins keep out of workers. ")
   }
 

@@ -461,7 +461,7 @@ async function main() {
   // keep the rule above. The top CHANGELOG entry is in scope too: the version-announce hook injects
   // the entry of the loaded version, and the check above holds the top entry to plugin.json.
   {
-    const skipTopFiles = ['README.md', 'REVIEW.md', 'NOTICE', 'CHANGELOG.md', 'manifest-gate.mjs', 'selftest.ps1',
+    const skipTopFiles = ['README.md', 'NOTICE', 'CHANGELOG.md', 'manifest-gate.mjs', 'selftest.ps1',
       'selftest-reads.json', 'tsconfig.json']
     const skipTopDirs = ['lib', 'evals', '.claude-plugin']
     const rtFiles = []
@@ -913,7 +913,7 @@ async function main() {
     }
   }
 
-  // --- canon zero-install stack and git boundary (REVIEW.md invariants 1 and 9, ADR 0158) --------
+  // --- canon zero-install stack and git boundary (review canon invariants 1 and 9, ADR 0158) ---
   // Both read the git-listed files: tracked, plus untracked and not ignored, so a new file counts at a
   // local close; a finding on an untracked file says so. Stack: a .py file imports only a module of
   // the Python 3.9+ stdlib or a repo module that the importer can reach — a listed .py (or package)
@@ -1007,7 +1007,7 @@ async function main() {
       for (const { rel, tracked } of entries) {
         const tag = tracked ? '' : ' (untracked)'
         if (depManifestRx.test(rel)) {
-          bad(`zero-install stack: ${rel}${tag} is a dependency manifest — the harness installs nothing (REVIEW.md invariant 1, ADR 0158)`)
+          bad(`zero-install stack: ${rel}${tag} is a dependency manifest — the harness installs nothing (review canon invariant 1, ADR 0158)`)
           stackBad++
           continue
         }
@@ -1038,7 +1038,7 @@ async function main() {
               pyImports++
               const top = mod.split('.')[0]
               if (!STDLIB.has(top) && !isLocal(rel, top)) {
-                bad(`zero-install stack: ${rel}:${i + 1}${tag} imports '${mod}' — not in the Python 3.9+ stdlib and no repo module the file can reach (REVIEW.md invariant 1, ADR 0158)`)
+                bad(`zero-install stack: ${rel}:${i + 1}${tag} imports '${mod}' — not in the Python 3.9+ stdlib and no repo module the file can reach (review canon invariant 1, ADR 0158)`)
                 stackBad++
               }
             }
@@ -1047,7 +1047,7 @@ async function main() {
               const prev = i > 0 ? lines[i - 1].replace(/\r$/u, '').trimStart() : ''
               const mark = markRx.exec(ln) || (prev.startsWith('#') ? markRx.exec(prev) : null)
               if (!mark) {
-                bad(`git boundary: ${rel}:${i + 1}${tag} starts git directly — route it through harness_config.git_run()/git_lines() or harness_retro.git(), or mark it '# harness:git-boundary <reason>' (REVIEW.md invariant 9, ADR 0158)`)
+                bad(`git boundary: ${rel}:${i + 1}${tag} starts git directly — route it through harness_config.git_run()/git_lines() or harness_retro.git(), or mark it '# harness:git-boundary <reason>' (review canon invariant 9, ADR 0158)`)
                 gitBad++
               } else if (!/\S/u.test(mark[1])) {
                 bad(`git boundary: ${rel}:${i + 1}${tag} carries harness:git-boundary with no reason — the marker names why this call bypasses the boundary`)
@@ -1075,7 +1075,7 @@ async function main() {
               const ok = spec.startsWith('./') || spec.startsWith('../') || spec.startsWith('node:') ||
                 nodeBuiltins.has(spec) || (hostOk && HOST_MODULES.has(spec))
               if (!ok) {
-                bad(`zero-install stack: ${rel}:${i + 1}${tag} imports '${spec}' — not a Node built-in, a relative path or a host test module (REVIEW.md invariant 1, ADR 0158)`)
+                bad(`zero-install stack: ${rel}:${i + 1}${tag} imports '${spec}' — not a Node built-in, a relative path or a host test module (review canon invariant 1, ADR 0158)`)
                 stackBad++
               }
             }

@@ -5,14 +5,16 @@
 # captures the hooks, a fake `$` answers process.run (git rev-parse) / session.cwd / fs.read / fs.write over an
 # in-memory map / model.complete / clock.sleep / ui.toast (a trap that counts; the module never calls it, ADR 0202), and each `next` is a stub whose result the hook must
 # hand back untouched where the module has nothing to add. What this suite proves is the contract the host
-# cannot check for us: the pure half (the prompt-path and declaration parsers, the switch parser, the three
-# stage detectors, the digest-row check and its append, the stage data and its cut, the side-check answer's NONE
-# rule, the edit-guard path match, the status text) is right; the hook set is exactly turn.start, tool.call,
-# session.append on doors delivery and prompt and command.run on ywr-harness:auto, and no session.start, no classic.* and
+# cannot check for us: the pure half (the prompt-path and declaration parsers, the switch parser, the two
+# stage detectors, the stage data and its cut, the side-check answer's NONE rule, the edit-guard path match, the
+# status text) is right; the review-start stage fires on a main-loop Skill call of the built-in code-review
+# (ADR 0215) and on nothing else, and a declaration of the retired review-digest stage gets a problem line that
+# names review-start; the hook set is exactly turn.start, tool.call and command.run on ywr-harness:auto, and no
+# session.append, no session.start, no classic.* and
 # no skill.prompt (the built-in guard skips those for a user-tier plugin, ADR 0175); a switch that is off, a
 # stage that is undeclared, a missing prompt file, a deny from `next`, a call with an `agentId` and a checkout
 # without git all leave the stage untouched and start no side check and never call $.model.fork; a switch that is on adds the static prompt and
-# then the side check's answer to the stage's context (or to the digest row's last text block), one side check at a time,
+# then the side check's answer to the stage's context, one side check at a time,
 # and a NONE answer, a timeout or a rejection never costs the static prompt; an Edit / Write
 # / NotebookEdit of `.harness.json` or a declared prompt file is denied while the switch is on and passes
 # otherwise; a stage runs only with the input baseline that the typed `on` took in this session (ADR 0176): no
@@ -25,7 +27,7 @@
 # off, and reads no file, runs no git call and shows no toast; a main-loop call of it reaches next untouched with the switch
 # on or off; no stage and no side-check answer calls $.ui.toast (ADR 0202); and the
 # entry `mods.mjs` registers these hooks beside the others. What it cannot prove - the engine's own event
-# shapes (the digest row, the Workflow call, the `--tree` result), that the guard lets the hooks run, that a
+# shapes (the Skill call, the `--tree` result), that the guard lets the hooks run, that a
 # real `$.model.complete` answers the way the fake does and honours its request fields (model, effort, max tokens, timeout), that the host answers a plugin skill command through `command.run` - is `claude plugin validate`'s
 # and the live `--plugin-dir` run's (spec 0012 section 3 Mods row); `claude plugin test` stays a local habit.
 $ErrorActionPreference = 'Stop'
@@ -64,10 +66,12 @@ const CUT = n => `\n[... cut at ${n} characters]`
 // Pure half
 // ---------------------------------------------------------------------------------------------
 
-eq('constants: command, stages, review workflow, state file, wait, caps, digest marks, tool sets',
-  [M.COMMAND, M.STAGES, M.REVIEW_WORKFLOW, M.STATE_REL, M.CHECK_WAIT_MS, M.PROMPT_MAX, M.DATA_MAX, M.DIGEST_MARKS.length, M.SHELL_TOOLS, M.EDIT_TOOLS],
-  ['ywr-harness:auto', ['review-start', 'review-digest', 'ready-report'], 'ywr-harness:adversarial-review', 'ywr-harness/auto.json', 30000, 16000, 6000, 2, ['Bash', 'PowerShell'], ['Edit', 'Write', 'NotebookEdit']])
-eq('constants: slice-close is not a stage', M.STAGES.includes('slice-close'), false)
+eq('constants: command, stages, review skill, state file, wait, caps, tool sets',
+  [M.COMMAND, M.STAGES, M.REVIEW_SKILL, M.STATE_REL, M.CHECK_WAIT_MS, M.PROMPT_MAX, M.DATA_MAX, M.SHELL_TOOLS, M.EDIT_TOOLS],
+  ['ywr-harness:auto', ['review-start', 'ready-report'], 'code-review', 'ywr-harness/auto.json', 30000, 16000, 6000, ['Bash', 'PowerShell'], ['Edit', 'Write', 'NotebookEdit']])
+eq('constants: slice-close and the retired review-digest are not stages', [M.STAGES.includes('slice-close'), M.STAGES.includes('review-digest')], [false, false])
+eq('constants: the review workflow name, the digest marks and doors and the digest-row helpers are gone (ADR 0215)',
+  [M.REVIEW_WORKFLOW, M.DIGEST_MARKS, M.DIGEST_DOORS, M.isDigestRow, M.digestLine, M.appendToRow, M.rowText], [undefined, undefined, undefined, undefined, undefined, undefined, undefined])
 eq('constants: the side check runs on the sonnet alias at effort low with a 1024-token cap (ywr-harness ADR 0189)', [M.CHECK_MODEL, M.CHECK_EFFORT, M.CHECK_MAX_TOKENS], ['sonnet', 'low', 1024])
 
 // SP: safePromptPath
@@ -97,27 +101,37 @@ eq('PD2 parseDecl: a decision_prompts that is not an object is one problem and n
 {
   const unk = M.parseDecl({ decision_prompts: { 'review-begin': { prompt: 'a.md' } } })
   eq('PD3 parseDecl: an unknown stage is dropped and named with the known list',
-    [unk.stages, unk.problems.length, unk.problems[0].includes('review-begin: unknown stage'), unk.problems[0].includes('review-start, review-digest, ready-report')], [{}, 1, true, true])
+    [unk.stages, unk.problems.length, unk.problems[0].includes('review-begin: unknown stage'), unk.problems[0].includes('review-start, ready-report')], [{}, 1, true, true])
   const sc = M.parseDecl({ decision_prompts: { 'slice-close': { prompt: 'a.md', check: true } } })
   eq('PD4 parseDecl: slice-close gets its own message (not a stage, the guard), not the unknown-stage one',
     [sc.stages, sc.problems.length, sc.problems[0].includes('slice-close: not a stage'), sc.problems[0].includes('ADR 0175'), sc.problems[0].includes('unknown stage')], [{}, 1, true, true, false])
-  const bad = M.parseDecl({ decision_prompts: { 'review-start': 'a.md', 'review-digest': null, 'ready-report': ['a.md'] } })
+  const bad = M.parseDecl({ decision_prompts: { 'review-start': 'a.md', 'ready-report': null } })
+  const bad2 = M.parseDecl({ decision_prompts: { 'review-start': ['a.md'] } })
   eq('PD5 parseDecl: an entry that is not an object (string, null, array) is dropped, one problem each',
-    [bad.stages, bad.problems.length, bad.problems.every(p => p.includes('expected an object with prompt and check'))], [{}, 3, true])
-  const bp = M.parseDecl({ decision_prompts: { 'review-start': { prompt: '../a.md' }, 'review-digest': { check: true }, 'ready-report': { prompt: 'a.txt' } } })
+    [bad.stages, bad2.stages, bad.problems.length + bad2.problems.length, [...bad.problems, ...bad2.problems].every(p => p.includes('expected an object with prompt and check'))], [{}, {}, 3, true])
+  const bp = M.parseDecl({ decision_prompts: { 'review-start': { prompt: '../a.md' }, 'ready-report': { prompt: 'a.txt' } } })
+  const bp2 = M.parseDecl({ decision_prompts: { 'review-start': { check: true } } })
   eq('PD6 parseDecl: a bad or absent prompt drops the entry, one problem each naming the prompt key',
-    [bp.stages, bp.problems.length, bp.problems.every(p => p.includes('.prompt: expected a repo-relative .md path'))], [{}, 3, true])
-  const bf = M.parseDecl({ decision_prompts: { 'ready-report': { prompt: 'a.md', check: 'yes' }, 'review-start': { prompt: 'b.md', check: 1 }, 'review-digest': { prompt: 'c.md', check: null } } })
+    [bp.stages, bp2.stages, bp.problems.length + bp2.problems.length, [...bp.problems, ...bp2.problems].every(p => p.includes('.prompt: expected a repo-relative .md path'))], [{}, {}, 3, true])
+  const bf = M.parseDecl({ decision_prompts: { 'ready-report': { prompt: 'a.md', check: 'yes' }, 'review-start': { prompt: 'b.md', check: 1 } } })
+  const bf2 = M.parseDecl({ decision_prompts: { 'review-start': { prompt: 'c.md', check: null } } })
   eq('PD7 parseDecl: a check that is not a boolean drops the entry (a string, a number and null alike)',
-    [bf.stages, bf.problems.length, bf.problems.every(p => p.includes('.check: expected true or false'))], [{}, 3, true])
+    [bf.stages, bf2.stages, bf.problems.length + bf2.problems.length, [...bf.problems, ...bf2.problems].every(p => p.includes('.check: expected true or false'))], [{}, {}, 3, true])
   const ex = M.parseDecl({ decision_prompts: { 'ready-report': { prompt: 'a.md', check: true, note: 1, why: 2 } } })
   eq('PD8 parseDecl: an unknown extra key warns (naming each) but the entry is kept',
     [ex.stages, ex.problems.length, ex.problems[0].includes('unknown key note, why ignored')], [{ 'ready-report': { prompt: 'a.md', check: true } }, 1, true])
-  const fd = M.parseDecl({ decision_prompts: { 'review-start': { prompt: 'a.md' }, 'review-digest': { prompt: 'b.md', check: false }, 'ready-report': { prompt: 'c.md', check: true } } })
+  const fd = M.parseDecl({ decision_prompts: { 'review-start': { prompt: 'a.md' }, 'ready-report': { prompt: 'c.md', check: true } } })
+  const fd2 = M.parseDecl({ decision_prompts: { 'review-start': { prompt: 'b.md', check: false } } })
   eq('PD9 parseDecl: check defaults to false; false stays false; true stays true; no problem',
-    [fd.stages, fd.problems], [{ 'review-start': { prompt: 'a.md', check: false }, 'review-digest': { prompt: 'b.md', check: false }, 'ready-report': { prompt: 'c.md', check: true } }, []])
+    [fd.stages, fd2.stages, fd.problems, fd2.problems], [{ 'review-start': { prompt: 'a.md', check: false }, 'ready-report': { prompt: 'c.md', check: true } }, { 'review-start': { prompt: 'b.md', check: false } }, [], []])
   const mix = M.parseDecl({ decision_prompts: { 'ready-report': { prompt: 'c.md' }, 'bogus': { prompt: 'x.md' } } })
   eq('PD10 parseDecl: a bad entry never turns another stage off or on', [Object.keys(mix.stages), mix.problems.length], [['ready-report'], 1])
+  const rd = M.parseDecl({ decision_prompts: { 'review-digest': { prompt: 'docs/prompts/review-digest.md', check: true }, 'review-start': { prompt: 'a.md' } } })
+  eq('PD11 parseDecl: the retired review-digest stage is dropped with one problem that names ywr-harness ADR 0215 and review-start, never the unknown-stage line; the other stage stays',
+    [Object.keys(rd.stages), rd.problems.length, rd.problems[0].startsWith('decision_prompts.review-digest: '), rd.problems[0].includes('ywr-harness ADR 0215'), rd.problems[0].includes('review-start'), rd.problems[0].includes('unknown stage')],
+    [['review-start'], 1, true, true, true, false])
+  const own = M.parseDecl({ decision_prompts: { constructor: { prompt: 'a.md' }, toString: { prompt: 'a.md' } } })
+  eq('PD12 parseDecl: a name that is an Object.prototype key is an unknown stage, never a retired one', [own.stages, own.problems.length, own.problems.every(p => p.includes('unknown stage'))], [{}, 2, true])
 }
 
 // PS: parseSwitch / switchText
@@ -130,71 +144,46 @@ eq('PS3 switchText: one JSON line with on and at, newline-terminated', [M.switch
 
 // ST: stageOfToolCall
 const GATES = 'python scripts/harness/harness_gates.py --tree'
-eq('ST1 stageOfToolCall: the review workflow by name is review-start; another workflow is none',
-  [M.stageOfToolCall({ tool: 'Workflow', name: 'ywr-harness:adversarial-review' }), M.stageOfToolCall({ tool: 'Workflow', name: 'ywr-harness:other' }), M.stageOfToolCall({ tool: 'Workflow' }), M.stageOfToolCall({ tool: 'Bash', name: 'ywr-harness:adversarial-review' })],
-  ['review-start', null, null, null])
+const REVIEW_YES = ['code-review', '/code-review', 'Code-Review', 'CODE-REVIEW', '  code-review  ', ' /code-review ']
+const REVIEW_NO = ['ywr-harness:code-review', 'other-plugin:code-review', 'code-reviewer', 'my-code-review', 'code_review', 'code-review x', 'code-review:high', '//code-review', 'review', 'simplify',
+  'ywr-harness:slice-close', 'ywr-harness:adversarial-review', '', ' ', '/', 'code-review' + ch(10) + 'x']
+const REVIEW_NONSTR = [undefined, null, 5, true, {}, ['code-review'], { toString: () => 'code-review' }, { trim: () => 'code-review' }]
+eq('ST1 stageOfToolCall: a main-loop Skill call of the built-in code-review is review-start, with a leading slash, any case and edge spaces; args do not matter',
+  [REVIEW_YES.map(n => M.stageOfToolCall({ tool: 'Skill', skill: n })), M.stageOfToolCall({ tool: 'Skill', skill: 'code-review', args: 'high' }), M.stageOfToolCall({ tool: 'Skill', skill: 'code-review', args: undefined })],
+  [REVIEW_YES.map(() => 'review-start'), 'review-start', 'review-start'])
+eq('ST1b stageOfToolCall: another skill, a plugin-prefixed or near name, a non-string skill, another tool and a Workflow call (the retired adversarial-review among them) are none',
+  [REVIEW_NO.map(n => M.stageOfToolCall({ tool: 'Skill', skill: n })), REVIEW_NONSTR.map(v => M.stageOfToolCall({ tool: 'Skill', skill: v })),
+   M.stageOfToolCall({ tool: 'Skill' }), M.stageOfToolCall({ tool: 'Workflow', name: 'ywr-harness:adversarial-review' }), M.stageOfToolCall({ tool: 'Workflow', name: 'code-review' }),
+   M.stageOfToolCall({ tool: 'Bash', skill: 'code-review' }), M.stageOfToolCall({ tool: 'Agent', skill: 'code-review' })],
+  [REVIEW_NO.map(() => null), REVIEW_NONSTR.map(() => null), null, null, null, null, null])
+eq('ST1c REVIEW_NAME / isReviewCall: a case-insensitive RegExp with no g or y flag; isReviewCall is true for a Skill call of the review (main loop or subagent), false for no event and another tool',
+  [M.REVIEW_NAME instanceof RegExp, M.REVIEW_NAME.flags, [M.REVIEW_NAME.test('code-review'), M.REVIEW_NAME.test('code-review'), M.REVIEW_NAME.test('code-review')],
+   M.isReviewCall({ tool: 'Skill', skill: 'code-review' }), M.isReviewCall({ tool: 'Skill', skill: 'code-review', agentId: 'a1' }), M.isReviewCall(null), M.isReviewCall(undefined), M.isReviewCall({ tool: 'Bash', skill: 'code-review' })],
+  [true, 'i', [true, true, true], true, true, false, false, false])
 eq('ST2 stageOfToolCall: a Bash or PowerShell call whose last step is harness_gates.py --tree is ready-report',
   [M.stageOfToolCall({ tool: 'Bash', command: GATES }), M.stageOfToolCall({ tool: 'PowerShell', command: GATES }), M.stageOfToolCall({ tool: 'Bash', command: 'cd x && ' + GATES })],
   ['ready-report', 'ready-report', 'ready-report'])
 eq('ST3 stageOfToolCall: a non-tree command, a gates run without --tree, a tree run followed by another step, and another tool are none',
   [M.stageOfToolCall({ tool: 'Bash', command: 'ls' }), M.stageOfToolCall({ tool: 'Bash', command: 'python scripts/harness/harness_gates.py a.py' }), M.stageOfToolCall({ tool: 'Bash', command: GATES + ' && git commit -m x' }),
    M.stageOfToolCall({ tool: 'Read', command: GATES }), M.stageOfToolCall({ tool: 'Bash' })], [null, null, null, null, null])
-eq('ST4 stageOfToolCall: a call with an agentId never starts a stage (even an empty-string id); a null or missing event is none',
-  [M.stageOfToolCall({ tool: 'Workflow', name: M.REVIEW_WORKFLOW, agentId: 'a1' }), M.stageOfToolCall({ tool: 'Bash', command: GATES, agentId: 'a1' }), M.stageOfToolCall({ tool: 'Bash', command: GATES, agentId: '' }), M.stageOfToolCall(null), M.stageOfToolCall(undefined)],
-  [null, null, null, null, null])
-
-// DR: rowText / isDigestRow
-const DIG_LINE = 'review ' + M.DIGEST_MARKS[0] + '3 lenses, 2 confirmed'
-const DIG_TEXT = 'Workflow finished\n' + DIG_LINE + '\n' + M.DIGEST_MARKS[1] + ' finding 1)'
-const digRow = (over = {}) => ({ door: 'delivery', origin: { kind: 'task-notification' }, message: { type: 'user', content: [{ type: 'text', text: DIG_TEXT }] }, ...over })
-eq('DR1 rowText: the text blocks joined by a newline; other blocks and malformed input add nothing',
-  [M.rowText({ content: [{ type: 'text', text: 'a' }, { type: 'tool_use' }, { type: 'text', text: 'b' }] }), M.rowText(null), M.rowText({}), M.rowText({ content: 'x' }), M.rowText({ content: [null, { type: 'text', text: 5 }] })],
-  ['a\n\nb', '', '', '', '\n'])
-eq('DR2 isDigestRow: door delivery (mid-turn) or prompt (idle, ADR 0187) + origin task-notification + both marks is a digest row', [M.isDigestRow(digRow()), M.isDigestRow(digRow({ door: 'prompt' }))], [true, true])
-eq('DR3 isDigestRow: the same text from the user\'s own prompt, on another door or with no origin is not one',
-  [M.isDigestRow(digRow({ door: 'prompt', origin: { kind: 'composer' } })), M.isDigestRow(digRow({ door: 'queue' })), M.isDigestRow(digRow({ door: undefined })), M.isDigestRow(digRow({ origin: { kind: 'user' } })), M.isDigestRow(digRow({ origin: undefined })), M.isDigestRow(digRow({ origin: null }))],
-  [false, false, false, false, false, false])
-eq('DR4 isDigestRow: one mark alone is not enough; no text is not',
-  [M.isDigestRow(digRow({ message: { content: [{ type: 'text', text: 'x ' + M.DIGEST_MARKS[0] + 'y' }] } })), M.isDigestRow(digRow({ message: { content: [{ type: 'text', text: M.DIGEST_MARKS[1] }] } })), M.isDigestRow(digRow({ message: { content: [] } })), M.isDigestRow(digRow({ message: undefined }))],
-  [false, false, false, false])
-eq('DR5 isDigestRow: a row with an agentId is not one; null and a missing event are not', [M.isDigestRow(digRow({ agentId: 'a1' })), M.isDigestRow(null), M.isDigestRow(undefined)], [false, false, false])
-eq('DR6 isDigestRow: the marks may sit in different text blocks of one row',
-  M.isDigestRow(digRow({ message: { content: [{ type: 'text', text: 'a ' + M.DIGEST_MARKS[0] }, { type: 'text', text: M.DIGEST_MARKS[1] }] } })), true)
-
-// AR: appendToRow
-{
-  const msg = { type: 'user', content: [{ type: 'tool_result', id: 1 }, { type: 'text', text: 'first' }, { type: 'image', src: 'x' }, { type: 'text', text: 'last' }, { type: 'image', src: 'y' }] }
-  const before = JSON.stringify(msg)
-  const out = M.appendToRow(msg, 'EXTRA')
-  eq('AR1 appendToRow: appends after the LAST text block only; the other blocks and the other keys are untouched',
-    [out.type, out.content[0], out.content[1], out.content[2], out.content[3], out.content[4], out.content.length], ['user', msg.content[0], msg.content[1], msg.content[2], { type: 'text', text: 'last\n\nEXTRA' }, msg.content[4], 5])
-  eq('AR2 appendToRow: the input message is not mutated', JSON.stringify(msg), before)
-  eq('AR3 appendToRow: a single text block gets the extra after a blank line', M.appendToRow({ content: [{ type: 'text', text: 'a' }] }, 'X').content[0].text, 'a\n\nX')
-  eq('AR4 appendToRow: null with no text block, an empty content, a non-array content, a null or missing message',
-    [M.appendToRow({ content: [{ type: 'image' }] }, 'X'), M.appendToRow({ content: [] }, 'X'), M.appendToRow({ content: 'text' }, 'X'), M.appendToRow(null, 'X'), M.appendToRow(undefined, 'X'), M.appendToRow({ content: [{ type: 'text', text: 5 }] }, 'X')],
-    [null, null, null, null, null, null])
-}
-
-// DL: digestLine
-eq('DL1 digestLine: the trimmed line holding the first mark; the first such line wins; CRLF is fine',
-  [M.digestLine(DIG_TEXT), M.digestLine('a\r\n   x ' + M.DIGEST_MARKS[0] + 'y   \r\nz'), M.digestLine('p ' + M.DIGEST_MARKS[0] + '1\nq ' + M.DIGEST_MARKS[0] + '2')],
-  [DIG_LINE, 'x ' + M.DIGEST_MARKS[0] + 'y', 'p ' + M.DIGEST_MARKS[0] + '1'])
-eq('DL2 digestLine: no line with the mark, empty, null and undefined give the empty string',
-  [M.digestLine('nothing here'), M.digestLine(''), M.digestLine(null), M.digestLine(undefined), M.digestLine(M.DIGEST_MARKS[1])], ['', '', '', '', ''])
+eq('ST4 stageOfToolCall: a call with an agentId never starts a stage (even an empty-string id), the review Skill call included; a null or missing event is none',
+  [M.stageOfToolCall({ tool: 'Skill', skill: 'code-review', agentId: 'a1' }), M.stageOfToolCall({ tool: 'Skill', skill: 'code-review', agentId: '' }), M.stageOfToolCall({ tool: 'Bash', command: GATES, agentId: 'a1' }), M.stageOfToolCall({ tool: 'Bash', command: GATES, agentId: '' }), M.stageOfToolCall(null), M.stageOfToolCall(undefined)],
+  [null, null, null, null, null, null])
 
 // SD: stageData
 {
-  const e = { tool: 'Workflow', name: M.REVIEW_WORKFLOW, args: { scope: { files: ['a.mjs'] }, shards: 'auto' } }
-  eq('SD1 stageData review-start: the call\'s arguments as JSON; no args reads as null', [M.stageData('review-start', e, null), M.stageData('review-start', { tool: 'Workflow' }, null), M.stageData('review-start', null, null)],
-    ['{"scope":{"files":["a.mjs"]},"shards":"auto"}', 'null', 'null'])
-  eq('SD2 stageData review-digest: the digest line of the row\'s message', [M.stageData('review-digest', digRow(), null), M.stageData('review-digest', null, null)], [DIG_LINE, ''])
+  const e = { tool: 'Skill', skill: 'code-review', args: 'high' }
+  eq('SD1 stageData review-start: the Skill call\'s args (the review level) as the trimmed string; an args that is not a string reads as JSON; no args, null args and no event read as empty',
+    [M.stageData('review-start', e, null), M.stageData('review-start', { ...e, args: '  medium \n' }, null), M.stageData('review-start', { ...e, args: { level: 'high' } }, null), M.stageData('review-start', { tool: 'Skill', skill: 'code-review' }, null), M.stageData('review-start', { ...e, args: null }, null), M.stageData('review-start', null, null)],
+    ['high', 'medium', '{"level":"high"}', '', '', ''])
+  eq('SD2 stageData: the retired review-digest stage reads nothing', [M.stageData('review-digest', { tool: 'Skill', skill: 'code-review', args: 'high' }, { text: 'x' }), M.stageData('review-digest', null, null)], ['', ''])
   eq('SD3 stageData ready-report: the result\'s text; a non-string text, a null result and an unknown stage give empty',
     [M.stageData('ready-report', {}, { text: 'tree: abc' }), M.stageData('ready-report', {}, { text: 5 }), M.stageData('ready-report', {}, null), M.stageData('slice-close', {}, { text: 'x' }), M.stageData('nope', {}, { text: 'x' })], ['tree: abc', '', '', '', ''])
   const exact = 'x'.repeat(M.DATA_MAX), over = 'x'.repeat(M.DATA_MAX + 50)
   eq('SD4 stageData: exactly DATA_MAX characters pass; more are cut at DATA_MAX with the cut marker',
-    [M.stageData('ready-report', {}, { text: exact }) === exact, M.stageData('ready-report', {}, { text: over }) === 'x'.repeat(M.DATA_MAX) + CUT(M.DATA_MAX), M.stageData('review-start', { args: { v: over } }, null).endsWith(CUT(M.DATA_MAX)), M.stageData('review-digest', digRow({ message: { content: [{ type: 'text', text: M.DIGEST_MARKS[0] + over + '\n' + M.DIGEST_MARKS[1] }] } }), null).endsWith(CUT(M.DATA_MAX))],
+    [M.stageData('ready-report', {}, { text: exact }) === exact, M.stageData('ready-report', {}, { text: over }) === 'x'.repeat(M.DATA_MAX) + CUT(M.DATA_MAX), M.stageData('review-start', { args: { v: over } }, null).endsWith(CUT(M.DATA_MAX)), M.stageData('review-start', { args: over }, null) === 'x'.repeat(M.DATA_MAX) + CUT(M.DATA_MAX)],
     [true, true, true, true])
-  const circ = { tool: 'Workflow' }; circ.args = circ
+  const circ = { tool: 'Skill', skill: 'code-review' }; circ.args = circ
   eq('SD5 stageData review-start: arguments that cannot be serialized give empty, never a throw', M.stageData('review-start', circ, null), '')
 }
 
@@ -217,9 +206,9 @@ eq('AN1 answerText: NONE in any case, with a period, with spaces, an empty or bl
   [{ isAnswered: true, text: 'NONE' }, { isAnswered: true, text: 'none.' }, { isAnswered: true, text: '  None  \n' }, { isAnswered: true, text: '' }, { isAnswered: true, text: ' \n ' }, { isAnswered: false, text: 'Check x' }, { text: 'Check x' }, { isAnswered: true, text: 5 }, { isAnswered: 'true', text: 'Check x' }, null, undefined].map(r => M.answerText('ready-report', r)),
   [null, null, null, null, null, null, null, null, null, null, null])
 {
-  const a = M.answerText('review-digest', { isAnswered: true, text: '  Check the lens 2 finding.  ' })
+  const a = M.answerText('review-start', { isAnswered: true, text: '  Check the level of the review.  ' })
   eq('AN2 answerText: a real answer reads as a side-check text that names the stage, says it is a separate model call and holds the trimmed answer',
-    [a.includes('at the review-digest stage'), a.includes('a separate model call'), a.endsWith(':\nCheck the lens 2 finding.')], [true, true, true])
+    [a.includes('at the review-start stage'), a.includes('a separate model call'), a.endsWith(':\nCheck the level of the review.')], [true, true, true])
   eq('AN3 answerText: an answer that only STARTS with NONE is an answer; one past DATA_MAX is cut',
     [M.answerText('ready-report', { isAnswered: true, text: 'NONE of the gates ran' }) !== null, M.answerText('ready-report', { isAnswered: true, text: 'q'.repeat(M.DATA_MAX + 9) }).endsWith('q'.repeat(M.DATA_MAX) + CUT(M.DATA_MAX))], [true, true])
 }
@@ -327,12 +316,12 @@ function capture(registerFn) {
 }
 {
   const C = capture(M.register)
-  eq('H1 register: exactly turn.start, tool.call, session.append, command.run', C.hooks.map(x => x.ev).sort(), ['command.run', 'session.append', 'tool.call', 'turn.start'])
-  eq('H2 register: session.append matches doors delivery and prompt, command.run matches ywr-harness:auto, turn.start and tool.call have no matcher',
-    [C.byEv('session.append')[0].matcher, C.byEv('command.run')[0].matcher, C.byEv('turn.start')[0].matcher, C.byEv('tool.call')[0].matcher],
-    [{ door: ['delivery', 'prompt'] }, { command: 'ywr-harness:auto' }, undefined, undefined])
-  eq('H3 register: no session.start, no classic.*, no skill.prompt, no prompt.compose (the guard skips a user-tier plugin\'s)',
-    [C.byEv('session.start').length, C.hooks.filter(x => x.ev.startsWith('classic.')).length, C.byEv('skill.prompt').length, C.byEv('prompt.compose').length], [0, 0, 0, 0])
+  eq('H1 register: exactly turn.start, tool.call, command.run', C.hooks.map(x => x.ev).sort(), ['command.run', 'tool.call', 'turn.start'])
+  eq('H2 register: command.run matches ywr-harness:auto, turn.start and tool.call have no matcher',
+    [C.byEv('command.run')[0].matcher, C.byEv('turn.start')[0].matcher, C.byEv('tool.call')[0].matcher],
+    [{ command: 'ywr-harness:auto' }, undefined, undefined])
+  eq('H3 register: no session.append (ADR 0215 retired the digest row), no session.start, no classic.*, no skill.prompt, no prompt.compose (the guard skips a user-tier plugin\'s)',
+    [C.byEv('session.append').length, C.byEv('session.start').length, C.hooks.filter(x => x.ev.startsWith('classic.')).length, C.byEv('skill.prompt').length, C.byEv('prompt.compose').length], [0, 0, 0, 0, 0])
   eq('H4 register: every hook is a function', C.hooks.every(x => typeof x.fn === 'function'), true)
 }
 
@@ -348,8 +337,8 @@ const PROMPT = 'docs/prompts/ready.md'
 const BODY = 'Before you close: name the gates that ran.'
 const ON = '{"on":true}'
 const declOf = (stages, extra = {}) => JSON.stringify({ decision_prompts: stages, ...extra })
-const ALL_CHECK = declOf({ 'review-start': { prompt: PROMPT, check: true }, 'review-digest': { prompt: PROMPT, check: true }, 'ready-report': { prompt: PROMPT, check: true } })
-const ALL_STATIC = declOf({ 'review-start': { prompt: PROMPT }, 'review-digest': { prompt: PROMPT }, 'ready-report': { prompt: PROMPT } })
+const ALL_CHECK = declOf({ 'review-start': { prompt: PROMPT, check: true }, 'ready-report': { prompt: PROMPT, check: true } })
+const ALL_STATIC = declOf({ 'review-start': { prompt: PROMPT }, 'ready-report': { prompt: PROMPT } })
 // `files`: path -> text (the in-memory fs); a path not in it makes fs.read reject.
 // `git`: 'ok' answers toplevel + an absolute git path; 'relative' answers the git path relative to the cwd;
 // 'reject' rejects; 'exit' exits non-zero; 'flaky' exits non-zero on the first call only and answers as 'ok' after; 'one-line' prints one line only; 'hold' answers when `gate()` is called.
@@ -417,7 +406,7 @@ const nextWith = v => { const c = []; const fn = async e => { c.push(e); return 
 const answers = text => async () => ({ isAnswered: true, text })
 const turnEv = { reason: 'prompt' }
 const treeEv = { tool: 'PowerShell', command: GATES }
-const reviewEv = { tool: 'Workflow', name: M.REVIEW_WORKFLOW, args: { scope: { files: ['a.mjs'] } } }
+const reviewEv = { tool: 'Skill', skill: 'code-review', args: 'high' }
 const TREE_OUT = { text: 'tree: ' + 'a'.repeat(40) + ' \u00b7 HEAD' }
 const filesOn = (decl, extra = {}) => ({ [STATE]: ON, [ROOT + '/.harness.json']: decl, [ROOT + '/' + PROMPT]: BODY, ...extra })
 const toolCall = async (E, e, r = TREE_OUT) => { await E.arm(); const next = nextWith(r); return E.hook('tool.call')(E.$, e, next).then(v => ({ v, next })) }
@@ -479,14 +468,35 @@ for (const [id, files] of [['TC1', { [ROOT + '/.harness.json']: ALL_CHECK, [ROOT
   const E = fakeEngine({ files: filesOn(ALL_STATIC) })
   const rs = await toolCall(E, reviewEv, { text: 'started' })
   const rb = await toolCall(E, { tool: 'Bash', command: 'cd x && ' + GATES }, TREE_OUT)
-  eq('TC7 tool.call: review-start (a Workflow call) and a Bash ready-report each carry their own stage\'s static prompt',
+  eq('TC7 tool.call: review-start (a Skill call of code-review) and a Bash ready-report each carry their own stage\'s static prompt',
     [rs.v.context, rb.v.context], [[STATIC_TEXT('review-start')], [STATIC_TEXT('ready-report')]])
 }
 {
   const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
   const { v } = await toolCall(E, reviewEv, { text: 'started', context: ['earlier note'] })
-  eq('TC8 tool.call: review-start with a check: the check prompt carries the review call\'s arguments; the context the result already had stays first',
-    [v.context, E.calls.checks[0].includes('{"scope":{"files":["a.mjs"]}}')], [['earlier note', STATIC_TEXT('review-start'), M.answerText('review-start', { isAnswered: true, text: ANSWER })], true])
+  eq('TC8 tool.call: review-start with a check: the check prompt carries the review call\'s args (the level) as its stage data; the context the result already had stays first',
+    [v.context, E.calls.checks[0].endsWith('## Stage data\nhigh'), E.calls.checks[0].includes('## Stage\nreview-start')], [['earlier note', STATIC_TEXT('review-start'), M.answerText('review-start', { isAnswered: true, text: ANSWER })], true, true])
+}
+{
+  // the Skill detector at the hook: only a main-loop call of code-review is the stage
+  const E = fakeEngine({ files: filesOn(ALL_STATIC) })
+  const a = await toolCall(E, { tool: 'Skill', skill: 'ywr-harness:verify', args: 'high' }, { text: 'a' })
+  const b = await toolCall(E, { tool: 'Skill', skill: 'ywr-harness:code-review', args: 'high' }, { text: 'b' })
+  const c = await toolCall(E, { tool: 'Workflow', name: 'ywr-harness:adversarial-review', args: { scope: {} } }, { text: 'c' })
+  eq('TC8b tool.call: another skill, a plugin-prefixed code-review and the retired adversarial-review Workflow call are no stage: next\'s result as is, no prompt read, no check, no log',
+    [a.v.text, b.v.text, c.v.text, 'context' in a.v, 'context' in b.v, 'context' in c.v, E.prompts(), E.calls.checks.length, E.calls.write.length], ['a', 'b', 'c', false, false, false, 0, 0, 0])
+  const F = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
+  const next = nextWith(SENT)
+  const ev = { ...reviewEv, agentId: 'agent-1' }
+  const v = await F.hook('tool.call')(F.$, ev, next)
+  eq('TC8c tool.call: a code-review Skill call with an agentId (a subagent) passes straight to next and starts no stage: no git, no read, no check',
+    [v === SENT, next.calls[0] === ev, F.calls.run.length, F.calls.read.length, F.calls.checks.length], [true, true, 0, 0, 0])
+  const G = fakeEngine({ files: filesOn(ALL_CHECK, { [STATE]: '{"on":false}' }), complete: answers(ANSWER) })
+  const g = await toolCall(G, { tool: 'Skill', skill: '/code-review', args: 'medium' }, { text: 'started' })
+  eq('TC8d tool.call: a code-review Skill call with the switch off is the very result of next: no context, no prompt read, no check', [g.v.text, 'context' in g.v, G.prompts(), G.calls.checks.length], ['started', false, 0, 0])
+  const H = fakeEngine({ files: filesOn(ALL_STATIC) })
+  const h = await toolCall(H, { tool: 'Skill', skill: ' /Code-Review ', args: 'xhigh' }, { text: 'started' })
+  eq('TC8e tool.call: the leading-slash, upper-case, edge-spaced spelling of code-review is the stage too', h.v.context, [STATIC_TEXT('review-start')])
 }
 {
   const E = fakeEngine({ files: filesOn(declOf({ 'ready-report': { prompt: PROMPT, check: false } })), complete: answers(ANSWER) })
@@ -532,7 +542,7 @@ for (const [id, text] of [['TC10', 'NONE'], ['TC11', 'none.'], ['TC12', '']]) {
   eq('TC18 tool.call: a declared prompt file that cannot be read -> the result untouched, no check', [v === TREE_OUT, 'context' in v, E.calls.checks.length], [true, false, 0])
 }
 {
-  const U = fakeEngine({ files: filesOn(declOf({ 'review-digest': { prompt: PROMPT, check: true } })), complete: answers(ANSWER) })
+  const U = fakeEngine({ files: filesOn(declOf({ 'review-start': { prompt: PROMPT, check: true } })), complete: answers(ANSWER) })
   const a = await toolCall(U, treeEv)
   const N = fakeEngine({ files: { [STATE]: ON, [ROOT + '/' + PROMPT]: BODY }, complete: answers(ANSWER) })
   const b = await toolCall(N, treeEv)
@@ -637,9 +647,8 @@ for (const [id, git] of [['TC28', 'reject'], ['TC29', 'exit'], ['TC30', 'one-lin
   const u = await toolCall(U, treeEv)
   eq('BL2 no baseline: an undeclared stage stays untouched (no line, no toast)', [u.v === TREE_OUT, U.calls.toast.length], [true, 0])
   const D = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER), armed: false })
-  const nd = nextWith(SENT)
-  await D.hook('session.append')(D.$, digRow(), nd)
-  eq('BL3 no baseline: the digest row gets the withheld line after its text', nd.calls[0].message.content[0].text, DIG_TEXT + '\n\n' + M.withheldText('review-digest', null))
+  const d = await toolCall(D, reviewEv, { text: 'started' })
+  eq('BL3 no baseline: the review-start stage (the code-review Skill call) gets the withheld line alone, no side check', [d.v.text, d.v.context, D.calls.checks.length], ['started', [M.withheldText('review-start', null)], 0])
 }
 {
   const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
@@ -837,100 +846,6 @@ for (const [id, git] of [['TC28', 'reject'], ['TC29', 'exit'], ['TC30', 'one-lin
 }
 
 // ---------------------------------------------------------------------------------------------
-// session.append: the review digest row
-// ---------------------------------------------------------------------------------------------
-const appendHook = E => async (...a) => { await E.arm(); return E.hook('session.append')(...a) }
-{
-  const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
-  const row = digRow({ message: { type: 'user', content: [{ type: 'text', text: 'head note' }, { type: 'text', text: DIG_TEXT }, { type: 'image', src: 'x' }] } })
-  const before = JSON.stringify(row)
-  const next = nextWith(SENT)
-  const v = await appendHook(E)(E.$, row, next)
-  const got = next.calls[0]
-  const extra = [STATIC_TEXT('review-digest'), M.answerText('review-digest', { isAnswered: true, text: ANSWER })].join('\n\n')
-  eq('SA1 session.append: a digest row with the switch on -> next gets the row with static prompt then check answer appended to its LAST text block; the result is next\'s',
-    [v === SENT, next.calls.length, got.message.content[1].text, got.message.content[0], got.message.content[2], got.door, got.origin, got.message.type], [true, 1, DIG_TEXT + '\n\n' + extra, row.message.content[0], row.message.content[2], 'delivery', { kind: 'task-notification' }, 'user'])
-  eq('SA2 session.append: the incoming row is not mutated; the check prompt carries the digest line; no toast',
-    [JSON.stringify(row), E.calls.checks[0].includes(DIG_LINE), E.calls.checks[0].includes('## Stage\nreview-digest'), E.calls.toast.length], [before, true, true, 0])
-}
-{
-  const E = fakeEngine({ files: filesOn(ALL_STATIC) })
-  const next = nextWith(SENT)
-  await appendHook(E)(E.$, digRow(), next)
-  eq('SA3 session.append: check false -> the static prompt alone is appended; no check', [next.calls[0].message.content[0].text, E.calls.checks.length], [DIG_TEXT + '\n\n' + STATIC_TEXT('review-digest'), 0])
-  const P = fakeEngine({ files: filesOn(ALL_STATIC) })
-  const np = nextWith(SENT)
-  await appendHook(P)(P.$, digRow({ door: 'prompt' }), np)
-  eq('SA3b session.append: the idle-session digest row (door prompt, origin task-notification, ADR 0187) gets the same append, door kept', [np.calls[0].message.content[0].text, np.calls[0].door], [DIG_TEXT + '\n\n' + STATIC_TEXT('review-digest'), 'prompt'])
-  const Q = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
-  const nq = nextWith(SENT)
-  const vq = await appendHook(Q)(Q.$, digRow({ door: 'prompt' }), nq)
-  const extraQ = [STATIC_TEXT('review-digest'), M.answerText('review-digest', { isAnswered: true, text: ANSWER })].join('\n\n')
-  eq('SA3c session.append: check true on the idle-session digest row -> one side check, static prompt then answer appended, door and origin kept, the result is next\'s',
-    [vq === SENT, Q.calls.checks.length, nq.calls[0].message.content[0].text, nq.calls[0].door, nq.calls[0].origin], [true, 1, DIG_TEXT + '\n\n' + extraQ, 'prompt', { kind: 'task-notification' }])
-}
-{
-  const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
-  const plain = digRow({ message: { type: 'user', content: [{ type: 'text', text: 'Workflow finished with no digest line' }] } })
-  const n1 = nextWith(SENT); const r1 = await appendHook(E)(E.$, plain, n1)
-  const asPrompt = digRow({ door: 'prompt', origin: { kind: 'composer' } })
-  const n2 = nextWith(SENT); const r2 = await appendHook(E)(E.$, asPrompt, n2)
-  const asUser = digRow({ origin: { kind: 'user' } })
-  const n3 = nextWith(SENT); await appendHook(E)(E.$, asUser, n3)
-  const asAgent = digRow({ agentId: 'a1' })
-  const n4 = nextWith(SENT); await appendHook(E)(E.$, asAgent, n4)
-  eq('SA4 session.append: a non-digest delivery row, the digest text in a typed prompt (door prompt, origin composer), a user-origin row and an agentId row reach next as the very same event; no git, no read, no check',
-    [r1 === SENT, r2 === SENT, n1.calls[0] === plain, n2.calls[0] === asPrompt, n3.calls[0] === asUser, n4.calls[0] === asAgent, E.calls.run.length, E.calls.read.length, E.calls.checks.length], [true, true, true, true, true, true, 0, 0, 0])
-}
-{
-  const E = fakeEngine({ files: filesOn(ALL_CHECK, { [STATE]: '{"on":false}' }), complete: answers(ANSWER) })
-  const row = digRow()
-  const next = nextWith(SENT)
-  const v = await appendHook(E)(E.$, row, next)
-  eq('SA5 session.append: a digest row with the switch off -> the same event to next, the prompt file never read, no check', [v === SENT, next.calls[0] === row, E.prompts(), E.calls.checks.length], [true, true, 0, 0])
-  const F = fakeEngine({ git: 'reject', complete: answers(ANSWER) })
-  const nf = nextWith(SENT)
-  await appendHook(F)(F.$, row, nf)
-  eq('SA6 session.append: no git -> the same event to next', [nf.calls[0] === row, F.calls.checks.length], [true, 0])
-  const G = fakeEngine({ files: filesOn(declOf({ 'ready-report': { prompt: PROMPT } })), complete: answers(ANSWER) })
-  const ng = nextWith(SENT)
-  await appendHook(G)(G.$, row, ng)
-  const H = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
-  const textless = digRow({ message: { type: 'user', content: [{ type: 'text', text: DIG_TEXT }] } })
-  const nh = nextWith(SENT)
-  H.fs.delete(ROOT + '/' + PROMPT)
-  await appendHook(H)(H.$, textless, nh)
-  eq('SA7 session.append: review-digest undeclared, or its prompt file unreadable -> the same event to next, no check', [ng.calls[0] === row, nh.calls[0] === textless, G.calls.checks.length + H.calls.checks.length], [true, true, 0])
-}
-{
-  // any failure in the stage work passes the ORIGINAL event to next
-  const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER), sleep: 'throw' })
-  const row = digRow()
-  const next = nextWith(SENT)
-  const before = unhandled
-  const v = await appendHook(E)(E.$, row, next)
-  await tick(30)
-  eq('SA9 session.append: a $.clock.sleep that throws inside the stage work passes the ORIGINAL event to next (same object, text unchanged), the result is next\'s, nothing unhandled',
-    [v === SENT, next.calls.length, next.calls[0] === row, next.calls[0].message.content[0].text === DIG_TEXT, unhandled - before], [true, 1, true, true, 0])
-  E.mode.sleep = 'abort'
-  const next2 = nextWith(SENT)
-  await appendHook(E)(E.$, digRow(), next2)
-  eq('SA10 session.append: after that failure the next digest row is appended again (the side-check flag was reset)', [next2.calls[0].message.content[0].text.includes(STATIC_TEXT('review-digest')), E.calls.checks.length], [true, 2])
-  const F = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
-  F.$.fs.read = async () => { throw new Error('disk gone') }
-  const nf = nextWith(SENT)
-  const rowf = digRow()
-  await appendHook(F)(F.$, rowf, nf)
-  eq('SA11 session.append: unreadable state files leave the event as it came', [nf.calls.length, nf.calls[0] === rowf], [1, true])
-}
-{
-  const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: () => new Promise(() => {}), sleep: 'now' })
-  const next = nextWith(SENT)
-  await appendHook(E)(E.$, digRow(), next)
-  eq('SA8 session.append: a check that times out leaves the static prompt alone appended', next.calls[0].message.content[0].text, DIG_TEXT + '\n\n' + STATIC_TEXT('review-digest'))
-}
-
-// ---------------------------------------------------------------------------------------------
 // command.run: /ywr-harness:auto
 // ---------------------------------------------------------------------------------------------
 {
@@ -958,6 +873,17 @@ const appendHook = E => async (...a) => { await E.arm(); return E.hook('session.
   const E = fakeEngine({ files: { [ROOT + '/.harness.json']: declOf({ 'ready-report': { prompt: PROMPT }, 'nope': { prompt: 'a.md' } }) } })
   const r = await cmd(E, 'status')
   eq('CR7 command.run status: a declaration problem shows as a "! " line; status reads the switch as off with no file', [r.text.includes(K_OFF), r.text.split('\n').some(l => l.startsWith('! decision_prompts.nope')), E.calls.write.length], [true, true, 0])
+}
+{
+  // a .harness.json that still declares the retired review-digest stage: a problem line, no stage, no prompt read for it
+  const E = fakeEngine({ files: filesOn(declOf({ 'review-digest': { prompt: PROMPT, check: true }, 'ready-report': { prompt: PROMPT } })), complete: answers(ANSWER) })
+  const on = await cmd(E, 'on')
+  const lines = on.text.split('\n')
+  const prob = lines.filter(l => l.startsWith('! decision_prompts.review-digest'))
+  const rv = await toolCall(E, reviewEv, { text: 'started' })
+  eq('CR7b command.run on: a declared review-digest is named in one "! " line that says it retired in ywr-harness ADR 0215 and names review-start, and is no stage line; a code-review Skill call is then undeclared and untouched',
+    [prob.length, prob[0].includes('ywr-harness ADR 0215'), prob[0].includes('review-start'), lines.some(l => l.startsWith('- review-digest')), lines.some(l => l.startsWith('- ready-report: ')), 'context' in rv.v, E.calls.checks.length],
+    [1, true, true, false, true, false, 0])
 }
 {
   const E = fakeEngine({ git: 'reject' })
@@ -1053,7 +979,7 @@ await want('LG7 statusText: no declared stage adds the declaration shape (one pa
     const decl = JSON.parse(shape).decision_prompts
     const withStage = M.statusText({ ...st, decl: { stages: { 'ready-report': { prompt: 'a.md', check: false } }, problems: [] } })
     return [l.length, HANGUL.test(l[3]), M.parseDecl(JSON.parse(shape)).problems, Object.keys(M.parseDecl(JSON.parse(shape)).stages), Object.keys(decl),
-      l[4].includes('/ywr-harness:harness-init'), l[4].includes('docs/prompts/review-digest.md'), l[4].includes('docs/prompts/ready-report.md'), HANGUL.test(l[4]),
+      l[4].includes('/ywr-harness:harness-init'), l[4].includes('docs/prompts/review-start.md'), l[4].includes('docs/prompts/ready-report.md'), HANGUL.test(l[4]),
       withStage.includes('harness-init'), withStage.includes('decision_prompts')]
   }, [5, true, [], ['ready-report'], ['ready-report'], true, true, true, true, false, false])
 await want('LG8 statusText: the last stage line comes last under the Korean label; none when the line is empty',
@@ -1124,19 +1050,20 @@ await want('LG17 check busy: a stage that starts while another side check runs l
   }, [['review-start', 'added', 'busy'], ['ready-report', 'added', 'answer']])
 
 // each stage shape, the log cap, the switch off, a failing write
-await want('LG18 the three stages each log under their own name, in order: review-start, ready-report, then the digest row',
+await want('LG18 the two stages each log under their own name, in order: review-start, ready-report',
   async () => {
     const E = fakeEngine({ files: filesOn(ALL_STATIC) })
     await toolCall(E, reviewEv, { text: 'started' })
     await toolCall(E, treeEv)
-    await appendHook(E)(E.$, digRow(), nextWith(SENT))
     return logOf(E).map(l => [l.stage, l.outcome])
-  }, [['review-start', 'added'], ['ready-report', 'added'], ['review-digest', 'added']])
+  }, [['review-start', 'added'], ['ready-report', 'added']])
 await want('LG19 a call that is no stage logs nothing, even with the switch on; a stage after them does',
   async () => {
     const E = fakeEngine({ files: filesOn(ALL_STATIC) })
     await toolCall(E, { tool: 'Bash', command: 'ls' }, { text: 'x' })
     await toolCall(E, { tool: 'Workflow', name: 'ywr-harness:other' }, { text: 'y' })
+    await toolCall(E, { tool: 'Skill', skill: 'ywr-harness:verify' }, { text: 'v' })
+    await toolCall(E, { ...reviewEv, agentId: 'a1' }, { text: 'w' })
     await toolCall(E, { ...treeEv, agentId: 'a1' })
     const quiet = [E.fs.has(LOG), E.calls.write.length, E.calls.read.includes(LOG)]
     await toolCall(E, treeEv)   // control: a real stage on the same engine does log
@@ -1170,7 +1097,6 @@ for (const [id, files] of [['LG23', { [ROOT + '/.harness.json']: ALL_CHECK, [ROO
       const E = fakeEngine({ files: { ...files, [LOG]: 'keep\n' }, complete: answers(ANSWER) })
       await toolCall(E, treeEv)
       await toolCall(E, reviewEv, { text: 'started' })
-      await appendHook(E)(E.$, digRow(), nextWith(SENT))
       const control = fakeEngine({ files: filesOn(ALL_STATIC) })   // the same stage with the switch on does log
       await toolCall(control, treeEv)
       return [E.calls.write.length, E.calls.read.includes(LOG), E.fs.get(LOG), logOf(control).length]
@@ -1185,10 +1111,9 @@ await want('LG25 a log write that fails keeps the stage result: the static promp
     let attempts = 0
     E.$.fs.write = async (p, t) => { if (p === LOG) { attempts++; throw new Error('EACCES: ' + p) } return write(p, t) }
     const { v } = await toolCall(E, treeEv)
-    const nd = nextWith(SENT)
-    await appendHook(E)(E.$, digRow(), nd)
+    const rv = await toolCall(E, reviewEv, { text: 'started' })
     await tick(30)
-    return [v.context, nd.calls[0].message.content[0].text.includes(STATIC_TEXT('review-digest')), E.fs.has(LOG), unhandled - before, attempts]
+    return [v.context, rv.v.context[0] === STATIC_TEXT('review-start'), E.fs.has(LOG), unhandled - before, attempts]
   }, [[STATIC_TEXT('ready-report'), M.answerText('ready-report', { isAnswered: true, text: ANSWER })], true, false, 0, 2])
 await want('LG26 a log read that fails on a log that exists keeps the stage result and leaves the log as it was (no write)',
   async () => {
@@ -1313,6 +1238,16 @@ eq('CD5 the close gate and the toast are gone: no export of the ADR 0198 gate (p
   [M.closeGate, M.gitOut, M.parseBranch, M.parseDefaultBranch, M.closeArgs, M.closeUnmet, M.closeDenyText, M.closeVerdict, M.closeBody, M.closeAnswer, M.CLOSE_LINE, M.CLOSE_SKILL_REL, M.CLOSE_TYPED, M.withheldToast],
   [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined])
 
+// the review stage did not change the subagent deny: a subagent's close call is still denied, and a subagent's code-review call is not
+{
+  const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
+  const d = await closeCall(E, { ...closeEv, agentId: 'a1' })
+  const n = nextWith(SENT)
+  const r = await E.hook('tool.call')(E.$, { ...reviewEv, agentId: 'a1' }, n)
+  eq('CD5b tool.call: with the review stage declared and the switch on, a subagent\'s close call is still {deny: SUBAGENT_CLOSE_DENY} and a subagent\'s code-review call reaches next untouched',
+    [d.v, d.next.calls.length, r === SENT, n.calls.length, touched(E)], [{ deny: DENY_TEXT }, 0, true, 1, UNTOUCHED])
+}
+
 // the hook: a subagent's close call is denied whatever the switch, with no file read and no git call
 for (const [state, files] of SWITCHES) {
   const E = fakeEngine({ files })
@@ -1388,11 +1323,11 @@ for (const [i, ev] of [{ tool: 'Skill', skill: 'ywr-harness:verify' }, { tool: '
 {
   const C = capture(ENTRY.register)
   eq('E1 mods.mjs: registers the ledger, the prerequisites hooks and the decision-prompts hooks, each once',
-    C.hooks.map(x => x.ev).sort(), ['agent.spawn', 'command.run', 'command.run', 'session.append', 'session.start', 'tool.call', 'turn.complete', 'turn.start', 'turn.step', 'ui.render'])
-  eq('E2 mods.mjs: the auto command.run, the delivery/prompt session.append and an unmatched turn.start and tool.call keep their matchers through the entry',
-    [C.byEv('command.run').map(x => x.matcher.command).sort(), C.byEv('session.append')[0].matcher, C.byEv('turn.start')[0].matcher, C.byEv('tool.call')[0].matcher],
-    [['ywr-harness:auto', 'ywr-harness:setup'], { door: ['delivery', 'prompt'] }, undefined, undefined])
-  eq('E3 mods.mjs: no classic.*, no skill.prompt, no prompt.compose', [C.hooks.filter(x => x.ev.startsWith('classic.')).length, C.byEv('skill.prompt').length, C.byEv('prompt.compose').length], [0, 0, 0])
+    C.hooks.map(x => x.ev).sort(), ['agent.spawn', 'command.run', 'command.run', 'session.start', 'tool.call', 'turn.complete', 'turn.start', 'turn.step', 'ui.render'])
+  eq('E2 mods.mjs: the auto command.run and an unmatched turn.start and tool.call keep their matchers through the entry',
+    [C.byEv('command.run').map(x => x.matcher.command).sort(), C.byEv('turn.start')[0].matcher, C.byEv('tool.call')[0].matcher],
+    [['ywr-harness:auto', 'ywr-harness:setup'], undefined, undefined])
+  eq('E3 mods.mjs: no session.append, no classic.*, no skill.prompt, no prompt.compose', [C.byEv('session.append').length, C.hooks.filter(x => x.ev.startsWith('classic.')).length, C.byEv('skill.prompt').length, C.byEv('prompt.compose').length], [0, 0, 0, 0])
   const auto = C.byEv('command.run').find(x => x.matcher.command === 'ywr-harness:auto')
   const E = fakeEngine({ files: { [ROOT + '/.harness.json']: ALL_STATIC } })
   const r = await auto.fn(E.$, { command: 'ywr-harness:auto', args: 'on' }, async () => { throw new Error('no next') })
@@ -1420,17 +1355,6 @@ try {
         $ok = (Assert-True $name ($verdict -eq 'OK') $verdict) -and $ok
     }
 } finally { Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue }
-
-# W1 - the review-digest detector reads words the workflow writes (ADR 0175 Decision 2): the digest
-# template of adversarial-review.js must still hold both DIGEST_MARKS, or the stage would never fire.
-# The middle dot is built from its code point, so this file stays ASCII.
-$wf = [IO.File]::ReadAllText([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../workflows/adversarial-review.js')))
-$digestDecl = @($wf -split "`r?`n" | Where-Object { $_ -match '^const digest = ' })
-$marks = @((([string][char]0xB7) + ' multi_lens '), 'full lists follow (confirmed')
-$digestSrc = if ($digestDecl.Count -eq 1) { ($wf.Substring($wf.IndexOf($digestDecl[0]))).Split([string[]]@("`n`n", "`r`n`r`n"), 2, 'None')[0] } else { '' }
-$ok = (Assert-True 'W1 adversarial-review.js: one digest template, and it holds both DIGEST_MARKS of decision-prompts.mjs' `
-    ($digestDecl.Count -eq 1 -and $digestSrc.Contains($marks[0]) -and $digestSrc.Contains($marks[1])) `
-    "digest declarations $($digestDecl.Count); marks found: $($marks | ForEach-Object { $digestSrc.Contains($_) })") -and $ok
 
 # META - the verdict plumbing is live: a FAIL verdict is refused (a suite that accepted it would pass any
 # mutant), and the probe did not silently drop cases (a truncated probe would still print OK lines).

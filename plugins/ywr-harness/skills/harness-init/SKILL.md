@@ -53,8 +53,7 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
 - **Seeds are never overwritten** — an existing `CLAUDE.md` or `.gitattributes` is preserved
   byte-identical and reported as preserved (template-only additions are reported on the same
   line, ywr-harness ADR 0051). A seed this repo does not have yet — e.g. the root `.gitignore` (ywr-harness ADR 0053)
-  or the starter `REVIEW.md` (ywr-harness ADR 0054) on a repo scaffolded before they existed — IS placed by
-  a re-run: creation is not an overwrite.
+  on a repo scaffolded before it existed — IS placed by a re-run: creation is not an overwrite.
 - **Nothing is ever deleted.** Accumulated ADRs and specs are untouched.
 - **Placement writes LF** — no matter how the installed plugin cache was checked out
   (`core.autocrlf` can stamp CRLF onto it), CRLF in a template folds to LF on write (only the
@@ -102,11 +101,14 @@ no report.
    the rebuild step.
 3. Write the repo's first ADR from `docs/adr/0000-template.md`. Record rejected options; that is
    what makes the record worth keeping.
-4. **Replace the starter content in `REVIEW.md`** with this repo's own review invariants
-   (ywr-harness ADR 0054) — the slice close cites this file, and until it is rewritten reviews run against
-   the generic starters only.
+4. **Replace the starter invariants in the `## Review canon` section of `CLAUDE.md`** with this
+   repo's own review invariants (ywr-harness ADR 0217). `/code-review` reads that section, and until it
+   is rewritten reviews run against the generic starters only. When the repo has a root `REVIEW.md`
+   from an older scaffold, tell the member how to move it: copy its invariants and gotchas into that
+   section, set `review.canon` in `.harness.json` to `CLAUDE.md`, and delete `REVIEW.md`. Until the
+   move, an `@REVIEW.md` line in `CLAUDE.md` keeps the review complete.
 5. Rebuild and commit `index.json` + `INDEX.md` with the source change.
-6. **Read the two stage prompts** the scaffold seeded, `docs/prompts/review-digest.md` and
+6. **Read the two stage prompts** the scaffold seeded, `docs/prompts/review-start.md` and
    `docs/prompts/ready-report.md` (ywr-harness ADR 0180). The template declares both under `decision_prompts`
    with no `check`, and they do nothing until the member types `/ywr-harness:auto on`. An existing
    `.harness.json` stays as it is. When the drift note names `decision_prompts`, tell the member to add
@@ -134,10 +136,8 @@ Beyond the docs shape, the scaffold vendors the pieces that actually run the gat
   gates (tests, typecheck) are deferred to CI and the deferral is reported.
 - `.githooks/pre-push` — scans **added lines** of the pushed range for secrets. A false positive is
   exempted per line with the marker `harness:allow-secret`, not with `--no-verify`.
-- `.githooks/commit-msg` — refuses a commit message whose review digest counts more high and medium
-  findings than it has `class:` lines; `git commit --no-verify` is the only bypass (ywr-harness ADR 0208).
 - `.githooks/post-commit` + `scripts/harness/harness_retro.py` — the slice retro gate: seven
-  deterministic docs-drift checks plus SIZE and CLASS at zero token cost, advisory, silent when clean (ywr-harness ADR 0017).
+  deterministic docs-drift checks plus SIZE at zero token cost, advisory, silent when clean (ywr-harness ADR 0017).
   Placed **GUARDED** — an existing `post-commit` without the `ywr-harness:post-commit` marker is
   refused rather than overwritten, and the one-line manual wiring is printed instead.
 

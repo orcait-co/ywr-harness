@@ -1,6 +1,6 @@
 ---
 name: slice-close
-description: Slice-close ritual as one command — scope resolution, deterministic gates before any LLM review, proportional adversarial review, spec-owned verify, and one commit that carries the slice, its handoff and the close record. Use when a slice is functionally done and needs closing — the person types it, or the main session calls it after its ready report once every owner question of the slice has an answer. A subagent never calls it.
+description: Slice-close ritual as one command — scope resolution, deterministic gates before any LLM review, proportional `/code-review` run, spec-owned verify, and one commit that carries the slice, its handoff and the close record. Use when a slice is functionally done and needs closing — the person types it, or the main session calls it after its ready report once every owner question of the slice has an answer. A subagent never calls it.
 ---
 
 # /slice-close — slice closing ritual
@@ -48,10 +48,10 @@ Six parts of the emitter's output belong in the close record:
 The emitter also prints `review canon:` for stage 2. For stage 5 it prints `handoff:` when the
 repo declares one, and `hooks:` when the repo has a `.githooks/` directory.
 
-**Run every emitted command and fix failures now.** Record the exact commands and results verbatim
-for the review's passed-gates block: mechanical defects never reach an LLM reviewer.
+**Run every emitted command and fix failures now**, before the review: mechanical defects never
+reach an LLM reviewer. Record the exact commands and results verbatim for the close record.
 
-## 2. Adversarial review, proportional to the tier
+## 2. Review, proportional to the tier
 
 The emitter decided the tier mechanically; if it looks wrong, fix `.harness.json`, do not argue it
 here. **This table consumes the slice scope's tier exactly once per slice** — a tier printed for a
@@ -60,88 +60,92 @@ later *fix diff* triggers nothing (its gate and `ungrouped:` output still apply,
 | tier | action |
 |---|---|
 | `skip` | No LLM review. Deterministic gates suffice. Record "review skipped: docs-only". |
-| `small` | `Workflow({name:'ywr-harness:adversarial-review', args:{scope:…, tier:'small'}})` — 2 merged lenses. |
-| `full` | Same call without `tier`. |
+| `small` | `Skill({skill: 'code-review', args: 'medium'})` |
+| `full` | `Skill({skill: 'code-review', args: 'medium'})` |
 
-`args.scope` is an **object**, never a bare string (a string scope cannot shard, loses the out-of-scope bucket and skeptic #2's gate check):
+The review is the built-in `/code-review` command (ywr-harness ADR 0215). It runs on the session
+model, at `medium` for both review tiers (ywr-harness ADR 0218), on every session model. Ultracode changes nothing. Call it
+from the main session with no target. The default target is the branch's commits that `origin/HEAD`
+lacks plus the uncommitted changes, new untracked files included. Before the call, list those
+commits with `git log --oneline origin/HEAD..HEAD`. When `origin/HEAD` does not resolve, the
+command fails: record that the commit list and the review's base are unknown.
+`git remote set-head origin --auto` sets `origin/HEAD` from the remote. When the list holds commits
+of an earlier slice, pushed to a branch or not, those enter the review too: record that, and give
+their findings buckets like any other. Pass no `--max-findings`: the close keeps the default cap.
+In an interactive session the review runs as a background agent. Wait for its task notification
+before you edit anything; the notification carries the findings, each with a file, a line, a
+summary, a failure scenario and a severity.
+
+**The review canon reaches the command only through `CLAUDE.md`.** The command reads `CLAUDE.md` and
+the files that it imports, never a separate canon file. Before the review, read the emitter's
+`review canon:` line:
+
+- **`(loaded at session start)`**: the canon is a memory file, `CLAUDE.md`, `.claude/CLAUDE.md` or
+  `CLAUDE.local.md`, with a `Review canon` heading outside code (ywr-harness ADR 0217). Go on.
+- **`NO HEADING`**: the memory file has no such heading. Go on, record that the review may have run
+  without the canon, and tell the person in the ready report.
+- **`(imported by <file>)`**: a canon in another file reaches the review through an `@<path>` line
+  outside code in that memory file. Go on.
+- **`NOT IMPORTED`**: add the import before you call the review. Append the section below to the
+  `CLAUDE.md` at the repo root, and create that file when the repo has none. Then run the emitter
+  again and confirm `(imported by CLAUDE.md)`. Do not move the canon into `CLAUDE.md` unasked: the
+  person decides that move.
+- **`NOT FOUND`**: record that the review ran without the canon.
 
 ```
-Workflow({name: 'ywr-harness:adversarial-review', args: {
-  tier: '<small when the emitter said small; omit otherwise>',
-  scope: {
-    files: [<the emitter's file list minus the exclusions below; coupled files adjacent>],
-    context: '<1-3 lines: what the slice does + key design decisions; then the exclusions, named>',
-    invariants: [<copied from the review canon the emitter named — never an inline list here>],
-    gates_passed: '<stage-1 commands + results, verbatim; plus "<what>: <gate> PASS" per gate-covered exclusion>'
-  },
-  root: '<the session's repo root, absolute — lets absolute and relative reports of one site merge>',
-  lensExtra: '<house-specific review angles, if this repo has any>',
-  shards: '<auto only per the shard habit below; omit otherwise>'
-}})
+## Review canon
+
+The slice-close review, `/code-review`, reads the review canon only through the import below
+(ywr-harness ADR 0215). Its invariants also bind every change you write. Its gotchas apply when you
+review. Keep the line while the canon holds this repo's review invariants.
+
+@<path>
 ```
 
-**Leave out of `files`** only what a deterministic gate already answered, named in `context`
-(`excluded: <files> — <why>`): a **generated surface whose drift gate passed** in stage 1 (its
-sources stay in scope); the **declared handoff** and its `docs/handoff-archive/` copy (resume
-state, not shipped); a file whose **whole diff a named gate checks** — e.g. `plugin.json` +
-`marketplace.json` carrying only the version bump, with `lockstep: manifest-gate PASS` in
-`gates_passed`. Everything else stays in scope.
+`<path>` is the path that the emitter printed, with a backslash before each space in it
+(`@docs/my\ canon.md`): Claude Code ends an unescaped path at its first space. A probe saw a review
+that started with the import apply an imported rule. Nobody verified that a canon or an import added
+or changed during the session reaches its review. When the canon, its import or its section changed
+during this session, record that.
 
-Every session runs the review workers on the same pins (ywr-harness ADR 0197), and ultracode does not
-change them (ywr-harness ADR 0108). Do not pass `sessionModel`: the workflow ignores it and logs one
-`[retired]` line. Record the result's `stats.worker_pins`.
+The command takes no scope exclusions and no passed-gates block. It can raise findings on a
+generated surface or on the handoff. Disposition those like any other finding.
 
-`invariants` come from the canon file the emitter printed. If it said **NOT FOUND**, stop and
-resolve that first: a review whose invariants nobody can cite is a review nobody can audit.
+**Record the level and the item count.** When the count equals a known cap, the record says that the
+cap can hide findings. The known caps are 10 items in a `claude -p` run and 32 in the findings tool.
+**Record the usage line too**: the duration, the tool uses and the tokens that the task notification
+reports for the review agent, as printed. When the notification carries no usage line, record that.
+The line is the only size signal of the run. It does not show which files the review read.
 
-Scope habits (ywr-harness ADR 0070, measured): **name the LOCAL path of every source a claim rests on** (a
-URL or "the docs say" costs a finder a `curl` round-trip); **order `files` so files that changed
-together sit together** (shards are cut along that order); **`shards` is a recall lever for dense
-or critical scopes, not a speed lever** — add `shards: 'auto'` when more than ~8 files remain after
-the exclusions, or the previous review's busiest finder ran past ~10 requests; never on a string
-scope (it throws). **→ Explicit shard groups, or the measurements: `reference.md` §Shards.**
-Put repo-specific angles in `lensExtra`; a redefined lens set never receives canonical updates.
-
-**Read the result's `digest` first** — its first key, one line: confirmed count by severity,
-`multi_lens` (confirmed findings that two or more lenses raised), out-of-scope / nit / rejected
-counts, `high_ids` (the highs step 3 below must prove), any coverage loss (dead lenses, finders or skeptics, unverified findings, capped finds), tier, shards, pin mode and `canary_ok`. A completion notice truncates
-around 14k characters, so the digest survives it; open the full lists only for what it names.
-
-**Lows are listed, not dispositioned** (ywr-harness ADR 0206). The close record lists each confirmed
-low, in scope or out of it: its `id`, title, `file:line` and the count of its `also_at` sites. Mark a low
-`fixed` when you fixed it anyway at every site, or `fixed in part` with the fixed sites named: its files go
-through the fix gates of step 1 below, and it gets no fix check and no written reading. Mark it
-`unverified` when the review did; a low can carry both marks. The list stays in the close record. It is
-no handoff item, no open item, no `BACKLOG.md` entry and no next-slice candidate.
-
-**Disposition**: every confirmed **high or medium** finding ends in exactly one of three buckets — and so does each
-site in its `also_at` list (the same claim at another file:line): a site is dispositioned on its
-own, never by its representative's verdict (ywr-harness ADR 0163):
+**Disposition**: every finding ends in exactly one of three buckets (ywr-harness ADR 0163,
+ywr-harness ADR 0215). The severity — `important`, `pre_existing`, `nit` or none — goes in the record
+beside the bucket, and it limits the buckets (ywr-harness ADR 0216). A finding that names more than
+one site gets a bucket per site:
 
 - **fixed** — the fix is checked as below.
-- **valid, no action** — the claim is true, but no change is worth making now. The reason says
-  why and names the record that keeps it: an ADR residual, a spec known limit, a handoff item or
-  a `BACKLOG.md` entry. A true claim with no record is not this bucket.
+- **valid, no action** — only for a `nit` whose fix would change a design or a coverage. The claim is
+  true, and the change waits for a slice that owns it. The reason says why and
+  names the record that keeps it, an open item:
+  `python "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.py" add risk "open item: <file:line> <change>; <why>"`.
+  A true claim with no record is not this bucket.
 - **false on reading** — the closer read the claim against the code and it does not hold. The
-  reason quotes the line or guard that shows it. Two or more keys in the finding's `lenses` mean
-  independent lenses raised it; the reason then answers each lens's claim in `also_at`.
+  reason quotes the line or guard that shows it.
 
-A confirmed high or medium marked `unverified: true` (every skeptic leg died, twice) is read against its
-claim before it is fixed or dispositioned. A **high or medium** in `rejected[]` whose skeptic
-votes split 1–1 is read by the closer against its claim before it counts as rejected; if true, it
-is dispositioned like a confirmed one. A result with only `rejected_count`: `reference.md`
-§Old-digest.
+**The severity limits the bucket** (ywr-harness ADR 0216):
 
-**Class line** (ywr-harness ADR 0208): every high or medium finding the digest counts gets ONE line
-in the close record, whatever its bucket; its `also_at` sites share it. Write
-`class: <id> instance — <why no deterministic check can own this defect>` or
-`class: <id> BACKLOG — <the deterministic owner that would retire the class>`, and for `BACKLOG`
-append the entry to `docs/handoff-archive/BACKLOG.md`: one bullet at the end of the section for its
-surface, naming the finding and the owner; create the file with a title line when the repo has
-none, and add the section heading when the file has no such section. Stage it with the slice. A class an
-LLM review keeps re-finding belongs to a deterministic owner. The commit-msg hook refuses a commit whose
-class lines are fewer than the digest's high and medium count, and the slice retro reports one that
-got past the hook. A low gets no class line.
+- An `important` finding, a `pre_existing` finding and a finding with no severity end fixed or false on
+  reading. Never valid, no action: fix it in this close, even when the fix is large.
+- A `nit` ends fixed or false on reading, unless its fix would change a design or a coverage. That
+  `nit` ends valid, no action, with its open item.
+- **Probe first**: a fix that rests on a host behaviour that no fact, spec or probe of the repo
+  records gets a probe on the real use path before the fix. The record names the probe and its
+  result. When this session cannot run the probe on that path, ask the owner with AskUserQuestion
+  before the fix. When the owner defers the probe, the finding ends valid, no action as the
+  owner's decision, with an open item. The session alone never defers an `important` finding.
+- **Defect class**: when a finding is one case of a class that a deterministic check could retire,
+  such as a lint rule, a CI check or a selftest assertion, the closer can also record the class as a
+  decision candidate. The record is one bullet in `docs/handoff-archive/BACKLOG.md`, at the place
+  that the file's header names, or at its end. A missing file starts with a title line.
 
 **The fix diff does not re-enter the review** (ywr-harness ADR 0028, ywr-harness ADR 0200). Close each fix by:
 
@@ -151,62 +155,23 @@ got past the hook. A low gets no class line.
    `review tier:` line is **not** an input to the table above. While iterating, run the touched
    component's own test file directly; a full runner this run prints is the
    close gate, run once on the final tree.
-2. **Per-finding fix check** (ywr-harness ADR 0090): read each fix against its finding's claim and failure
-   scenario. **High and medium** findings go to skeptic legs on the pinned worker agent
-   (`ywr-harness:worker` on every session model — a single Agent-tool leg, not a review
-   workflow's fan-out, ywr-harness ADR 0109; ultracode or not, ywr-harness ADR 0108),
-   **batched**: one leg per
+2. **Per-finding fix check** (ywr-harness ADR 0090): every fixed finding except a `nit` goes to a
+   skeptic leg on the pinned worker agent (`ywr-harness:worker` on every session model — a single
+   Agent-tool leg, ywr-harness ADR 0109; ultracode or not, ywr-harness ADR 0108), **batched**: one leg per
    group whose fixes touch the same files or the same defect class, **at most 4 findings per leg**,
    and a leg of its own for a fix that touches a declared critical surface. A leg gets its findings
-   (severity · title · claim · evidence · `also_at`) plus the files the fixes touched, tries to
+   (severity · summary · failure scenario · file and line) plus the files the fixes touched, tries to
    refute, finding by finding, that each fix closes its scenario without opening an adjacent one,
    and answers **per finding** exactly `fixed: true|false` plus a reason. Legs run in parallel.
    Quote every verdict into the close record; `fixed: false` reopens that finding — patch it, then
-   re-check it alone. A low gets no fix check (ywr-harness ADR 0206); a nit needs none.
-3. **Fix proof for every high the digest names** (ywr-harness ADR 0169): the script runs the command and
-   records its exit code against the `--tree` snapshots before and after it, so the proof is never
-   the closer's own line. **The review picks the keys, not the closer**: the digest's `high_ids`
-   gives a count and then the `id` of every in-scope confirmed high (`F<n>-<fingerprint>`) and of
-   every rejected high that not every vote refuted (`R<n>-…`: a 1–1 split, or a refute beside a
-   dead leg). A fixed `O<n>-…` high may be added; nothing can be left out. The fingerprint ties an
-   id to its finding, so a later review's `F1` never inherits an earlier `F1`'s proof. **Before
-   editing a fix**, run a command that shows the finding's scenario, and after the fix run the
-   SAME argv again:
-
-   ```
-   python "${CLAUDE_PLUGIN_ROOT}/scripts/fix_proof.py" run <id> -- <command> [args...]
-   python "${CLAUDE_PLUGIN_ROOT}/scripts/fix_proof.py" waive <id> --reason "<bucket>: <why no proof>"
-   python "${CLAUDE_PLUGIN_ROOT}/scripts/fix_proof.py" check --digest "<the digest line, verbatim>" [<O id> ...]
-   ```
-
-   `run` executes at the repo root with no shell — wrap a shell line in `pwsh -NoProfile -Command`
-   or `sh -c`. A run that changes the tree (a snapshot test, codegen, a formatter writing a
-   non-ignored file) cannot count: ignore or remove its output and run again. Any non-zero exit is
-   a failing half, and the PROVEN line prints the code — read a code other than 1 as the test
-   failing, not its invocation (a missing file, a bad flag). A listed high that is not proven
-   takes a waiver whose reason names its bucket: a fix no command can show (prose, a race, a
-   hosted service), **valid, no action** or **false on reading**. `check` runs after the last
-   edit and after every review, and every line it prints goes into the close record. **Exit 0** —
-   every key proven. **Exit 1** — a key has no proof or waiver: the close stops. **Exit 3** — only
-   waivers remain: the session never accepts its own waiver, so the ready report lists them, and
-   ask the owner about each waived key with its reason (AskUserQuestion). A key that this
-   session already asked after the ready report keeps that answer; ask only the rest in this close.
-   Quote each answer into the close record, and stop on any refusal. In a headless
-   session nobody answers: the close stops at exit 3 with no handoff and no commit, and the report
-   lists the waivers. **Exit 2**
-   — `check` could not read its input (the digest, a key, the git snapshot or the journal): it
-   checked nothing, so the close stops until a fixed input reaches exit 0, 1 or 3.
-   **→ A digest with no `high_ids`, or a result with only `rejected_count`:
-   `reference.md` §Old-digest.** A command
-   that passed before the fix proves nothing; the check reports it MISSING. The skeptic leg above
-   still runs: the proof shows the scenario closed, the leg looks for damage beside it.
+   re-check it alone. A fixed `nit` goes through the gates of step 1 and gets no leg.
 
 **No fix gets a re-review in this slice** (ywr-harness ADR 0200, which narrows ywr-harness ADR 0028). A patch
-and a new mechanism close the same way: steps 1 to 3 above. When you judge that a fix needs more
+and a new mechanism close the same way: steps 1 and 2 above. When you judge that a fix needs more
 review, record the need when you decide it:
-`python "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.py" add risk "open item: review <files and lines> of the <id> fix; <why>"`.
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.py" add risk "open item: review <files and lines> of the <file:line> fix; <why>"`.
 Stage 5 puts that note in the handoff as an open item. The next slice that touches those files puts
-those hunks in its review scope. The close record names each fix that went to an open item, or says
+those hunks in its review. The close record names each fix that went to an open item, or says
 `none`. This is your decision. It is no owner question. The rebase re-arm below is a separate
 rule: it is no re-review of a fix.
 
@@ -258,20 +223,17 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   slice: input, never proof (ywr-harness ADR 0105). Check each one against the tree and the stage outputs. Keep the decisions, rejected
   options and owner answers that still hold for the record body; put the facts and risks that stay
   open into the handoff. A risk note that starts with `open item:` becomes an open item there (ywr-harness ADR 0200). Correct or drop a note the tree contradicts, and never let a note stand in
-  for a gate run, the digest, a fix proof or the ready report.
+  for a gate run, the review's findings or the ready report.
 - Regenerate doc surfaces if any ADR/spec source changed (`pwsh docs/build.ps1`), committing
   `index.json` + `INDEX.md` with the change.
 - **Commit**: subject at most 72 characters; the **close record in the body** — the `scope:` line;
   the gates that passed; the tier **and its reason**; the `ignored-tree claims:` line as printed (a
   standing claim with its reason; `none checked` / `NOT CHECKED` quoted, never summarised as
   clean); `prepared: reused at …` when stages 1–3 came from a ready report; the review outcome
-  (confirmed / rejected counts, `multi_lens`, `stats.worker_pins`, and `stats.find_omitted` with
-  `capped_finders` when a finder hit its cap, and `stats.cap_unreported` when a finder did not say
-  whether it did — unknown coverage, never read as full) or the skip reason;
-  the low list of stage 2; the fix disposition (each high and medium finding's bucket — fixed / valid, no action / false on reading — with
-  the count per bucket, gate re-runs, every per-finding verdict, `also_at` sites and split
-  rejections, the `fix_proof.py check` lines and the owner's answer on each waiver, each high or medium fix passed to an open item or `none`);
-  the class line of each high and medium finding;
+  (the level, the item count, the usage line and the cap note of stage 2, the emitter's `review canon:` line, and
+  whether the canon, its import or its section changed during this session) or the skip reason; the fix disposition (each finding's severity and bucket — fixed / valid,
+  no action / false on reading — with the count per bucket, gate re-runs, every per-finding verdict,
+  and each fix passed to an open item or `none`);
   the slice notes kept, as corrected, with the `show` count line; `review basis:` after a rebase; the verify verdict; and
   what went ungated or unverified. **Never paste a CI skip directive into the body** — GitHub skips
   every push- and PR-triggered workflow when the pushed commit's message contains one (the
@@ -283,11 +245,6 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_retro.py"` by hand. A follow-up commit only when a
   retro finding changes an ADR, a spec or the docs index (ywr-harness ADR 0017); a "no change" result is not
   resume state and never gets a commit.
-- **Class tally** (ywr-harness ADR 0209): after the commit, run
-  `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_retro.py" --coverage` and quote its `-- class lines`
-  lines verbatim in the close report. The tally counts the `instance` and `BACKLOG` lines of recent
-  closes, this close included. Never truncate it. Under `SLICE_RETRO=0` the run prints nothing: say
-  that the tally did not run, never that it is clean.
 
 The last item of the record is the point of the whole ritual: a close that does not say what it
 did *not* cover reads as complete coverage.

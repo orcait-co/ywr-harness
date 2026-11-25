@@ -1,4 +1,4 @@
-# Selftest for the shipped git hooks (ADR 0015; post-commit ADR 0017; commit-msg ADR 0208). They live under templates/ —
+# Selftest for the shipped git hooks (ADR 0015; post-commit ADR 0017). They live under templates/ —
 # payload this plugin COPIES rather than runs — but pre-commit and pre-push are the only shipped
 # artifacts that can block a commit or a push, so "template payload has no selftest here" is the
 # wrong call for them. post-commit cannot block anything; its cases (P) exist because every one of
@@ -21,9 +21,8 @@ $hooksSrc = Join-Path $PSScriptRoot 'templates/githooks'
 $preCommit = Join-Path $hooksSrc 'pre-commit'
 $prePush = Join-Path $hooksSrc 'pre-push'
 $postCommit = Join-Path $hooksSrc 'post-commit'
-$commitMsg = Join-Path $hooksSrc 'commit-msg'
 
-foreach ($f in @($preCommit, $prePush, $postCommit, $commitMsg)) {
+foreach ($f in @($preCommit, $prePush, $postCommit)) {
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) {
         Write-Host "FAIL — hook template missing: $f" -ForegroundColor Red
         exit 1
@@ -916,173 +915,6 @@ try {
     }
 } finally {
     if ($null -ne $prevRetroVar) { $env:SLICE_RETRO = $prevRetroVar }
-}
-
-# =================================================================================================
-# commit-msg — refuses a close record that owes `class:` lines and lacks them (ADR 0208, spec 0007)
-# =================================================================================================
-# Besides pre-commit and pre-push, this is the one shipped hook that blocks. Its branches: a sh pre-filter
-# (one `grep -q confirmed`, no cut and no dropped line) that starts no Python when grep finds nothing; the
-# Python check when it finds the word; and a REFUSAL, never a silent pass, when grep cannot read the message
-# (exit other than 0 or 1), the interpreter or the vendored script is missing, or the check exits other than
-# 0 or 1. Piggybacks on two fixtures: cm-ok (the vendored retro and config) and cm-noscript. The python-less
-# arm follows P5 (fact 42): absence is VERIFIED under the narrowed PATH before asserting, and that PATH
-# carries shims for the other tools the hook needs (git, grep). Without them the pre-filter finds nothing,
-# and e1/e2 would pass or fail on a missing grep instead of on the missing python.
-$cmDigest2 = "fix: close`n`nReview: confirmed 2 (h0 m2 l0) · multi_lens 4`n"
-$tplScripts = Join-Path $PSScriptRoot 'templates/scripts/harness'
-function Invoke-CommitMsg([string]$Repo, [string]$Name, [string]$Body, [string]$PathOverride = '', [switch]$Missing) {
-    $f = Join-Path $fxBase "cm-$Name.txt"
-    # -Missing: hand the hook a path that does not exist (grep cannot read it), writing nothing.
-    if (-not $Missing) { [IO.File]::WriteAllText($f, ($Body -replace "`r`n", "`n")) }
-    elseif (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
-    $sh = ConvertTo-ShPath $commitMsg
-    $prevPath = $env:PATH
-    Push-Location $Repo
-    try {
-        if ($PathOverride) { $env:PATH = $PathOverride }
-        elseif ($shExtraPath.Count) { $env:PATH = ($shExtraPath -join ';') + ';' + $prevPath }
-        $out = (& $shCmd.Source $sh (ConvertTo-ShPath $f) 2>&1) | Out-String
-        return @{ Out = $out; Code = $LASTEXITCODE }
-    } finally { $env:PATH = $prevPath; Pop-Location }
-}
-$cmOk = New-Repo 'cm-ok'
-foreach ($vf in @('harness_retro.py', 'harness_config.py')) {
-    Write-File $cmOk "scripts/harness/$vf" ([IO.File]::ReadAllText((Join-Path $tplScripts $vf)))
-}
-$cmNoScript = New-Repo 'cm-noscript'
-if (-not $pyAvail) {
-    Write-Host 'SKIP [CM-a..CM-f commit-msg] python absent (reported, not silent) — CI has python' -ForegroundColor Yellow
-} else {
-    $rCMa = Invoke-CommitMsg $cmOk 'a' ($cmDigest2 + "`nclass: A instance - one-off`n")
-    $ok = (Assert-True 'CM-a two owed findings and one class line REFUSE the commit: exit 1, ADR 0208, both line forms, --no-verify' `
-        ($rCMa.Code -eq 1 -and $rCMa.Out -match 'REFUSED' -and $rCMa.Out -match 'ADR 0208' -and $rCMa.Out -match 'class: <id> instance' -and $rCMa.Out -match 'class: <id> BACKLOG' -and $rCMa.Out -match 'git commit --no-verify') "exit=$($rCMa.Code) out=$($rCMa.Out)") -and $ok
-    $rCMb = Invoke-CommitMsg $cmOk 'b' ($cmDigest2 + "`nclass: A instance - one-off`nclass: B BACKLOG - docs gate`n")
-    $ok = (Assert-True 'CM-b one class line per finding passes: exit 0, silent' ($rCMb.Code -eq 0 -and $rCMb.Out.Trim() -eq '') "exit=$($rCMb.Code) out=$($rCMb.Out)") -and $ok
-    # CM-c: `git commit -m`/`-F` keep a `#` line in the stored message, so a digest there is REFUSED when short (F1).
-    # No scissors section is cut, whatever the comment character is: the check counts the whole file, as the retro does.
-    $rCMc = Invoke-CommitMsg $cmOk 'c' "fix: x`n`n#181 Review: confirmed 9 (h5 m4 l0)`n"
-    $ok = (Assert-True 'CM-c1 a digest only on a # line is REFUSED (the line is kept in the stored message): exit 1, ADR 0208' ($rCMc.Code -eq 1 -and $rCMc.Out -match 'REFUSED' -and $rCMc.Out -match 'counts 9 confirmed' -and $rCMc.Out -match 'ADR 0208') "exit=$($rCMc.Code) out=$($rCMc.Out)") -and $ok
-    $rCMc2 = Invoke-CommitMsg $cmOk 'c2' "fix: x`n`n# ------------------------ >8 ------------------------`ndiff`n+Review: confirmed 9 (h5 m4 l0)`n"
-    $ok = (Assert-True 'CM-c2 a digest only below the scissors line is REFUSED (no cut): exit 1, counts 9, ADR 0208' ($rCMc2.Code -eq 1 -and $rCMc2.Out -match 'REFUSED' -and $rCMc2.Out -match 'counts 9 confirmed' -and $rCMc2.Out -match 'ADR 0208') "exit=$($rCMc2.Code) out=$($rCMc2.Out)") -and $ok
-    $rCMc3 = Invoke-CommitMsg $cmOk 'c3' "fix: x`n`n; ------------------------ >8 ------------------------  `ndiff`n+Review: confirmed 9 (h5 m4 l0)`n"
-    $ok = (Assert-True 'CM-c3 a digest below a ; scissors line (core.commentChar) with trailing spaces is REFUSED: exit 1, counts 9' ($rCMc3.Code -eq 1 -and $rCMc3.Out -match 'REFUSED' -and $rCMc3.Out -match 'counts 9 confirmed') "exit=$($rCMc3.Code) out=$($rCMc3.Out)") -and $ok
-    # CM-c4/CM-c5 (F1-3d8a2118): a scissors line ABOVE a short digest. `-m`/`-F` keep it, so the retro counts the digest.
-    $rCMc4 = Invoke-CommitMsg $cmOk 'c4' "fix: x`n`n# ------------------------ >8 ------------------------`nReview: confirmed 3 (h1 m2 l0)`n"
-    $ok = (Assert-True 'CM-c4 a # scissors line ABOVE a short digest is REFUSED: exit 1, counts 3, has 0 class lines' ($rCMc4.Code -eq 1 -and $rCMc4.Out -match 'REFUSED' -and $rCMc4.Out -match 'counts 3 confirmed' -and $rCMc4.Out -match 'has 0 class line') "exit=$($rCMc4.Code) out=$($rCMc4.Out)") -and $ok
-    $rCMc5 = Invoke-CommitMsg $cmOk 'c5' "fix: x`n`n- ------------------------ >8 ------------------------`nReview: confirmed 3 (h1 m2 l0)`n"
-    $ok = (Assert-True 'CM-c5 a "- " scissors line ABOVE a short digest is REFUSED: exit 1, counts 3' ($rCMc5.Code -eq 1 -and $rCMc5.Out -match 'REFUSED' -and $rCMc5.Out -match 'counts 3 confirmed') "exit=$($rCMc5.Code) out=$($rCMc5.Out)") -and $ok
-    $rCMd = Invoke-CommitMsg $cmOk 'd' "fix: plain`n`nNo review digest here.`n"
-    $ok = (Assert-True 'CM-d a message with no digest passes: exit 0, silent' ($rCMd.Code -eq 0 -and $rCMd.Out.Trim() -eq '') "exit=$($rCMd.Code) out=$($rCMd.Out)") -and $ok
-    $rCMd2 = Invoke-CommitMsg $cmOk 'd2' "fix: prose`n`nconfirmed 3 findings in prose, no digest shape.`n"
-    $ok = (Assert-True 'CM-d2 the loose token without the digest shape reaches Python and passes: exit 0, silent' ($rCMd2.Code -eq 0 -and $rCMd2.Out.Trim() -eq '') "exit=$($rCMd2.Code) out=$($rCMd2.Out)") -and $ok
-
-    # CM-f: the real thing. Git hands the hook its own message file. A refused `git commit` leaves HEAD where
-    # it was, and --no-verify is the one bypass. core.hooksPath points at a dir holding only this hook.
-    New-Item -ItemType Directory -Force -Path (Join-Path $cmOk '.githooks') | Out-Null
-    Copy-Item -LiteralPath $commitMsg -Destination (Join-Path $cmOk '.githooks/commit-msg')
-    if (-not $IsWindows) { & chmod +x (Join-Path $cmOk '.githooks/commit-msg') }
-    & git -C $cmOk config core.hooksPath .githooks 2>$null
-    $headBefore = (& git -C $cmOk rev-parse HEAD 2>$null | Out-String).Trim()
-    $gitOut = (& git -C $cmOk commit -q --allow-empty -m 'fix: close' -m 'Review: confirmed 2 (h0 m2 l0)' -m 'class: A instance - one-off' 2>&1 | Out-String)
-    $gitCode = $LASTEXITCODE
-    $headAfter = (& git -C $cmOk rev-parse HEAD 2>$null | Out-String).Trim()
-    $ok = (Assert-True 'CM-f1 git itself runs the hook: a real commit lacking a class line is refused and HEAD does not move' ($gitCode -ne 0 -and $headAfter -eq $headBefore -and $gitOut -match 'REFUSED') "exit=$gitCode out=$gitOut") -and $ok
-    # CM-f1b: the reported scenario through real git -F (cleanup=whitespace keeps the scissors line): refused, HEAD stays.
-    $cmFFile = Join-Path $fxBase 'cm-f1b.txt'
-    [IO.File]::WriteAllText($cmFFile, "fix: close`n`n# ------------------------ >8 ------------------------`nReview: confirmed 3 (h1 m2 l0)`n")
-    $f1bOut = (& git -C $cmOk commit -q --allow-empty -F $cmFFile 2>&1 | Out-String)
-    $f1bCode = $LASTEXITCODE
-    $headF1b = (& git -C $cmOk rev-parse HEAD 2>$null | Out-String).Trim()
-    $ok = (Assert-True 'CM-f1b git commit -F with a # scissors line above a short digest is refused and HEAD does not move' ($f1bCode -ne 0 -and $headF1b -eq $headBefore -and $f1bOut -match 'REFUSED' -and $f1bOut -match 'counts 3 confirmed') "exit=$f1bCode out=$f1bOut") -and $ok
-    $null = & git -C $cmOk commit -q --no-verify --allow-empty -m 'fix: close' -m 'Review: confirmed 2 (h0 m2 l0)' -m 'class: A instance - one-off' 2>&1
-    $nvCode = $LASTEXITCODE
-    $headNv = (& git -C $cmOk rev-parse HEAD 2>$null | Out-String).Trim()
-    $ok = (Assert-True 'CM-f2 --no-verify commits the same message' ($nvCode -eq 0 -and $headNv -ne $headBefore) "exit=$nvCode") -and $ok
-
-    # CM-f3 (F10): the check exits with a status other than 0 or 1 (here 2, as argparse does) is a crash, and the
-    # hook REFUSES it, naming the exit code. The stub replaces the vendored script for this one commit only, then the
-    # real bytes come back (e1/e2 below read the same fixture).
-    $cmRetroPath = Join-Path $cmOk 'scripts/harness/harness_retro.py'
-    $cmRetroReal = [IO.File]::ReadAllText($cmRetroPath)
-    try {
-        [IO.File]::WriteAllText($cmRetroPath, "import sys`nsys.exit(2)`n")
-        $headF3 = (& git -C $cmOk rev-parse HEAD 2>$null | Out-String).Trim()
-        $f3Out = (& git -C $cmOk commit -q --allow-empty -m 'fix: close' -m 'Review: confirmed 2 (h0 m2 l0)' -m 'class: A instance - one-off' -m 'class: B instance - one-off' 2>&1 | Out-String)
-        $f3Code = $LASTEXITCODE
-        $headF3After = (& git -C $cmOk rev-parse HEAD 2>$null | Out-String).Trim()
-    } finally { [IO.File]::WriteAllText($cmRetroPath, $cmRetroReal) }
-    $ok = (Assert-True 'CM-f3 a check that exits 2 REFUSES the commit, names exit 2 and --no-verify, and HEAD does not move' `
-        ($f3Code -ne 0 -and $headF3After -eq $headF3 -and $f3Out -match 'REFUSED' -and $f3Out -match 'exited 2' -and $f3Out -match '--no-verify') "exit=$f3Code out=$f3Out") -and $ok
-
-    # CM-f4 (O183, ADR 0209): core.commentChar `-` and a strip cleanup. Git would store the message without its
-    # `- class:` lines, so the hook reads the comment string and refuses; HEAD stays. The control commits the same
-    # body with plain `class:` lines.
-    & git -C $cmOk config core.commentChar '-' 2>$null
-    try {
-        $cmF4 = Join-Path $fxBase 'cm-f4.txt'
-        [IO.File]::WriteAllText($cmF4, "fix: close`n`nReview: confirmed 2 (h0 m2 l0)`n`n- class: A instance - r`n- class: B instance - r`n")
-        $headF4 = (& git -C $cmOk rev-parse HEAD 2>$null | Out-String).Trim()
-        $f4Out = (& git -C $cmOk commit -q --allow-empty --cleanup=strip -F $cmF4 2>&1 | Out-String)
-        $f4Code = $LASTEXITCODE
-        $headF4After = (& git -C $cmOk rev-parse HEAD 2>$null | Out-String).Trim()
-        [IO.File]::WriteAllText($cmF4, "fix: close`n`nReview: confirmed 2 (h0 m2 l0)`n`nclass: A instance - r`nclass: B instance - r`n")
-        $null = (& git -C $cmOk commit -q --allow-empty --cleanup=strip -F $cmF4 2>&1 | Out-String)
-        $f4bCode = $LASTEXITCODE
-        $f4bBody = (& git -C $cmOk log -1 --format=%B 2>$null | Out-String)
-    } finally { & git -C $cmOk config --unset core.commentChar 2>$null }
-    $ok = (Assert-True 'CM-f4 core.commentChar - with a strip cleanup: "- class:" lines do not pay, the commit is REFUSED and HEAD does not move' `
-        ($f4Code -ne 0 -and $headF4After -eq $headF4 -and $f4Out -match 'REFUSED' -and $f4Out -match 'comment string `-`') "exit=$f4Code out=$f4Out") -and $ok
-    $ok = (Assert-True 'CM-f4 control: plain class lines commit, and git stored both' ($f4bCode -eq 0 -and ([regex]::Matches($f4bBody, '(?m)^class:')).Count -eq 2) "exit=$f4bCode body=$f4bBody") -and $ok
-}
-
-# CM-g (F1): grep cannot read the message (a path that does not exist, grep exit 2): the pre-filter is not "no token", so
-# the hook REFUSES instead of passing. It needs no Python, so it runs where python is absent too. A chmod 000 arm is not
-# used: Windows has no mode bit and a root CI user reads through it, so a missing file is the portable unreadable case.
-$rCMg = Invoke-CommitMsg $cmOk 'g-missing' '' -Missing
-$ok = (Assert-True 'CM-g a message grep cannot read REFUSES: exit 1, names the grep exit, ADR 0208 and --no-verify (fail closed)' `
-    ($rCMg.Code -eq 1 -and $rCMg.Out -match 'REFUSED — could not read the message \(grep exit [2-9]' -and $rCMg.Out -match 'ADR 0208' -and $rCMg.Out -match '--no-verify') "exit=$($rCMg.Code) out=$($rCMg.Out)") -and $ok
-
-# CM-e1..e3: the missing-tool arms. e3 needs no narrowed PATH: the script check runs before the interpreter check.
-$rCMe3 = Invoke-CommitMsg $cmNoScript 'e3' $cmDigest2
-$ok = (Assert-True 'CM-e3 a digest with no scripts/harness/harness_retro.py REFUSES, naming the script (never a silent pass)' `
-    ($rCMe3.Code -eq 1 -and $rCMe3.Out -match 'REFUSED — this message holds a review digest, but scripts/harness/harness_retro.py was not found' -and $rCMe3.Out -match '--no-verify') "exit=$($rCMe3.Code) out=$($rCMe3.Out)") -and $ok
-$rCMe3b = Invoke-CommitMsg $cmNoScript 'e3b' "fix: plain`n"
-$ok = (Assert-True 'CM-e3 control: the same repo with a digest-free message passes, exit 0, silent' ($rCMe3b.Code -eq 0 -and $rCMe3b.Out.Trim() -eq '') "exit=$($rCMe3b.Code) out=$($rCMe3b.Out)") -and $ok
-
-$cmBin = Join-Path $fxBase 'cm-bin'
-New-Item -ItemType Directory -Force -Path $cmBin | Out-Null
-$cmShimsOk = $true
-foreach ($tool in @('git', 'grep')) {
-    if ($tool -eq 'git') { $abs = ConvertTo-ShPath $gitLauncher }
-    else {
-        $prevP = $env:PATH
-        try {
-            if ($shExtraPath.Count) { $env:PATH = ($shExtraPath -join ';') + ';' + $prevP }
-            $abs = "$(& $shPath -c "command -v $tool" 2>&1)".Trim()
-        } finally { $env:PATH = $prevP }
-    }
-    if (-not $abs) { $cmShimsOk = $false; continue }
-    $shim = Join-Path $cmBin $tool
-    [IO.File]::WriteAllText($shim, "#!/bin/sh`nexec '$abs' `"`$@`"`n")
-    if (-not $IsWindows) { & chmod +x $shim }
-}
-$prevPath = $env:PATH
-try {
-    $env:PATH = $cmBin
-    $cmPy = "$(& $shPath -c 'command -v python; command -v python3; command -v py' 2>&1)".Trim()
-    $cmTools = "$(& $shPath -c 'command -v git && command -v grep' 2>&1)".Trim()
-} finally { $env:PATH = $prevPath }
-if ($cmPy -or -not $cmShimsOk -or -not $cmTools) {
-    $cmWhy = "the narrowed PATH is not python-free with git and grep (python='$cmPy' tools='$cmTools' shims=$cmShimsOk)"
-    if ($env:CI) { $ok = (Assert-True 'CM-e1/e2 the shim PATH probe resolves on CI' $false $cmWhy) -and $ok }
-    else { Write-Host "SKIP [CM-e1 CM-e2 commit-msg] $cmWhy — reported, not silent; CI fails on it" -ForegroundColor Yellow }
-} else {
-    $rCMe1 = Invoke-CommitMsg $cmOk 'e1' "fix: plain`n`nNo digest.`n" $cmBin
-    $ok = (Assert-True 'CM-e1 no python on PATH and no digest: the commit passes, exit 0, silent (the pre-filter needs no Python)' ($rCMe1.Code -eq 0 -and $rCMe1.Out.Trim() -eq '') "exit=$($rCMe1.Code) out=$($rCMe1.Out)") -and $ok
-    $rCMe2 = Invoke-CommitMsg $cmOk 'e2' $cmDigest2 $cmBin
-    $ok = (Assert-True 'CM-e2 no python on PATH and a digest: REFUSED with the python line (never a silent pass), exit 1' `
-        ($rCMe2.Code -eq 1 -and $rCMe2.Out -match 'REFUSED — this message holds a review digest, but python was not found' -and $rCMe2.Out -match '--no-verify') "exit=$($rCMe2.Code) out=$($rCMe2.Out)") -and $ok
 }
 
 Remove-FixtureRoot $fxBase
