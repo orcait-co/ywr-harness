@@ -1350,7 +1350,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         (-not ($tracked -match 'docs/docs\.html|docs/docs\.artifact\.html')) "tracked: $($tracked -join ', ')") -and $ok
     $ok = (Assert-True 'V committed outputs ARE tracked (index.json + INDEX.md)' `
         (($tracked -contains 'docs/index.json') -and ($tracked -contains 'docs/INDEX.md')) "tracked: $($tracked -join ', ')") -and $ok
-    & git -C $v check-ignore -q .claude/telemetry/subagent-stops.jsonl 2>$null
+    & git -C $v check-ignore -q .claude/telemetry/delegations/slot-00.json 2>$null
     $ok = (Assert-True 'V telemetry ledger path is ignored before it exists (audit M3)' ($LASTEXITCODE -eq 0) 'check-ignore says not ignored') -and $ok
     $pyCmd = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
     $rV1 = & $pyCmd.Source (Join-Path $v 'scripts/harness/harness_gates.py') --all --repo $v 2>&1 | Out-String

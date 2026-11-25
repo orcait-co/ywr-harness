@@ -25,8 +25,8 @@
 // mid-stream is "left where it stood". It never carries a gate: hosts < 2.1.287, `disableAllHooks`,
 // `--safe-mode` and a managed `allowManagedModsOnly` all drop it (ywr-harness ADR 0117).
 //
-// What it never writes: a prompt, a task description, an answer or any other message text (the
-// secret-adjacent rule `subagent-telemetry` keeps). Where it writes (ywr-harness ADR 0118): a RING of twenty
+// What it never writes: a prompt, a task description, an answer or any other message text (never
+// persist what may carry a secret). Where it writes (ywr-harness ADR 0118): a RING of twenty
 // session files, `<project root>/.claude/telemetry/delegations/slot-00.json`..`slot-19.json` —
 // gitignored by the scaffold and the canon — and only where the root holds `.harness.json` (a repo
 // that adopted the harness), so a session in a home directory or a stranger's checkout leaves nothing

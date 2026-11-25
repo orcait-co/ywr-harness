@@ -223,7 +223,7 @@ Try-Case 'displayName-removed' {
 Try-Case 'hook-path-broken' {
     param($d)
     $p = Join-Path $d 'hooks/hooks.json'
-    (Get-Content -LiteralPath $p -Raw).Replace('subagent-telemetry.mjs', 'subagent-telemetry-MOVED.mjs') |
+    (Get-Content -LiteralPath $p -Raw).Replace('config-change-audit.mjs', 'config-change-audit-MOVED.mjs') |
         Set-Content -LiteralPath $p -NoNewline
 }
 
@@ -231,8 +231,8 @@ Try-Case 'exec-form-regressed' {
     param($d)
     $p = Join-Path $d 'hooks/hooks.json'
     $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
-    $h = $j.hooks.SubagentStop[0].hooks[0]
-    $h.command = '"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-telemetry.mjs"'
+    $h = $j.hooks.ConfigChange[0].hooks[0]
+    $h.command = '"${CLAUDE_PLUGIN_ROOT}/hooks/config-change-audit.mjs"'
     $h.PSObject.Properties.Remove('args')
     $j | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $p -NoNewline
 }

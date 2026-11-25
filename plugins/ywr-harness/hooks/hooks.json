@@ -110,18 +110,6 @@
           }
         ]
       }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/subagent-telemetry.mjs"],
-            "timeout": 10
-          }
-        ]
-      }
     ]
   }
 }

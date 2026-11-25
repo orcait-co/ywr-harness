@@ -12,6 +12,11 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.82.1 — 2026-11-25
+
+- `subagent-telemetry` hook 을 지웠습니다(ywr-harness ADR 0219). 이 hook 은 서브에이전트가 끝날 때마다 `.claude/telemetry/subagent-stops.jsonl` 에 한 줄을 남겼지만, v0.82.0 에서 그 기록을 읽던 eval case 가 빠진 뒤로 이 파일을 읽는 곳이 없습니다. 이제 플러그인은 `SubagentStop` 이벤트에 hook 을 등록하지 않고, `/reload-plugins` 의 hook 수는 11 에서 10 으로 줄어듭니다.
+- 이미 있는 `.claude/telemetry/subagent-stops.jsonl` 과, 쓰기가 겹쳤을 때 생긴 `subagent-stops-spill-<pid>.jsonl` 파일은 플러그인이 지우지 않습니다. `.gitignore` 시드가 `.claude/telemetry/` 를 제외하므로 커밋되지 않으며, 필요 없으면 지워도 됩니다. 같은 폴더의 `delegations/` 위임 기록은 그대로 남습니다.
+
 ## v0.82.0 — 2026-11-25
 
 - 슬라이스 close 의 리뷰가 Claude Code 기본 명령 `/code-review` 로 바뀌었습니다(ywr-harness ADR 0215). `ywr-harness:adversarial-review` workflow 와 `ywr-harness:reviewer` 에이전트는 플러그인에서 빠졌습니다. 이 workflow 를 이름으로 부르면 이제 오류가 납니다. `/ywr-harness:slice-close` 는 게이트 tier 가 `small` 이든 `full` 이든 `/code-review medium` 을 세션 모델로 실행합니다. `skip` 이면 지금처럼 리뷰를 건너뜁니다. 결함을 심어 둔 fixture 두 개(심은 결함 11개, 각 10회 실행)에서 `medium` 은 `high` 와 똑같이 매 실행 11개를 모두 찾았고(110/110), 같이 돌린 20쌍 모두에서 더 빨랐습니다(wall 중앙값 약 30 % 단축, ywr-harness ADR 0218).

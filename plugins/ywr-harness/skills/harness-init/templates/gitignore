@@ -9,8 +9,8 @@ docs/docs.artifact.html
 docs/customer.html
 docs/customer.artifact.html
 
-# Machine-local telemetry ledger the ywr-harness SubagentStop hook appends. Per-machine, so a
-# committed copy conflicts for every other writer.
+# Machine-local delegation ledger that the ywr-harness delegation-ledger hooks module writes.
+# Per-machine, so a committed copy conflicts for every other writer.
 .claude/telemetry/
 
 # Secrets — commit .env.example only.
