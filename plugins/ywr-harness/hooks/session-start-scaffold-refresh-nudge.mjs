@@ -10,15 +10,14 @@
 // something — which is the only observable that matters: a version stamp would nag on hook-only
 // releases and stay silent on hand-edits, this fires exactly when the files differ.
 //
-// The placement map (TOOLCHAIN / GUARDED / GUARD_MARKER) is read from init.ps1's own literals at
-// each firing, NOT duplicated here: the hook and init.ps1 ship in the same plugin at the same
-// version, so the map can never skew, and two copies of one rule is how they end up disagreeing
-// (init.ps1's own header). Extraction failure is a reported EXTRACTION-DRIFT banner, never
-// silence — a guard that cannot report its own drift is indistinguishable from an absent guard —
-// bounded to plausible-scaffold repos (a `scripts/harness/` directory) so a broken plugin does
-// not banner every unrelated session. The pwsh original walked init.ps1's PowerShell AST; Node has
-// no such parser, so this port lexes init.ps1 (comments, quoted strings, here-strings, variables)
-// and accepts exactly the shapes the AST walk accepted — see the "init.ps1 literal reader" block.
+// The placement map (TOOLCHAIN / GUARDED / GUARD_MARKER) is imported from
+// skills/harness-init/placement.mjs at each firing, NOT duplicated here: the hook, init.mjs and
+// placement.mjs ship in the same plugin at the same version, so the map can never skew, and two copies
+// of one rule is how they end up disagreeing. The module is data with no side effect at import. An
+// import that fails, or a table that is not a non-empty list of [source, destination] string pairs,
+// is a reported EXTRACTION-DRIFT banner, never silence — a guard that cannot report its own drift is
+// indistinguishable from an absent guard — bounded to plausible-scaffold repos (a `scripts/harness/`
+// directory) so a broken plugin does not banner every unrelated session.
 //
 // Comparison contract (ywr-harness ADR 0033):
 //   - TOOLCHAIN placements: EOL-insensitive byte identity (bytes compared after dropping 0x0D).
@@ -31,7 +30,7 @@
 //   - A missing TOOLCHAIN placement counts as drift, named `(missing)`: a file the canon added
 //     after this repo's last scaffold run is exactly the stale state.
 //   - GUARDED (post-commit) is compared only when it carries the marker; a marker-less file is
-//     foreign, init.ps1 refuses to touch it, so a re-run would change nothing — silent, the same
+//     foreign, init.mjs refuses to touch it, so a re-run would change nothing — silent, the same
 //     shape as the githooks-nudge's foreign-hooksPath silence (ywr-harness ADR 0029).
 //   - SEED files are never compared: their content is the consuming repo's decisions. The one read of a seed
 //     is the retired-text scan below (ywr-harness ADR 0207): a fixed phrase list, never a template comparison.
@@ -57,7 +56,7 @@
 // nudge: the probe can only improve the advice, never silence the hook.
 //
 // Direction probe (ywr-harness ADR 0042): after drift, the NORMAL branch reads the repo's `.harness-version`
-// stamp (written by init.ps1 on every successful run — generated, never a template, never in the
+// stamp (written by init.mjs on every successful run — generated, never a template, never in the
 // placement map, so it can never itself count as drift). stamp > running -> repo AHEAD: the
 // advice flips to "update the plugin, do NOT init" (multi-writer: another writer refreshed this
 // repo with a newer plugin). stamp < running -> refresh advice with the direction stated as
@@ -72,16 +71,16 @@
 // "genuinely behind" and sends the person into a run that collides with the pushed scaffold. So,
 // only after drift is found, after the ywr-harness ADR 0039 branch and after the stamp probe, the hook asks the
 // remote-tracking refs whether they carry a commit this checkout lacks that touches `.harness-version`
-// — the stamp ALONE: init.ps1 writes it on every run that changes the version and on a first run, a
+// — the stamp ALONE: init.mjs writes it on every run that changes the version and on a first run, a
 // same-version re-run places byte-identical templates, and a hand edit is not a scaffold run (the
 // ywr-harness ADR 0042 equal-version branch owns hand edits). The walk is patch-equivalence filtered, so a local
 // rebase or amend of a stamp commit is no hit. Candidates in order: the current branch's upstream,
-// then origin/HEAD (init.ps1's offline default-branch signal, ywr-harness ADR 0062). A hit replaces the ywr-harness ADR 0042
+// then origin/HEAD (init.mjs's offline default-branch signal, ywr-harness ADR 0062). A hit replaces the ywr-harness ADR 0042
 // behind, equal and direction-blind branches: do NOT run harness-init, pull first. The repo-AHEAD
 // branch (stamp newer than the running plugin) keeps precedence and skips the probe: it already
 // forbids init, and the next session start re-checks after the plugin update. NO network — the refs
 // are as of the last fetch, and both messages say so. Any git failure or absence is no hit, never an
-// error line. init.ps1 runs the same detection as a refusal (-AllowUpstreamAhead).
+// error line. init.mjs runs the same detection as a refusal (--allow-upstream-ahead).
 //
 // Payload and output contract: same as the sibling nudge (verified against the official hooks
 // reference 2026-08-05) — cwd per firing; systemMessage AND hookSpecificOutput.additionalContext
@@ -126,7 +125,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys, collator, markerAbove } from './hook-lib.mjs'
 
 // Test-Path -PathType Container / Leaf, promoted so every failure (a root that does not exist on
@@ -198,7 +197,7 @@ const READY = 'docs/prompts/ready-report.md'
 // The CLAUDE.md seed dropped its slice-rule bullets in 0.72.0 (ywr-harness ADR 0183), before the rule itself changed, so
 // its rows carry 0.72.0 and the ADR that later changed the rule.
 // The seed docs/prompts/review-digest.md left the scaffold in ywr-harness ADR 0215, so its three rows left this table:
-// a row names a file that the real init.ps1 places. REVIEW.md is the one exception: the scaffold no longer places it
+// a row names a file that the real init.mjs places. REVIEW.md is the one exception: the scaffold no longer places it
 // (ywr-harness ADR 0217), but a repo whose review.canon names it still loads it into every review through an import,
 // so its rows stay. Its current text is the `## Review canon` section of the CLAUDE.md seed.
 const RETIRED_SEED = [
@@ -212,6 +211,7 @@ const RETIRED_SEED = [
   { phrase: 'For every confirmed finding, judge', files: ['REVIEW.md'], version: '0.79.0', adr: '0206' },
   { phrase: 'fix_proof.py check', files: [READY], version: '0.82.0', adr: '0215' },
   { phrase: 'one `class:` line per finding', files: ['REVIEW.md'], version: '0.82.0', adr: '0215' },
+  { phrase: 'pwsh docs/build.ps1', files: CLAUDE_FILES, version: '0.84.0', adr: '0220' },
 ]
 
 // Whitespace runs to one space: the form both a phrase and a file text are compared in.
@@ -400,305 +400,6 @@ function prop(e, name) {
   return isObject(e) ? getProp(e, name) : undefined
 }
 
-// =====================================================================================================
-// init.ps1 literal reader — the AST walk's replacement
-//
-// The pwsh original found the FIRST assignment to $TOOLCHAIN / $GUARDED / $GUARD_MARKER anywhere in
-// init.ps1 and accepted its right-hand side ONLY when it is a bare string constant (or, for the maps,
-// a possibly [type]-converted hashtable literal whose every key and value is one). A computed value
-// that merely CONTAINS a literal (`'prefix/' + $suffix`, an expandable "$dir/file", a nested table)
-// fails extraction whole — a fragment in the map is a wrong path compared quietly (review
-// 2026-08-06, high). The reader keeps that strictness: it lexes init.ps1 into tokens, finds the first
-// `$NAME <assign-op>` pair, and after a string constant demands a statement end, so `'a' + $b`,
-// `'a' | x`, `@{...}.Keys` and the like are refused.
-//
-// Not reproduced: the AST parse reported ANY syntax error in init.ps1 as an extraction failure; this
-// reader fails on a lexical error (an unterminated string, here-string or block comment) and on
-// unbalanced brackets — the shape a truncated or corrupted copy takes. Any other syntax error is
-// init.selftest's to catch.
-// =====================================================================================================
-const SQ = "'‘’‚‛"        // PowerShell's single-quote characters
-const DQ = '"“”„'              // ... and its double-quote characters
-const WORD_STOP = new Set([...' \t\r\n\f\v;(){}[]|&,=<>$@\'"‘’‚‛“”„`'])
-const ESCAPES = { 0: '\0', a: '\x07', b: '\b', e: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' }
-
-class LexError extends Error { }
-
-// A single-quoted string, from `i` (just after the opening quote): '' is a literal quote.
-function lexSingle(src, i) {
-  let value = ''
-  for (;;) {
-    if (i >= src.length) throw new LexError('unterminated single-quoted string')
-    if (SQ.includes(src[i])) {
-      if (SQ.includes(src[i + 1] ?? '')) { value += src[i]; i += 2; continue }
-      return { value, next: i + 1 }
-    }
-    value += src[i++]
-  }
-}
-
-// A subexpression `$( ... )`, from `i` (just after the `$(`) to just past its matching `)`. Strings,
-// here-strings and comments inside it are skipped as such, so a `"` or `)` inside them does not end it.
-function skipSub(src, i) {
-  const n = src.length
-  let depth = 1
-  while (i < n) {
-    const c = src[i]
-    if (c === '`') { i += 2; continue }
-    if (SQ.includes(c)) { i = lexSingle(src, i + 1).next; continue }
-    if (DQ.includes(c)) { i = lexDouble(src, i + 1, false).next; continue }
-    if (c === '@' && (SQ.includes(src[i + 1] ?? '') || DQ.includes(src[i + 1] ?? ''))) {
-      let j = i + 2
-      while (src[j] === ' ' || src[j] === '\t' || src[j] === '\r') j++
-      if (src[j] === '\n') {
-        const e = hereEnd(src, j, SQ.includes(src[i + 1]) ? SQ : DQ)
-        if (e < 0) throw new LexError('unterminated here-string')
-        i = e + 3
-        continue
-      }
-    }
-    if (c === '#' && (i === 0 || /\s/.test(src[i - 1]))) { while (i < n && src[i] !== '\n') i++; continue }
-    if (c === '(') depth++
-    else if (c === ')' && --depth === 0) return i + 1
-    i++
-  }
-  throw new LexError('unterminated subexpression')
-}
-
-// Index of the newline that precedes the closing `'@` / `"@` of a here-string whose opener ends at the
-// newline `nl` (an empty body ends at that very newline), or -1.
-function hereEnd(src, nl, quotes) {
-  let k = nl - 1
-  for (;;) {
-    k = src.indexOf(String.fromCharCode(10), k + 1)
-    if (k < 0) return -1
-    if (quotes.includes(src[k + 1] ?? '') && src[k + 2] === '@') return k
-  }
-}
-
-// Body of a double-quoted string or here-string, from `i` (just after the opening quote). Returns
-// { value, pure, next }; pure is false when the text expands (`$name`, `${..}`, `$(..)`), which makes it
-// an ExpandableString — not a bare constant. A `$( ... )` is skipped whole, quotes and all.
-function lexDouble(src, i, hereString) {
-  let value = ''
-  let pure = true
-  for (;;) {
-    if (i >= src.length) throw new LexError('unterminated double-quoted string')
-    const c = src[i]
-    if (hereString) {
-      if (c === '\n' && src[i + 1] === '"' && src[i + 2] === '@') return { value, pure, next: i + 3 }
-      if (c === '\n' && DQ.includes(src[i + 1] ?? '') && src[i + 2] === '@') return { value, pure, next: i + 3 }
-    } else if (DQ.includes(c)) {
-      if (DQ.includes(src[i + 1] ?? '')) { value += c; i += 2; continue }   // "" -> "
-      return { value, pure, next: i + 1 }
-    }
-    if (c === '`') {
-      const n = src[i + 1] ?? ''
-      value += Object.prototype.hasOwnProperty.call(ESCAPES, n) ? ESCAPES[n] : n
-      i += 2
-      continue
-    }
-    if (c === '$' && src[i + 1] === '(') {
-      pure = false
-      const e = skipSub(src, i + 2)
-      value += src.slice(i, e)
-      i = e
-      continue
-    }
-    if (c === '$' && /[A-Za-z0-9_{?$^:]/.test(src[i + 1] ?? '')) pure = false
-    value += c
-    i++
-  }
-}
-
-function lex(src) {
-  const toks = []
-  const n = src.length
-  let i = 0
-  while (i < n) {
-    const c = src[i]
-    if (c === '\n') { toks.push({ t: 'nl' }); i++; continue }
-    if (c === ' ' || c === '\t' || c === '\r' || c === '\f' || c === '\v' || c === ' ') { i++; continue }
-    if (c === '`' && (src[i + 1] === '\n' || (src[i + 1] === '\r' && src[i + 2] === '\n'))) { i += src[i + 1] === '\n' ? 2 : 3; continue }
-    if (c === '#') { while (i < n && src[i] !== '\n') i++; continue }
-    if (c === '<' && src[i + 1] === '#') {
-      const e = src.indexOf('#>', i + 2)
-      if (e < 0) throw new LexError('unterminated block comment')
-      i = e + 2
-      continue
-    }
-    if (SQ.includes(c)) {
-      const r = lexSingle(src, i + 1)
-      toks.push({ t: 'str', v: r.value, pure: true })
-      i = r.next
-      continue
-    }
-    if (DQ.includes(c)) {
-      const r = lexDouble(src, i + 1, false)
-      toks.push({ t: 'str', v: r.value, pure: r.pure })
-      i = r.next
-      continue
-    }
-    if (c === '@') {
-      const q = src[i + 1] ?? ''
-      if (SQ.includes(q) || DQ.includes(q)) {
-        // here-string: the opener must be followed by optional blanks and a newline
-        let j = i + 2
-        while (src[j] === ' ' || src[j] === '\t' || src[j] === '\r') j++
-        if (src[j] === '\n') {
-          j++
-          if (SQ.includes(q)) {
-            const found = hereEnd(src, j - 1, SQ)
-            if (found < 0) throw new LexError('unterminated here-string')
-            let body = src.slice(j, found)
-            if (body.endsWith('\r')) body = body.slice(0, -1)
-            toks.push({ t: 'str', v: body, pure: true })
-            i = found + 3
-            continue
-          }
-          const r = lexDouble(src, j - 1, true)
-          let body = r.value.slice(1)
-          if (body.endsWith('\r')) body = body.slice(0, -1)
-          toks.push({ t: 'str', v: body, pure: r.pure })
-          i = r.next
-          continue
-        }
-      }
-      if (q === '{') { toks.push({ t: 'hashopen' }); i += 2; continue }
-      if (q === '(') { toks.push({ t: 'other', v: '@(' }); i += 2; continue }
-      toks.push({ t: 'other', v: '@' })
-      i++
-      continue
-    }
-    if (c === '$') {
-      if (src[i + 1] === '{') {
-        const e = src.indexOf('}', i + 2)
-        if (e < 0) throw new LexError('unterminated braced variable')
-        toks.push({ t: 'var', v: src.slice(i + 2, e) })
-        i = e + 1
-        continue
-      }
-      if (src[i + 1] === '(') { toks.push({ t: 'other', v: '$(' }); i += 2; continue }
-      let j = i + 1
-      while (j < n && /[\w:?$^]/.test(src[j])) j++
-      toks.push(j > i + 1 ? { t: 'var', v: src.slice(i + 1, j) } : { t: 'other', v: '$' })
-      i = Math.max(j, i + 1)
-      continue
-    }
-    // assignment operators: = += -= *= /= %= ??=
-    if (c === '=') { toks.push({ t: 'assign', v: '=' }); i++; continue }
-    if ('+-*/%'.includes(c) && src[i + 1] === '=') { toks.push({ t: 'assign', v: c + '=' }); i += 2; continue }
-    if (c === '?' && src[i + 1] === '?' && src[i + 2] === '=') { toks.push({ t: 'assign', v: '??=' }); i += 3; continue }
-    if (c === ';') { toks.push({ t: 'semi' }); i++; continue }
-    if (c === '{') { toks.push({ t: 'lbrace' }); i++; continue }
-    if (c === '}') { toks.push({ t: 'rbrace' }); i++; continue }
-    if (c === '[') { toks.push({ t: 'lbrack' }); i++; continue }
-    if (c === ']') { toks.push({ t: 'rbrack' }); i++; continue }
-    if (c === '(') { toks.push({ t: 'lparen' }); i++; continue }
-    if (c === ')') { toks.push({ t: 'rparen' }); i++; continue }
-    let j = i
-    if (c === '`') j += 2          // a backtick escape at a token start belongs to the word
-    while (j < n && !WORD_STOP.has(src[j])) j++
-    if (j === i) j = i + 1         // always progress (`,` `|` `&` `<` `>` and friends)
-    toks.push({ t: 'other', v: src.slice(i, j) })
-    i = j
-  }
-  return toks
-}
-
-// A file whose brackets do not pair up is not a PowerShell script the parser would have accepted.
-function balanced(toks) {
-  const close = { hashopen: '}', lbrace: '}', lparen: ')', lbrack: ']' }
-  const stack = []
-  for (const t of toks) {
-    if (close[t.t]) stack.push(close[t.t])
-    else if (t.t === 'other' && (t.v === '@(' || t.v === '$(')) stack.push(')')
-    else if (t.t === 'rbrace' || t.t === 'rparen' || t.t === 'rbrack') {
-      const want = t.t === 'rbrace' ? '}' : t.t === 'rparen' ? ')' : ']'
-      if (stack.pop() !== want) return false
-    }
-  }
-  return stack.length === 0
-}
-
-// The token after a literal must end the statement; an operator, a pipe, a member access or a
-// second token means the value was computed.
-function atStatementEnd(toks, j) {
-  const t = toks[j]
-  return !t || t.t === 'nl' || t.t === 'semi' || t.t === 'rbrace' || t.t === 'rparen'
-}
-
-// Index of the assignment operator of the FIRST `$name <op>` in document order, or -1. The variable
-// must sit directly before the operator (a newline ends the statement) and not be a typed
-// left-hand side (`[string]$name = ...` is a conversion, not a variable assignment).
-function findAssignment(toks, name) {
-  for (let i = 0; i + 1 < toks.length; i++) {
-    const t = toks[i]
-    if (t.t !== 'var' || !ieq(t.v, name) || toks[i + 1].t !== 'assign') continue
-    if (i > 0 && toks[i - 1].t === 'rbrack') continue
-    return i + 1
-  }
-  return -1
-}
-
-function afterAssign(toks, a) {
-  let j = a + 1
-  while (toks[j] && toks[j].t === 'nl') j++
-  return j
-}
-
-// $NAME = [ordered]@{ 'k' = 'v' ... }  ->  array of [key, value] in order, or null. Any entry that is
-// not a bare string constant on both sides (a computed key or value) fails the whole map.
-function literalMap(toks, name) {
-  const a = findAssignment(toks, name)
-  if (a < 0) return null
-  let j = afterAssign(toks, a)
-  while (toks[j] && toks[j].t === 'lbrack') {      // [ordered] / [hashtable] conversions
-    j++
-    while (toks[j] && toks[j].t === 'other') j++
-    if (!toks[j] || toks[j].t !== 'rbrack') return null
-    j++
-  }
-  if (!toks[j] || toks[j].t !== 'hashopen') return null
-  j++
-  const entries = new Map()                          // keyed case-insensitively, in source order
-  for (;;) {
-    while (toks[j] && (toks[j].t === 'nl' || toks[j].t === 'semi')) j++
-    const k = toks[j]
-    if (!k) return null
-    if (k.t === 'rbrace') { j++; break }
-    let key
-    if (k.t === 'str' && k.pure) key = k.v
-    else if (k.t === 'other' && /^[A-Za-z_][\w.-]*$/.test(k.v)) key = k.v     // bareword key
-    else return null
-    j++
-    if (!toks[j] || toks[j].t !== 'assign' || toks[j].v !== '=') return null
-    j = afterAssign(toks, j)
-    const v = toks[j]
-    if (!v || v.t !== 'str' || !v.pure) return null
-    j++
-    if (!atStatementEnd(toks, j)) return null
-    // A repeated key (case-insensitively) is a PowerShell PARSE error in a literal hashtable, which
-    // failed the AST walk's whole parse — so it fails the map here too.
-    if (entries.has(key.toLowerCase())) return null
-    entries.set(key.toLowerCase(), [key, v.v])
-  }
-  if (!atStatementEnd(toks, j)) return null
-  return entries.size ? [...entries.values()] : null
-}
-
-// $NAME = 'literal'  ->  the string, or null.
-function literalValue(toks, name) {
-  const a = findAssignment(toks, name)
-  if (a < 0) return null
-  const j = afterAssign(toks, a)
-  const v = toks[j]
-  if (!v || v.t !== 'str' || !v.pure || !atStatementEnd(toks, j + 1)) return null
-  return v.v
-}
-
-// =====================================================================================================
-
 // .NET [version] needs every component to fit Int32; the plugin's versions are far below that.
 function toVersion(parts) {
   if (parts.length > 4) return null
@@ -711,11 +412,11 @@ function cmpVersion(a, b) {
   return 0
 }
 
-// Upstream-ahead detection (ywr-harness ADR 0135) — the same definition as init.ps1's guard, NO network. Candidate
+// Upstream-ahead detection (ywr-harness ADR 0135) — the same definition as init.mjs's guard, NO network. Candidate
 // refs in order, deduped: the current branch's upstream (accepted only on exit 0 with a refs/ name),
-// then the remote default branch (origin/HEAD, init.ps1's offline default-branch signal, ywr-harness ADR 0062).
+// then the remote default branch (origin/HEAD, init.mjs's offline default-branch signal, ywr-harness ADR 0062).
 // Hit = `git --literal-pathspecs log -1 --cherry-pick --right-only HEAD...<ref> -- .harness-version`
-// exits 0 with a non-empty line; the first hit wins. The stamp is the ONLY path (init.ps1 writes it on
+// exits 0 with a non-empty line; the first hit wins. The stamp is the ONLY path (init.mjs writes it on
 // every version-changing or first run; a hand edit is not a scaffold run), and --cherry-pick drops a
 // commit whose patch HEAD already carries (a local rebase or amend not yet force-pushed). Any git
 // failure or absence is no hit. Returns { ref, sha, date } or null; `ref` is the short name
@@ -747,7 +448,23 @@ function drift(payload) {
   emit({ systemMessage: `[hook:scaffold-refresh-nudge] SCHEMA DRIFT — SessionStart 페이로드에 'cwd' 필드가 없어, 이 저장소의 벤더링된 툴체인이 설치된 플러그인과 일치하는지 확인할 수 없습니다. 수신된 키: ${keys}. 페이로드 형식을 다시 확인하고 hooks/session-start-scaffold-refresh-nudge.mjs을 수정하세요 (ywr-harness ADR 0033).` })
 }
 
-function main(payload) {
+// A placement table the hook can compare by: a non-empty list of [source, destination] pairs of
+// non-empty strings, no source repeated (compared case-insensitively, as a case-insensitive file
+// system reads two spellings of one file). Anything else fails extraction whole — a fragment in the
+// map is a wrong path compared quietly.
+function validMap(m) {
+  if (!Array.isArray(m) || m.length === 0) return false
+  const seen = new Set()
+  for (const e of m) {
+    if (!Array.isArray(e) || e.length !== 2 || typeof e[0] !== 'string' || !e[0] || typeof e[1] !== 'string' || !e[1]) return false
+    const k = e[0].toLowerCase()
+    if (seen.has(k)) return false
+    seen.add(k)
+  }
+  return true
+}
+
+async function main(payload) {
   const cwd = netTrim(psString(getProp(payload, 'cwd')))
   if (!cwd) return drift(payload)
   // No `scripts/harness/` from cwd upward: neither the work tree root nor cwd can pass the
@@ -770,18 +487,18 @@ function main(payload) {
   // (a cloned repo's), and a model reads this output.
   const rootShow = inline(root, 300)
 
-  // Plausible-scaffold gate: init.ps1 places scripts/harness/ unconditionally, so a repo without
+  // Plausible-scaffold gate: init.mjs places scripts/harness/ unconditionally, so a repo without
   // that directory was never scaffolded and there is nothing to verify. This is also the noise
   // bound for the extraction banner below — a broken plugin banners only where a scaffold
   // plausibly exists, not in every session on the machine.
   if (!isDir(path.join(root, 'scripts/harness'))) return
 
-  // --- placement map, read from init.ps1's own literals (zero second copy — ywr-harness ADR 0033) ----------
+  // --- placement map, imported from placement.mjs (zero second copy — ywr-harness ADR 0033) ----------
   // process.argv[1] keeps the path as launched (the original used $PSScriptRoot, which does not
   // resolve symlinks); import.meta.url is realpath'd.
   const here = path.dirname(process.argv[1] ? path.resolve(process.argv[1]) : fileURLToPath(import.meta.url))
   const pluginRoot = path.resolve(here, '..')
-  const initPath = path.join(pluginRoot, 'skills/harness-init/init.ps1')
+  const placementPath = path.join(pluginRoot, 'skills/harness-init/placement.mjs')
   const templatesDir = path.join(pluginRoot, 'skills/harness-init/templates')
 
   const extractionDrift = detail => emit({
@@ -791,17 +508,18 @@ function main(payload) {
   let toolchain = null
   let guarded = null
   let marker = null
-  if (isFile(initPath)) {
+  if (isFile(placementPath)) {
     try {
-      const toks = lex(readText(initPath))
-      if (!balanced(toks)) throw new LexError('unbalanced brackets')
-      toolchain = literalMap(toks, 'TOOLCHAIN')
-      guarded = literalMap(toks, 'GUARDED')
-      marker = literalValue(toks, 'GUARD_MARKER')
+      const mod = await import(pathToFileURL(placementPath).href)
+      if (validMap(mod.TOOLCHAIN) && validMap(mod.GUARDED) && typeof mod.GUARD_MARKER === 'string' && mod.GUARD_MARKER) {
+        toolchain = mod.TOOLCHAIN.map(e => [e[0], e[1]])
+        guarded = mod.GUARDED.map(e => [e[0], e[1]])
+        marker = mod.GUARD_MARKER
+      }
     } catch { toolchain = guarded = marker = null }
   }
   if (!toolchain || !guarded || !marker) {
-    return extractionDrift('설치된 플러그인의 skills/harness-init/init.ps1에서 배치 맵을 읽을 수 없습니다 ($TOOLCHAIN/$GUARDED/$GUARD_MARKER 리터럴)')
+    return extractionDrift('설치된 플러그인의 skills/harness-init/placement.mjs에서 배치 맵을 읽을 수 없습니다 (TOOLCHAIN/GUARDED/GUARD_MARKER export)')
   }
 
   // File-level sentinel: the directory gate above is a plausibility bound; ownership is decided
@@ -813,7 +531,7 @@ function main(payload) {
     // ever moves the vendored scripts, an unchecked empty list would silently disable this hook
     // on every repo forever, which is the anti-vacuity failure mode this hook exists to refuse
     // (review 2026-08-06, medium).
-    return extractionDrift('추출된 배치 맵에 scripts/harness/*.py 대상이 없어, 이 훅이 기준으로 삼는 ownership sentinel이 init.ps1에서 이동했습니다')
+    return extractionDrift('추출된 배치 맵에 scripts/harness/*.py 대상이 없어, 이 훅이 기준으로 삼는 ownership sentinel이 placement.mjs에서 이동했습니다')
   }
   if (!sentinels.some(s => isFile(path.join(root, s)))) return
 
@@ -892,7 +610,7 @@ function main(payload) {
     if (!isFile(dst)) { drifted.push(`${rel} (missing)`); continue }
     try {
       const body = comparable(dst)
-      // Marker-less = foreign = init.ps1 refuses it = a re-run changes nothing: silent.
+      // Marker-less = foreign = init.mjs refuses it = a re-run changes nothing: silent.
       if (body.includes(marker) && body !== comparable(src)) drifted.push(rel)
     } catch { drifted.push(`${rel} (unreadable)`) }
   }
@@ -1006,7 +724,7 @@ function main(payload) {
   // the session is current on this machine; what byte comparison cannot say is WHICH SIDE is newer
   // — and under multi-writer "another writer refreshed this repo with a newer plugin" is the
   // everyday state, not the canon-mid-slice edge ywr-harness ADR 0033 accepted. `.harness-version` (written by
-  // init.ps1 on every successful run) orients the advice: repo-ahead flips it to "update the
+  // init.mjs on every successful run) orients the advice: repo-ahead flips it to "update the
   // plugin, do NOT init"; repo-behind states the direction as measured; same-version names a
   // hand-edit; unreadable/missing falls back to direction-blind — with the caveat now on the HUMAN
   // surface too, not only in additionalContext (the 2026-08-10 audit's asymmetry). Every probe
@@ -1034,7 +752,7 @@ function main(payload) {
       if (/^\d+(\.\d+)+$/.test(t)) {
         // [version] pads unspecified components with -1, so '0.28' would compare BELOW '0.28.0'
         // and flip the direction verdict (review 2026-08-10, low). Normalize to four components
-        // before comparing — the same rule as init.ps1's ConvertTo-VersionOrNull, cross-referenced
+        // before comparing — the same rule as init.mjs's toVersionOrNull, cross-referenced
         // there; more than four stays invalid. Display keeps the raw token.
         const sv = toVersion(t.split('.'))
         if (sv) { stampVer = sv; stampDisp = `v${t}` }
@@ -1086,5 +804,5 @@ function main(payload) {
 
 try {
   const payload = parseJson(readStdin())
-  if (isObject(payload) && ieq(psString(getProp(payload, 'hook_event_name')), 'SessionStart')) main(payload)
+  if (isObject(payload) && ieq(psString(getProp(payload, 'hook_event_name')), 'SessionStart')) await main(payload)
 } catch { /* fail-open: a hook defect is never a blocked session */ }

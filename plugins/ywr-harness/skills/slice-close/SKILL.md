@@ -224,7 +224,7 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   options and owner answers that still hold for the record body; put the facts and risks that stay
   open into the handoff. A risk note that starts with `open item:` becomes an open item there (ywr-harness ADR 0200). Correct or drop a note the tree contradicts, and never let a note stand in
   for a gate run, the review's findings or the ready report.
-- Regenerate doc surfaces if any ADR/spec source changed (`pwsh docs/build.ps1`), committing
+- Regenerate doc surfaces if any ADR/spec source changed (`node docs/build.mjs`), committing
   `index.json` + `INDEX.md` with the change.
 - **Commit**: subject at most 72 characters; the **close record in the body** — the `scope:` line;
   the gates that passed; the tier **and its reason**; the `ignored-tree claims:` line as printed (a

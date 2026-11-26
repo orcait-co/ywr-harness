@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install the tools ywr-harness needs (pwsh 7+, node, python 3.9+) — on Windows with winget, elsewhere by printing the install commands. Use when the user types the command; the plugin's prerequisite band names it when a tool is missing.
+description: Install the tools ywr-harness needs (node 22+, python 3.9+) — on Windows with winget, elsewhere by printing the install commands. Use when the user types the command; the plugin's prerequisite band names it when a tool is missing.
 disable-model-invocation: true
 ---
 
@@ -17,13 +17,12 @@ agreed to the installs it names — and to nothing else.
 Run each of these once and read its exit code and first line:
 
 ```
-pwsh --version
 node --version
 python --version
 ```
 
 A tool needs an install when the command is not found, exits non-zero (the Windows Store `python`
-alias does), or reports `pwsh` below 7 or `python` below 3.9. If none needs one, say so and stop.
+alias does), or reports `node` below 22 or `python` below 3.9. If none needs one, say so and stop.
 
 ## 2. Install
 
@@ -32,7 +31,6 @@ Installer" from the Microsoft Store and stop. Otherwise run, one at a time, only
 tools that need an install:
 
 ```
-winget install --id Microsoft.PowerShell --exact --source winget --accept-package-agreements --accept-source-agreements --disable-interactivity --silent
 winget install --id OpenJS.NodeJS.LTS --exact --source winget --accept-package-agreements --accept-source-agreements --disable-interactivity --silent
 winget install --id Python.Python.3.13 --exact --source winget --accept-package-agreements --accept-source-agreements --disable-interactivity --silent
 ```
@@ -42,9 +40,10 @@ and that interrupting the run (Esc) may cut the install off part-way — unmeasu
 off, the prerequisite band returns at the next session; run the command again.
 Exit code `-1978335189` (`0x8A15002B`) means the package is already installed.
 
-Off Windows, install nothing. Print the commands instead: macOS `brew install --cask powershell`,
-`brew install node`, `brew install python`; Linux, the distribution's packages (the command must
-resolve as `python`).
+Off Windows, install nothing. Print the commands instead: macOS `brew install node`,
+`brew install python`, and `brew upgrade node` for an old Homebrew install; Linux, a Node 22+ LTS from nodejs.org or a version manager such as nvm
+(a distribution's `nodejs` package can be older than 22), and the distribution's package for
+`python` (the command must resolve as `python`).
 
 ## 3. Report
 

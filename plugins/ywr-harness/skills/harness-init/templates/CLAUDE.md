@@ -16,7 +16,7 @@
 ## Commands
 
 - Local dev: <command>
-- Docs regeneration: `pwsh docs/build.ps1`
+- Docs regeneration: `node docs/build.mjs`
 - Lint: <per-language lint command, scoped to the slice — not the whole tree>
 - Tests: <command>
 

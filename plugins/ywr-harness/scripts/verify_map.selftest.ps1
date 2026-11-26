@@ -138,7 +138,7 @@ $ok = (Assert-True 'D3 falsy wrong-typed sections each warn (verify/review/retro
 # --- E: missing index names the rebuild command -------------------------------------------------
 $e = New-Repo 'no-index' $GOOD_CFG $null
 $rE = Invoke-Map $e @()
-$ok = (Assert-True 'E missing index names the rebuild command' ($rE.Out -match 'build it: pwsh docs/build\.ps1') $rE.Out) -and $ok
+$ok = (Assert-True 'E missing index names the rebuild command' ($rE.Out -match 'build it: node docs/build\.mjs') $rE.Out) -and $ok
 $ok = (Assert-True 'E missing index exits 0' ($rE.Code -eq 0) "exit=$($rE.Code)") -and $ok
 
 # --- F: an empty range must not read as a verified range ---------------------------------------
@@ -228,7 +228,7 @@ $L_INDEX = @'
 $l = New-Repo 'non-list-implements' $GOOD_CFG $L_INDEX
 $rL = Invoke-Map $l @('apps/api/app/pipeline.py')
 $ok = (Assert-True 'L a null / string implements_in does not crash (exit 0, no traceback)' ($rL.Code -eq 0 -and $rL.Out -notmatch 'Traceback') "exit=$($rL.Code): $($rL.Out)") -and $ok
-$ok = (Assert-True 'L the null is warned, naming the spec and the rebuild' ($rL.Out -match 'spec 0004: implements_in in the index is null, not a list' -and $rL.Out -match 'rebuild the index \(pwsh docs/build\.ps1\)') $rL.Out) -and $ok
+$ok = (Assert-True 'L the null is warned, naming the spec and the rebuild' ($rL.Out -match 'spec 0004: implements_in in the index is null, not a list' -and $rL.Out -match 'rebuild the index \(node docs/build\.mjs\)') $rL.Out) -and $ok
 $ok = (Assert-True 'L the "[" string is warned too (it used to map nothing silently)' ($rL.Out -match 'spec 0005: implements_in in the index is str "\[", not a list') $rL.Out) -and $ok
 # A current builder writes the same null for an empty or comment-only value (and the same "[" for an
 # unterminated list), which a rebuild reproduces — the warning must also name the fix that clears it.

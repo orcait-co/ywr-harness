@@ -526,7 +526,7 @@ $ok = (Assert-True 'J tier reason em dash survives' ($rJ.Out -match 'review tier
 # --- K: the hooks drift report (ADR 0015) -------------------------------------------------------
 # core.hooksPath is per-clone and never committed, so a repo can carry .githooks/ while THIS clone
 # runs none of it. Without this line the two states are indistinguishable, which is the whole reason
-# the conditional wiring in init.ps1 is not sufficient on its own.
+# the conditional wiring in init.mjs is not sufficient on its own.
 $k = New-Repo 'hooks-report' $CFG @('api/app.py')
 $rK0 = Invoke-Gates $k @()
 $ok = (Assert-True 'K0 no .githooks/ means no hooks line at all' ($rK0.Out -notmatch 'hooks:') $rK0.Out) -and $ok
@@ -584,7 +584,7 @@ $ok = (Assert-True 'K6d an absolute path to a DIFFERENT dir stays foreign' ($rK6
 
 # K6f: `.githooks` reached THROUGH a link (an NTFS junction on Windows — a symlink needs admin there;
 # a symlink on POSIX) with core.hooksPath written as the REAL target. `resolve()` follows the link, so
-# this is wired — pinned here because the scaffold's compare (init.ps1 Test-HooksPathNames) was made
+# this is wired — pinned here because the scaffold's compare (init.mjs testHooksPathNames) was made
 # to match THIS rule on 2026-09-07 after a lexical compare said REFUSED for the same state; a
 # regression on either side breaks the parity. SKIP is reported when the link cannot be made.
 $k6f = New-Repo 'hooks-linked' $CFG @('api/app.py')
@@ -1644,57 +1644,43 @@ $rZ3 = Invoke-Gates $z1 @('--all')
 $ok = (Assert-True 'Z3 --all claims scaffold paths built-in too' ($rZ3.Out -match 'scaffold-claimed \(2 file\(s\)' -and $rZ3.Out -match '(?m)^  \.harness\.json\s*$') $rZ3.Out) -and $ok
 $ok = (Assert-True 'Z3 --all still fails the partition on the repo''s own files' ($rZ3.Out -match 'ungrouped \(' -and $rZ3.Out -match 'weird/thing\.rb') $rZ3.Out) -and $ok
 
-# Z4: THE PAIRING GATE — harness_config.SCAFFOLD_CLAIMS must equal init.ps1's placement-map
+# Z4: THE PAIRING GATE — harness_config.SCAFFOLD_CLAIMS must equal the placement.mjs tables'
 # destinations plus the generated .harness-version stamp, in BOTH directions (ADR 0044's
-# accepted second copy; the fm_digest pairing shape). Extraction is STRICT: a computed value in
-# a placement map fails this case loudly rather than degrading to a fragment (the ADR 0033
+# accepted second copy; the fm_digest pairing shape). The tables are IMPORTED by a node child, never
+# re-read as text, and the read is STRICT: a table that is not a non-empty list of [source,
+# destination] string pairs fails this case loudly rather than degrading to a fragment (the ADR 0033
 # lesson — a fragment in the map is a wrong path compared quietly). Scope, stated so this is
 # never read wider than it checks (review 2026-08-11, low): the pairing covers the DESTINATION
 # axis only — the only axis SCAFFOLD_CLAIMS carries. A template SOURCE-key rename with the same
 # destination, or a GUARD_MARKER change, passes here by design; both are irrelevant to claims.
-$initPath = Join-Path $PSScriptRoot '../skills/harness-init/init.ps1'
-$zTok = $null; $zErr = $null
-$initAst = [System.Management.Automation.Language.Parser]::ParseFile($initPath, [ref]$zTok, [ref]$zErr)
-function Get-ZPureString($Node) {
-    if ($Node -is [System.Management.Automation.Language.StringConstantExpressionAst]) { return $Node.Value }
-    if ($Node -is [System.Management.Automation.Language.CommandExpressionAst]) { return (Get-ZPureString $Node.Expression) }
-    if ($Node -is [System.Management.Automation.Language.PipelineAst]) {
-        $e = @($Node.PipelineElements)
-        if ($e.Count -eq 1) { return (Get-ZPureString $e[0]) }
-    }
-    return $null
-}
-function Get-ZMapDestinations($Ast, [string]$VarName) {
-    $asgn = $Ast.Find({ param($a)
-            $a -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-            $a.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
-            $a.Left.VariablePath.UserPath -eq $VarName }, $true)
-    if (-not $asgn) { return $null }
-    $e = $asgn.Right
-    if ($e -is [System.Management.Automation.Language.PipelineAst]) {
-        $el = @($e.PipelineElements)
-        if ($el.Count -ne 1) { return $null }
-        $e = $el[0]
-    }
-    if ($e -is [System.Management.Automation.Language.CommandExpressionAst]) { $e = $e.Expression }
-    while ($e -is [System.Management.Automation.Language.AttributedExpressionAst]) { $e = $e.Child }
-    if ($e -isnot [System.Management.Automation.Language.HashtableAst]) { return $null }
-    $vals = @()
-    foreach ($kv in $e.KeyValuePairs) {
-        $v = Get-ZPureString $kv.Item2
-        if ($null -eq $v) { return $null }
-        $vals += $v
-    }
-    return $vals
-}
+$placementPath = Join-Path $PSScriptRoot '../skills/harness-init/placement.mjs'
+$zNodeVerdict = Resolve-NodeVerdict ([bool](Get-Command node -ErrorAction SilentlyContinue)) ([bool]$env:CI)
 $zDests = @()
-$zExtractOk = $true
-foreach ($m in 'TOOLCHAIN', 'GUARDED', 'SEED', 'SEED_CORPUS') {
-    $v = Get-ZMapDestinations $initAst $m
-    if ($null -eq $v -or -not $v.Count) { $zExtractOk = $false; break }
-    $zDests += $v
+$zExtractOk = $false
+$zExtractWhy = ''
+if ($zNodeVerdict.Verdict -eq 'run') {
+    $zCode = 'const u = (await import("node:url")).pathToFileURL(process.argv[1]).href; const m = await import(u); console.log(JSON.stringify({ TOOLCHAIN: m.TOOLCHAIN, GUARDED: m.GUARDED, SEED: m.SEED, SEED_CORPUS: m.SEED_CORPUS }))'
+    $zJson = (& node --input-type=module -e $zCode $placementPath 2>&1 | Out-String)
+    try {
+        $zTables = $zJson | ConvertFrom-Json
+        $zExtractOk = $true
+        foreach ($m in 'TOOLCHAIN', 'GUARDED', 'SEED', 'SEED_CORPUS') {
+            $t = @($zTables.$m)
+            if (-not $t.Count) { $zExtractOk = $false; $zExtractWhy = "$m is empty or missing"; break }
+            foreach ($e in $t) {
+                $pair = @($e)
+                if ($pair.Count -ne 2 -or $pair[0] -isnot [string] -or $pair[1] -isnot [string] -or -not $pair[0] -or -not $pair[1]) { $zExtractOk = $false; $zExtractWhy = "$m holds a malformed entry"; break }
+                $zDests += $pair[1]
+            }
+            if (-not $zExtractOk) { break }
+        }
+    } catch { $zExtractWhy = "the import printed no JSON: $zJson" }
 }
-$ok = (Assert-True 'Z4 init.ps1 placement maps extract whole (strict — no fragments)' $zExtractOk 'AST extraction returned null/empty for a placement map — init.ps1 literals moved; fix the extraction or the maps, and keep SCAFFOLD_CLAIMS paired') -and $ok
+if ($zNodeVerdict.Verdict -eq 'skip') {
+    Write-Host "SKIP [Z4 pairing]: $($zNodeVerdict.Message)" -ForegroundColor Yellow
+} else {
+    $ok = (Assert-True 'Z4 placement.mjs tables extract whole (strict — no fragments)' $zExtractOk "the placement tables moved or malformed ($zExtractWhy $($zNodeVerdict.Message)) — fix the module, and keep SCAFFOLD_CLAIMS paired") -and $ok
+}
 if ($zExtractOk) {
     $zExpected = @($zDests + '.harness-version' | Sort-Object -Unique)
     $zSavedPP = $env:PYTHONPATH
@@ -1706,7 +1692,7 @@ if ($zExtractOk) {
     finally { $env:PYTHONPATH = $zSavedPP }
     $zMissing = @($zExpected | Where-Object { $zActual -notcontains $_ })
     $zExtra = @($zActual | Where-Object { $zExpected -notcontains $_ })
-    $ok = (Assert-True 'Z4 SCAFFOLD_CLAIMS == init.ps1 destinations + .harness-version (both directions)' `
+    $ok = (Assert-True 'Z4 SCAFFOLD_CLAIMS == placement.mjs destinations + .harness-version (both directions)' `
         (-not $zMissing.Count -and -not $zExtra.Count) `
         "missing from SCAFFOLD_CLAIMS: [$($zMissing -join ', ')] · extra in SCAFFOLD_CLAIMS: [$($zExtra -join ', ')]") -and $ok
 }

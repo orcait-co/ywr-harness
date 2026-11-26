@@ -63,14 +63,14 @@ const BAD = new RegExp('[' + ch(0) + '-' + ch(0x1f) + ch(0x7f) + ch(0x85) + ch(0
 // Pure half
 // ---------------------------------------------------------------------------------------------
 
-eq('TOOLS: node, pwsh, python in that order; min null / 7.0 / 3.9; the three winget ids',
+eq('TOOLS: node, python in that order; min 22.0 / 3.9; the two winget ids',
   [M.TOOLS.map(t => t.name), M.TOOLS.map(t => t.min), M.TOOLS.map(t => t.winget)],
-  [['node', 'pwsh', 'python'], [null, [7, 0], [3, 9]], ['OpenJS.NodeJS.LTS', 'Microsoft.PowerShell', 'Python.Python.3.13']])
+  [['node', 'python'], [[22, 0], [3, 9]], ['OpenJS.NodeJS.LTS', 'Python.Python.3.13']])
 eq('constants: COMMAND, probe timeout, winget up-to-date code 0x8A15002B',
   [M.COMMAND, M.PROBE_TIMEOUT_MS, M.WINGET_UP_TO_DATE], ['ywr-harness:setup', 15000, 2316632107])
 
 // P: parseVersion
-eq('P1 parseVersion: PowerShell line with CRLF', M.parseVersion('PowerShell 7.6.6\r\n'), [7, 6])
+eq('P1 parseVersion: node line with CRLF', M.parseVersion('v22.6.6\r\n'), [22, 6])
 eq('P2 parseVersion: v24.14.0', M.parseVersion('v24.14.0'), [24, 14])
 eq('P3 parseVersion: Python 3.13.13', M.parseVersion('Python 3.13.13'), [3, 13])
 eq('P4 parseVersion: garbage, a bare number, empty, null, undefined all null',
@@ -78,7 +78,7 @@ eq('P4 parseVersion: garbage, a bare number, empty, null, undefined all null',
 
 // V: verdictOf
 const run = (exitCode, stdout = '', stderr = '') => ({ result: { exitCode, stdout, stderr } })
-eq('V1 verdictOf: exit 0 + pwsh 7.6.6 -> ok 7.6', M.verdictOf(T.pwsh, run(0, 'PowerShell 7.6.6\r\n')), { state: 'ok', version: '7.6' })
+eq('V1 verdictOf: exit 0 + node 22.6.6 with CRLF -> ok 22.6', M.verdictOf(T.node, run(0, 'v22.6.6\r\n')), { state: 'ok', version: '22.6' })
 eq('V2 verdictOf: exit 9009 (Windows "not recognized") -> missing', M.verdictOf(T.node, run(9009)), { state: 'missing' })
 eq('V3 verdictOf: any non-zero exit is missing (the Store python alias)', [1, 127, 49].map(c => M.verdictOf(T.python, run(c, '', 'Python was not found')).state), ['missing', 'missing', 'missing'])
 eq('V4 verdictOf: a rejection whose message holds ENOENT: Command not found -> missing',
@@ -87,52 +87,53 @@ eq('V4 verdictOf: a rejection whose message holds ENOENT: Command not found -> m
    M.verdictOf(T.node, { error: "Command 'x' not found" }).state], ['missing', 'missing', 'missing'])
 eq('V5 verdictOf: a timed-out rejection -> unknown', [M.verdictOf(T.node, { error: new Error('timed out') }), M.verdictOf(T.node, { error: 'timed out' })],
   [{ state: 'unknown' }, { state: 'unknown' }])
-eq('V6 verdictOf: pwsh 6.2 -> old, version 6.2', M.verdictOf(T.pwsh, run(0, 'PowerShell 6.2.7')), { state: 'old', version: '6.2' })
+eq('V6 verdictOf: node 20.11 -> old, version 20.11', M.verdictOf(T.node, run(0, 'v20.11.1')), { state: 'old', version: '20.11' })
 eq('V7 verdictOf: python 3.8 -> old; 3.9 -> ok; 3.13 -> ok; 2.7 on stderr -> old; 4.0 -> ok',
   [M.verdictOf(T.python, run(0, 'Python 3.8.10')), M.verdictOf(T.python, run(0, 'Python 3.9.0')), M.verdictOf(T.python, run(0, 'Python 3.13.13')),
    M.verdictOf(T.python, run(0, '', 'Python 2.7.18')), M.verdictOf(T.python, run(0, 'Python 4.0.0'))],
   [{ state: 'old', version: '3.8' }, { state: 'ok', version: '3.9' }, { state: 'ok', version: '3.13' }, { state: 'old', version: '2.7' }, { state: 'ok', version: '4.0' }])
-eq('V8 verdictOf: pwsh boundary 7.0 ok, 6.9 old', [M.verdictOf(T.pwsh, run(0, '7.0.0')).state, M.verdictOf(T.pwsh, run(0, '6.9.9')).state], ['ok', 'old'])
-eq('V9 verdictOf: node has no minimum, any version is ok', [M.verdictOf(T.node, run(0, 'v0.10.48')), M.verdictOf(T.node, run(0, 'v24.14.0'))],
-  [{ state: 'ok', version: '0.10' }, { state: 'ok', version: '24.14' }])
+eq('V8 verdictOf: python boundary 3.9 ok, 3.8 old (a bare version line)', [M.verdictOf(T.python, run(0, '3.9.0')).state, M.verdictOf(T.python, run(0, '3.8.9')).state], ['ok', 'old'])
+eq('V9 verdictOf: node minimum 22.0 (ywr-harness ADR 0220): 0.10 and 21.9 old, boundary 22.0 ok, 24.14 ok',
+  [M.verdictOf(T.node, run(0, 'v0.10.48')), M.verdictOf(T.node, run(0, 'v21.9.0')), M.verdictOf(T.node, run(0, 'v22.0.0')), M.verdictOf(T.node, run(0, 'v24.14.0'))],
+  [{ state: 'old', version: '0.10' }, { state: 'old', version: '21.9' }, { state: 'ok', version: '22.0' }, { state: 'ok', version: '24.14' }])
 eq('V10 verdictOf: exit 0 with an unparseable version -> ok, version null (even for a tool with a minimum)',
-  [M.verdictOf(T.pwsh, run(0, 'weird output')), M.verdictOf(T.python, run(0, '', ''))], [{ state: 'ok', version: null }, { state: 'ok', version: null }])
+  [M.verdictOf(T.node, run(0, 'weird output')), M.verdictOf(T.python, run(0, '', ''))], [{ state: 'ok', version: null }, { state: 'ok', version: null }])
 eq('V11 verdictOf: a malformed outcome is unknown',
   [undefined, null, 'x', 7, {}, { result: null }, { result: {} }, { result: { exitCode: '0' } }, { result: { exitCode: null } }].map(o => M.verdictOf(T.node, o).state),
   ['unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown'])
 
 // N: needsOf
 {
-  const n = M.needsOf([{ state: 'old', version: '1.0' }, { state: 'ok', version: '7.6' }, { state: 'missing' }])
+  const n = M.needsOf([{ state: 'old', version: '1.0' }, { state: 'missing' }])
   eq('N1 needsOf: keeps TOOLS order, only missing / old, version null when absent',
     n.map(x => [x.tool.name, x.state, x.version]), [['node', 'old', '1.0'], ['python', 'missing', null]])
   eq('N2 needsOf: unknown and ok are dropped; short, empty, null input gives []',
-    [M.needsOf([{ state: 'unknown' }, { state: 'ok' }, { state: 'unknown' }]), M.needsOf([]), M.needsOf(null), M.needsOf(undefined)], [[], [], [], []])
-  eq('N3 needsOf: a sparse array (missing slots) does not throw and keeps the index', M.needsOf([undefined, { state: 'missing' }]).map(x => x.tool.name), ['pwsh'])
+    [M.needsOf([{ state: 'unknown' }, { state: 'ok' }]), M.needsOf([]), M.needsOf(null), M.needsOf(undefined)], [[], [], [], []])
+  eq('N3 needsOf: a sparse array (missing slots) does not throw and keeps the index', M.needsOf([undefined, { state: 'missing' }]).map(x => x.tool.name), ['python'])
 }
 
 // B: bandText / noteText / manualText
 {
-  const needs = M.needsOf([{ state: 'missing' }, { state: 'old', version: '6.2' }, { state: 'old', version: '3.8' }])
+  const needs = M.needsOf([{ state: 'missing' }, { state: 'old', version: '3.8' }])
   const band = M.bandText(needs)
   eq('B1 bandText: names every tool and /ywr-harness:setup, and is Korean',
-    [band.includes('node'), band.includes('pwsh'), band.includes('python'), band.includes('/ywr-harness:setup'), HANGUL.test(band), band.startsWith('[ywr-harness]')], [true, true, true, true, true, true])
-  eq('B2 bandText: an old tool renders `pwsh 6.2 (7.0 <Korean needs>)`, a missing one is the bare name',
-    [band.includes('pwsh 6.2 (7.0 ' + K_NEED + ')'), band.includes('python 3.8 (3.9 ' + K_NEED + ')'), band.includes('node 0'), band.includes('node ·')], [true, true, false, true])
-  eq('B3 bandText: a single missing tool names only it', M.bandText(M.needsOf([{ state: 'missing' }])).includes('pwsh'), false)
+    [band.includes('node'), band.includes('python'), band.includes('/ywr-harness:setup'), HANGUL.test(band), band.startsWith('[ywr-harness]')], [true, true, true, true, true])
+  eq('B2 bandText: an old tool renders `python 3.8 (3.9 <Korean needs>)`, a missing one is the bare name',
+    [band.includes('python 3.8 (3.9 ' + K_NEED + ')'), band.includes('node 0'), band.includes('node ·')], [true, false, true])
+  eq('B3 bandText: a single missing tool names only it', M.bandText(M.needsOf([{ state: 'missing' }])).includes('python'), false)
 
   const note = M.noteText(needs)
   eq('B4 noteText: English (ASCII only), names each tool and the command',
-    [ASCII.test(note), note.includes('`node`'), note.includes('`pwsh`'), note.includes('`python`'), note.includes('/ywr-harness:setup')], [true, true, true, true, true])
+    [ASCII.test(note), note.includes('`node`'), note.includes('`python`'), note.includes('/ywr-harness:setup')], [true, true, true, true])
   eq('B5 noteText: says the plugin installs nothing until the user types the command',
     [note.includes('the plugin installs nothing until the user types it'), note.includes('winget')], [true, true])
   eq('B6 noteText: missing and old are told apart; the old line names both versions',
-    [M.noteText(M.needsOf([{ state: 'missing' }])).includes('`node` is not on PATH'), note.includes('`pwsh` 6.2 is older than the 7.0'), note.includes('`python` 3.8 is older than the 3.9')], [true, true, true])
+    [M.noteText(M.needsOf([{ state: 'missing' }])).includes('`node` is not on PATH'), note.includes('`python` 3.8 is older than the 3.9')], [true, true])
   eq('B7 noteText: states facts only, no imperative aimed at the model',
     [/\b(?:you (?:should|must|need|can)|please|must|should|do not|don't|never|always|ignore|install (?:it|them|the))\b/i.test(note), /\n[A-Z][a-z]+ (?:the|a|an|it|them) /.test('\n' + note.split('\n').slice(1, -1).join('\n'))],
     [false, false])
   eq('B8 noteText: first line identifies the source, then one line per tool, then the closing facts',
-    [note.split('\n').length, note.split('\n')[0].startsWith('ywr-harness prerequisite check')], [1 + 3 + 1, true])
+    [note.split('\n').length, note.split('\n')[0].startsWith('ywr-harness prerequisite check')], [1 + 2 + 1, true])
 
   // B11. the note names no hook count (hooks.json owns it, and a number drifts) and names each skill by its
   // namespaced name: a bare hyphenated skill name does not resolve in a session.
@@ -142,19 +143,29 @@ eq('V11 verdictOf: a malformed outcome is unknown',
   eq('B11 noteText: no hook count before "settings hooks" and no bare skill name (' + skillNames.length + ' hyphenated skills checked)',
     [/\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b[^.]{0,20}settings hooks/i.test(note), bare, skillNames.includes('harness-init')], [false, [], true])
 
+  // B12. an OLD node breaks nothing yet (ywr-harness ADR 0220): its note line and a band that names only it
+  // claim no failure; a missing or another old tool beside it keeps the failure band.
+  const soft = M.needsOf([{ state: 'old', version: '20.11' }])
+  const softNote = M.noteText(soft), softBand = M.bandText(soft)
+  eq('B12 old node: the note names 20.11 below 22.0 and the untested hooks, not a hook error; a node-only band claims no failure; a missing python beside it keeps the failure band',
+    [softNote.includes('`node` 20.11 is older than the 22.0'), softNote.includes('nobody tested'), softNote.includes('report a hook error'), ASCII.test(softNote),
+     softBand.includes('node 20.11 (22.0 ' + K_NEED + ')'), softBand.includes('동작하지'), softBand.includes('/ywr-harness:setup'),
+     M.bandText(M.needsOf([{ state: 'old', version: '20.11' }, { state: 'missing' }])).includes('동작하지'),
+     T.node.uses.includes('subagent stop')],
+    [true, true, false, true, true, false, true, true, false])
+
   eq('B9 manualText: Windows gives one backticked winget line per tool, in order',
-    M.manualText(M.needsOf([{ state: 'missing' }, { state: 'ok' }, { state: 'missing' }]), true).split('\n'),
+    M.manualText(M.needsOf([{ state: 'missing' }, { state: 'missing' }]), true).split('\n'),
     ['- node: `' + M.wingetArgv(T.node).join(' ') + '`', '- python: `' + M.wingetArgv(T.python).join(' ') + '`'])
   eq('B10 manualText: off Windows gives each tool\'s `other` line',
-    M.manualText(M.needsOf([{ state: 'missing' }, { state: 'missing' }, { state: 'missing' }]), false).split('\n'),
-    ['- node: ' + T.node.other, '- pwsh: ' + T.pwsh.other, '- python: ' + T.python.other])
+    M.manualText(M.needsOf([{ state: 'missing' }, { state: 'missing' }]), false).split('\n'),
+    ['- node: ' + T.node.other, '- python: ' + T.python.other])
 }
 
 // W: wingetArgv
 {
   const FLAGS = ['--exact', '--source', 'winget', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity', '--silent']
   eq('W1 wingetArgv: node', M.wingetArgv(T.node), ['winget', 'install', '--id', 'OpenJS.NodeJS.LTS', ...FLAGS])
-  eq('W2 wingetArgv: pwsh', M.wingetArgv(T.pwsh), ['winget', 'install', '--id', 'Microsoft.PowerShell', ...FLAGS])
   eq('W3 wingetArgv: python', M.wingetArgv(T.python), ['winget', 'install', '--id', 'Python.Python.3.13', ...FLAGS])
 }
 
@@ -171,8 +182,8 @@ eq('V11 verdictOf: a malformed outcome is unknown',
   const py0 = M.resultLine(T.python, 0), pyUpd = M.resultLine(T.python, 2316632107), pyUpd2 = M.resultLine(T.python, -1978335189)
   eq('R6 resultLine: the python alias hint shows for python on exit 0 and on up-to-date (both encodings), on top of the PATH hint, and is not a failure',
     [hint(py0), hint(pyUpd), pyUpd === pyUpd2, py0.startsWith('- python: '), py0.includes('winget exit'), pyUpd.includes('winget exit')], [[true, true], [true, true], true, true, false, false])
-  eq('R7 resultLine: pwsh gets the PATH hint without the python alias hint; failure lines carry neither hint',
-    [hint(M.resultLine(T.pwsh, 0)), hint(M.resultLine(T.pwsh, 2316632107)), hint(bad), hint(nul)], [[true, false], [true, false], [false, false], [false, false]])
+  eq('R7 resultLine: node gets the PATH hint without the python alias hint; failure lines carry neither hint',
+    [hint(M.resultLine(T.node, 0)), hint(M.resultLine(T.node, 2316632107)), hint(bad), hint(nul)], [[true, false], [true, false], [false, false], [false, false]])
   eq('R3 resultLine: 1603 is a failure naming the exit and the manual command',
     [bad.startsWith('- python: '), bad.includes('winget exit 1603'), bad.includes('`' + M.wingetArgv(T.python).join(' ') + '`')], [true, true, true])
   eq('R4 resultLine: null is a failure with the no-exit word', [nul.includes('winget exit ' + K_NONE), nul.includes('null')], [true, false])
@@ -184,7 +195,7 @@ eq('V11 verdictOf: a malformed outcome is unknown',
 {
   const n0 = M.resultNote(T.node, 0), nu = M.resultNote(T.node, 2316632107), nu2 = M.resultNote(T.node, -1978335189)
   const nb = M.resultNote(T.python, 1603), nn = M.resultNote(T.python, null)
-  const all = [n0, nu, nu2, nb, nn, M.resultNote(T.pwsh, 0), M.resultNote(T.node, 2316632108), M.resultNote(T.node, '0')]
+  const all = [n0, nu, nu2, nb, nn, M.resultNote(T.python, 0), M.resultNote(T.node, 2316632108), M.resultNote(T.node, '0')]
   eq('RN1 resultNote: every note is English, ASCII only, no Hangul, no newline, and starts with the tool name',
     [all.every(s => ASCII.test(s)), all.some(s => HANGUL.test(s)), all.some(s => s.includes('\n')), n0.startsWith('node: '), nb.startsWith('python: ')], [true, false, false, true, true])
   eq('RN2 resultNote: exit 0 says winget exited 0 and that PATH is known only after a restart; it is no failure',
@@ -259,7 +270,6 @@ const SENT = { sentinel: 'next-result' }
 const NEXT_BAND = { sentinel: 'next-band' }
 const OKS = {
   node: { exitCode: 0, stdout: 'v24.14.0\n', stderr: '' },
-  pwsh: { exitCode: 0, stdout: 'PowerShell 7.6.6\r\n', stderr: '' },
   python: { exitCode: 0, stdout: 'Python 3.13.13\n', stderr: '' },
   winget: { exitCode: 0, stdout: 'v1.12.0\n', stderr: '' },
 }
@@ -323,7 +333,7 @@ const bandText = n => n.children[0].children[0]
 // S1: returns what next resolved to BEFORE the probes settle (each probe hangs on its own promise)
 {
   const gates = {}
-  const by = Object.fromEntries(['node', 'pwsh', 'python'].map(n => [n, () => new Promise(res => { gates[n] = res })]))
+  const by = Object.fromEntries(['node', 'python'].map(n => [n, () => new Promise(res => { gates[n] = res })]))
   const E = fakeEngine({ by })
   const next = nextWith(SENT)
   let settled = false
@@ -331,29 +341,29 @@ const bandText = n => n.children[0].children[0]
   await tick()
   eq('S1 session.start: settles with probes still pending; next was called once with the event; the probes started after it',
     [settled, next.calls.length, next.calls[0] === startEv, E.calls.run.map(a => a[0]), E.calls.runOpts.every(o => o && o.timeoutMs === M.PROBE_TIMEOUT_MS)],
-    [true, 1, true, ['node', 'pwsh', 'python'], true])
+    [true, 1, true, ['node', 'python'], true])
   const bandNow = await E.hook('ui.render')(E.$, bandEv(), nextWith(NEXT_BAND))
   eq('S2 ui.render: before the probes finish the band hook passes next(e) through', bandNow, NEXT_BAND)
-  gates.node({ exitCode: 0, stdout: 'v24.14.0', stderr: '' }); gates.pwsh({ exitCode: 0, stdout: 'PowerShell 7.6.6', stderr: '' }); gates.python({ exitCode: 0, stdout: 'Python 3.13.13', stderr: '' })
+  gates.node({ exitCode: 0, stdout: 'v24.14.0', stderr: '' }); gates.python({ exitCode: 0, stdout: 'Python 3.13.13', stderr: '' })
   eq('S3 session.start: the hook returns the very object next resolved to', (await p) === SENT, true)
   await tick()
-  eq('S4 session.start: all three ok -> no append, no invalidate', [E.calls.append.length, E.calls.invalidate.length], [0, 0])
+  eq('S4 session.start: both ok -> no append, no invalidate', [E.calls.append.length, E.calls.invalidate.length], [0, 0])
   const nx = nextWith(NEXT_BAND)
   eq('S5 ui.render: all ok -> next(e) and its value', [(await E.hook('ui.render')(E.$, bandEv(), nx)) === NEXT_BAND, nx.calls.length], [true, 1])
 }
 
-// S6..: node missing (ENOENT), pwsh ok, python old -> one note, one invalidate, one band
+// S6..: node missing (ENOENT), python old -> one note, one invalidate, one band
 {
   const E = fakeEngine({ by: { node: enoent('node'), python: { exitCode: 0, stdout: 'Python 3.8.10', stderr: '' } } })
   const next = nextWith(SENT)
   const r = await E.hook('session.start')(E.$, startEv, next)
   await tick()
-  const needs = M.needsOf([{ state: 'missing' }, { state: 'ok', version: '7.6' }, { state: 'old', version: '3.8' }])
+  const needs = M.needsOf([{ state: 'missing' }, { state: 'old', version: '3.8' }])
   eq('S6 session.start: returns next\'s object even when the probes find a miss', r === SENT, true)
   eq('S7 session.start: exactly one session.append, a user row with one text block equal to noteText(needs)',
     [E.calls.append.length, E.calls.append[0]], [1, { message: { type: 'user', content: [{ type: 'text', text: M.noteText(needs) }] } }])
   eq('S8 session.start: exactly one ui.invalidate of ui.render', E.calls.invalidate, ['ui.render'])
-  eq('S9 session.start: the three probes ran once each, argv from TOOLS, no other command', E.calls.run, [['node', '--version'], ['pwsh', '--version'], ['python', '--version']])
+  eq('S9 session.start: the two probes ran once each, argv from TOOLS, no other command', E.calls.run, [['node', '--version'], ['python', '--version']])
   const nx = nextWith(NEXT_BAND)
   const band = await E.hook('ui.render')(E.$, bandEv(false), nx)
   eq('S10 ui.render: the band is a Box holding one Text whose text is bandText(needs); next not called',
@@ -364,18 +374,18 @@ const bandText = n => n.children[0].children[0]
   eq('S12 ui.render: with a survey up the band yields to next(e)', [(await E.hook('ui.render')(E.$, bandEv(true), nxs)) === NEXT_BAND, nxs.calls.length], [true, 1])
 }
 
-// S13: a command that exits non-zero (the Store python alias) and an old pwsh
+// S13: a command that exits non-zero (the Store python alias) and an old node
 {
-  const E = fakeEngine({ by: { python: { exitCode: 9009, stdout: '', stderr: '' }, pwsh: { exitCode: 0, stdout: 'PowerShell 5.1.19041', stderr: '' } } })
+  const E = fakeEngine({ by: { python: { exitCode: 9009, stdout: '', stderr: '' }, node: { exitCode: 0, stdout: 'v20.11.1', stderr: '' } } })
   await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
-  eq('S13 session.start: exit 9009 is missing and pwsh 5.1 is old; the note names both, not node',
-    [E.calls.append.length, E.calls.append[0].message.content[0].text.includes('`python` is not on PATH'), E.calls.append[0].message.content[0].text.includes('`pwsh` 5.1 is older than the 7.0'),
-     E.calls.append[0].message.content[0].text.includes('`node`')], [1, true, true, false])
+  eq('S13 session.start: exit 9009 is missing and node 20.11 is old; the note names both',
+    [E.calls.append.length, E.calls.append[0].message.content[0].text.includes('`python` is not on PATH'), E.calls.append[0].message.content[0].text.includes('`node` 20.11 is older than the 22.0')],
+    [1, true, true])
 }
 
 // S14: every probe unknown (a non-ENOENT rejection) stays silent
 {
-  const E = fakeEngine({ by: { node: new Error('timed out'), pwsh: new Error('timed out'), python: new Error('spawn EPERM') } })
+  const E = fakeEngine({ by: { node: new Error('timed out'), python: new Error('spawn EPERM') } })
   const r = await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
   const nx = nextWith(NEXT_BAND)
   eq('S14 session.start: all unknown -> no append, no invalidate, no band; next is returned',
@@ -386,7 +396,7 @@ const bandText = n => n.children[0].children[0]
     [r2 === SENT, F.calls.append.length, F.calls.invalidate.length], [true, 0, 0])
   const G = fakeEngine({ by: { node: new Error('timed out') } })
   await G.hook('session.start')(G.$, startEv, nextWith(SENT)); await tick()
-  eq('S16 session.start: one unknown tool beside two ok ones is silent', [G.calls.append.length, G.calls.invalidate.length], [0, 0])
+  eq('S16 session.start: one unknown tool beside one ok one is silent', [G.calls.append.length, G.calls.invalidate.length], [0, 0])
   const H = fakeEngine({ by: { node: new Error('timed out'), python: enoent('python') } })
   await H.hook('session.start')(H.$, startEv, nextWith(SENT)); await tick()
   eq('S17 session.start: unknown beside a miss speaks only for the miss',
@@ -421,19 +431,19 @@ const bandText = n => n.children[0].children[0]
   eq('K1 session.start: one $.clock.after with delay 0; no probe runs before the timer fires',
     [r === SENT, E.calls.after, E.timers.length, E.calls.run.length, E.calls.append.length], [true, [0], 1, 0, 0])
   await E.timers[0](); await tick()
-  eq('K2 session.start: the timer runs the three probes and appends one note',
-    [E.calls.run.map(a => a[0]), E.calls.append.length], [['node', 'pwsh', 'python'], 1])
+  eq('K2 session.start: the timer runs the two probes and appends one note',
+    [E.calls.run.map(a => a[0]), E.calls.append.length], [['node', 'python'], 1])
   for (const [id, clock] of [['K3', 'throws'], ['K4', 'none']]) {
     const F = fakeEngine({ by: { node: enoent('node') }, clock })
     const before = unhandled
     const r2 = await F.hook('session.start')(F.$, startEv, nextWith(SENT)); await tick()
     eq(`${id} session.start: with clock '${clock}' the probes run directly; one note, the result returned, nothing unhandled`,
-      [r2 === SENT, F.calls.run.length, F.calls.append.length, unhandled - before], [true, 3, 1, 0])
+      [r2 === SENT, F.calls.run.length, F.calls.append.length, unhandled - before], [true, 2, 1, 0])
   }
   const L = fakeEngine({ by: { node: enoent('node') }, clock: 'late-throw' })
   await L.hook('session.start')(L.$, startEv, nextWith(SENT)); await tick(40)
   eq('K5 session.start: a clock call that scheduled the timer and then threw still runs the probes once; one note',
-    [L.calls.run.length, L.calls.append.length], [3, 1])
+    [L.calls.run.length, L.calls.append.length], [2, 1])
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -443,52 +453,52 @@ const bandText = n => n.children[0].children[0]
 const LA = 'C:\\Users\\u\\AppData\\Local'
 const WA = n => LA + '\\Microsoft\\WindowsApps\\' + n + '.exe'
 eq('A1 aliasPath: the WindowsApps alias of the name under LOCALAPPDATA; one trailing separator is dropped',
-  [M.aliasPath(LA, 'pwsh'), M.aliasPath(LA + '\\', 'winget'), M.aliasPath('d:\\x', 'node')],
-  [WA('pwsh'), WA('winget'), 'd:\\x\\Microsoft\\WindowsApps\\node.exe'])
+  [M.aliasPath(LA, 'python'), M.aliasPath(LA + '\\', 'winget'), M.aliasPath('d:\\x', 'node')],
+  [WA('python'), WA('winget'), 'd:\\x\\Microsoft\\WindowsApps\\node.exe'])
 eq('A2 aliasPath: no drive-rooted base gives null (unset, empty, relative, POSIX, UNC, a bare drive letter)',
-  [undefined, null, '', 'AppData\\Local', '/home/u', '\\\\srv\\share', 'C:'].map(b => M.aliasPath(b, 'pwsh')), [null, null, null, null, null, null, null])
+  [undefined, null, '', 'AppData\\Local', '/home/u', '\\\\srv\\share', 'C:'].map(b => M.aliasPath(b, 'python')), [null, null, null, null, null, null, null])
 {
-  const E = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: { exitCode: 0, stdout: 'PowerShell 7.6.7\r\n', stderr: '' } } })
+  const E = fakeEngine({ localAppData: LA, by: { python: enoent('python'), [WA('python')]: { exitCode: 0, stdout: 'Python 3.13.13\r\n', stderr: '' } } })
   await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
-  eq('A3 session.start: a refused bare pwsh that answers by its alias path is ok -> no note, no band; the alias run is the one extra probe',
-    [E.calls.append.length, E.calls.invalidate.length, E.calls.run], [0, 0, [['node', '--version'], ['pwsh', '--version'], ['python', '--version'], [WA('pwsh'), '--version']]])
+  eq('A3 session.start: a refused bare python that answers by its alias path is ok -> no note, no band; the alias run is the one extra probe',
+    [E.calls.append.length, E.calls.invalidate.length, E.calls.run], [0, 0, [['node', '--version'], ['python', '--version'], [WA('python'), '--version']]])
 }
 {
-  const E = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: enoent(WA('pwsh')) } })
+  const E = fakeEngine({ localAppData: LA, by: { python: enoent('python'), [WA('python')]: enoent(WA('python')) } })
   await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
-  const F = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: { exitCode: 1, stdout: '', stderr: 'not recognized' } } })
+  const F = fakeEngine({ localAppData: LA, by: { python: enoent('python'), [WA('python')]: { exitCode: 1, stdout: '', stderr: 'not recognized' } } })
   await F.hook('session.start')(F.$, startEv, nextWith(SENT)); await tick()
-  eq('A4 session.start: an alias path that is refused too, or exits non-zero, leaves pwsh missing (the note names it)',
-    [E.calls.append.length, E.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH'), F.calls.append.length, F.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH')], [1, true, 1, true])
+  eq('A4 session.start: an alias path that is refused too, or exits non-zero, leaves python missing (the note names it)',
+    [E.calls.append.length, E.calls.append[0]?.message.content[0].text.includes('`python` is not on PATH'), F.calls.append.length, F.calls.append[0]?.message.content[0].text.includes('`python` is not on PATH')], [1, true, 1, true])
 }
 {
-  const E = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: new Error('timed out') } })
+  const E = fakeEngine({ localAppData: LA, by: { python: enoent('python'), [WA('python')]: new Error('timed out') } })
   await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
-  const F = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) } })
+  const F = fakeEngine({ localAppData: LA, by: { python: enoent('python'), [WA('python')]: Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) } })
   await F.hook('session.start')(F.$, startEv, nextWith(SENT)); await tick()
-  eq('A5 session.start: an alias probe that times out or rejects otherwise ("unknown") does not hide the first missing: the note names pwsh',
-    [E.calls.append.length, E.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH'), F.calls.append.length, F.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH')], [1, true, 1, true])
-  const G = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: { exitCode: 0, stdout: 'PowerShell 6.2.7', stderr: '' } } })
+  eq('A5 session.start: an alias probe that times out or rejects otherwise ("unknown") does not hide the first missing: the note names python',
+    [E.calls.append.length, E.calls.append[0]?.message.content[0].text.includes('`python` is not on PATH'), F.calls.append.length, F.calls.append[0]?.message.content[0].text.includes('`python` is not on PATH')], [1, true, 1, true])
+  const G = fakeEngine({ localAppData: LA, by: { python: enoent('python'), [WA('python')]: { exitCode: 0, stdout: 'Python 3.8.10', stderr: '' } } })
   await G.hook('session.start')(G.$, startEv, nextWith(SENT)); await tick()
-  eq('A5b session.start: an "old" answer by the alias path stands: the note names pwsh 6.2 as older than 7.0, not as missing',
-    [G.calls.append.length, G.calls.append[0]?.message.content[0].text.includes('`pwsh` 6.2 is older than the 7.0'), G.calls.append[0]?.message.content[0].text.includes('not on PATH')], [1, true, false])
-  const H = fakeEngine({ localAppData: LA, envThrowsFor: ['LOCALAPPDATA'], by: { pwsh: enoent('pwsh') } })
+  eq('A5b session.start: an "old" answer by the alias path stands: the note names python 3.8 as older than 3.9, not as missing',
+    [G.calls.append.length, G.calls.append[0]?.message.content[0].text.includes('`python` 3.8 is older than the 3.9'), G.calls.append[0]?.message.content[0].text.includes('not on PATH')], [1, true, false])
+  const H = fakeEngine({ localAppData: LA, envThrowsFor: ['LOCALAPPDATA'], by: { python: enoent('python') } })
   const before = unhandled
   const r = await H.hook('session.start')(H.$, startEv, nextWith(SENT)); await tick()
-  eq('A5c session.start: a LOCALAPPDATA read that throws after OS reads Windows gives no retry and leaves pwsh missing, with no unhandled rejection',
-    [r === SENT, unhandled - before, H.calls.env.includes('LOCALAPPDATA'), H.calls.run.length, H.calls.append.length, H.calls.append[0]?.message.content[0].text.includes('`pwsh` is not on PATH')], [true, 0, true, 3, 1, true])
+  eq('A5c session.start: a LOCALAPPDATA read that throws after OS reads Windows gives no retry and leaves python missing, with no unhandled rejection',
+    [r === SENT, unhandled - before, H.calls.env.includes('LOCALAPPDATA'), H.calls.run.length, H.calls.append.length, H.calls.append[0]?.message.content[0].text.includes('`python` is not on PATH')], [true, 0, true, 2, 1, true])
 }
 {
-  const E = fakeEngine({ os: 'Linux', localAppData: LA, by: { pwsh: enoent('pwsh') } })
+  const E = fakeEngine({ os: 'Linux', localAppData: LA, by: { python: enoent('python') } })
   await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
   const F = fakeEngine({ localAppData: LA, by: { python: { exitCode: 9009, stdout: '', stderr: '' } } })
   await F.hook('session.start')(F.$, startEv, nextWith(SENT)); await tick()
-  const G = fakeEngine({ localAppData: LA, by: { pwsh: new Error('timed out') } })
+  const G = fakeEngine({ localAppData: LA, by: { python: new Error('timed out') } })
   await G.hook('session.start')(G.$, startEv, nextWith(SENT)); await tick()
-  const H = fakeEngine({ by: { pwsh: enoent('pwsh') } })
+  const H = fakeEngine({ by: { python: enoent('python') } })
   await H.hook('session.start')(H.$, startEv, nextWith(SENT)); await tick()
   eq('A6 session.start: no alias try off Windows, after a non-zero exit (the Store python alias), after a non-ENOENT rejection, or without LOCALAPPDATA',
-    [E.calls.run.length, F.calls.run.length, G.calls.run.length, H.calls.run.length, E.calls.append.length, F.calls.append.length, H.calls.append.length], [3, 3, 3, 3, 1, 1, 1])
+    [E.calls.run.length, F.calls.run.length, G.calls.run.length, H.calls.run.length, E.calls.append.length, F.calls.append.length, H.calls.append.length], [2, 2, 2, 2, 1, 1, 1])
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -503,10 +513,10 @@ const noSpawn = () => { throw new Error('spawn must not be called') }
 {
   const E = fakeEngine({ spawnImpl: noSpawn })
   const r = await runCmd(E)
-  eq('C1 setup: all three ok -> names the three installed tools in TOOLS order, no unknown line, no spawn, one ASCII English context row naming them',
-    [r.text.startsWith('node · pwsh · python '), r.text.includes('--version'), spawned(E), Array.isArray(r.context) && r.context.length === 1 && ASCII.test(r.context[0]),
+  eq('C1 setup: both ok -> names the two installed tools in TOOLS order, no unknown line, no spawn, one ASCII English context row naming them',
+    [r.text.startsWith('node · python '), r.text.includes('--version'), spawned(E), Array.isArray(r.context) && r.context.length === 1 && ASCII.test(r.context[0]),
      r.context[0], E.calls.status],
-    [true, false, [], true, 'ywr-harness setup found node, pwsh, python on PATH; it installed nothing.', []])
+    [true, false, [], true, 'ywr-harness setup found node, python on PATH; it installed nothing.', []])
 }
 // (b) not Windows
 {
@@ -523,11 +533,10 @@ const noSpawn = () => { throw new Error('spawn must not be called') }
   eq('C4 setup: an env.get that throws reads as not Windows (manual commands, no spawn)', [r2.text.includes(M.manualText(need, false)), spawned(F)], [true, []])
   const G = fakeEngine({ os: null, by: { node: enoent('node') }, spawnImpl: noSpawn })
   eq('C5 setup: OS unset is not Windows', [(await runCmd(G)).text.includes(M.manualText(need, false)), spawned(G)], [true, []])
-  const need3 = M.needsOf([{ state: 'old', version: '1.0' }, { state: 'missing' }, { state: 'old', version: '3.8' }])
-  const H = fakeEngine({ os: 'Darwin', by: { node: { exitCode: 0, stdout: 'v0.1.0', stderr: '' }, pwsh: enoent('pwsh'), python: { exitCode: 0, stdout: 'Python 3.8.1', stderr: '' } }, spawnImpl: noSpawn })
+  const H = fakeEngine({ os: 'Darwin', by: { node: { exitCode: 0, stdout: 'v22.0.0', stderr: '' }, python: { exitCode: 0, stdout: 'Python 3.8.1', stderr: '' } }, spawnImpl: noSpawn })
   const r3 = await runCmd(H)
-  eq('C6 setup: not Windows lists the manual line of each missing / old tool only (pwsh and python, not node)',
-    [r3.text.includes('- pwsh: ' + T.pwsh.other), r3.text.includes('- python: ' + T.python.other), r3.text.includes('- node:')], [true, true, false])
+  eq('C6 setup: not Windows lists the manual line of each missing / old tool only (python, not node)',
+    [r3.text.includes('- python: ' + T.python.other), r3.text.includes('- node:')], [true, false])
 }
 // (c) Windows, no winget
 {
@@ -602,13 +611,13 @@ const child = (pieces, code, { throwFirst = false } = {}) => (arg, done) => {
 }
 // the up-to-date winget code, and a spawn whose result has no numeric code
 {
-  const E = fakeEngine({ by: { pwsh: enoent('pwsh') }, spawnImpl: (arg, done) => { const g = child(['x'], 0)(arg, done); g.result = Promise.resolve({ code: -1978335189, signal: null }); return g } })
+  const E = fakeEngine({ by: { node: enoent('node') }, spawnImpl: (arg, done) => { const g = child(['x'], 0)(arg, done); g.result = Promise.resolve({ code: -1978335189, signal: null }); return g } })
   const r = await runCmd(E)
   eq('C18 setup: winget "no applicable upgrade" (signed -1978335189) reads as already installed, not a failure',
-    [r.text.split('\n')[1] === M.resultLine(T.pwsh, 2316632107), r.text.includes('winget exit')], [true, false])
-  const F = fakeEngine({ by: { pwsh: enoent('pwsh') }, spawnImpl: (arg, done) => { const g = child([], 0)(arg, done); g.result = Promise.resolve({ code: null, signal: 'SIGTERM' }); return g } })
+    [r.text.split('\n')[1] === M.resultLine(T.node, 2316632107), r.text.includes('winget exit')], [true, false])
+  const F = fakeEngine({ by: { node: enoent('node') }, spawnImpl: (arg, done) => { const g = child([], 0)(arg, done); g.result = Promise.resolve({ code: null, signal: 'SIGTERM' }); return g } })
   const r2 = await runCmd(F)
-  eq('C19 setup: a signalled child (code null) is a failure line with the no-exit word', r2.text.split('\n')[1] === M.resultLine(T.pwsh, null), true)
+  eq('C19 setup: a signalled child (code null) is a failure line with the no-exit word', r2.text.split('\n')[1] === M.resultLine(T.node, null), true)
 }
 // a spawn that throws on its first pull: reported as a failure, the next tool still runs, status cleared
 {
@@ -628,28 +637,28 @@ const child = (pieces, code, { throwFirst = false } = {}) => (arg, done) => {
   try { await runCmd(G) } catch (e) { thrown = e.message }
   eq('C22 setup: when the loop is escaped by a throw, the finally still clears the status line', [thrown, G.calls.status.at(-1), G.calls.status.length], ['status broke', undefined, 2])
 }
-// three installs: the (i/n) counters and the order across the whole TOOLS list
+// two installs: the (i/n) counters and the order across the whole TOOLS list
 {
-  const E = fakeEngine({ by: { node: enoent('node'), pwsh: { exitCode: 0, stdout: 'PowerShell 6.2.7', stderr: '' }, python: { exitCode: 0, stdout: 'Python 3.8.10', stderr: '' } },
+  const E = fakeEngine({ by: { node: enoent('node'), python: { exitCode: 0, stdout: 'Python 3.8.10', stderr: '' } },
     spawnImpl: (arg, done) => child([], 0)(arg, done) })
   const r = await runCmd(E)
-  eq('C23 setup: node missing, pwsh and python old -> three spawns in TOOLS order, heads 1/3 2/3 3/3',
+  eq('C23 setup: node missing, python old -> two spawns in TOOLS order, heads 1/2 2/2',
     [spawned(E).map(a => a[3]), E.calls.status.filter(s => typeof s === 'string')],
-    [['OpenJS.NodeJS.LTS', 'Microsoft.PowerShell', 'Python.Python.3.13'], ['node ' + K_INSTALLING + ' (1/3)' + TAIL, 'pwsh ' + K_INSTALLING + ' (2/3)' + TAIL, 'python ' + K_INSTALLING + ' (3/3)' + TAIL]])
+    [['OpenJS.NodeJS.LTS', 'Python.Python.3.13'], ['node ' + K_INSTALLING + ' (1/2)' + TAIL, 'python ' + K_INSTALLING + ' (2/2)' + TAIL]])
   eq('C24 setup: the final status call is the clear', E.calls.status.at(-1), undefined)
 }
 // an old tool is installed over the old one the same way as a missing one
 {
-  const E = fakeEngine({ by: { pwsh: { exitCode: 0, stdout: 'PowerShell 6.2.7', stderr: '' } }, spawnImpl: (arg, done) => child([], 0)(arg, done) })
+  const E = fakeEngine({ by: { python: { exitCode: 0, stdout: 'Python 3.8.10', stderr: '' } }, spawnImpl: (arg, done) => child([], 0)(arg, done) })
   await runCmd(E)
-  eq('C25 setup: a single old tool is installed with wingetArgv(tool), head (1/1) with the Esc warning', [spawned(E), E.calls.status[0]], [[M.wingetArgv(T.pwsh)], 'pwsh ' + K_INSTALLING + ' (1/1)' + TAIL])
+  eq('C25 setup: a single old tool is installed with wingetArgv(tool), head (1/1) with the Esc warning', [spawned(E), E.calls.status[0]], [[M.wingetArgv(T.python)], 'python ' + K_INSTALLING + ' (1/1)' + TAIL])
 }
 // (e) every probe unknown
 {
-  const E = fakeEngine({ by: { node: new Error('timed out'), pwsh: new Error('timed out'), python: new Error('timed out') }, spawnImpl: noSpawn })
+  const E = fakeEngine({ by: { node: new Error('timed out'), python: new Error('timed out') }, spawnImpl: noSpawn })
   const r = await runCmd(E)
-  const all = M.needsOf([{ state: 'missing' }, { state: 'missing' }, { state: 'missing' }])
-  eq('C26 setup: every probe unknown -> the manual winget commands for all three, no spawn, no winget probe, one English context',
+  const all = M.needsOf([{ state: 'missing' }, { state: 'missing' }])
+  eq('C26 setup: every probe unknown -> the manual winget commands for both, no spawn, no winget probe, one English context',
     [r.text.includes(M.manualText(all, true)), spawned(E), E.calls.run.some(a => a[0] === 'winget'), r.context.length, ASCII.test(r.context[0]), r.context[0].includes('installed nothing')], [true, [], false, 1, true, true])
   const F = fakeEngine({ noProcess: true, os: 'Linux' })
   const r2 = await runCmd(F)
@@ -663,90 +672,126 @@ const child = (pieces, code, { throwFirst = false } = {}) => (arg, done) => {
   const UNK = new Error('timed out')
   const NV = ' Not verified (probe timed out or failed): '
   const st = s => ({ state: s })
-  const ut = M.unknownText([st('ok'), st('unknown'), st('ok')])
+  const ut = M.unknownText([st('ok'), st('unknown')])
   eq('U1 unknownText: starts on a new line, names only the unknown tool with its --version command',
-    [ut.startsWith('\n'), ut.includes('pwsh'), ut.includes('`pwsh --version`'), ut.includes('node'), ut.includes('python')], [true, true, true, false, false])
-  const ut2 = M.unknownText([st('unknown'), st('ok'), st('unknown')])
+    [ut.startsWith('\n'), ut.includes('python'), ut.includes('`python --version`'), ut.includes('node')], [true, true, true, false])
+  const ut2 = M.unknownText([st('unknown'), st('unknown')])
   eq('U1b unknownText: two unknown tools are named in TOOLS order, each with its command; none unknown, missing, old, empty and sparse input give the empty string',
     [ut2.includes('node · python'), ut2.includes('`node --version`, `python --version`'), ut2.includes('pwsh'),
-     M.unknownText([st('ok'), st('ok'), st('ok')]), M.unknownText([st('missing'), { state: 'old', version: '1.0' }, st('ok')]), M.unknownText([]), M.unknownText([undefined, st('unknown')]).includes('pwsh')],
+     M.unknownText([st('ok'), st('ok')]), M.unknownText([st('missing'), { state: 'old', version: '1.0' }]), M.unknownText([]), M.unknownText([undefined, st('unknown')]).includes('python')],
     [true, true, false, '', '', '', true])
   // ok + unknown on Windows: neither "all installed" nor an install
-  const E = fakeEngine({ by: { pwsh: UNK }, spawnImpl: noSpawn })
+  const E = fakeEngine({ by: { python: UNK }, spawnImpl: noSpawn })
   const r = await runCmd(E)
-  eq('U2 setup: node and python ok, pwsh unknown -> names only node and python as installed, lists pwsh as not verified, installs nothing',
-    [r.text.startsWith('node · python '), r.text.endsWith(M.unknownText([st('ok'), st('unknown'), st('ok')])), r.text.includes('pwsh ·'), r.text.includes(K_ALL), r.text.includes('`pwsh --version`'), spawned(E)],
+  eq('U2 setup: node ok, python unknown -> names only node as installed, lists python as not verified, installs nothing',
+    [r.text.startsWith('node '), r.text.endsWith(M.unknownText([st('ok'), st('unknown')])), r.text.includes('node · python'), r.text.includes(K_ALL), r.text.includes('`python --version`'), spawned(E)],
     [true, true, false, false, true, []])
-  eq('U2b setup: the context is ASCII and says pwsh was not verified, not that it is on PATH',
-    [r.context.length, ASCII.test(r.context[0]), r.context[0]], [1, true, 'ywr-harness setup found node, python on PATH; it installed nothing.' + NV + 'pwsh.'])
-  const E2 = fakeEngine({ by: { pwsh: UNK, python: UNK }, spawnImpl: noSpawn })
-  const r2 = await runCmd(E2)
-  eq('U2c setup: two unknown tools beside one ok -> only the ok tool is named installed, both listed, nothing spawned',
-    [r2.text.startsWith('node '), r2.text.includes('pwsh · python'), spawned(E2), r2.context[0]],
-    [true, true, [], 'ywr-harness setup found node on PATH; it installed nothing.' + NV + 'pwsh, python.'])
+  eq('U2b setup: the context is ASCII and says python was not verified, not that it is on PATH',
+    [r.context.length, ASCII.test(r.context[0]), r.context[0]], [1, true, 'ywr-harness setup found node on PATH; it installed nothing.' + NV + 'python.'])
   // missing + unknown on Windows: only the missing tool is installed, the unknown one is listed
-  const E3 = fakeEngine({ by: { node: enoent('node'), pwsh: UNK }, spawnImpl: (arg, done) => child([], 0)(arg, done) })
+  const E3 = fakeEngine({ by: { node: enoent('node'), python: UNK }, spawnImpl: (arg, done) => child([], 0)(arg, done) })
   const r3 = await runCmd(E3)
-  const v3 = [st('missing'), st('unknown'), st('ok')]
-  eq('U3 setup: node missing, pwsh unknown, python ok on Windows -> one spawn (node only); the result text holds the node line then the unknown line; the unknown tool is never installed',
-    [spawned(E3), r3.text.includes(M.resultLine(T.node, 0) + M.unknownText(v3)), r3.text.includes('`pwsh --version`'), E3.calls.status[0]],
+  const v3 = [st('missing'), st('unknown')]
+  eq('U3 setup: node missing, python unknown on Windows -> one spawn (node only); the result text holds the node line then the unknown line; the unknown tool is never installed',
+    [spawned(E3), r3.text.includes(M.resultLine(T.node, 0) + M.unknownText(v3)), r3.text.includes('`python --version`'), E3.calls.status[0]],
     [[M.wingetArgv(T.node)], true, true, 'node ' + K_INSTALLING + ' (1/1)' + TAIL])
   eq('U3b setup: the install context ends with the not-verified sentence, is one ASCII row, and names only node as installed',
-    [r3.context.length, ASCII.test(r3.context[0]), r3.context[0].startsWith('ywr-harness setup ran winget for node. '), r3.context[0].endsWith('until Claude Code restarts.' + NV + 'pwsh.')], [1, true, true, true])
+    [r3.context.length, ASCII.test(r3.context[0]), r3.context[0].startsWith('ywr-harness setup ran winget for node. '), r3.context[0].endsWith('until Claude Code restarts.' + NV + 'python.')], [1, true, true, true])
   // missing + unknown off Windows
   const E4 = fakeEngine({ os: 'Linux', by: { node: enoent('node'), python: UNK }, spawnImpl: noSpawn })
   const r4 = await runCmd(E4)
   eq('U4 setup: not Windows, node missing, python unknown -> manual line for node only, the unknown line, a not-verified context, nothing spawned, no winget probe',
-    [r4.text.includes(M.manualText(M.needsOf([st('missing')]), false)), r4.text.endsWith(M.unknownText([st('missing'), st('ok'), st('unknown')])), r4.text.includes('- python:'),
+    [r4.text.includes(M.manualText(M.needsOf([st('missing')]), false)), r4.text.endsWith(M.unknownText([st('missing'), st('unknown')])), r4.text.includes('- python:'),
      r4.context.length, ASCII.test(r4.context[0]), r4.context[0].endsWith(NV + 'python.'), spawned(E4), E4.calls.run.some(a => a[0] === 'winget')],
     [true, true, false, 1, true, true, [], false])
   // missing + unknown on Windows without winget
-  const E5 = fakeEngine({ by: { node: enoent('node'), pwsh: UNK, winget: enoent('winget') }, spawnImpl: noSpawn })
+  const E5 = fakeEngine({ by: { node: enoent('node'), python: UNK, winget: enoent('winget') }, spawnImpl: noSpawn })
   const r5 = await runCmd(E5)
-  eq('U5 setup: no winget, node missing, pwsh unknown -> the App Installer text, the unknown line, a not-verified context, nothing spawned',
+  eq('U5 setup: no winget, node missing, python unknown -> the App Installer text, the unknown line, a not-verified context, nothing spawned',
     [r5.text.includes('App Installer'), r5.text.endsWith(M.unknownText(v3)), r5.context[0], spawned(E5)],
-    [true, true, 'ywr-harness setup found no winget; it installed nothing.' + NV + 'pwsh.', []])
+    [true, true, 'ywr-harness setup found no winget; it installed nothing.' + NV + 'python.', []])
   // an OLD tool beside an unknown one: the old one installs, the unknown one is listed
-  const E6 = fakeEngine({ by: { node: UNK, pwsh: { exitCode: 0, stdout: 'PowerShell 5.1.19041', stderr: '' } }, spawnImpl: (arg, done) => child([], 0)(arg, done) })
+  const E6 = fakeEngine({ by: { node: UNK, python: { exitCode: 0, stdout: 'Python 3.8.10', stderr: '' } }, spawnImpl: (arg, done) => child([], 0)(arg, done) })
   const r6 = await runCmd(E6)
-  eq('U7 setup: pwsh old, node unknown -> pwsh is installed (with the old-version line), node is listed as not verified and is not installed',
-    [spawned(E6), r6.text.includes(M.resultLine(T.pwsh, 0, '5.1') + M.unknownText([st('unknown'), st('old'), st('ok')])), r6.context[0].endsWith(NV + 'node.'), ASCII.test(r6.context[0])],
-    [[M.wingetArgv(T.pwsh)], true, true, true])
+  eq('U7 setup: python old, node unknown -> python is installed (with the old-version line), node is listed as not verified and is not installed',
+    [spawned(E6), r6.text.includes(M.resultLine(T.python, 0, '3.8') + M.unknownText([st('unknown'), st('old')])), r6.context[0].endsWith(NV + 'node.'), ASCII.test(r6.context[0])],
+    [[M.wingetArgv(T.python)], true, true, true])
 }
 
 // F2: an OLD tool's result lines say the old version is first on PATH, not that the new one is missing from it
 {
   const UP_U = 2316632107, UP_S = -1978335189
   const hint = s => [s.includes('PATH'), s.includes('python.exe')]
-  const p0 = M.resultLine(T.pwsh, 0, '5.1'), pu = M.resultLine(T.pwsh, UP_U, '5.1'), pu2 = M.resultLine(T.pwsh, UP_S, '5.1')
-  eq('O1 resultLine(old): exit 0 for an old pwsh names the old version first on PATH, differs from the no-old line, is no failure, has no python hint',
-    [p0.startsWith('- pwsh: '), p0.includes('5.1'), p0.includes('winget exit'), hint(p0), p0 === M.resultLine(T.pwsh, 0), M.resultLine(T.pwsh, 0) === M.resultLine(T.pwsh, 0, null)], [true, true, false, [true, false], false, true])
+  const p0 = M.resultLine(T.node, 0, '20.11'), pu = M.resultLine(T.node, UP_U, '20.11'), pu2 = M.resultLine(T.node, UP_S, '20.11')
+  eq('O1 resultLine(old): exit 0 for an old node names the old version first on PATH, differs from the no-old line, is no failure, has no python hint',
+    [p0.startsWith('- node: '), p0.includes('20.11'), p0.includes('winget exit'), hint(p0), p0 === M.resultLine(T.node, 0), M.resultLine(T.node, 0) === M.resultLine(T.node, 0, null)], [true, true, false, [true, false], false, true])
   eq('O2 resultLine(old): up-to-date (unsigned and signed) names the old version too, differs from exit 0 and from the no-old line',
-    [pu === pu2, pu.includes('5.1'), pu.includes('winget exit'), hint(pu), pu === p0, pu === M.resultLine(T.pwsh, UP_U)], [true, true, false, [true, false], false, false])
+    [pu === pu2, pu.includes('20.11'), pu.includes('winget exit'), hint(pu), pu === p0, pu === M.resultLine(T.node, UP_U)], [true, true, false, [true, false], false, false])
   const y0 = M.resultLine(T.python, 0, '3.8'), yu = M.resultLine(T.python, UP_S, '3.8')
   eq('O3 resultLine(old): an old python gets the old-version hint WITHOUT the python alias hint (on 0 and on up-to-date); a missing python still gets it',
     [y0.includes('3.8'), hint(y0), yu.includes('3.8'), hint(yu), M.resultLine(T.python, 0).includes('python.exe'), y0 === M.resultLine(T.python, 0)], [true, [true, false], true, [true, false], true, false])
   eq('O4 resultLine(old): a failure line is the same with or without the old version',
     [M.resultLine(T.python, 1603, '3.8') === M.resultLine(T.python, 1603), M.resultLine(T.node, null, '1.0') === M.resultLine(T.node, null)], [true, true])
-  const nu = M.resultNote(T.pwsh, UP_U, '5.1'), nu2 = M.resultNote(T.pwsh, UP_S, '5.1'), nn = M.resultNote(T.pwsh, UP_U)
-  eq('RN7 resultNote(old): up-to-date with an old version says it found 5.1 first on PATH, not that it did not find it; ASCII; unsigned = signed',
-    [nu.includes('found 5.1 first on PATH'), nu.includes('did not find it on PATH'), nu === nu2, ASCII.test(nu), nu.includes('failed')], [true, false, true, true, false])
+  const nu = M.resultNote(T.node, UP_U, '20.11'), nu2 = M.resultNote(T.node, UP_S, '20.11'), nn = M.resultNote(T.node, UP_U)
+  eq('RN7 resultNote(old): up-to-date with an old version says it found 20.11 first on PATH, not that it did not find it; ASCII; unsigned = signed',
+    [nu.includes('found 20.11 first on PATH'), nu.includes('did not find it on PATH'), nu === nu2, ASCII.test(nu), nu.includes('failed')], [true, false, true, true, false])
   eq('RN8 resultNote: up-to-date without an old version keeps "did not find it on PATH"; exit 0 and failures ignore the old version',
-    [nn.includes('did not find it on PATH'), nn.includes('first on PATH'), M.resultNote(T.pwsh, 0, '5.1') === M.resultNote(T.pwsh, 0), M.resultNote(T.pwsh, 1603, '5.1') === M.resultNote(T.pwsh, 1603), M.resultNote(T.pwsh, null, '5.1') === M.resultNote(T.pwsh, null)],
+    [nn.includes('did not find it on PATH'), nn.includes('first on PATH'), M.resultNote(T.node, 0, '20.11') === M.resultNote(T.node, 0), M.resultNote(T.node, 1603, '20.11') === M.resultNote(T.node, 1603), M.resultNote(T.node, null, '20.11') === M.resultNote(T.node, null)],
     [true, false, true, true, true])
-  // end to end: node missing (no old), pwsh old 5.1, both up-to-date
+  // end to end: node missing (no old), python old 3.8, both up-to-date
   const upChild = (arg, done) => { const g = child([], 0)(arg, done); g.result = Promise.resolve({ code: UP_S, signal: null }); return g }
-  const E = fakeEngine({ by: { node: enoent('node'), pwsh: { exitCode: 0, stdout: 'PowerShell 5.1.19041', stderr: '' } }, spawnImpl: upChild })
+  const E = fakeEngine({ by: { node: enoent('node'), python: { exitCode: 0, stdout: 'Python 3.8.10', stderr: '' } }, spawnImpl: upChild })
   const r = await runCmd(E)
   const lines = r.text.split('\n')
-  eq('O5 setup: a missing node and an old pwsh 5.1, both reported up-to-date -> node\'s line has no old version, pwsh\'s line names 5.1',
-    [lines[1] === M.resultLine(T.node, UP_S), lines[2] === M.resultLine(T.pwsh, UP_S, '5.1'), lines[2].includes('5.1'), lines[1].includes('5.1')], [true, true, true, false])
-  eq('O5b setup: the context joins resultNote(node) and resultNote(pwsh, old 5.1) and is ASCII',
-    [r.context[0].includes(M.resultNote(T.node, UP_S)), r.context[0].includes(M.resultNote(T.pwsh, UP_S, '5.1')), r.context[0].includes('found 5.1 first on PATH'), ASCII.test(r.context[0])], [true, true, true, true])
+  eq('O5 setup: a missing node and an old python 3.8, both reported up-to-date -> node\'s line has no old version, python\'s line names 3.8',
+    [lines[1] === M.resultLine(T.node, UP_S), lines[2] === M.resultLine(T.python, UP_S, '3.8'), lines[2].includes('3.8'), lines[1].includes('3.8')], [true, true, true, false])
+  eq('O5b setup: the context joins resultNote(node) and resultNote(python, old 3.8) and is ASCII',
+    [r.context[0].includes(M.resultNote(T.node, UP_S)), r.context[0].includes(M.resultNote(T.python, UP_S, '3.8')), r.context[0].includes('found 3.8 first on PATH'), ASCII.test(r.context[0])], [true, true, true, true])
   const F = fakeEngine({ by: { python: { exitCode: 0, stdout: 'Python 3.8.10', stderr: '' } }, spawnImpl: (arg, done) => child([], 0)(arg, done) })
   const r2 = await runCmd(F)
   eq('O6 setup: an old python 3.8 installed with exit 0 -> its line is resultLine(python, 0, 3.8) with no alias hint; the context uses resultNote(python, 0)',
     [r2.text.split('\n')[1] === M.resultLine(T.python, 0, '3.8'), r2.text.split('\n')[1].includes('python.exe'), r2.context[0].includes(M.resultNote(T.python, 0, '3.8')), ASCII.test(r2.context[0])], [true, false, true, true])
+  // O7. the node minimum (ywr-harness ADR 0220): a Windows node 20.11 is installed by winget like any old tool,
+  // and its result line carries the old-version hint, never the PATH hint of a missing tool.
+  const H = fakeEngine({ by: { node: { exitCode: 0, stdout: 'v20.11.1\n', stderr: '' } }, spawnImpl: (arg, done) => child([], 0)(arg, done) })
+  const r3 = await runCmd(H)
+  const l3 = r3.text.split('\n')[1]
+  eq('O7 setup: Windows node 20.11 -> one spawn of wingetArgv(node), its line is resultLine(node, 0, 20.11) naming 20.11 as the old version',
+    [spawned(H), l3 === M.resultLine(T.node, 0, '20.11'), l3.includes('이전 버전(20.11)'), l3 === M.resultLine(T.node, 0)],
+    [[M.wingetArgv(T.node)], true, true, false])
+}
+
+// PW: pwsh left the prerequisite list (ywr-harness ADR 0220 decision 10): no probe runs it, no text names it,
+// and a machine without it draws no band
+{
+  const PW = /pwsh|powershell/i
+  const st = s => ({ state: s })
+  const every = [
+    M.bandText(M.needsOf([st('missing'), st('missing')])), M.bandText(M.needsOf([{ state: 'old', version: '20.11' }, { state: 'old', version: '3.8' }])),
+    M.noteText(M.needsOf([st('missing'), st('missing')])), M.noteText(M.needsOf([{ state: 'old', version: '20.11' }, { state: 'old', version: '3.8' }])),
+    M.manualText(M.needsOf([st('missing'), st('missing')]), true), M.manualText(M.needsOf([st('missing'), st('missing')]), false),
+    M.unknownText([st('unknown'), st('unknown')]),
+    ...M.TOOLS.flatMap(t => [M.resultLine(t, 0), M.resultLine(t, 2316632107), M.resultLine(t, 1603), M.resultLine(t, null), M.resultNote(t, 0), M.resultNote(t, 1603), M.resultNote(t, null), M.wingetArgv(t).join(' ')]),
+    JSON.stringify(M.TOOLS),
+  ]
+  eq('PW1 pwsh is not a prerequisite: not in TOOLS, in no band, note, manual line, unknown line, result line or winget argv (' + every.length + ' texts checked)',
+    [M.TOOLS.map(t => t.name), T.pwsh, every.filter(t => PW.test(t)).length], [['node', 'python'], undefined, 0])
+  // no probe, no alias retry and no winget install ever runs pwsh, and a machine without pwsh stays silent
+  const E = fakeEngine({ localAppData: LA, by: { node: enoent('node'), [WA('node')]: enoent(WA('node')), python: enoent('python'), [WA('python')]: enoent(WA('python')), pwsh: enoent('pwsh') }, spawnImpl: child([], 0) })
+  await E.hook('session.start')(E.$, startEv, nextWith(SENT)); await tick()
+  const r = await runCmd(E)
+  const F = fakeEngine({ localAppData: LA, by: { pwsh: enoent('pwsh'), [WA('pwsh')]: enoent(WA('pwsh')) } })
+  await F.hook('session.start')(F.$, startEv, nextWith(SENT)); await tick()
+  const bandF = await F.hook('ui.render')(F.$, bandEv(), nextWith(NEXT_BAND))
+  eq('PW2 pwsh is never probed, retried by alias path or installed, and a machine without pwsh draws no band and appends no note',
+    [E.calls.run.some(a => PW.test(a.join(' '))), E.calls.spawn.some(a => PW.test(JSON.stringify(a))), PW.test(r.text), PW.test(r.context.join(' ')), PW.test(E.calls.append.map(m => JSON.stringify(m)).join(' ')),
+     F.calls.run.some(a => PW.test(a.join(' '))), F.calls.append.length, F.calls.invalidate.length, bandF === NEXT_BAND],
+    [false, false, false, false, false, false, 0, 0, true])
+  // the node entry says what an old or missing node costs now that the skill scripts are Node scripts
+  eq('PW3 node texts: a missing node names the skill scripts and the statusline installer; an old node names the hooks and skill scripts, requires 22.0 and claims no failure',
+    [T.node.uses.includes('ywr-harness:harness-init'), T.node.uses.includes('ywr-harness:report-issue'), T.node.uses.includes('statusline installer'),
+     T.node.oldUses.includes('hooks and skill scripts below 22.0'), T.node.oldUses.includes('requires 22.0'), /fail|error/i.test(T.node.oldUses)],
+    [true, true, true, true, true, false])
 }
 
 // F3: one setup at a time

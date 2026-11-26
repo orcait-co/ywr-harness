@@ -12,6 +12,21 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.84.0 — 2026-11-26
+
+- 멤버가 실행하는 스크립트가 모두 Node 로 바뀌었습니다(ywr-harness ADR 0220 1단계). `/ywr-harness:harness-init` 은 `skills/harness-init/init.mjs`, `/ywr-harness:report-issue` 는 `skills/report-issue/report-issue.mjs`, 상태 줄 설치는 `statusline/install.mjs` 를 `node` 로 실행합니다. 하는 일과 출력, 종료 코드는 전과 같습니다. 옵션 이름은 Node 형식입니다: `--target`, `--dry-run`, `--force`, `--allow-upstream-ahead`, `--description=…`, `--file --body-path=…`, `--claude-dir`. 안내 문구도 같은 이름(`--force` 등)을 씁니다.
+- PowerShell(`pwsh`)은 이제 전제 조건이 아닙니다. 세션 시작 검사와 `/ywr-harness:setup` 은 `node` 22 이상과 `python` 3.9 이상만 확인하고, PowerShell 설치를 권하지 않습니다. Node 가 없으면 hook 뿐 아니라 위 세 스크립트도 실패합니다.
+- 문서 빌드 래퍼가 `docs/build.ps1` 에서 `docs/build.mjs` 로 바뀌었습니다. 이제 `node docs/build.mjs` 로 재생성합니다(`bash docs/build.sh` 는 그대로입니다). `/ywr-harness:harness-init` 을 다시 돌리면 `docs/build.mjs` 가 배치됩니다. 이미 있는 `docs/build.ps1` 은 지우지 않고 `retired: docs/build.ps1 — …` 한 줄로 알려 줍니다. 더 관리되지 않는 파일이니 `git rm docs/build.ps1` 로 지우세요.
+- `CLAUDE.md` 시드는 `/ywr-harness:harness-init` 이 덮어쓰지 않으므로, 예전에 scaffold 한 repo 의 `CLAUDE.md` 에는 `pwsh docs/build.ps1` 이 남아 있습니다. 세션 시작 scaffold 안내가 이 문구를 옛 규칙으로 알려 줍니다. `node docs/build.mjs` 로 직접 고치세요.
+- `/ywr-harness:artifact-publish` 가 라이브 상태 확인과 발행 후 해시 증명에 `Artifact action: read` 에 `path: "index.html"` 을 준 호출을 씁니다. 지금의 Artifact 도구에는 전에 쓰던 `read_file` 이 없습니다. 또 Claude Code 2.1.332 에서는 첫 발행 거절이 라이브 페이지와의 줄 diff 를 보여 주고 Read 를 요구하지 않으므로, 저장본을 줄 단위로 읽는 단계는 거절이 Read 를 요구할 때만 합니다.
+- scaffold 안내 hook 과 `manifest-gate.mjs` 는 이제 배치 목록을 `skills/harness-init/placement.mjs` 에서 읽습니다. 목록은 여전히 한 곳에만 있습니다.
+- `.harness.json` 의 그룹 `match` 에 조건부 정규식 `(?(1)…)` 을 쓰면, `/ywr-harness:harness-init` 이 그 패턴을 읽지 못해 그 그룹이 아무 파일도 맡지 않는다고 봅니다. 그래서 안내 줄이 그 그룹의 파일을 "scaffold gate 를 선언한 그룹이 없다" 고 잘못 알릴 수 있습니다. 실제 게이트(`harness_gates.py`)는 Python 이라 그 패턴을 그대로 읽으며 영향이 없습니다.
+
+## v0.83.0 — 2026-11-26
+
+- 하네스는 앞으로 Node 하나로만 돕니다(ywr-harness ADR 0220). PowerShell 과 Python 스크립트는 세 단계에 걸쳐 Node 로 옮겨지고, 단계가 끝날 때마다 그 도구가 전제 조건 목록에서 빠집니다. 이번 버전에서는 아직 아무 스크립트도 바뀌지 않았습니다.
+- 전제 조건 검사가 이제 Node 22.0 이상을 요구합니다. 세션을 시작할 때 `node --version` 이 22.0 보다 낮으면, 프롬프트 위의 안내 띠에 Node 버전과 `22.0 이상 필요` 가 나오고, 다음 릴리스부터 필요한 버전보다 낮다고 알리며 `/ywr-harness:setup` 을 권합니다. 이 버전의 hook 을 Node 22 미만에서 시험하지는 않았습니다. Windows 에서 `/ywr-harness:setup` 은 `winget` 으로 Node LTS 를 설치합니다. 다른 OS 에서는 설치 명령만 보여 줍니다. Linux 에서는 배포판의 `nodejs` 패키지가 22 보다 낮을 수 있으니 nodejs.org 의 LTS 나 nvm 같은 버전 관리자를 쓰세요. macOS 에서 Homebrew 로 깐 Node 가 낮으면 `brew upgrade node` 를 쓰세요. 다음 단계부터 Node 로 옮겨지는 스크립트는 Node 22 이상을 전제로 합니다.
+
 ## v0.82.2 — 2026-11-25
 
 - `harness_gates.py` 의 `review canon:` 줄과 세션 시작 scaffold 안내가, 0열에서 시작하는 닫는 코드 펜스, `#` 헤딩, `***`/`---` 구분선, `===` 밑줄 바로 다음 줄에 4칸 들여 쓴 `@path` 를 이제 import 로 세지 않습니다(dist #18). 이 줄들은 그 앞의 문단을 끝내므로, 빈 줄이 없어도 다음 줄은 들여쓰기 코드 블록이고 Claude Code 2.1.332 는 그 import 를 로드하지 않습니다(probe 로 확인). 전에는 이 줄을 import 로 읽어 `(imported by CLAUDE.md)` 를 출력했습니다. 이제는 `(NOT IMPORTED …)` 가 붙으니, 그 `@path` 줄을 들여쓰기 없이 다시 쓰세요. 리스트 항목 안의 펜스 뒤에 오는 들여쓴 줄은 항목 본문이라 지금처럼 import 로 셉니다.

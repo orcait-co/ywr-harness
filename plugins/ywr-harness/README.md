@@ -43,7 +43,7 @@ calls the scripts directly and never goes through the host's component registry.
 | `question-notify.mjs` | `PreToolUse` and `PostToolUse` (matcher `AskUserQuestion`) | Notification only (ADR 0202). On Windows, `PreToolUse` shows a toast while the model waits for your answer; the toast takes no focus and stays until you answer or dismiss it. `PostToolUse` removes the toast of the same session. Both events are registered `async`, so the question dialog never waits for the hook. It writes nothing on stdout and never decides. Silent off Windows, without `powershell.exe` under `SystemRoot`, and when `YWR_HARNESS_QUESTION_NOTIFY` is `0`, `false`, `no` or `off`. |
 | `session-start-githooks-nudge.mjs` | `SessionStart` | Suggest-only (ADR 0029). Speaks exactly when the work tree carries `.githooks/` and this clone's `core.hooksPath` is unset — the state where no git hook runs and nothing else says so until slice close or CI. Names the one-line fix; never sets it. A wired clone, a repo without `.githooks/`, and a deliberate foreign `hooksPath` are all silent. |
 | `session-start-model-route-guard.mjs` | `SessionStart` (matcher `startup\|resume\|fork`) | Warn-only (ADR 0107, ADR 0130, ADR 0132). Speaks exactly when a setting can move a model alias to an older model, or a `CLAUDE_CODE_EFFORT_LEVEL` overrides every worker effort pin: an `ANTHROPIC_DEFAULT_*_MODEL`, a `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (any value; the second moves every workflow agent, the model of each `agent()` call included), a full id in `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_MODEL` / a settings `model`, a non-empty `modelOverrides`, or a `CLAUDE_CODE_USE_*` cloud provider; or a non-empty `CLAUDE_CODE_EFFORT_LEVEL`, which beats an agent's frontmatter `effort`, a per-call Agent `effort` (both per the docs) and a Workflow `agent()` `effort` (measured on 2.1.295) — read from the environment and the user, project and local settings files. One Korean line naming each setting and where it is set; never model context, never a change. Silent otherwise. `node session-start-model-route-guard.mjs --preflight` is the environment-only half the eval runner uses to refuse a paid run (one line per finding, exit 1; `preflight: clear`, exit 0); it never reads the effort variable, which the runner's wrapper sets itself. |
-| `session-start-scaffold-refresh-nudge.mjs` | `SessionStart` | Suggest-only (ADR 0033). Speaks exactly when the work tree carries a ywr-harness scaffold whose TOOLCHAIN placements differ from the installed plugin's templates — the stale-vendor state ADR 0014 recorded as undetected. Byte comparison, EOL-insensitive (the seed `.gitattributes` makes CRLF/LF checkout variance legitimate); the placement map is read from `init.ps1`'s own literals by a small lexer (anything it cannot read as a bare string constant or a literal table is EXTRACTION DRIFT), so no second copy exists to drift. Comparison is exact apart from line endings — letter case, a BOM, U+00AD and NUL all count. Names the count, the files (capped list, cap stated), and the remedy; writes nothing. Seeds are never compared; a marker-less `post-commit` is skipped exactly as the scaffold refuses it. The one read of a seed is the retired-text scan (ADR 0207): the hook names each seed file that still holds a rule phrase that a later release changed, because `harness-init` never overwrites a seed. The advice is DIRECTION-AWARE (ADR 0042) via the repo's `.harness-version` stamp (written by `harness-init` on every successful run): repo ahead of this install → update the plugin, `harness-init` forbidden; repo behind → refresh, direction stated as measured; same version → hand-edit named; no readable stamp → the direction-blind caveat on the human banner AND the model context (a canon working tree mid-slice, or a multi-writer repo refreshed by a newer plugin, is *newer* than the installed copy and a re-run would revert it). When the running copy is itself a superseded cache install (a session that outlived a plugin update — ADR 0039), the advice flips: same file list, but the basis is named STALE, `/reload-plugins` (or a restart) is instructed, and `harness-init` is forbidden from that session — the loaded skill would place the old templates. The registry probe is best-effort; any failure returns the normal nudge. |
+| `session-start-scaffold-refresh-nudge.mjs` | `SessionStart` | Suggest-only (ADR 0033). Speaks exactly when the work tree carries a ywr-harness scaffold whose TOOLCHAIN placements differ from the installed plugin's templates — the stale-vendor state ADR 0014 recorded as undetected. Byte comparison, EOL-insensitive (the seed `.gitattributes` makes CRLF/LF checkout variance legitimate); the placement map is imported from `skills/harness-init/placement.mjs`, the one module that `init.mjs` also reads (a failed import or an empty map is EXTRACTION DRIFT), so no second copy exists to drift. Comparison is exact apart from line endings — letter case, a BOM, U+00AD and NUL all count. Names the count, the files (capped list, cap stated), and the remedy; writes nothing. Seeds are never compared; a marker-less `post-commit` is skipped exactly as the scaffold refuses it. The one read of a seed is the retired-text scan (ADR 0207): the hook names each seed file that still holds a rule phrase that a later release changed, because `harness-init` never overwrites a seed. The advice is DIRECTION-AWARE (ADR 0042) via the repo's `.harness-version` stamp (written by `harness-init` on every successful run): repo ahead of this install → update the plugin, `harness-init` forbidden; repo behind → refresh, direction stated as measured; same version → hand-edit named; no readable stamp → the direction-blind caveat on the human banner AND the model context (a canon working tree mid-slice, or a multi-writer repo refreshed by a newer plugin, is *newer* than the installed copy and a re-run would revert it). When the running copy is itself a superseded cache install (a session that outlived a plugin update — ADR 0039), the advice flips: same file list, but the basis is named STALE, `/reload-plugins` (or a restart) is instructed, and `harness-init` is forbidden from that session — the loaded skill would place the old templates. The registry probe is best-effort; any failure returns the normal nudge. |
 | `session-start-slice-notes.mjs` | `SessionStart` (matcher `compact`) | Context only (ADR 0172). After a context compaction it runs `scripts/harness/slice_note.py show` and hands the session's own slice notes back to the model, so a decision made before the compaction keeps its reason. The other session sources never start it. Silent when the cwd is not in a work tree, when git is absent, and when there are no notes. |
 | `session-start-version-announce.mjs` | `SessionStart` | Announce-once-per-version (ADR 0030). At the first session that loads a new plugin version it says so once — old → new, up to three bullets from `CHANGELOG.md` (the member release-notes canon, Korean), and the onboarding artifact's release-notes tab — then records the version in `<config dir>/ywr-harness/announced-version` (the config dir is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`; ADR 0136), the plugin's only user-scope write. A machine's very first run gets a one-time link-only welcome instead (ADR 0031) — "업데이트됨" is claimed only when a previous version was recorded. Steady state and downgrades are silent; `manifest-gate.mjs` refuses a release whose top CHANGELOG entry does not match `plugin.json`. |
 
@@ -65,9 +65,9 @@ No prompt, task description or answer is written. It writes only in a repo whose
 `.harness.json`. Hosts below 2.1.287, `disableAllHooks`, `--safe-mode` and `--bare` drop it, and
 the hooks in the table above keep running.
 
-`hooks/prerequisites.mjs` checks the three tools the plugin needs (ADR 0142): `node` for the
-hooks in the table above, `pwsh` 7+ for the skills' scripts and the selftests, `python` 3.9+ for the
-gate scripts. A mod needs neither `node` nor `pwsh`, so it can report any of them missing. At
+`hooks/prerequisites.mjs` checks the two tools the plugin needs on a member machine (ADR 0142): `node` 22+
+(ADR 0220) for the hooks in the table above and the skills' scripts, `python` 3.9+ for the gate scripts.
+A mod needs no `node`, so it can report either of them missing. At
 session start it runs each tool's `--version` in the background, so the start never waits for it.
 On a missing or too-old tool it shows one Korean band above the prompt naming the tools and
 `/ywr-harness:setup`, and adds one note for Claude to the conversation (hidden from you) naming
@@ -224,7 +224,7 @@ matched", which is the hardest kind of gate failure to notice.
 ## Status line (user scope)
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/statusline/install.ps1"     # add -DryRun to preview
+node "${CLAUDE_PLUGIN_ROOT}/statusline/install.mjs"     # add --dry-run to preview
 ```
 
 Renders `location · model · effort · ctx N%/SIZE · 5h N% · 7d N% · ywr-harness vX.Y.Z`, dropping
@@ -317,7 +317,7 @@ repo is private, so the report is filed as an issue on the PUBLIC dist repo `orc
 and the canon's session-start inbox lists every open dist issue (ADR 0085 — no label is set, because
 GitHub drops one set by a filer without push access). The skill drafts the body
 (running + registered plugin versions, `claude --version`, OS, `owner/repo` + `.harness-version`,
-the refresh nudge's verdict and `init.ps1 -DryRun` output quoted verbatim, `git log --oneline -3`
+the refresh nudge's verdict and `init.mjs --dry-run` output quoted verbatim, `git log --oneline -3`
 of every file a re-run would change, a dedupe fingerprint), shows it, and files it only after ONE
 confirmation — the reviewed file is what gets filed. It never includes file contents or diffs
 (the tracker is public; the canon asks in-thread), never runs `harness-init`, and without `gh`
@@ -363,20 +363,21 @@ do not run it.
 
 ## Prerequisites
 
-- `node` — runs every hook in the table above (`hooks/*.mjs`, with the shared `hooks/hook-lib.mjs`; Node
-  costs ~70 ms per hook call against ~780 ms for pwsh, ADR 0116), `manifest-gate.mjs` and the
+- `node` 22+ (ADR 0220; older versions get the prerequisite band) — runs every hook in the table above (`hooks/*.mjs`, with the shared `hooks/hook-lib.mjs`; Node
+  costs ~70 ms per hook call against ~780 ms for pwsh, ADR 0116), the skills' scripts (`harness-init`,
+  `report-issue`), the status line installer, `manifest-gate.mjs` and the
   workflow corpus gate `scripts/workflow-gates.mjs`. Absent `node`: those hooks cannot
   start on a member machine — the host reports a hook error and never a blocked call, since no
   hook can block; the suites report a skip locally and a hard failure on CI, where they must
   actually run.
-- `pwsh` (PowerShell 7+) on `PATH` — the skills' scripts (`harness-init`, `report-issue`) and every
-  selftest. No hook runs on it.
+- `pwsh` (PowerShell 7+) — only the plugin's own selftests below, which a member never runs. No hook or
+  skill script runs on it, so the prerequisite check does not name it (ADR 0220).
 - `python` 3.9+ (stdlib only) — every gate script under `scripts/` requires it:
   `harness_gates.py` (invoked by the `pre-commit` hook), `harness_retro.py` (by the
   `post-commit` hook), `verify_map.py` (by `ywr-harness:verify`), and `slice_note.py` (by the session, the
   `session-start-slice-notes.mjs` hook and `/ywr-harness:slice-close`).
 
-The prerequisite check (`hooks/prerequisites.mjs`, above) names any of the three that is missing
+The prerequisite check (`hooks/prerequisites.mjs`, above) names either of the two that is missing
 or too old at each session start, and `/ywr-harness:setup` installs them on your command.
 
 Hooks run wherever the session runs; the gates and selftests are also exercised on Linux pwsh,

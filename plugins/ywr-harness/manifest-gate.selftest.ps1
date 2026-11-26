@@ -526,37 +526,37 @@ echo drifted' -NoNewline
 $g = Run-GateAt $r
 Record 'placement-guarded-marked-drift' ($g.rc -eq 1 -and $g.out -match 'dogfood placement DIVERGED: \.githooks/post-commit') "exit=$($g.rc)"
 
-# The pair list is parsed from init.ps1 — a parse that yields nothing must FAIL, not sweep zero
+# The pair list is imported from placement.mjs — a read that yields nothing must FAIL, not sweep zero
 # pairs and read as coverage.
 $r = New-CanonShape 'placement-map-unparseable'
-$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/init.ps1'
-(Get-Content -LiteralPath $ip -Raw).Replace('$TOOLCHAIN = [ordered]@{', '$RENAMED_MAP = [ordered]@{') | Set-Content -LiteralPath $ip -NoNewline
+$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/placement.mjs'
+(Get-Content -LiteralPath $ip -Raw).Replace('export const TOOLCHAIN = ', 'export const RENAMED_MAP = ') | Set-Content -LiteralPath $ip -NoNewline
 $g = Run-GateAt $r
 Record 'placement-map-unparseable' ($g.rc -eq 1 -and $g.out -match 'an empty sweep is not a pass') "exit=$($g.rc)"
 
-# A PARTIALLY unparseable map is the silent-narrowing variant: one entry rewritten in a form the
-# parser does not read must FAIL loudly, not drop that one pair while the sweep still counts >0.
+# A PARTIALLY unreadable map is the silent-narrowing variant: one entry rewritten in a form the
+# reader does not accept (a destination that is not a string) must FAIL loudly, not drop that one pair
+# while the sweep still counts >0.
 $r = New-CanonShape 'placement-map-partial-parse'
-$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/init.ps1'
-(Get-Content -LiteralPath $ip -Raw).Replace("'githooks/pre-commit'                    = '.githooks/pre-commit'", '"githooks/pre-commit"                    = ".githooks/pre-commit"') | Set-Content -LiteralPath $ip -NoNewline
+$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/placement.mjs'
+(Get-Content -LiteralPath $ip -Raw).Replace("['githooks/pre-commit', '.githooks/pre-commit'],", "['githooks/pre-commit', 5],") | Set-Content -LiteralPath $ip -NoNewline
 $g = Run-GateAt $r
-Record 'placement-map-partial-parse' ($g.rc -eq 1 -and $g.out -match 'unparsed entry line') "exit=$($g.rc) unparsed-named=$([bool]($g.out -match 'unparsed entry line'))"
+Record 'placement-map-partial-parse' ($g.rc -eq 1 -and $g.out -match 'malformed entry') "exit=$($g.rc) malformed-named=$([bool]($g.out -match 'malformed entry'))"
 
-# Same class, non-quote-prefixed: a bareword key does not LOOK like a quoted entry, and the
-# first cut's quote-prefixed guard let exactly that vanish (review 2026-08-07, medium).
+# Same class, another shape: an entry with no destination (a one-element list) is not a pair, and a
+# reader that skipped it would let that placement vanish (review 2026-08-07, medium).
 $r = New-CanonShape 'placement-map-bareword-key'
-$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/init.ps1'
-(Get-Content -LiteralPath $ip -Raw).Replace("'githooks/pre-commit'                    = '.githooks/pre-commit'", "githooks_precommit                    = '.githooks/pre-commit'") | Set-Content -LiteralPath $ip -NoNewline
+$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/placement.mjs'
+(Get-Content -LiteralPath $ip -Raw).Replace("['githooks/pre-commit', '.githooks/pre-commit'],", "['githooks/pre-commit'],") | Set-Content -LiteralPath $ip -NoNewline
 $g = Run-GateAt $r
-Record 'placement-map-bareword-key' ($g.rc -eq 1 -and $g.out -match 'unparsed entry line') "exit=$($g.rc)"
+Record 'placement-map-bareword-key' ($g.rc -eq 1 -and $g.out -match 'malformed entry') "exit=$($g.rc)"
 
-# GUARDED emptiness must fail SYMMETRICALLY with TOOLCHAIN: Get-PlacementMap returns a real
-# empty dictionary when the wrapper matches but nothing inside parses, so a null-check alone
-# lets one family's coverage vanish while the sweep still reports green (review 2026-08-07,
-# high). Commenting out the single entry is exactly the merge-accident shape.
+# GUARDED emptiness must fail SYMMETRICALLY with TOOLCHAIN: an emptied table reads as a real empty
+# list, so a null-check alone lets one family's coverage vanish while the sweep still reports green
+# (review 2026-08-07, high). Commenting out the single entry is exactly the merge-accident shape.
 $r = New-CanonShape 'placement-map-guarded-emptied'
-$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/init.ps1'
-(Get-Content -LiteralPath $ip -Raw).Replace("    'githooks/post-commit' = '.githooks/post-commit'", "    # 'githooks/post-commit' = '.githooks/post-commit'") | Set-Content -LiteralPath $ip -NoNewline
+$ip = Join-Path $r 'plugins/ywr-harness/skills/harness-init/placement.mjs'
+(Get-Content -LiteralPath $ip -Raw).Replace("  ['githooks/post-commit', '.githooks/post-commit'],", "  // ['githooks/post-commit', '.githooks/post-commit'],") | Set-Content -LiteralPath $ip -NoNewline
 $g = Run-GateAt $r
 Record 'placement-map-guarded-emptied' ($g.rc -eq 1 -and $g.out -match 'an empty sweep is not a pass' -and $g.out -match 'guarded=0') "exit=$($g.rc) guarded0-named=$([bool]($g.out -match 'guarded=0'))"
 
@@ -586,7 +586,7 @@ Record 'placement-skip-cache-shape' ($g.Code -eq 0 -and $out -match 'dogfood pla
 $apIn = @('REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-start.md',
     'workflows/fixture-flow.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\verify\SKILL.md',
     'hooks/hooks.json', 'hooks/slice-status.test.ts', 'hooks/x.selftest.mjs', 'scripts/slice_note.py', 'CHANGELOG.md', 'README.md',
-    'skills/harness-init/init.ps1', 'lib/selftest-lib.ps1', 'agents/sub/deep.md')
+    'skills/harness-init/init.mjs', 'lib/selftest-lib.ps1', 'agents/sub/deep.md')
 $apWant = @('REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-start.md',
     'workflows/fixture-flow.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\verify\SKILL.md')
 $psi = [Diagnostics.ProcessStartInfo]::new($nodeExe)

@@ -14,7 +14,7 @@ const BAND = {
 
 const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const missing = { exitCode: 9009, stdout: '', stderr: 'not recognized', isStdoutTruncated: false, isStderrTruncated: false }
-const VERSIONS: Record<string, string> = { pwsh: 'PowerShell 7.6.6', node: 'v24.14.0', python: 'Python 3.13.13' }
+const VERSIONS: Record<string, string> = { node: 'v24.14.0', python: 'Python 3.13.13' }
 
 test('a missing node draws the band on every surface and appends one model note', async ($, on) => {
   // The probes run on a `$.clock.after(0, …)` timer (ADR 0164); `clock.settle()` runs it and waits for it.
@@ -51,7 +51,7 @@ test('every tool present: no band, no note', async ($, on) => {
   await $.session.start({ cwd: 'C:/repo', surface: 'terminal', isInteractive: true })
   expect(ran).toEqual([]) // the session start returned before the timer ran
   await clock.settle()
-  expect(ran).toEqual(['node', 'pwsh', 'python'])
+  expect(ran).toEqual(['node', 'python']) // pwsh is no prerequisite (ADR 0220)
   expect(appended.length).toBe(0)
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' } as never)
   expect(await ui.find({ type: 'Text', text: /ywr-harness/ } as never)).toBeUndefined()

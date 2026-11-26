@@ -24,16 +24,16 @@ expected, and (if a toolchain file was patched locally) why. Do not invent a des
 ## 2. Draft — nothing is filed
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.ps1" -Description "<description>"
+node "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.mjs" --description="<description>"
 ```
 
-Run it from inside the repo the report is about (or add `-Target <repo root>`). It prints
+Run it from inside the repo the report is about (or add `--target="<repo root>"`). Keep the `--name=value` form: a value that starts with a dash is refused in the `--name value` form. It prints
 `body:` (the scratch file), `title:`, `drift:`, `similar open reports:` and the exact FILE command.
 It gathers, without re-implementing anything: the running plugin copy's version and every
-registered install, `claude --version`, OS + pwsh, the repo as `owner/repo` (parsed from
+registered install, `claude --version`, OS + node, the repo as `owner/repo` (parsed from
 `origin` — the URL itself is never written), branch, `.harness-version`; the refresh-nudge hook's
 verdict quoted verbatim (the hook is run with a synthetic SessionStart payload — it writes
-nothing); `init.ps1 -DryRun` output quoted verbatim (writes nothing); `git log --oneline -3` for
+nothing); `init.mjs --dry-run` output quoted verbatim (writes nothing); `git log --oneline -3` for
 each file the dry run would change; a fingerprint for dedupe.
 
 Exit 1 with a `FAIL —` line means nothing was drafted (no description, bad target). Quote it and
@@ -55,7 +55,7 @@ may be the better move. That is the member's call — the fingerprint is a hint,
 ## 4. File exactly that file
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.ps1" -File -BodyPath "<body path from step 2>"
+node "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.mjs" --file --body-path="<body path from step 2>"
 ```
 
 The script files the reviewed file (title line stripped) with `gh issue create` and prints one of:
@@ -73,4 +73,4 @@ The script files the reviewed file (title line stripped) with `gh issue create` 
 - **Never runs `/ywr-harness:harness-init`**, even when the dry run shows a refresh would fix
   things — a re-run reverts the very edit being reported (ywr-harness ADR 0010's signal; ywr-harness ADR 0033/0042 on
   direction).
-- **Never regenerates the body at filing time.** `-File` takes the file the member read.
+- **Never regenerates the body at filing time.** `--file` takes the file the member read.

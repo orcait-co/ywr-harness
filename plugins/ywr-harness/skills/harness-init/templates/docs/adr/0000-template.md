@@ -3,7 +3,7 @@
   1) 이 파일을 docs/adr/NNNN-kebab-title.md 로 복사 (NNNN = 다음 4자리 번호, 0 패딩; 파일명은 ASCII 로 쓴다)
   2) 아래 YAML frontmatter(--- 사이)를 채운다  ← 기계(에이전트/index.json)가 읽는 부분
   3) 본문 주석을 지우고 산문을 채운다              ← 사람이 읽는 부분
-  4) `pwsh docs/build.ps1` (또는 `bash docs/build.sh`) 실행 → index.json·INDEX.md·docs.html·docs.artifact.html 재생성
+  4) `node docs/build.mjs` (또는 `bash docs/build.sh`) 실행 → index.json·INDEX.md·docs.html·docs.artifact.html 재생성
   규칙:
   - ADR은 append-only. 한번 accepted된 ADR의 결정/맥락은 고치지 않는다.
     결정이 바뀌면 새 ADR을 쓰고, 이 ADR의 status를 'superseded' + superseded_by: NNNN 으로만 바꾼다.

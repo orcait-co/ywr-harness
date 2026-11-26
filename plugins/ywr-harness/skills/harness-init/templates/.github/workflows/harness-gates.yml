@@ -578,7 +578,7 @@ jobs:
             exit 1
           }
           if [ -n "$(git status --porcelain docs/index.json docs/INDEX.md)" ]; then
-            echo "::error::docs/index.json 또는 docs/INDEX.md 가 소스와 어긋났습니다(드리프트). 로컬에서 pwsh docs/build.ps1 후 커밋하세요."
+            echo "::error::docs/index.json 또는 docs/INDEX.md 가 소스와 어긋났습니다(드리프트). 로컬에서 node docs/build.mjs 후 커밋하세요."
             git --no-pager diff -- docs/index.json docs/INDEX.md
             exit 1
           fi

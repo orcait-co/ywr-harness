@@ -1,10 +1,10 @@
 # Self-test for session-start-scaffold-refresh-nudge.mjs (ADR 0033).
 # Usage: pwsh plugins/ywr-harness/hooks/session-start-scaffold-refresh-nudge.selftest.ps1
 #
-# Fixture provenance: the scaffolded fixtures are placed by the REAL init.ps1 (one run, then
+# Fixture provenance: the scaffolded fixtures are placed by the REAL init.mjs (one run, then
 # tree copies) — a hand-copied placement would duplicate the map this hook exists not to
 # duplicate, and would test the copy. The fixture-prep assertion below is what fails if
-# init.ps1 stops placing what the hook reads, which is exactly the coupling ADR 0033 accepts.
+# init.mjs stops placing what the hook reads, which is exactly the coupling ADR 0033 accepts.
 #
 # The hook's verdict is filesystem-only (unlike the githooks sibling, whose verdict is git
 # state), so almost every case runs on a git-less machine too: with git present the fixtures
@@ -24,13 +24,14 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core + fixture lifecycle
 $hook = Join-Path $PSScriptRoot 'session-start-scaffold-refresh-nudge.mjs'
 $hookLib = Join-Path $PSScriptRoot 'hook-lib.mjs'   # the hook imports it: every copied hook needs it beside it
-$init = Join-Path $PSScriptRoot '../skills/harness-init/init.ps1'
+$init = Join-Path $PSScriptRoot '../skills/harness-init/init.mjs'
+$placement = Join-Path $PSScriptRoot '../skills/harness-init/placement.mjs'   # the placement map the hook imports
 $templates = Join-Path $PSScriptRoot '../skills/harness-init/templates'
 # The hook is Node (ADR 0116): absent node is a reported skip locally and a FAIL on CI.
 Assert-NodeOrExit 'session-start-scaffold-refresh-nudge'
 
 # Resolved BEFORE any case clears $env:PATH — `& pwsh` / `& node` resolve at call time and would fail.
-# pwsh runs init.ps1 (the scaffold fixture); node runs the hook under test.
+# node runs init.mjs (the scaffold fixture) and the hook under test.
 $pwshExe = (Get-Command pwsh).Source
 $nodeExe = (Get-Command node).Source
 # ~200 git calls (fixture builds plus the hook's own probes): the worker binary, not the cmd\git.exe
@@ -147,11 +148,11 @@ trap { $env:PATH = $savedPath; Remove-FixtureRoot $fx; break }
 $base = Join-Path $fx 'repo-base'
 New-Item -ItemType Directory -Force -Path $base | Out-Null
 if ($gitOk) { & git -c init.defaultBranch=main init -q $base 2>$null | Out-Null }
-& $pwshExe -NoProfile -ExecutionPolicy Bypass -File $init -Target $base *> $null
-$ok = (Assert-True 'fixture: real init.ps1 scaffolded the base repo' `
+& $nodeExe $init --target $base *> $null
+$ok = (Assert-True 'fixture: real init.mjs scaffolded the base repo' `
         ((Test-Path -LiteralPath (Join-Path $base 'scripts/harness/harness_gates.py')) -and
         (Test-Path -LiteralPath (Join-Path $base '.githooks/post-commit'))) `
-        'init.ps1 did not place the files this suite mutates — every later verdict would be about a broken fixture') -and $ok
+        'init.mjs did not place the files this suite mutates — every later verdict would be about a broken fixture') -and $ok
 
 $fresh = Join-Path $fx 'repo-fresh'
 $stale = Join-Path $fx 'repo-stale'
@@ -178,12 +179,12 @@ $bytes = [IO.File]::ReadAllBytes($pcPath)
 $ms = [IO.MemoryStream]::new()
 foreach ($b in $bytes) { if ($b -eq 10) { $ms.WriteByte(13) }; $ms.WriteByte($b) }
 [IO.File]::WriteAllBytes($pcPath, $ms.ToArray())
-# foreign post-commit: no marker -> init.ps1 refuses it -> the hook must skip it the same way
+# foreign post-commit: no marker -> init.mjs refuses it -> the hook must skip it the same way
 Set-Content -LiteralPath (Join-Path $foreignpc '.githooks/post-commit') -Value "#!/bin/sh`nexit 0"
 # ours post-commit: marker retained, content drifted
 Add-Content -LiteralPath (Join-Path $ourspc '.githooks/post-commit') -Value 'echo extra'
 # manydrift: seven TOOLCHAIN placements drifted -> the list caps at 5 and STATES the cap
-foreach ($rel in @('docs/README.md', 'docs/adr/README.md', 'docs/spec/README.md', 'docs/build.ps1',
+foreach ($rel in @('docs/README.md', 'docs/adr/README.md', 'docs/spec/README.md', 'docs/build.mjs',
         'docs/build.sh', 'docs/build_docs.py', 'scripts/harness/harness_config.py')) {
     Add-Content -LiteralPath (Join-Path $many $rel) -Value '# drift'
 }
@@ -424,7 +425,7 @@ foreach ($row in $retiredRows) {
         # REVIEW.md is the one retired file: no scaffold places it any more, but a repo that older scaffolds seeded keeps it
         # and an import can load it as the review canon, so the hook still scans it for retired text.
         if ($f -eq 'REVIEW.md' -and -not (Test-Path -LiteralPath $placed -PathType Leaf)) { continue }
-        if (-not (Test-Path -LiteralPath $placed -PathType Leaf)) { $tableFails += "${f}: the real init.ps1 places no such seed"; continue }
+        if (-not (Test-Path -LiteralPath $placed -PathType Leaf)) { $tableFails += "${f}: the real init.mjs places no such seed"; continue }
         if ((Get-Squashed ([IO.File]::ReadAllText($placed))).Contains($row.phrase)) { $tableFails += "$($row.phrase): the current seed $f holds it" }
     }
 }
@@ -694,7 +695,7 @@ foreach ($bc in $byteCases) {
     }
 }
 
-# 5. marker-less post-commit -> no drift (the rule only, no nudge): init.ps1 refuses a foreign file, so a re-run would
+# 5. marker-less post-commit -> no drift (the rule only, no nudge): init.mjs refuses a foreign file, so a re-run would
 #    change nothing — a nudge here would nag forever (the 0029 foreign-value shape)
 $out = Invoke-Hook (New-Payload @{ cwd = $foreignpc })
 $ok = (Assert-RuleOnly 'foreign post-commit is no drift (the rule only)' $out) -and $ok
@@ -776,7 +777,7 @@ if ($gitOk) {
     Copy-Item -LiteralPath $base -Destination $uaA -Recurse -Force
     Add-Content -LiteralPath (Join-Path $uaA 'scripts/harness/harness_gates.py') -Value '# selftest drift'
     Set-Content -LiteralPath (Join-Path $uaA '.harness-version') -Value '0.0.1'
-    Invoke-UaGit $uaA @('config', '--local', '--unset', 'core.hooksPath')   # init.ps1 wired the scaffold's hooks; the fixture commits bypass them
+    Invoke-UaGit $uaA @('config', '--local', '--unset', 'core.hooksPath')   # init.mjs wired the scaffold's hooks; the fixture commits bypass them
     Invoke-UaGit $uaA @('add', '-A')
     Invoke-UaGit $uaA @('commit', '-q', '-m', 'A: scaffold at an old stamp')
     Invoke-UaGit $uaA @('remote', 'add', 'origin', $uaRemote)
@@ -924,62 +925,40 @@ $out = Invoke-Hook '{"hook_event_name":"SessionStart","x\u2028[hook:forged]y":1}
 $ok = (Assert-Nudge '11e a payload key carrying U+2028 is flattened in the SCHEMA DRIFT banner' $out `
         @('SCHEMA DRIFT', '수신된 키: hook_event_name, x \[hook:forged\]y\.') @('[\u2028]', 'EXTRACTION DRIFT')) -and $ok
 
-# 12. EXTRACTION DRIFT, not silence, when the plugin's own init.ps1 stops carrying literal
-#     maps: a byte-identical copy of the hook runs from a fake plugin tree whose init.ps1
-#     parses but assigns $TOOLCHAIN non-literally. The copy IS the shipped code (hook-lib.mjs
-#     beside it) — what moves is the script's own directory, which is the resolution path under test.
-#     The hook reads init.ps1's literals with its own lexer (Node has no PowerShell AST), so 12/12b/12c
-#     and 12d-12h below pin exactly which shapes that reader accepts.
-$fakeBroken = Join-Path $fx 'fake-broken'
-New-Item -ItemType Directory -Force -Path (Join-Path $fakeBroken 'hooks') | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $fakeBroken 'skills/harness-init/templates') | Out-Null
-Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.mjs')
-Copy-Item -LiteralPath $hookLib -Destination (Join-Path $fakeBroken 'hooks/hook-lib.mjs')
-Set-Content -LiteralPath (Join-Path $fakeBroken 'skills/harness-init/init.ps1') -Value @'
-$TOOLCHAIN = Get-ChildItem
-$GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
-$GUARD_MARKER = 'ywr-harness:post-commit'
-'@
-$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeBroken 'hooks/session-start-scaffold-refresh-nudge.mjs')
+# 12. EXTRACTION DRIFT, not silence, when the plugin's own placement.mjs stops carrying a usable map:
+#     a byte-identical copy of the hook runs from a fake plugin tree whose placement.mjs imports but
+#     exports a TOOLCHAIN that is not a table. The copy IS the shipped code (hook-lib.mjs beside it) —
+#     what moves is the script's own directory, which is the resolution path under test. The hook
+#     imports the module, so 12/12b/12c and 12d-12e below pin what a usable map is: a non-empty list of
+#     [source, destination] string pairs for TOOLCHAIN and GUARDED, a non-empty string GUARD_MARKER.
+function New-FakeTree([string]$Name, [string]$PlacementText) {
+    $t = Join-Path $fx $Name
+    New-Item -ItemType Directory -Force -Path (Join-Path $t 'hooks') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $t 'skills/harness-init') | Out-Null
+    Copy-Item -LiteralPath $hook -Destination (Join-Path $t 'hooks/session-start-scaffold-refresh-nudge.mjs')
+    Copy-Item -LiteralPath $hookLib -Destination (Join-Path $t 'hooks/hook-lib.mjs')
+    Copy-Item -LiteralPath $templates -Destination (Join-Path $t 'skills/harness-init/templates') -Recurse
+    [IO.File]::WriteAllText((Join-Path $t 'skills/harness-init/placement.mjs'), $PlacementText)
+    return (Join-Path $t 'hooks/session-start-scaffold-refresh-nudge.mjs')
+}
+$gLit = "export const GUARDED = [['githooks/post-commit', '.githooks/post-commit']]`nexport const GUARD_MARKER = 'ywr-harness:post-commit'`n"
+$tcOne = "export const TOOLCHAIN = [['scripts/harness/harness_gates.py', 'scripts/harness/harness_gates.py']]`n"
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-broken' ("export const TOOLCHAIN = 'not a table'`n" + $gLit))
 $ok = (Assert-Nudge 'unreadable placement map reports EXTRACTION DRIFT, not silence' $out `
         @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵') `
         @('템플릿과 다릅니다', '제안만 합니다', 'SCHEMA DRIFT', $ruleMark)) -and $ok   # $stale holds slice_note.py, yet no rule here
 
-# 12b. a PARTIAL literal — a hashtable whose value is computed but CONTAINS a string constant
-#      (`'docs/' + $x`) — must fail extraction WHOLE, never contribute the fragment to the map
-#      (review 2026-08-06, high: `.Find()` returned 'prefix/' for `'prefix/' + $suffix`). The
-#      exact reported shape is the fixture; a regression to Find()-style extraction turns this
-#      case red with a false nudge or false silence instead of the banner.
-$fakePartial = Join-Path $fx 'fake-partial'
-New-Item -ItemType Directory -Force -Path (Join-Path $fakePartial 'hooks') | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $fakePartial 'skills/harness-init/templates') | Out-Null
-Copy-Item -LiteralPath $hook -Destination (Join-Path $fakePartial 'hooks/session-start-scaffold-refresh-nudge.mjs')
-Copy-Item -LiteralPath $hookLib -Destination (Join-Path $fakePartial 'hooks/hook-lib.mjs')
-Set-Content -LiteralPath (Join-Path $fakePartial 'skills/harness-init/init.ps1') -Value @'
-$suffix = 'harness_gates.py'
-$TOOLCHAIN = [ordered]@{ 'scripts/harness/harness_gates.py' = 'scripts/harness/' + $suffix }
-$GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
-$GUARD_MARKER = 'ywr-harness:post-commit'
-'@
-$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakePartial 'hooks/session-start-scaffold-refresh-nudge.mjs')
-$ok = (Assert-Nudge 'partial literal fails extraction whole, never a fragment' $out `
+# 12b. a PARTIAL entry — a pair whose destination is not a string — must fail extraction WHOLE, never
+#      contribute the fragment to the map (the ADR 0033 lesson: a fragment is a wrong path compared quietly).
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-partial' ("export const TOOLCHAIN = [['scripts/harness/harness_gates.py', 'scripts/harness/' + 5]]`n" + $gLit))
+$ok = (Assert-Nudge 'partial entry fails extraction whole, never a fragment' $out `
         @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵') `
         @('템플릿과 다릅니다', '\(missing\)', 'SCHEMA DRIFT')) -and $ok
 
-# 12c. a fully literal map with NO scripts/harness/*.py destination -> the ownership sentinel
-#      is gone; an unchecked empty list would silently disable the hook on every repo forever
-#      (review 2026-08-06, medium). The banner, not silence, is the contract.
-$fakeNoSent = Join-Path $fx 'fake-nosentinel'
-New-Item -ItemType Directory -Force -Path (Join-Path $fakeNoSent 'hooks') | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $fakeNoSent 'skills/harness-init/templates') | Out-Null
-Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeNoSent 'hooks/session-start-scaffold-refresh-nudge.mjs')
-Copy-Item -LiteralPath $hookLib -Destination (Join-Path $fakeNoSent 'hooks/hook-lib.mjs')
-Set-Content -LiteralPath (Join-Path $fakeNoSent 'skills/harness-init/init.ps1') -Value @'
-$TOOLCHAIN = [ordered]@{ 'docs/README.md' = 'docs/README.md' }
-$GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
-$GUARD_MARKER = 'ywr-harness:post-commit'
-'@
-$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (Join-Path $fakeNoSent 'hooks/session-start-scaffold-refresh-nudge.mjs')
+# 12c. a fully valid map with NO scripts/harness/*.py destination -> the ownership sentinel
+#      is gone; an unchecked empty list would silently disable the hook on every repo forever.
+#      The banner, not silence, is the contract.
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-nosentinel' ("export const TOOLCHAIN = [['docs/README.md', 'docs/README.md']]`n" + $gLit))
 $ok = (Assert-Nudge 'sentinel-less map reports EXTRACTION DRIFT, not permanent silence' $out `
         @('EXTRACTION DRIFT', 'sentinel', 'UNKNOWN, 확인되지 않았습니다') `
         @('템플릿과 다릅니다', 'SCHEMA DRIFT')) -and $ok
@@ -991,7 +970,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmpl 'hooks') | Out-Nu
 New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmpl 'skills/harness-init') | Out-Null
 Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.mjs')
 Copy-Item -LiteralPath $hookLib -Destination (Join-Path $fakeTmpl 'hooks/hook-lib.mjs')
-Copy-Item -LiteralPath $init -Destination (Join-Path $fakeTmpl 'skills/harness-init/init.ps1')
+Copy-Item -LiteralPath $placement -Destination (Join-Path $fakeTmpl 'skills/harness-init/placement.mjs')
 Copy-Item -LiteralPath $templates -Destination (Join-Path $fakeTmpl 'skills/harness-init/templates') -Recurse
 Remove-Item -LiteralPath (Join-Path $fakeTmpl 'skills/harness-init/templates/docs/build_docs.py') -Force
 $out = Invoke-Hook (New-Payload @{ cwd = $fresh }) (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.mjs')
@@ -999,55 +978,23 @@ $ok = (Assert-Nudge 'missing template reports EXTRACTION DRIFT naming the file' 
         @('EXTRACTION DRIFT', '템플릿이 없습니다', 'templates/docs/build_docs\.py') `
         @('템플릿과 다릅니다', 'SCHEMA DRIFT')) -and $ok
 
-# 12d-12h. THE LITERAL READER'S BOUNDARY. The pwsh original walked init.ps1's AST; the Node hook lexes
-#     it, so what it accepts is pinned here, one fake plugin tree (real templates, the hook + hook-lib)
-#     per init.ps1 shape. Accepted: a literal table behind comments and decoys, double-quoted constants,
-#     a trailing separator. Refused (EXTRACTION DRIFT, never a fragment and never silence): a value that
-#     expands, a parenthesized or member-accessed table, a computed or piped marker, an unterminated
-#     string, and a first assignment that is not a literal (the AST walk took the FIRST one).
-function New-FakeTree([string]$Name, [string]$InitText) {
-    $t = Join-Path $fx $Name
-    New-Item -ItemType Directory -Force -Path (Join-Path $t 'hooks') | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $t 'skills/harness-init') | Out-Null
-    Copy-Item -LiteralPath $hook -Destination (Join-Path $t 'hooks/session-start-scaffold-refresh-nudge.mjs')
-    Copy-Item -LiteralPath $hookLib -Destination (Join-Path $t 'hooks/hook-lib.mjs')
-    Copy-Item -LiteralPath $templates -Destination (Join-Path $t 'skills/harness-init/templates') -Recurse
-    Set-Content -LiteralPath (Join-Path $t 'skills/harness-init/init.ps1') -Value $InitText
-    return (Join-Path $t 'hooks/session-start-scaffold-refresh-nudge.mjs')
-}
-$gLit = @'
-$GUARDED = [ordered]@{ 'githooks/post-commit' = '.githooks/post-commit' }
-$GUARD_MARKER = 'ywr-harness:post-commit'
-'@
-$tcLit = @'
-$TOOLCHAIN = [ordered]@{ 'scripts/harness/harness_gates.py' = 'scripts/harness/harness_gates.py' }
-'@
-$tcDecoys = @'
-# $TOOLCHAIN = [ordered]@{ 'decoy/in-comment' = 'decoy/in-comment' }
-<# $GUARD_MARKER = 'decoy-in-block-comment' #>
-$note = "$TOOLCHAIN = 1"
-$TOOLCHAIN = [ordered]@{
-    # a comment inside the table
-    'scripts/harness/harness_gates.py' = 'scripts/harness/harness_gates.py'   # trailing comment
-    "docs/README.md" = "docs/README.md";
-}
-'@
-$ok = (Assert-Nudge '12d a literal table behind comments and decoys is read, and only its two files are compared' `
-        (Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-decoys' ($tcDecoys + "`n" + $gLit))) `
+# 12d-12e. WHAT THE HOOK ACCEPTS. One fake plugin tree (real templates, the hook + hook-lib) per placement.mjs shape.
+#     Accepted: a minimal table of two pairs, behind a comment and a computed-but-string-valued entry. Refused
+#     (EXTRACTION DRIFT, never a fragment and never silence): an empty table, an entry of the wrong arity, a
+#     source repeated in another letter case, a marker that is not a string, a missing GUARDED export, a module
+#     that throws at import and a module that does not parse.
+$tcDecoys = "// a comment above the table`nconst dir = 'scripts'`nexport const TOOLCHAIN = [`n  [dir + '/harness/harness_gates.py', 'scripts/harness/harness_gates.py'], // trailing comment`n  ['docs/README.md', 'docs/README.md'],`n]`n"
+$ok = (Assert-Nudge '12d a minimal table behind a comment is read, and only its two files are compared' `
+        (Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-decoys' ($tcDecoys + $gLit))) `
         @('1개의 벤더링된 툴체인 파일', 'harness_gates\.py') @('EXTRACTION DRIFT', 'SCHEMA DRIFT', 'harness-gates\.yml', 'decoy')) -and $ok
 $refused = [ordered]@{
-    'an expanding value'                    = ("`$d = 'scripts'`n" + '$TOOLCHAIN = [ordered]@{ ''scripts/harness/harness_gates.py'' = "$d/harness/harness_gates.py" }' + "`n" + $gLit)
-    'a parenthesized table'                 = ('$TOOLCHAIN = (' + $tcLit.Substring('$TOOLCHAIN = '.Length) + ')' + "`n" + $gLit)
-    'a member access on the table'          = ($tcLit + '.Keys' + "`n" + $gLit)
-    'a computed marker'                     = ($tcLit + "`n" + '$GUARDED = [ordered]@{ ''githooks/post-commit'' = ''.githooks/post-commit'' }' + "`n" + '$GUARD_MARKER = ''ywr-harness:'' + ''post-commit''')
-    'a piped marker'                        = ($tcLit + "`n" + $gLit + ' | Out-Null')
-    'an unterminated string'                = ($tcLit + "`n" + $gLit + "`n" + '$x = ''oops')
-    'a non-literal FIRST assignment'        = ('$TOOLCHAIN = Get-ChildItem' + "`n" + $tcLit + "`n" + $gLit)
-    'an empty table'                        = ('$TOOLCHAIN = [ordered]@{}' + "`n" + $gLit)
-    'an expanding value whose $( ) holds quotes' = ('$TOOLCHAIN = [ordered]@{ ''scripts/harness/harness_gates.py'' = "docs/$(Join-Path "a" "b")/x.md" }' + "`n" + $gLit)
-    # keys are TEMPLATE paths, so the repeat differs only in case: on a case-insensitive filesystem a last-one-wins reading would
-    # build a VALID map and nudge, so only the refusal banners (on a case-sensitive one the missing template banners too — green either way)
-    'a repeated key (a PowerShell parse error)' = ('$TOOLCHAIN = [ordered]@{ ''scripts/harness/harness_gates.py'' = ''scripts/harness/harness_gates.py''; ''SCRIPTS/harness/harness_gates.py'' = ''scripts/harness/harness_gates.py'' }' + "`n" + $gLit)
+    'an empty table'                        = ("export const TOOLCHAIN = []`n" + $gLit)
+    'an entry of the wrong arity'           = ("export const TOOLCHAIN = [['scripts/harness/harness_gates.py']]`n" + $gLit)
+    'a source repeated in another letter case' = ("export const TOOLCHAIN = [['scripts/harness/harness_gates.py', 'scripts/harness/harness_gates.py'], ['SCRIPTS/harness/harness_gates.py', 'scripts/harness/harness_gates.py']]`n" + $gLit)
+    'a marker that is not a string'         = ($tcOne + "export const GUARDED = [['githooks/post-commit', '.githooks/post-commit']]`nexport const GUARD_MARKER = ['ywr-harness:post-commit']`n")
+    'a missing GUARDED export'              = ($tcOne + "export const GUARD_MARKER = 'ywr-harness:post-commit'`n")
+    'a module that throws at import'        = ($tcOne + $gLit + "throw new Error('boom')`n")
+    'a module that does not parse'          = ($tcOne + $gLit + "export const BROKEN = [`n")
 }
 $rfi = 0
 foreach ($name in $refused.Keys) {
@@ -1057,64 +1004,8 @@ foreach ($name in $refused.Keys) {
             @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다') @('템플릿과 다릅니다', '\(missing\)', 'SCHEMA DRIFT')) -and $ok
 }
 
-# 12f. LEXING PINS, asserted by VALUE. Each fake init.ps1 below maps REAL template keys to destinations that exist
-#      nowhere in the repo, so the destination text the reader extracted is exactly the name the banner prints
-#      as `<dest> (missing)`. The expected values are the ones PowerShell's own parser gives (checked with
-#      [Parser]::ParseInput, LF and CRLF): `''` is one quote, `` `t `` a tab, `` `" `` and `""` a double quote, a
-#      here-string body has no trailing CR, and a `$( )` holding quotes is ONE expandable string (so the map
-#      line after it is still read, not swallowed). Decoy maps inside comments, a single- and a double-quoted
-#      here-string are ignored — a decoy that won would name templates/x and EXTRACTION-DRIFT.
-function Join-Init([string[]]$Lines, [string]$Eol = "`n") { return (($Lines -join $Eol) + $Eol) }
-$gLines = @('$GUARDED = [ordered]@{ ''githooks/post-commit'' = ''.githooks/post-commit'' }', '$GUARD_MARKER = ''ywr-harness:post-commit''')
-$quoteLines = @(
-    '# $TOOLCHAIN = [ordered]@{ ''x'' = ''y'' }',
-    '$decoy1 = @''',
-    '$TOOLCHAIN = [ordered]@{ ''x'' = ''y'' }',
-    '''@',
-    '$decoy2 = @"',
-    '$TOOLCHAIN = [ordered]@{ ''x2'' = ''y2'' }',
-    '"@',
-    '$joined = "x $(Join-Path "a" "b") y"',
-    '$lone = "x $(Write-Output ''say "hi'') y"',   # a lone " inside a single-quoted string inside $( ): only nesting keeps the next lines intact
-    '$TOOLCHAIN = [ordered]@{',
-    '    # a comment inside the table',
-    '    ''scripts/harness/harness_gates.py'' = ''scripts/harness/harness_gates.py''   # trailing comment',
-    '    ''docs/README.md'' = ''docs/it''''s.md''',
-    '    ''docs/build.sh'' = "docs/a`tb.sh"',
-    '    ''docs/build.ps1'' = "docs/q`"x.ps1"',
-    '    ''docs/build_docs.py'' = "docs/r""y.ps1"',
-    '}'
-) + $gLines
-$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-quoting' (Join-Init $quoteLines))
-$ok = (Assert-Nudge '12f quoting forms, decoys in here-strings and a $( ) holding quotes: the extracted values are the AST values' $out `
-        @('5개의 벤더링된 툴체인 파일', 'harness_gates\.py', "docs/it's\.md \(missing\)", 'docs/a\tb\.sh \(missing\)', 'docs/q"x\.ps1 \(missing\)', 'docs/r"y\.ps1 \(missing\)') `
-        @('EXTRACTION DRIFT', 'SCHEMA DRIFT', '\+\d+ more', 'x2', 'templates/x')) -and $ok
-$hereLines = @(
-    '$TOOLCHAIN = [ordered]@{',
-    '    ''scripts/harness/harness_gates.py'' = ''scripts/harness/harness_gates.py''',
-    '    ''docs/check_docs.py'' = @"',
-    'docs/hs.py',
-    '"@',
-    '    ''docs/adr/README.md'' = @''',
-    'docs/hs2.py',
-    '''@',
-    '}',
-    '$GUARDED = [ordered]@{ ''githooks/post-commit'' = ''.githooks/post-commit'' }',
-    '$GUARD_MARKER = @"',
-    'ywr-harness:post-commit',
-    '"@'
-)
-# R2: the same fixture under LF and under CRLF — a CR kept before the closing "@ / '@ would end up in the value
-# (`docs/hs.py\r`) and in the GUARD_MARKER, which then no longer matches the guarded file: the post-commit is dropped.
-foreach ($eol in @(@{ N = 'LF'; V = "`n" }, @{ N = 'CRLF'; V = "`r`n" })) {
-    $out = Invoke-Hook (New-Payload @{ cwd = $ourspc }) (New-FakeTree "fake-here-$($eol.N)" (Join-Init $hereLines $eol.V))
-    $ok = (Assert-Nudge "12g here-string values and a here-string GUARD_MARKER under $($eol.N): no trailing CR, the guarded file is recognised" $out `
-            @('3개의 벤더링된 툴체인 파일', 'docs/hs\.py \(missing\)', 'docs/hs2\.py \(missing\)', '\.githooks[\\/]post-commit') `
-            @('EXTRACTION DRIFT', 'SCHEMA DRIFT', '\r', 'harness_gates')) -and $ok
-}
-
 # 13b-13f. STALE-BASIS PROBE (ADR 0039): a byte-identical hook copy runs from a fake VERSIONED
-#          CACHE layout (<plugins>/cache/<marketplace>/<name>/<version>) with the real init.ps1
+#          CACHE layout (<plugins>/cache/<marketplace>/<name>/<version>) with the real placement.mjs
 #          and templates beside it, so the drift verdict itself stays the real one (repo-stale's
 #          2 files). What varies per case is the sibling installed_plugins.json — the probe's
 #          only input. The running copy's plugin.json is pinned to 0.0.1 so assertions can tell
@@ -1127,7 +1018,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy '.claude-plugin'
 New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy 'skills/harness-init') | Out-Null
 Copy-Item -LiteralPath $hook -Destination (Join-Path $staleCopy 'hooks/session-start-scaffold-refresh-nudge.mjs')
 Copy-Item -LiteralPath $hookLib -Destination (Join-Path $staleCopy 'hooks/hook-lib.mjs')
-Copy-Item -LiteralPath $init -Destination (Join-Path $staleCopy 'skills/harness-init/init.ps1')
+Copy-Item -LiteralPath $placement -Destination (Join-Path $staleCopy 'skills/harness-init/placement.mjs')
 Copy-Item -LiteralPath $templates -Destination (Join-Path $staleCopy 'skills/harness-init/templates') -Recurse
 Set-Content -LiteralPath (Join-Path $staleCopy '.claude-plugin/plugin.json') -Value '{"name":"ywr-harness","version":"0.0.1"}'
 $staleHook = Join-Path $staleCopy 'hooks/session-start-scaffold-refresh-nudge.mjs'

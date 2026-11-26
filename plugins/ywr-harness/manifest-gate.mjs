@@ -39,7 +39,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const WIN = process.platform === 'win32'
 const ESC = String.fromCharCode(27)
@@ -523,12 +523,12 @@ async function main() {
 
   // --- dogfood placement identity (ADR 0037 follow-up) ------------------------------------------
   // In the canon dogfood shape (<repo>/plugins/ywr-harness, ADR 0018) every scaffold placement the
-  // repo carries is compared against its template. The pair list is PARSED from init.ps1's own
-  // $TOOLCHAIN/$GUARDED maps — one list, one owner — and a parse that yields nothing FAILS. The
+  // repo carries is compared against its template. The pair list is IMPORTED from placement.mjs's
+  // TOOLCHAIN and GUARDED tables — one list, one owner — and a read that yields nothing FAILS. The
   // compare is ADR 0033's fold VERBATIM (drop every 0x0D on both sides), the contract the scaffold's
   // refresh report and the refresh-nudge hook use. GUARDED placements without the scaffold marker
   // are foreign files the scaffold refuses to touch — reported and skipped, never compared.
-  const initPath = join(root, 'skills/harness-init/init.ps1')
+  const placementPath = join(root, 'skills/harness-init/placement.mjs')
   const repoRoot = parentOf(parentOf(root))
   // BOTH root markers: a consuming repo that vendors this plugin tree by hand has a declaration but
   // is NOT the canon (its sweep would fail on version skew, not drift — review 2026-08-07, low); the
@@ -539,40 +539,39 @@ async function main() {
     isFile(join(repoRoot, '.claude-plugin/marketplace.json'))
   if (!inTree) {
     note('dogfood placements: skipped — not the canon dogfood shape (needs .harness.json AND .claude-plugin/marketplace.json at the repo root above this plugin; a marketplace cache and a hand-vendored copy each miss one)')
-  } else if (!isFile(initPath)) {
-    bad('dogfood placements: init.ps1 missing — the placement map has no source to parse')
+  } else if (!isFile(placementPath)) {
+    bad('dogfood placements: placement.mjs missing — the placement map has no source to read')
   } else {
-    // [ordered]@{} keys compare case-insensitively; a repeated key keeps its first spelling.
-    const placementMap = (text, varName) => {
-      const m = new RegExp(`\\$${varName}${S}*=${S}*\\[ordered\\]@\\{([\\s\\S]*?)\\r?\\n\\}`, 'u').exec(text)
-      if (!m) return null
+    // A table is a list of [source, destination] pairs of non-empty strings. Keys compare
+    // case-insensitively; a repeated key keeps its first spelling.
+    const placementMap = (list, varName) => {
+      if (!Array.isArray(list)) return null
       const pairs = new Map()
-      for (const line of m[1].split('\n')) {
-        const p = new RegExp(`^${S}*'([^']+)'${S}*=${S}*'([^']+)'`, 'iu').exec(line)
-        if (p) {
-          const prev = pairs.get(upper(p[1]))
-          pairs.set(upper(p[1]), { rel: prev ? prev.rel : p[1], dest: p[2] })
-        } else if (commentRx.test(line) || !new RegExp(NS, 'u').test(line)) {
-          // comments and blanks
+      for (const e of list) {
+        if (Array.isArray(e) && e.length === 2 && typeof e[0] === 'string' && e[0] && typeof e[1] === 'string' && e[1]) {
+          const prev = pairs.get(upper(e[0]))
+          pairs.set(upper(e[0]), { rel: prev ? prev.rel : e[0], dest: e[1] })
         } else {
-          // ANYTHING else inside the block is an entry the parser cannot read; skipping it would drop
-          // a pair while the sweep still counts >0 (review 2026-08-07, medium).
-          bad(`dogfood placements: unparsed entry line in $${varName} of init.ps1 — ${netTrim(line)} (single-quoted 'src' = 'dest' is the parsed form)`)
+          // ANYTHING else in the table is an entry the reader cannot use; skipping it would drop
+          // a pair while the sweep still counts >0.
+          bad(`dogfood placements: malformed entry in ${varName} of placement.mjs — ${JSON.stringify(e)} (a [source, destination] pair of non-empty strings is the form)`)
         }
       }
       return [...pairs.values()]
     }
-    const initText = readText(initPath)
-    const tool = placementMap(initText, 'TOOLCHAIN')
-    const guard = placementMap(initText, 'GUARDED')
-    const markerM = new RegExp(`\\$GUARD_MARKER${S}*=${S}*'([^']+)'`, 'u').exec(initText)
-    // BOTH maps non-null AND non-empty (review 2026-08-07, high): a block whose lines all fail to
-    // parse returns an empty map, and a null-check alone lets that family's coverage vanish.
-    if (!tool || tool.length === 0 || !guard || guard.length === 0 || !markerM) {
-      bad(`dogfood placements: could not parse $TOOLCHAIN/$GUARDED/$GUARD_MARKER from init.ps1 — an empty sweep is not a pass (toolchain=${tool ? tool.length : 'none'} guarded=${guard ? guard.length : 'none'})`)
+    let mod = null
+    let importError = ''
+    try { mod = await import(pathToFileURL(placementPath).href) } catch (e) { importError = ` (import failed: ${e && e.message ? e.message : e})` }
+    const tool = mod ? placementMap(mod.TOOLCHAIN, 'TOOLCHAIN') : null
+    const guard = mod ? placementMap(mod.GUARDED, 'GUARDED') : null
+    const markerValue = mod && typeof mod.GUARD_MARKER === 'string' && mod.GUARD_MARKER ? mod.GUARD_MARKER : null
+    // BOTH maps non-null AND non-empty: a table whose entries all fail to read is an empty map, and a
+    // null-check alone lets that family's coverage vanish.
+    if (!tool || tool.length === 0 || !guard || guard.length === 0 || !markerValue) {
+      bad(`dogfood placements: could not read TOOLCHAIN/GUARDED/GUARD_MARKER from placement.mjs — an empty sweep is not a pass (toolchain=${tool ? tool.length : 'none'} guarded=${guard ? guard.length : 'none'})${importError}`)
     } else {
       const folded = (p) => { const b = readBytes(p); return b.includes(13) ? b.filter(x => x !== 13) : b }
-      const markerRx = new RegExp(rxEscape(markerM[1]), 'iu')
+      const markerRx = new RegExp(rxEscape(markerValue), 'iu')
       let pDrift = 0, pChecked = 0
       const pAbsent = [], pForeign = []
       for (const fam of [{ map: tool, guarded: false }, { map: guard, guarded: true }]) {
@@ -580,7 +579,7 @@ async function main() {
           const t = join(root, `skills/harness-init/templates/${rel}`)
           const d = join(repoRoot, dest)
           if (!isFile(t)) {
-            bad(`dogfood placements: init.ps1 maps '${rel}' but the template does not exist`)
+            bad(`dogfood placements: placement.mjs maps '${rel}' but the template does not exist`)
             pDrift++
             continue
           }

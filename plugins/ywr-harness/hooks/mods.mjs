@@ -3,7 +3,7 @@
 // own, so each file keeps its own contract and its own selftest:
 //
 // - `delegation-ledger.mjs`: the observe-only delegation ledger (ywr-harness ADR 0117, ywr-harness ADR 0118). Never draws.
-// - `prerequisites.mjs`: the pwsh / node / python check, its band and `/ywr-harness:setup` (ywr-harness ADR 0142).
+// - `prerequisites.mjs`: the node / python check, its band and `/ywr-harness:setup` (ywr-harness ADR 0142).
 // - `decision-prompts.mjs`: the `/ywr-harness:auto` switch and its stage prompts (ywr-harness ADR 0174, ywr-harness ADR 0175).
 //
 // `slice-status.mjs` (ywr-harness ADR 0138, ywr-harness ADR 0139) stays in the tree but is NOT registered (ywr-harness ADR 0140): its status

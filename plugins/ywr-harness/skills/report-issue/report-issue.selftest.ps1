@@ -1,32 +1,31 @@
-# Self-test for report-issue.ps1 (ADR 0064, spec 0013).
+# Self-test for report-issue.mjs (ADR 0064, spec 0013).
 # Usage: pwsh plugins/ywr-harness/skills/report-issue/report-issue.selftest.ps1
 #
-# The network boundary is `gh`, and every case that would cross it runs against a FAKE gh: a
-# `gh.ps1` written into a fixture directory and put FIRST on a PATH that holds only that directory,
-# pwsh's, git's and node's (node runs the refresh-nudge hook report-issue.ps1 quotes, ADR 0116; the real
-# gh, python and claude are unreachable for the child — the "claude: not on PATH" line is
-# deterministic here, unless node's directory also holds claude). Where gh shares a directory with
-# pwsh, git or node (GitHub's ubuntu runner: /usr/bin), the gh-absent PATH is a private directory of
-# links to just those three — see the $noGhOk block. PowerShell resolves `gh` to the .ps1 on both
-# Windows and Linux, and `& <script>.ps1` sets $LASTEXITCODE from the script's `exit`, which is
-# the contract report-issue.ps1 reads. The fake logs every argv it receives (one line per call,
-# fields joined by U+001F) so the assertions read what gh WAS ASKED, not what a mock returned.
+# The network boundary is `gh`, and every case that would cross it runs against a FAKE gh: a copy of the
+# node binary named `gh` (`gh.exe` on Windows) in a fixture directory, put FIRST on a PATH that holds only
+# that directory, git's and node's (node runs the refresh-nudge hook report-issue.mjs quotes, ADR 0116; the
+# real gh, python and claude are unreachable for the child — the "claude: not on PATH" line is deterministic
+# here, unless node's directory also holds claude). report-issue.mjs starts gh by absolute path without a
+# shell, so the fake must be a real executable: a `.ps1` or `.cmd` fake cannot start that way. The copy
+# runs the preload `fake-gh.cjs` (through NODE_OPTIONS, set by Invoke-Feedback), which answers as gh when
+# the running binary is the copy and does nothing in any other node process. Where gh shares a directory
+# with git or node (GitHub's ubuntu runner: /usr/bin), the gh-absent PATH is a private directory of links to
+# just those two — see the $noGhOk block. The fake logs every argv it receives (one line per call, fields
+# joined by U+001F) so the assertions read what gh WAS ASKED, not what a mock returned.
 #
-# The scaffolded fixture is built by the REAL init.ps1 (spec 0009) and then hand-patched, because
+# The scaffolded fixture is built by the REAL init.mjs (spec 0009) and then hand-patched, because
 # the script's drift section is the refresh nudge's and the dry run's own output — asserting
 # against a faked drift would test the fake. Content-leak assertions use a marker string planted
 # in the patch: it must be in the repo and NEVER in the body.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')
-$script = Join-Path $PSScriptRoot 'report-issue.ps1'
+$script = Join-Path $PSScriptRoot 'report-issue.mjs'
 $skillMd = Join-Path $PSScriptRoot 'SKILL.md'
 $pluginRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$initPs1 = Join-Path $pluginRoot 'skills/harness-init/init.ps1'
+$initMjs = Join-Path $pluginRoot 'skills/harness-init/init.mjs'
 $manifestVer = (Get-Content -LiteralPath (Join-Path $pluginRoot '.claude-plugin/plugin.json') -Raw | ConvertFrom-Json).version
 
-# Resolved BEFORE PATH is narrowed — `& pwsh` resolves at call time and would fail.
-$pwshExe = (Get-Command pwsh).Source
 $gitOk = [bool](Get-Command git -ErrorAction SilentlyContinue)
 if (-not $gitOk) {
     Write-Host 'SKIP — git not on PATH; report-issue.selftest needs real repos for its fixtures (reported, not silent)' -ForegroundColor Yellow
@@ -35,7 +34,7 @@ if (-not $gitOk) {
 $gitDir = Split-Path (Get-Command git).Source -Parent
 # ADR 0149 §2 (L2): on Windows the PATH `git` is the cmd\git.exe LAUNCHER (one extra process per git call);
 # the narrowed PATHs below carry the worker's directory (mingw64\bin) in its place — but ONLY when that
-# directory holds no gh, claude, python (python3 and py too: init.ps1 probes them) or node under any
+# directory holds no gh, claude, python (python3 and py too: init.mjs probes them) or node under any
 # extension PowerShell would resolve: those names
 # are the "unreachable" premise of every narrowed-PATH case here. A directory that shadows one keeps the
 # launcher directory and says so with a visible WARN line (never silent). Non-Windows: '' — unchanged.
@@ -53,7 +52,7 @@ if ($gitWorkerDir) {
     if ($shadow.Count) { Write-Host "WARN [L2 git worker dir] $gitWorkerDir holds $($shadow -join ', '), which the narrowed PATH must not reach — keeping the cmd\ launcher directory $gitDir (ADR 0149 §2)" -ForegroundColor Yellow }
     else { $gitDir = $gitWorkerDir }
 }
-# The refresh nudge report-issue.ps1 quotes is a Node hook (ADR 0116), found by a PATH scan: absent node is
+# The refresh nudge report-issue.mjs quotes is a Node hook (ADR 0116), found by a PATH scan: absent node is
 # a reported skip locally and a FAIL on CI, and the narrowed child PATHs below must carry node's directory.
 Assert-NodeOrExit 'report-issue'
 $nodeExe = (Get-Command node).Source
@@ -64,7 +63,7 @@ $ok = $true
 $savedPath = $env:PATH
 $savedMode = $env:YWR_FAKE_GH_MODE; $savedLog = $env:YWR_FAKE_GH_LOG; $savedProto = $env:GIT_ALLOW_PROTOCOL
 # L4 (ADR 0149): the fixture commits take their identity from the environment, set once here — the four
-# per-fixture `git config user.*` spawns are gone. Nothing in report-issue.ps1 or init.ps1 reads user.name/email.
+# per-fixture `git config user.*` spawns are gone. Nothing in report-issue.mjs or init.mjs reads user.name/email.
 $savedGitId = @{}
 foreach ($k in 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL') { $savedGitId[$k] = [Environment]::GetEnvironmentVariable($k) }
 function Restore-GitIdentity { foreach ($k in $savedGitId.Keys) { [Environment]::SetEnvironmentVariable($k, $savedGitId[$k]) } }
@@ -73,10 +72,10 @@ $env:GIT_AUTHOR_EMAIL = 'selftest@example.invalid'; $env:GIT_COMMITTER_EMAIL = '
 $fx = New-FixtureRoot 'feedback-selftest'
 trap { $env:PATH = $savedPath; $env:YWR_FAKE_GH_MODE = $savedMode; $env:YWR_FAKE_GH_LOG = $savedLog; $env:GIT_ALLOW_PROTOCOL = $savedProto; Restore-GitIdentity; Remove-FixtureRoot $fx; break }
 
-# git is the other network boundary: init.ps1 fetches the origin before its upstream-ahead check, under
-# -DryRun too (ADR 0137), and the scaffolded fixture's origin is a github.com ssh URL. Unblocked, each of
+# git is the other network boundary: init.mjs fetches the origin before its upstream-ahead check, under
+# --dry-run too (ADR 0137), and the scaffolded fixture's origin is a github.com ssh URL. Unblocked, each of
 # the 12 init runs below made a real ssh attempt that failed in ~2 s, so ~24 s of this suite was network
-# (fact 131). `file` refuses ssh and https before any transport starts. init.ps1's own fetch code
+# (fact 131). `file` refuses ssh and https before any transport starts. init.mjs's own fetch code
 # still runs as written, and the FETCH FAILED line it prints is the same. N1 proves the refusal holds:
 # without it, the suite stays green and goes back to the network.
 # The refusal text is gettext-translated, so the probe pins LC_ALL=C for its own two calls.
@@ -95,45 +94,52 @@ $fakeDir = Join-Path $fx 'fake-gh'
 New-Item -ItemType Directory -Force -Path $fakeDir | Out-Null
 $ghLog = Join-Path $fx 'gh-calls.log'
 $env:YWR_FAKE_GH_LOG = $ghLog
+$ghName = if ($IsWindows) { 'gh.exe' } else { 'gh' }
+Copy-Item -LiteralPath $nodeExe -Destination (Join-Path $fakeDir $ghName)
+$fakeGhJs = Join-Path $fx 'fake-gh.cjs'
 @'
-# No param block ON PURPOSE: with declared parameters PowerShell's binder parses gh's own flags
-# (--json, --limit, --state) as parameter names and throws "positional parameter cannot be found"
-# — measured on the first run of this suite. Bare $args keeps every token verbatim.
-# stderr goes through Write-Error, NOT [Console]::Error: the suite runs report-issue.ps1 in a runspace (ADR 0149),
-# where the process's real stderr is not captured, but report-issue.ps1's own `2>&1` still merges the error stream.
-$Rest = @($args | ForEach-Object { [string]$_ })
-$mode = $env:YWR_FAKE_GH_MODE
-if ($env:YWR_FAKE_GH_LOG) { Add-Content -LiteralPath $env:YWR_FAKE_GH_LOG -Value ($Rest -join [char]0x1F) -Encoding utf8 }
-$sub = "$($Rest[0]) $($Rest[1])"
-switch ($sub) {
-    'auth status'  { if ($mode -eq 'unauth') { Write-Error 'You are not logged into any GitHub hosts. To log in, run: gh auth login' -ErrorAction Continue; exit 1 }; Write-Output 'github.com: Logged in'; exit 0 }
-    # Kept although report-issue.ps1 no longer lists labels (ADR 0085): a regression that re-adds the
-    # preflight is then LOGGED (F2b reads the log) instead of dying on the unexpected-subcommand arm.
-    'label list'   { Write-Output '[{"name":"bug"},{"name":"upstream-report"}]'; exit 0 }
-    'issue list'   {
-        if ($mode -eq 'similar') { Write-Output '[{"number":12,"title":"[upstream-report] acme/widget: same drift"}]' }
-        # GitHub's server-side shape (ADR 0085): the earlier report was filed by a read-role member,
-        # so its label was dropped — a `-l upstream-report` search cannot see it, an unfiltered one can.
-        elseif ($mode -eq 'unlabelled') { if (@($Rest | Where-Object { $_ -eq '-l' -or $_ -like '--label*' }).Count) { Write-Output '[]' } else { Write-Output '[{"number":6,"title":"[upstream-report] acme/scaffolded: earlier read-role report","author":{"login":"member-a"}}]' } }
-        # A stranger's issue carrying a published fingerprint, with a hostile title: ESC, NEL, U+2028, CR/LF.
-        elseif ($mode -eq 'hostile') { Write-Output ('[{"number":7,"title":"fake\u001b[2Jreport\u0085line\u2028two\r\nthree","author":{"login":"stranger"}}]') }
-        elseif ($mode -eq 'many') { Write-Output ('[' + ((1..20 | ForEach-Object { "{`"number`":$_,`"title`":`"dup $_`"}" }) -join ',') + ']') }
-        else { Write-Output '[]' }
-        exit 0
-    }
-    'issue create' { if ($mode -eq 'createfail') { Write-Error 'GraphQL: Resource not accessible by integration (createIssue)' -ErrorAction Continue; exit 1 }; Write-Output 'https://github.com/orcait-co/ywr-harness/issues/999'; exit 0 }
-    default        { Write-Error "fake gh: unexpected subcommand '$sub'" -ErrorAction Continue; exit 64 }
+// The fake gh: a preload that acts only in the copy of node named gh, and exits before node reads argv as a script.
+const path = require('node:path'), fs = require('node:fs')
+if (path.basename(process.execPath).toLowerCase().replace(/\.exe$/, '') === 'gh') {
+  // node turned the first argument into an absolute script path; gh's subcommand is its last segment.
+  const rest = process.argv.slice(1)
+  if (rest.length) rest[0] = path.basename(rest[0])
+  const mode = process.env.YWR_FAKE_GH_MODE
+  if (process.env.YWR_FAKE_GH_LOG) fs.appendFileSync(process.env.YWR_FAKE_GH_LOG, rest.join('\u001f') + '\n', 'utf8')
+  // Synchronous writes, then an immediate exit: node would otherwise go on to load argv[1] as its main module.
+  const out = (t) => fs.writeSync(1, t + '\n'), err = (t) => fs.writeSync(2, t + '\n')
+  const sub = `${rest[0]} ${rest[1]}`
+  let code = 0
+  if (sub === 'auth status') { if (mode === 'unauth') { err('You are not logged into any GitHub hosts. To log in, run: gh auth login'); code = 1 } else out('github.com: Logged in') }
+  // Kept although report-issue.mjs no longer lists labels (ADR 0085): a regression that re-adds the
+  // preflight is then LOGGED (F2b reads the log) instead of dying on the unexpected-subcommand arm.
+  else if (sub === 'label list') out('[{"name":"bug"},{"name":"upstream-report"}]')
+  else if (sub === 'issue list') {
+    if (mode === 'similar') out('[{"number":12,"title":"[upstream-report] acme/widget: same drift"}]')
+    // GitHub's server-side shape (ADR 0085): the earlier report was filed by a read-role member,
+    // so its label was dropped — a `-l upstream-report` search cannot see it, an unfiltered one can.
+    else if (mode === 'unlabelled') out(rest.some(x => x === '-l' || x.startsWith('--label')) ? '[]' : '[{"number":6,"title":"[upstream-report] acme/scaffolded: earlier read-role report","author":{"login":"member-a"}}]')
+    // A stranger's issue carrying a published fingerprint, with a hostile title: ESC, NEL, U+2028, CR/LF (JSON escapes).
+    else if (mode === 'hostile') out(String.raw`[{"number":7,"title":"fake\u001b[2Jreport\u0085line\u2028two\r\nthree","author":{"login":"stranger"}}]`)
+    else if (mode === 'many') out('[' + Array.from({ length: 20 }, (_, i) => `{"number":${i + 1},"title":"dup ${i + 1}"}`).join(',') + ']')
+    else out('[]')
+  }
+  else if (sub === 'issue create') { if (mode === 'createfail') { err('GraphQL: Resource not accessible by integration (createIssue)'); code = 1 } else out('https://github.com/orcait-co/ywr-harness/issues/999') }
+  else { err(`fake gh: unexpected subcommand '${sub}'`); code = 64 }
+  process.exit(code)
 }
-'@ | Set-Content -LiteralPath (Join-Path $fakeDir 'gh.ps1') -Encoding utf8
+'@ | Set-Content -LiteralPath $fakeGhJs -Encoding utf8
+# The preload every child node of a case gets. A case that adds its own preload appends to it (B1d, B1e).
+$fakeGhOption = "--require `"$($fakeGhJs -replace '\\', '/')`""
 
-$pathWithGh = "$fakeDir$sep$(Split-Path $pwshExe -Parent)$sep$gitDir$sep$nodeDir"
-$pathNoGh = "$(Split-Path $pwshExe -Parent)$sep$gitDir$sep$nodeDir"
-$pathNoNode = "$fakeDir$sep$(Split-Path $pwshExe -Parent)$sep$gitDir"      # B1c: node genuinely absent (checked there)
-# "gh absent" must be TRUE, not assumed: on GitHub's ubuntu runner pwsh, git AND gh all live in
-# /usr/bin, so a PATH of "pwsh dir + git dir" still resolves the real (unauthenticated) gh — the
+$pathWithGh = "$fakeDir$sep$gitDir$sep$nodeDir"
+$pathNoGh = "$gitDir$sep$nodeDir"
+$pathNoNode = "$fakeDir$sep$gitDir"      # B1c: node genuinely absent (checked there)
+# "gh absent" must be TRUE, not assumed: on GitHub's ubuntu runner node, git AND gh can all live in
+# /usr/bin, so a PATH of "git dir + node dir" still resolves the real (unauthenticated) gh — the
 # first CI run of this suite failed F1 on exactly that ("not authenticated" where "not on PATH" was
 # asserted; the pwsh docker image passed only because it has no gh at all). When gh still resolves
-# on the narrowed PATH, a private bin directory holding links to ONLY pwsh and git becomes the
+# on the narrowed PATH, a private bin directory holding links to ONLY git and node becomes the
 # gh-absent PATH; if even that leaves gh resolvable, the gh-absent cases are a reported SKIP.
 $env:PATH = $pathNoGh; $ghLeak = Get-Command gh -ErrorAction SilentlyContinue; $env:PATH = $savedPath
 $noGhOk = $true
@@ -141,17 +147,17 @@ if ($ghLeak) {
     $binNoGh = Join-Path $fx 'bin-nogh'
     New-Item -ItemType Directory -Force -Path $binNoGh | Out-Null
     try {
-        foreach ($t in @($pwshExe, (Get-Command git).Source, $nodeExe)) {
+        foreach ($t in @((Get-Command git).Source, $nodeExe)) {
             New-Item -ItemType SymbolicLink -Path (Join-Path $binNoGh (Split-Path $t -Leaf)) -Target $t -ErrorAction Stop | Out-Null
         }
         $pathNoGh = $binNoGh
         $env:PATH = $pathNoGh; $ghLeak = Get-Command gh -ErrorAction SilentlyContinue; $env:PATH = $savedPath
     } catch { $ghLeak = $_ }
     if ($ghLeak) {
-        Write-Host "SKIP [gh-absent premise] gh shares a directory with pwsh/git and a private link dir could not isolate them ($ghLeak) — F1 and B3 are NOT run (reported, not silent)" -ForegroundColor Yellow
+        Write-Host "SKIP [gh-absent premise] gh shares a directory with git/node and a private link dir could not isolate them ($ghLeak) — F1 and B3 are NOT run (reported, not silent)" -ForegroundColor Yellow
         $noGhOk = $false
     } else {
-        Write-Host "note: gh shares a directory with pwsh/git here; gh-absent cases use a private link dir ($binNoGh)" -ForegroundColor DarkGray
+        Write-Host "note: gh shares a directory with git/node here; gh-absent cases use a private link dir ($binNoGh)" -ForegroundColor DarkGray
     }
 }
 
@@ -159,27 +165,31 @@ if ($ghLeak) {
 # declared under it reads as EMPTY inside the function — every child ran without arguments on the
 # first run of this suite (all cases red on "a report needs a description").
 #
-# ADR 0149 (L1): every case but the canary runs report-issue.ps1 in a NEW RUNSPACE of this process through the
-# lib's Invoke-ScriptInRunspace — no `pwsh -File` cold start per case (~3.4 s → ~2.3 s measured, fact 145).
-# The narrowed PATH is process-wide env, so it applies inside the runspace exactly as it did to a child.
-# Contract (lib): Code is report-issue.ps1's own `exit N`; an abort (missing script, `throw`, a binding failure)
-# is Code -1, which no case's `want` accepts. What stays a REAL `pwsh -File` child, and why:
-#   - A1 (the canary, Invoke-FeedbackChild): members run report-issue.ps1 as a process, so ONE happy-path case
-#     keeps the real shape, and A1c compares the runspace path against it (a divergence goes red);
-#   - G2/G3 (Invoke-AutoLoadProbe): their subject IS a fresh process's module auto-loading (ADR 0111 §5b);
-#   - the init.ps1 scaffold run (B0) and, inside report-issue.ps1, its own init and node children.
-# Call sites pass argv-shaped arrays ('-Description', 'x', '-File'); the lib folds them by report-issue.ps1's
-# own parameter metadata: pairs and switches bind as in a `pwsh -File` child, so a '-Word' description is a value (A4).
-function Invoke-Feedback([string[]]$ScriptArgs, [string]$Path) {
-    $env:PATH = $Path
-    try { $r = Invoke-ScriptArgv $script $ScriptArgs; $script:Exit = $r.Code; $o = [string]$r.Out }
-    finally { $env:PATH = $savedPath }
-    return $o
+# report-issue.mjs runs as a node child (ADR 0220), the shape members run. Call sites keep the old
+# argv-shaped arrays ('-Description', 'x', '-File'); ConvertTo-NodeArgv is the one place that turns them into
+# the Node flags, always in the `--name=value` form, so a '-Word' description stays a value (A4). The child's
+# stdout and stderr are both captured; the lib pins the console decoding to UTF-8.
+$nodeFlags = @{ '-Description' = 'description'; '-Title' = 'title'; '-Target' = 'target'; '-BodyPath' = 'body-path'; '-Repo' = 'repo'; '-OutDir' = 'out-dir' }
+function ConvertTo-NodeArgv([string[]]$ScriptArgs) {
+    $out = @()
+    for ($i = 0; $i -lt $ScriptArgs.Count; $i++) {
+        $t = $ScriptArgs[$i]
+        if ($t -ceq '-File') { $out += '--file' }
+        elseif ($nodeFlags.ContainsKey($t)) {
+            if ($i + 1 -ge $ScriptArgs.Count) { throw "ConvertTo-NodeArgv: '$t' has no value" }
+            $out += "--$($nodeFlags[$t])=$($ScriptArgs[$i + 1])"; $i++
+        }
+        else { throw "ConvertTo-NodeArgv: '$t' names no parameter" }
+    }
+    return $out
 }
-function Invoke-FeedbackChild([string[]]$ScriptArgs, [string]$Path) {
+function Invoke-Feedback([string[]]$ScriptArgs, [string]$Path, [string]$ExtraNodeOptions = '') {
+    $argv = @(ConvertTo-NodeArgv $ScriptArgs)
+    $savedNo = $env:NODE_OPTIONS
     $env:PATH = $Path
-    try { $o = (& $pwshExe -NoProfile -File $script @ScriptArgs 2>&1 | Out-String); $script:Exit = $LASTEXITCODE }
-    finally { $env:PATH = $savedPath }
+    $env:NODE_OPTIONS = ("$fakeGhOption $ExtraNodeOptions").Trim()
+    try { $o = (& $nodeExe $script @argv 2>&1 | Out-String); $script:Exit = $LASTEXITCODE }
+    finally { $env:PATH = $savedPath; $env:NODE_OPTIONS = $savedNo }
     return $o
 }
 function Get-BodyPath([string]$Out) {
@@ -216,17 +226,19 @@ Invoke-GitQ $plain @('add', '-A'); Invoke-GitQ $plain @('commit', '-q', '-m', 'i
 $outDir = Join-Path $fx 'out'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-# --- Z0: the contracts the in-process runner rests on (ADR 0149; same pins as init.selftest) ---------
-# `*>&1` captures SIX streams where a child's console capture saw two: report-issue.ps1 reports through
-# Write-Host (Say) only, so a Write-Warning/-Verbose/-Debug/-Information would surface in $out for the
-# first time and could flip a `-notmatch`. The runner is a runspace in THIS process: a process-exit API
-# would end the whole suite where a child confined it. And the script's verdict is its own `exit`.
-$zWide = @(Select-String -LiteralPath $script -Pattern '\bWrite-(Warning|Verbose|Debug|Information)\b' | Where-Object { $_.Line -notmatch '^\s*#' })
-$ok = (Assert-True 'Z0 report-issue.ps1 reports through Write-Host only (the *>&1 capture contract)' ($zWide.Count -eq 0) "lines: $(($zWide | ForEach-Object { $_.LineNumber }) -join ', ')") -and $ok
-$zExit = @(Select-String -LiteralPath $script -Pattern 'Environment\]::Exit|SetShouldExit' | Where-Object { $_.Line -notmatch '^\s*#' })
-$ok = (Assert-True 'Z0 report-issue.ps1 never calls a process-exit API (runspace, not child)' ($zExit.Count -eq 0) "lines: $(($zExit | ForEach-Object { $_.LineNumber }) -join ', ')") -and $ok
-$zLast = @(Get-Content -LiteralPath $script | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^#' })[-1]
-$ok = (Assert-True 'Z0 report-issue.ps1 ends in an explicit exit (Code is always its own verdict)' ($zLast -match '^\s*exit\s+\d+\s*$') "last statement: $zLast") -and $ok
+# --- Z0: the contracts the child-process runner rests on (Node counterparts of the old runspace pins) -----
+# The verdict is the child's exit code, and the captured text is all it wrote. report-issue.mjs reports through
+# one writer (stdout); a stray console.error/warn would reach the captured text by a second path. It never
+# calls process.exit: that can end the process before a piped stdout is flushed, and a truncated report
+# could still match a loose assertion. Its last statement sets process.exitCode from main(), so the exit
+# code is always its own verdict.
+$zSrc = @(Get-Content -LiteralPath $script | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^//' })
+$zWide = @($zSrc | Where-Object { $_ -match '\bconsole\.|process\.stderr' })
+$ok = (Assert-True 'Z0 report-issue.mjs reports through one writer, stdout (no console.*, no process.stderr)' ($zWide.Count -eq 0) "lines: $($zWide -join ' | ')") -and $ok
+$zExit = @($zSrc | Where-Object { $_ -match 'process\.exit\s*\(' })
+$ok = (Assert-True 'Z0 report-issue.mjs never calls process.exit (a piped stdout is always flushed)' ($zExit.Count -eq 0) "lines: $($zExit -join ' | ')") -and $ok
+$zLast = $zSrc[-1]
+$ok = (Assert-True 'Z0 report-issue.mjs ends by setting process.exitCode from main() (Code is always its own verdict)' ($zLast -match '^\s*process\.exitCode\s*=\s*main\(\)\s*$') "last statement: $zLast") -and $ok
 
 # L2 guard self-check (ADR 0149 §2): a worker directory holding gh / claude / python / node under ANY
 # resolvable spelling is seen by Get-ShadowingCommand, and an empty one is clean — so the guard cannot go
@@ -246,9 +258,9 @@ $ok = (Assert-True 'L2 the worker-dir guard sees a shadowing gh/claude/python/py
 # A. DRAFT mode — plain repo
 # =================================================================================================
 $env:YWR_FAKE_GH_MODE = 'ok'; Reset-GhLog
-# A1 is the CANARY: a real `pwsh -File` child (the shape members run), the one case that is not a runspace.
+# A1 is the CANARY: the first child run; A1c repeats it and must agree.
 $descA = "the gate emitter prints nothing`nsecond line"
-$out = Invoke-FeedbackChild @('-Description', $descA, '-Target', $plain, '-OutDir', $outDir) $pathWithGh
+$out = Invoke-Feedback @('-Description', $descA, '-Target', $plain, '-OutDir', $outDir) $pathWithGh
 $exitA = $script:Exit
 $bodyA = Get-BodyPath $out
 $textA = Read-Body $bodyA
@@ -264,9 +276,8 @@ $ok = (Assert-Text 'A1 draft on a plain repo: exit 0, body written, sections pre
 $ok = (Assert-True 'A1b draft file is <OutDir>/ywr-harness-report-issue-<yyyyMMdd-HHmmss>.md' `
         ([bool]$bodyA -and ((Split-Path -Leaf $bodyA) -cmatch '^ywr-harness-report-issue-\d{8}-\d{6}\.md$') -and `
          ([IO.Path]::GetFullPath((Split-Path -Parent $bodyA)) -eq [IO.Path]::GetFullPath($outDir))) "body: $bodyA") -and $ok
-# A1c: the SAME case through the runspace path (what every other case uses) must agree with the child on
-# the exit code, on every A1 assertion, and on the output and body text themselves once the per-run body
-# file name is masked — a runspace/process divergence goes red here instead of hiding in the other cases.
+# A1c: the SAME case run again must agree with A1 on the exit code, on every A1 assertion, and on the output
+# and body text themselves once the per-run body file name is masked — a run-to-run divergence goes red here.
 # Its own OutDir, seeded with an empty draft for every second from 1 s before to 300 s after (a loaded runner
 # delays the run's clock read; 302 empty files cost nothing): the run must take the
 # `-2` name beside its second's seed and leave the seed empty (O93 — before it, a same-second run overwrote it).
@@ -281,12 +292,12 @@ $textRs = Read-Body $bodyRs
 function Get-Masked([string]$Text, [string]$BodyFile) { return ((($Text -replace "`r`n", "`n") -replace [regex]::Escape($BodyFile), '<body>').Trim()) }
 $maskOut = Get-Masked $out $bodyA; $maskOutRs = Get-Masked $outRs $bodyRs
 $maskBody = Get-Masked $textA $bodyA; $maskBodyRs = Get-Masked $textRs $bodyRs
-$ok = (Assert-Text 'A1c the canary case through the runspace path matches the real pwsh -File child: same exit code, same A1 assertions, same output and body' ("$outRs`n=====`n$textRs") `
+$ok = (Assert-Text 'A1c the canary case run again matches the first child run: same exit code, same A1 assertions, same output and body' ("$outRs`n=====`n$textRs") `
         $a1Must $a1Not `
-        @($(if ($exitRs -ne $exitA) { "exit differs: runspace $exitRs vs child $exitA" }),
-          $(if ($bodyRs -eq $bodyA) { 'the runspace run reused the child body file' }),
-          $(if ($maskOutRs -cne $maskOut) { "output differs after masking the body path`n--- child ---`n$maskOut`n--- runspace ---`n$maskOutRs" }),
-          $(if ($maskBodyRs -cne $maskBody) { 'body text differs between child and runspace' }))) -and $ok
+        @($(if ($exitRs -ne $exitA) { "exit differs: second run $exitRs vs first $exitA" }),
+          $(if ($bodyRs -eq $bodyA) { 'the second run reused the first body file' }),
+          $(if ($maskOutRs -cne $maskOut) { "output differs after masking the body path`n--- first ---`n$maskOut`n--- second ---`n$maskOutRs" }),
+          $(if ($maskBodyRs -cne $maskBody) { 'body text differs between the two runs' }))) -and $ok
 $seedRs = if ($bodyRs) { (Split-Path -Leaf $bodyRs) -replace '-2\.md$', '.md' } else { '' }
 $ok = (Assert-True 'A1d a draft in a second that already has one takes the -2 name and leaves the earlier file untouched' `
         ([bool]$bodyRs -and ((Split-Path -Leaf $bodyRs) -cmatch '^ywr-harness-report-issue-\d{8}-\d{6}-2\.md$') -and `
@@ -310,8 +321,8 @@ $ok = (Assert-Text 'A3 no description -> exit 1 with a FAIL line and no body fil
         @('FAIL — a report needs a description') @('(?m)^\s*body:') `
         @($(if ($script:Exit -ne 1) { "exit $script:Exit (want 1)" }), $(if ($after -ne $before) { 'a body file was written' }))) -and $ok
 
-# A4: -Title override. The description is shaped like a parameter name: a child binds '-Word' as the
-# value, and so must the runspace fold (O93 — the old fold read it as a switch and aborted).
+# A4: -Title override. The description is shaped like a parameter name: the `--description=-Word` form
+# binds it as the value (the `--description -Word` form is refused by the Node parser).
 $out = Invoke-Feedback @('-Description', '-Word', '-Title', 'custom title here', '-Target', $plain, '-OutDir', $outDir) $pathWithGh
 $textA4 = Read-Body (Get-BodyPath $out)
 $ok = (Assert-Text 'A4 -Title is used verbatim as the body title line; a -Word description binds as the value' $textA4 `
@@ -332,12 +343,12 @@ Invoke-GitQ $scaff @('-c', 'init.defaultBranch=main', 'init', '-q')
 Invoke-GitQ $scaff @('remote', 'add', 'origin', 'git@github.com:acme/scaffolded.git')
 # Real scaffold run, python OFF the PATH so the docs build is a reported skip rather than a dependency.
 $env:PATH = $pathNoGh
-try { & $pwshExe -NoProfile -File $initPs1 -Target $scaff 2>&1 | Out-Null; $initExit = $LASTEXITCODE } finally { $env:PATH = $savedPath }
+try { & $nodeExe $initMjs "--target=$scaff" 2>&1 | Out-Null; $initExit = $LASTEXITCODE } finally { $env:PATH = $savedPath }
 $gatesPy = Join-Path $scaff 'scripts/harness/harness_gates.py'
 $scaffReady = ($initExit -eq 0) -and (Test-Path -LiteralPath $gatesPy) -and (Test-Path -LiteralPath (Join-Path $scaff '.harness-version'))
-$ok = (Assert-True 'B0 fixture: init.ps1 scaffolded the repo (stamp + vendored gate script present)' $scaffReady "init exit=$initExit") -and $ok
+$ok = (Assert-True 'B0 fixture: init.mjs scaffolded the repo (stamp + vendored gate script present)' $scaffReady "init exit=$initExit") -and $ok
 if ($scaffReady) {
-    # --no-verify on the fixture's commits: init.ps1 wires core.hooksPath, and since ADR 0094 the
+    # --no-verify on the fixture's commits: init.mjs wires core.hooksPath, and since ADR 0094 the
     # seeded docs groups run check_docs.py at pre-commit — this scaffold ran with python off the PATH,
     # so no index was built and the hook (correctly) refuses the commit. This suite tests the
     # feedback draft, not the hooks; a refused commit left the history block empty (B1/B6 red).
@@ -368,13 +379,13 @@ if ($scaffReady) {
             ($listCall.Count -eq 1 -and $listCall[0] -match 'orcait-co/ywr-harness' -and $listCall[0] -match "-S$([char]0x1F)`"fb[0-9a-f]{10}`"" -and $listCall[0] -match "--state$([char]0x1F)open" `
              -and -not (Test-LabelArg $listCall[0]) -and $listCall[0] -notmatch 'upstream-report') "calls: $($calls -join ' | ')") -and $ok
 
-    # B1c (ADR 0116): the refresh nudge is a Node hook and report-issue.ps1 finds node by scanning PATH — no
-    # Get-Command (G1 below: ADR 0113's window allows exactly git, gh, claude). With node absent the report
+    # B1c (ADR 0116): the refresh nudge is a Node hook that the host starts as an exec-form `node` from PATH, and
+    # report-issue.mjs looks for that `node` on PATH the same way. With node absent the report
     # must SAY the verdict could not be read — never a silent pass, never a fabricated "no drift" line —
     # while the dry run, which needs no node, still runs and still names the drifted files.
     $env:PATH = $pathNoNode; $nodeLeak = Get-Command node -ErrorAction SilentlyContinue; $env:PATH = $savedPath
     if ($nodeLeak) {
-        Write-Host "SKIP [B1c node-absent premise] node still resolves on a PATH of pwsh + git directories ($($nodeLeak.Source)) — B1c is NOT run (reported, not silent)" -ForegroundColor Yellow
+        Write-Host "SKIP [B1c node-absent premise] node still resolves on a PATH of the fake-gh + git directories ($($nodeLeak.Source)) — B1c is NOT run (reported, not silent)" -ForegroundColor Yellow
     } else {
         $out = Invoke-Feedback @('-Description', 'node absent', '-Target', $scaff, '-OutDir', $outDir) $pathNoNode
         $textB1c = Read-Body (Get-BodyPath $out)
@@ -387,23 +398,22 @@ if ($scaffReady) {
     }
 
     # B1d/B1e (N4): node's stderr is not part of the verdict. A NODE_OPTIONS preload that writes to stderr on every
-    # run must not turn the hook's JSON into "not JSON" (the verdict is still the hook's systemMessage, and the noise
+    # run of the HOOK must not turn the hook's JSON into "not JSON" (the verdict is still the hook's systemMessage, and the noise
     # stays out of the report); a run that FAILS (the preload throws -> exit 1, no stdout) says so and quotes stderr.
+    # report-issue.mjs is a node process too, so each preload acts only in the hook process, by its script name.
     $savedNodeOptions = $env:NODE_OPTIONS
     $noisy = Join-Path $fx 'stderr-noise.cjs'
-    Set-Content -LiteralPath $noisy -Value 'process.stderr.write("PRELOAD-STDERR-NOISE\n")' -Encoding utf8
+    Set-Content -LiteralPath $noisy -Value 'if (/scaffold-refresh-nudge\.mjs$/.test(process.argv[1] || "")) process.stderr.write("PRELOAD-STDERR-NOISE\n")' -Encoding utf8
     $boom = Join-Path $fx 'preload-boom.cjs'
-    Set-Content -LiteralPath $boom -Value 'throw new Error("PRELOAD-BOOM")' -Encoding utf8
+    Set-Content -LiteralPath $boom -Value 'if (/scaffold-refresh-nudge\.mjs$/.test(process.argv[1] || "")) throw new Error("PRELOAD-BOOM")' -Encoding utf8
     try {
-        $env:NODE_OPTIONS = "--require `"$($noisy -replace '\\', '/')`""
-        $out = Invoke-Feedback @('-Description', 'noisy stderr', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh
+        $out = Invoke-Feedback @('-Description', 'noisy stderr', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh "--require `"$($noisy -replace '\\', '/')`""
         $textB1d = Read-Body (Get-BodyPath $out)
         $ok = (Assert-Text 'B1d node stderr noise does not break the verdict: the nudge is still parsed and quoted, the noise is not in the report' ("$out`n=====`n$textB1d") `
                 @('\[hook:scaffold-refresh-nudge\]', '2 toolchain file\(s\) a re-run would change') `
                 @('PRELOAD-STDERR-NOISE', 'hook output was not JSON', 'the refresh nudge exited', 'Traceback') `
                 @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }), $(if (-not $textB1d) { 'no body written' }))) -and $ok
-        $env:NODE_OPTIONS = "--require `"$($boom -replace '\\', '/')`""
-        $out = Invoke-Feedback @('-Description', 'failing node', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh
+        $out = Invoke-Feedback @('-Description', 'failing node', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh "--require `"$($boom -replace '\\', '/')`""
         $textB1e = Read-Body (Get-BodyPath $out)
         $ok = (Assert-Text 'B1e a failing node run is reported with its exit code and stderr, never as a silent pass' ("$out`n=====`n$textB1e") `
                 @('the refresh nudge exited 1 with no output', 'PRELOAD-BOOM', 'harness-init -> .*\(dry run — nothing written\)') `
@@ -483,14 +493,14 @@ if ($scaffReady) {
     $fenceCount = ([regex]::Matches($textB6, '(?m)^' + [regex]::Escape($fenceLine) + '$')).Count
     $ok = (Assert-True 'B6b exactly two 4-backtick fence lines (open + close) around the history block' ($fenceCount -eq 2) "count=$fenceCount") -and $ok
 
-    # B7: init.ps1 refuses a DOWNGRADE (stamp newer than this copy, ADR 0042) -> the dry run exits 1
+    # B7: init.mjs refuses a DOWNGRADE (stamp newer than this copy, ADR 0042) -> the dry run exits 1
     # before comparing -> drift is UNKNOWN, never "none" (review 2026-08-28, high)
     Set-Content -LiteralPath (Join-Path $scaff '.harness-version') -Value '99.0.0' -Encoding ascii
     Reset-GhLog
     $out = Invoke-Feedback @('-Description', 'downgrade', '-Target', $scaff, '-OutDir', $outDir) $pathWithGh
     $textB7 = Read-Body (Get-BodyPath $out)
     $ok = (Assert-Text 'B7 downgrade-refused dry run -> drift UNKNOWN, search not run, REFUSED text quoted' ("$out`n=====`n$textB7") `
-            @('toolchain drift: UNKNOWN — init\.ps1 -DryRun exited 1 before comparing', 'similar open reports: not searched \(drift UNKNOWN', 'REFUSED — this repo.s toolchain was last scaffolded by ywr-harness v99\.0\.0', 'stamp: 99\.0\.0') `
+            @('toolchain drift: UNKNOWN — init\.mjs --dry-run exited 1 before comparing', 'similar open reports: not searched \(drift UNKNOWN', 'REFUSED — this repo.s toolchain was last scaffolded by ywr-harness v99\.0\.0', 'stamp: 99\.0\.0') `
             @('none — a re-run would change nothing', 'toolchain file\(s\) a re-run would change') `
             @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }))) -and $ok
     $ok = (Assert-True 'B7b no gh search was attempted while drift is UNKNOWN' (@((Get-GhCalls) | Where-Object { $_ -match "^issue$([char]0x1F)list" }).Count -eq 0) "calls: $((Get-GhCalls) -join ' | ')") -and $ok
@@ -544,10 +554,10 @@ $ok = (Assert-Text 'F5 create failure -> exit 2, NOT FILED quotes gh, by-hand UR
         @($(if ($script:Exit -ne 2) { "exit $script:Exit (want 2)" }))) -and $ok
 $ok = (Assert-True 'F5b exactly one create attempt — no blind retry' (@((Get-GhCalls) | Where-Object { $_ -match "^issue$([char]0x1F)create" }).Count -eq 1) "calls: $((Get-GhCalls) -join ' | ')") -and $ok
 
-# F6: -File without -BodyPath -> exit 1 (usage), nothing called
+# F6: --file without --body-path -> exit 1 (usage), nothing called
 Reset-GhLog
 $out = Invoke-Feedback @('-File') $pathWithGh
-$ok = (Assert-Text 'F6 -File without -BodyPath is a usage error' $out @('FAIL — -File needs -BodyPath') @('filed:', 'NOT FILED') `
+$ok = (Assert-Text 'F6 -File without -BodyPath is a usage error' $out @('FAIL — --file needs --body-path') @('filed:', 'NOT FILED') `
         @($(if ($script:Exit -ne 1) { "exit $script:Exit (want 1)" }), $(if ((Get-GhCalls).Count) { 'gh was called' }))) -and $ok
 
 # F7: -Repo override reaches the create call (the test seam the ADR names)
@@ -569,106 +579,24 @@ $skill = Get-Content -LiteralPath $skillMd -Raw
 # The label clauses (ADR 0085): the member is no longer told the report carries `upstream-report` —
 # for a read-role filer GitHub drops it — and IS told the canon inbox lists every open dist issue.
 $ok = (Assert-Text 'S1 SKILL.md: user-invoked only, namespaced references, both script modes named, the never-list, the no-label inbox claim' $skill `
-        @('(?m)^disable-model-invocation: true', '/ywr-harness:report-issue', 'report-issue\.ps1" -Description', 'report-issue\.ps1" -File -BodyPath', 'Never files without step 3', 'Never includes file contents or diffs', 'Never runs `/ywr-harness:harness-init`',
+        @('(?m)^disable-model-invocation: true', '/ywr-harness:report-issue', 'report-issue\.mjs" --description=', 'report-issue\.mjs" --file --body-path=', 'Never files without step 3', 'Never includes file contents or diffs', 'Never runs `/ywr-harness:harness-init`',
           'inbox lists every open dist issue', 'ADR 0085') `
         @('`/report-issue`', '`/harness-init`', 'label `upstream-report`', 'with label upstream-report', "label: 'upstream-report' is absent")) -and $ok
 
 # =================================================================================================
-# G. The git / gh / claude lookups' module auto-loading switch (ADR 0111, ADR 0113): off for those
-#    lookups alone, restored to the exact prior value on every path, nothing but Get-Command inside the try.
+# I. One flattening rule: report-issue.mjs imports hook-lib's inline() and holds no copy of the class
 # =================================================================================================
-# The switch is production code and its failure modes are silent (a missing restore leaves every
-# LATER cmdlet from a not-yet-loaded module "not recognized" only when the script reaches it). So the
-# guard reads the REAL report-issue.ps1: an AST check of the shape, then the extracted snippet run in fresh
-# `pwsh -NoProfile -File` children. Not caught by this guard (stated): a cmdlet added INSIDE the try
-# that is already loaded at that point, and a change to the lookup's ~1.4 s speedup itself.
-$alPs = [System.Management.Automation.Language.Parser]
-$alErr = $null; $alTok = $null
-$alAst = $alPs::ParseFile($script, [ref]$alTok, [ref]$alErr)
-$alTry = @($alAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $n.Body.Extent.Text -match 'Get-Command\s+claude\b' }, $true))
-$alFail = @()
-$alSnippet = ''
-if ($alErr.Count) { $alFail += "report-issue.ps1 has parse errors: $($alErr[0].Message)" }
-elseif ($alTry.Count -ne 1) { $alFail += "want exactly one try around 'Get-Command claude', found $($alTry.Count)" }
-else {
-    $t = $alTry[0]
-    $stmts = @($t.Parent.Statements)
-    $ti = [array]::IndexOf($stmts, $t)
-    $isPrefAssign = { param($s, $var) $s -is [System.Management.Automation.Language.AssignmentStatementAst] -and $s.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and $s.Left.VariablePath.UserPath -eq $var }
-    if ($ti -lt 2 -or -not (& $isPrefAssign $stmts[$ti - 2] 'alPrev') -or -not (& $isPrefAssign $stmts[$ti - 1] 'PSModuleAutoLoadingPreference') -or $stmts[$ti - 1].Right.Extent.Text -notmatch "^'None'$") {
-        $alFail += "the try must be immediately preceded by `$alPrev = <saved value> then `$PSModuleAutoLoadingPreference = 'None' (nothing between them and the try)"
-    } else { $alSnippet = $alAst.Extent.Text.Substring($stmts[$ti - 2].Extent.StartOffset, $t.Extent.EndOffset - $stmts[$ti - 2].Extent.StartOffset) }
-    # Every statement is `$x = Get-Command <name> ...` (one command, nothing else), and the names are exactly git, gh, claude.
-    $alNames = @()
-    foreach ($st in @($t.Body.Statements)) {
-        $cmds = @($st.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
-        if ($st -isnot [System.Management.Automation.Language.AssignmentStatementAst] -or $cmds.Count -ne 1 -or $cmds[0].GetCommandName() -ne 'Get-Command' -or $cmds[0].CommandElements.Count -lt 2) { $alFail += "a try statement is not a single Get-Command assignment: '$($st.Extent.Text)'"; continue }
-        $alNames += [string]$cmds[0].CommandElements[1].Extent.Text
-    }
-    if ((@($alNames | Sort-Object) -join ',') -cne 'claude,gh,git') { $alFail += "the try looks up '$($alNames -join ', ')' (want exactly git, gh, claude)" }
-    $inTry = @($t.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() })
-    if (@($inTry | Where-Object { $_ -ne 'Get-Command' }).Count -or -not $inTry.Count) { $alFail += "commands inside the try: $($inTry -join ', ') (want only Get-Command — an autoloaded cmdlet there would run with auto-loading off)" }
-    if (-not $t.Finally) { $alFail += 'the try has no finally' }
-    else {
-        if (@($t.Finally.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)).Count) { $alFail += 'the finally runs a command (restore by assignment only: with auto-loading off a cmdlet there may not resolve)' }
-        if (-not (@($t.Finally.Statements) | Where-Object { & $isPrefAssign $_ 'PSModuleAutoLoadingPreference' })) { $alFail += 'the finally does not assign $PSModuleAutoLoadingPreference' }
-    }
-    if ($t.CatchClauses.Count) { $alFail += 'the try has a catch clause (the restore path must be the finally alone)' }
-    $alAssigns = @($alAst.FindAll({ param($n) & $isPrefAssign $n 'PSModuleAutoLoadingPreference' }, $true))
-    if ($alAssigns.Count -ne 2) { $alFail += "want exactly 2 assignments to `$PSModuleAutoLoadingPreference in report-issue.ps1 (off, restore), found $($alAssigns.Count)" }
-}
-$ok = (Assert-True 'G1 report-issue.ps1: auto-loading is switched off only for the git/gh/claude lookups (try holds those Get-Command assignments alone, finally restores by assignment, two assignments in the file)' ($alFail.Count -eq 0) ($alFail -join ' · ')) -and $ok
-
-function Invoke-AutoLoadProbe([string]$Name, [string]$Prior) {
-    $p = Join-Path $fx "alprobe-$Name.ps1"
-    $body = @($Prior, $alSnippet, '"AL=$PSModuleAutoLoadingPreference"; "ARCHIVE=" + [bool](Get-Command Compress-Archive -ErrorAction SilentlyContinue)') | Where-Object { $_ }
-    Set-Content -LiteralPath $p -Value ($body -join "`n") -Encoding utf8
-    return (& $pwshExe -NoProfile -File $p 2>&1 | Out-String)
-}
-$archiveAvail = [bool](Get-Module -ListAvailable -Name Microsoft.PowerShell.Archive)
-if (-not $alSnippet) {
-    $ok = (Assert-True 'G2 the extracted lookup leaves module auto-loading working in a fresh child' $false 'G1 could not extract the snippet') -and $ok
-    $ok = (Assert-True 'G3 the extracted lookup restores a prior enum None exactly (not widened to All)' $false 'G1 could not extract the snippet') -and $ok
-} else {
-    # Prior UNSET (the -File default): restored to All, so a cmdlet from a NOT-yet-loaded module still resolves.
-    $o2 = Invoke-AutoLoadProbe 'unset' ''
-    if ($archiveAvail) {
-        $ok = (Assert-Text 'G2 the extracted lookup leaves module auto-loading working in a fresh child (prior unset -> All; a cmdlet from a not-yet-loaded module resolves after it)' $o2 @('(?m)^AL=All\s*$', '(?m)^ARCHIVE=True\s*$') @('(?m)^AL=None')) -and $ok
-    } else {
-        Write-Host 'SKIP [G2 auto-load restore] Microsoft.PowerShell.Archive is not installed here, so no not-yet-loaded module cmdlet can prove the restore (reported, not silent)' -ForegroundColor Yellow
-    }
-    # Prior ENUM None (a profile can set it typed): the enum's value is 0, falsy — a truthiness test restores All.
-    $o3 = Invoke-AutoLoadProbe 'enumnone' '$PSModuleAutoLoadingPreference = [System.Management.Automation.PSModuleAutoLoadingPreference]::None'
-    $ok = (Assert-Text 'G3 the extracted lookup restores a prior enum None exactly (stays None, not widened to All)' $o3 @('(?m)^AL=None\s*$') @('(?m)^AL=All')) -and $ok
-}
-
-# =================================================================================================
-# I. Inline()'s character class, pinned to EXPECTED values like hook-lib.selftest pins inline()
-# =================================================================================================
-# report-issue.ps1's Inline() is the one pwsh copy of the one-line rule left (the hooks and the inbox import
-# hook-lib.mjs's inline()). B2b reaches it through four hostile characters only, so a narrowed class could
-# pass. This case runs the REAL function, extracted from the AST parsed for G, on one string of every UTF-16
-# code unit in order between two 'x' (Trim never reaches a unit). The result must equal that string with exactly
-# the class turned to spaces — C0, DEL, NEL, U+2028, U+2029 and the backtick, spelled here by code point and
-# never as the character. One string comparison, not a pwsh loop per unit; the loop runs only on a miss, to name it.
-$inFail = @()
-$inDef = @($alAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Inline' }, $true))
-if ($inDef.Count -ne 1) { $inFail += "want exactly one function Inline in report-issue.ps1, found $($inDef.Count)" }
-else {
-    . ([scriptblock]::Create($inDef[0].Extent.Text))
-    $inIn = 'x' + [string]::new([char[]](0..0xFFFF)) + 'x'
-    $inWantChars = $inIn.ToCharArray()
-    foreach ($c in @(0..0x1F) + @(0x7F, 0x85, 0x2028, 0x2029, 0x60)) { $inWantChars[$c + 1] = ' ' }
-    $inWant = [string]::new($inWantChars)
-    $inOut = Inline $inIn
-    if ($inOut.Length -ne $inIn.Length) { $inFail += "Inline changed the length: $($inIn.Length) -> $($inOut.Length)" }
-    elseif ($inOut -cne $inWant) {
-        $inMiss = @(for ($c = 0; $c -lt 0x10000; $c++) {
-            if ($inOut[$c + 1] -cne $inWant[$c + 1]) { 'U+{0:X4} became U+{1:X4}, want U+{2:X4}' -f $c, [int]$inOut[$c + 1], [int]$inWant[$c + 1] } })
-        $inFail += "$($inMiss.Count) unit(s) off the class: $(($inMiss | Select-Object -First 8) -join ', ')$(if ($inMiss.Count -gt 8) { ', ...' })"
-    }
-}
-$ok = (Assert-True 'I1 Inline() flattens exactly C0, DEL, U+0085, U+2028, U+2029 and the backtick to a space, over every UTF-16 code unit' ($inFail.Count -eq 0) ($inFail -join ' · ')) -and $ok
+# The pwsh original carried its own copy of the one-line rule, and I1 pinned that copy over every UTF-16
+# code unit. The Node port imports hook-lib.mjs's inline(), whose class hook-lib.selftest pins the same way,
+# so I1 now pins the import and the absence of a second copy: no other character class over the flattened
+# set (U+2028, U+2029, U+0085) in the script. B2c still drives the rule end to end through a hostile title.
+# (Cases G1-G3 pinned pwsh's module auto-loading switch around the git/gh/claude lookups; Node has no such
+# switch, so they left with report-issue.ps1.)
+$iSrc = [IO.File]::ReadAllText($script)
+$iFail = @()
+if ($iSrc -notmatch "(?m)^import \{[^}]*\binline\b[^}]*\} from '\.\./\.\./hooks/hook-lib\.mjs'") { $iFail += "no import of inline from '../../hooks/hook-lib.mjs'" }
+if ($iSrc -match '\\u2028|\\u2029|\\u0085|\\x85') { $iFail += 'the script spells a flattened code point itself (a second copy of the class)' }
+$ok = (Assert-True 'I1 report-issue.mjs flattens through hook-lib inline() (imported, no second copy of the class)' ($iFail.Count -eq 0) ($iFail -join ' · ')) -and $ok
 
 # --- META: the harness itself must be able to fail ------------------------------------------------
 $meta = (Assert-Text 'META probe' 'abc' @('zzz') @() 6>$null)

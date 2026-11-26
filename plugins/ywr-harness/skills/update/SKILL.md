@@ -94,9 +94,9 @@ ahead of the session is visible and normal — it *is* the restart-to-apply sign
 
 It never runs `/ywr-harness:harness-init` itself, even though bundling it looks convenient
 (ywr-harness ADR 0034): the byte comparison alone cannot prove direction (the `.harness-version` stamp
-orients the nudge's advice since ywr-harness ADR 0042, and `init.ps1` itself refuses a stamped downgrade —
+orients the nudge's advice since ywr-harness ADR 0042, and `init.mjs` itself refuses a stamped downgrade —
 but a stampless repo stays ambiguous), so an automatic re-run could REVERT a
 working tree that is deliberately newer than the installed plugin (ywr-harness ADR 0033); before the reload
-has happened, *which* `init.ps1` bytes a path invocation executes is an installation-layout
+has happened, *which* `init.mjs` bytes a path invocation executes is an installation-layout
 detail, not a contract; and `ywr-harness:harness-init` is user-invoked by design — a bundle that
 shells into its script would bypass that gate.

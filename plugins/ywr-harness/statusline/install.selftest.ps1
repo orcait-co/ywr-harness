@@ -1,4 +1,4 @@
-# Selftest for install.ps1 — it writes into the USER's global settings.json, which is the most
+# Selftest for install.mjs — it writes into the USER's global settings.json, which is the most
 # valuable file this plugin touches anywhere. Every branch is enumerated, and the two that matter
 # most are the ones a happy-path check never reaches: an unrelated key must survive the rewrite,
 # and an existing statusLine belonging to someone else must not be clobbered.
@@ -9,14 +9,17 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
-$install = Join-Path $PSScriptRoot 'install.ps1'
+$install = Join-Path $PSScriptRoot 'install.mjs'
 $fxBase = New-FixtureRoot 'statusline-install-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 $ok = $true
 
+# The installer is Node (ywr-harness ADR 0220). Call sites keep the old switch names; this map is the one place
+# that turns them into the Node flags.
+$flagMap = @{ '-DryRun' = '--dry-run'; '-ClaudeDir' = '--claude-dir' }
 function Invoke-Install([string]$Dir, [string[]]$Extra) {
-    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $install, '-ClaudeDir', $Dir) + $Extra
-    $out = & pwsh @a 2>&1 | Out-String
+    $a = @($install, '--claude-dir', $Dir) + @($Extra | ForEach-Object { if ($flagMap.ContainsKey($_)) { $flagMap[$_] } else { $_ } })
+    $out = & node @a 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 function New-Dir([string]$Name) {
@@ -180,7 +183,7 @@ $i = New-Dir 'explicit-beats-env'
 $prevCfg = $env:CLAUDE_CONFIG_DIR
 try {
     $env:CLAUDE_CONFIG_DIR = $h
-    $outH = & pwsh -NoProfile -ExecutionPolicy Bypass -File $install 2>&1 | Out-String
+    $outH = & node $install 2>&1 | Out-String
     $codeH = $LASTEXITCODE
     # An explicit -ClaudeDir still wins over the env var — every fixture-pointed case in this
     # suite depends on exactly that precedence.
@@ -206,7 +209,7 @@ try {
     $env:CLAUDE_CONFIG_DIR = 'not-absolute\cfg'
     Push-Location $fxBase
     try {
-        $outI2 = & pwsh -NoProfile -ExecutionPolicy Bypass -File $install 2>&1 | Out-String
+        $outI2 = & node $install 2>&1 | Out-String
         $codeI2 = $LASTEXITCODE
     } finally { Pop-Location }
     # Explicit dir under the same malformed env: must still install (trusted verbatim).

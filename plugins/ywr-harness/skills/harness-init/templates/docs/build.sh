@@ -16,7 +16,7 @@ for cand in python3 python py; do
 done
 [ -n "$py" ] || { echo "Python을 찾을 수 없습니다 (python3/python/py)." >&2; exit 1; }
 
-# Encoding pin, same as build.ps1. Harmless where the locale is already UTF-8. Without it a
+# Encoding pin, same as build.mjs. Harmless where the locale is already UTF-8. Without it a
 # non-UTF-8 locale turns the builder's own output into exit 1 after index.json is written.
 export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8

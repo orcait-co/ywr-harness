@@ -52,8 +52,8 @@ like any code about to run on their machine — and its contract ("default mode 
 that writes nothing") is that contract, not a verified property.
 
 Exit 0 = the committed source matches its generator. Exit 1 = DRIFT: stop, tell the member to
-regenerate with the repo's own regeneration command (whatever the repo documents — `pwsh
-docs/build.ps1` for the docs surfaces; a check script has no write mode by contract, the
+regenerate with the repo's own regeneration command (whatever the repo documents — `node
+docs/build.mjs` for the docs surfaces; a check script has no write mode by contract, the
 generator does), commit, and re-invoke. Exit 2 = REFUSED: misuse, or a corpus/declaration the
 generator itself refuses — regeneration will not help; fix the cause the check names, then
 re-invoke. Never publish a drifted source, and never
@@ -62,10 +62,12 @@ regenerate on your own initiative — the regeneration is a tree change the memb
 ## 3. Live state first, then ONE confirmation
 
 Before asking anything, learn what is live — one tool result line, no page read: `Artifact
-action: read_file` with the item's `url` and `path: "index.html"` saves the served page to the
-scratchpad and names the saved path, its byte count and its sha256 (above the tool's small-file
-band; for a small page the tool's contract echoes the file's text too — the proof is the hash over
-the saved file either way, and the echo costs the page's own size). Strip the wrapper (§5's rule)
+action: read` with the item's `url` and `path: "index.html"` saves the served page to a local file
+and names where it put it, its byte count and its sha256 (ywr-harness fact 138, Claude Code 2.1.332;
+the tool lists no `read_file`). That sha256 covers the whole served page, wrapper included: hash the
+saved file's body, never compare the tool's sha256 with the source. Nobody measured whether it echoes a small page's text — the proof is the hash over
+the saved file either way. Without `path`, `action: read` reads the whole page into context: never
+use that form for a proof. Strip the wrapper (§5's rule)
 and find the served body in the source's COMMITTED HISTORY: `git log --format=%h -- <source>`
 lists every state the repo has had (`--follow` if the source was ever renamed); hash each
 (`git show <sha>:<source>`, newest first — the first match is enough), allowing the one trailing
@@ -96,15 +98,18 @@ Nothing has left the machine yet. On stop, print what remains so the member can 
 For each confirmed item, publish `source` to its declared `url` with the Artifact tool. The
 tool refuses a republish until THIS conversation has Read the live version, and the order
 matters: a fetch placed BEFORE the first refusal counts for nothing (ywr-harness fact 43).
-`read_file` never satisfies the precondition. The sequence,
-as last measured (ywr-harness fact 138, Claude Code 2.1.296):
+`read_file` never satisfied the precondition (ywr-harness fact 43); nobody measured whether the §3
+`read` with `path` does, so follow what each refusal asks, never that guess. The sequence,
+as measured on Claude Code 2.1.296 and 2.1.332 (ywr-harness fact 138):
 
-1. `Artifact publish` of `source` to `url`. It is REFUSED — the contract, not an error: the tool
-   saves the served page to a local file and demands it be Read line by line. The refusal arrives
-   before any approval prompt. Omit `icon` — a redeploy keeps the page's tab icon
+1. `Artifact publish` of `source` to `url`. It is REFUSED — the contract, not an error. On 2.1.296
+   the tool saved the served page to a local file and demanded it be Read line by line. On 2.1.332
+   it printed a line diff against the live page and said that this made the live version count as
+   viewed; it demanded no Read. The refusal arrives before any approval prompt. Omit `icon` — a
+   redeploy keeps the page's tab icon
    (`favicon` is the deprecated name); label per the repo's convention (e.g. `v<version>-rn`).
-2. Read that saved file line-complete. Size the slices to the per-call TOKEN cap, not to a line
-   count — denser lines need smaller slices (measured 2026-09-07 on a ~2,000-line page: 250-line
+2. Only when the refusal demands a Read: read that saved file line-complete. Size the slices to
+   the per-call TOKEN cap, not to a line count — denser lines need smaller slices (measured 2026-09-07 on a ~2,000-line page: 250-line
    reads exceeded the cap past the middle of the file, ~125-line slices did not). ~50k tokens at
    136 KB.
 3. `Artifact publish` again, unchanged. It is REFUSED as identical content. Read what the
@@ -114,29 +119,31 @@ as last measured (ywr-harness fact 138, Claude Code 2.1.296):
      step 4.
    - It names a fetch of the URL ("fetch the artifact's URL again — re-Reading a file an
      earlier refusal handed you does not count") → this is the older host behaviour of ywr-harness fact 43.
-     Call `Artifact action: read` of the `url` once (~45k tokens at 136 KB; the page enters
+     Call `Artifact action: read` of the `url` once, without `path` (~45k tokens at 136 KB; the page enters
      context), then go to step 4.
    - It says neither → stop and report its text. A host change moved the precondition; never
      publish again on a guess.
 4. `Artifact publish` — succeeds (the result names the new Version). Record in the close which
-   branch of step 3 ran: ywr-harness fact 138 is one measurement, and the next republish re-measures it.
+   refusal shape step 1 met and which branch of step 3 ran: ywr-harness fact 138 holds two
+   measurements on two hosts, and the next republish re-measures it.
 
 For a large page (megabytes) the saved copy counts as viewed and step 2 is not demanded. Never
 fight a refusal with `force`, and never read the served copy into context for a comparison — the
-hash is the proof (ywr-harness fact 38); §3's `read_file` is what proves nothing is lost, so the refusal's
-saved copy is never needed for a proof. Budget ≈50k tokens of served page per republish at 136 KB
-(step 2), ≈95k when step 3 names the fetch, and none when §3 finds the page already live; a
-smaller page costs proportionally less.
+hash is the proof (ywr-harness fact 38); §3's `action: read` with `path` is what proves nothing
+is lost, so the refusal's saved copy is never needed for a proof. Budget ≈50k tokens of served
+page per republish at 136 KB when step 1 demands the Read of step 2, ≈45k more when step 3 names
+the fetch, and none when §3 finds the page already live; a smaller page costs proportionally less.
+A refusal that demands no Read still prints its line diff into context, and the diff grows with the
+lines the publish changes: budget it from the size of `git diff <live commit> HEAD -- <source>`.
 
 A publish refused for OWNERSHIP is final for this machine: only the account that owns the URL
 can redeploy it. Report which account owns it and stop — never work around it.
 
 ## 5. Lockstep proof
 
-After publishing, prove served == committed by byte comparison: `Artifact action: read_file`
-(`path: "index.html"`) again — the saved copy on disk, the result as in §3 (one line above the
-tool's small-file band, a small page's text echoed too); never `action: read` here (it reads the
-whole page into context by design, ywr-harness fact 38). Strip the frame-runtime head through
+After publishing, prove served == committed by byte comparison: `Artifact action: read` with
+`path: "index.html"` again — the saved copy on disk, the result as in §3; never `action: read`
+without `path` here (it reads the whole page into context by design, ywr-harness fact 38). Strip the frame-runtime head through
 `<body>\n` and the trailing `</body></html>`, hash the remainder, compare with the committed
 source file. **The serve wrapper appends ONE trailing LF before `</body></html>`** (measured
 pre- and post-publish) — treat served-stripped ==

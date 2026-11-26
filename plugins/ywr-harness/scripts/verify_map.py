@@ -101,7 +101,7 @@ def spec_files(spec: dict, warns: list[str]) -> list[str]:
         shown = "null" if raw is None else f"{type(raw).__name__} {json.dumps(raw)[:40]}"
         warns.append(f"spec {sid}: implements_in in the index is {shown}, not a list "
                      "— treated as owning NO files. If the spec declares a block or multi-line "
-                     "list, rebuild the index (pwsh docs/build.ps1): builders before 0.54.0 read "
+                     "list, rebuild the index (node docs/build.mjs): builders before 0.54.0 read "
                      "only the one-line [a, b] form. If a rebuilt index still shows this, the "
                      "value itself is not a list — write it as [a, b], or [] for a spec that "
                      "owns nothing yet")
@@ -135,7 +135,7 @@ def main() -> int:
     index_path = root / cfg["index"]
     if not index_path.exists() and not index_path.is_symlink():  # a dangling link is FAILED below
         hc.say(f"index: ABSENT — {cfg['index']} does not exist, so no spec owns any file and "
-               "nothing below is spec-verified; build it: pwsh docs/build.ps1")
+               "nothing below is spec-verified; build it: node docs/build.mjs")
         return 0
     try:
         index = json.loads(index_path.read_text(encoding="utf-8"))
@@ -145,7 +145,7 @@ def main() -> int:
         print(f"{cfg['index']} unreadable ({type(e).__name__}: {e})", file=sys.stderr)
         hc.say(f"index: FAILED — {cfg['index']} exists but cannot be read ({type(e).__name__}); "
                "NOTHING was mapped or verified. This run must not be read as a pass (ywr-harness ADR 0110); "
-               "rebuild: pwsh docs/build.ps1")
+               "rebuild: node docs/build.mjs")
         return 1
     specs = index.get("spec", [])  # a non-object entry is REFUSED per entry in the loop below
 
@@ -157,11 +157,11 @@ def main() -> int:
     stamp = index.get("fm_digest")
     if stamp is None:
         hc.say("index: no staleness stamp (index predates ywr-harness ADR 0043) — rebuild once to enable: "
-               "pwsh docs/build.ps1")
+               "node docs/build.mjs")
     elif fm_digest((root / cfg["index"]).parent) != stamp:
         hc.say("index: STALE — the adr/spec frontmatter beside the index differs from the "
                "committed index, so the spec ownership below may be out of date; rebuild: "
-               "pwsh docs/build.ps1 (advisory — CI's drift gate enforces this on merge)")
+               "node docs/build.mjs (advisory — CI's drift gate enforces this on merge)")
 
     try:
         files, prov = hc.changed_files(root, args.rev_range, args.files)
@@ -193,7 +193,7 @@ def main() -> int:
     for n, spec in enumerate(specs, 1):
         if not isinstance(spec, dict):
             refused.append(f"index spec entry {n} is not an object — skipped, it maps nothing; "
-                           "rebuild the index (pwsh docs/build.ps1)")
+                           "rebuild the index (node docs/build.mjs)")
             continue
         # An entry without a usable id still MAPS: dropping it would hide its verify
         # scripts — a coverage gap reading as "no spec owns this". Shown under a placeholder and
@@ -204,7 +204,7 @@ def main() -> int:
             sid = f"(index entry {n}, no id)"
             refused.append(f"index spec entry {n} (title {json.dumps(spec.get('title', ''))[:60]}) "
                            "has no id — mapped under a placeholder; give the spec an `id:` in its "
-                           "frontmatter and rebuild the index (pwsh docs/build.ps1)")
+                           "frontmatter and rebuild the index (node docs/build.mjs)")
         impl = spec_files(spec, refused)
         verify = sorted(p for p in impl if verify_re and verify_re.match(p))
         matched = sorted(f for f in files if hc.owned(impl, f))

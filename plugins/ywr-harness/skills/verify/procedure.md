@@ -19,7 +19,7 @@ python "<PLUGIN_ROOT>/scripts/verify_map.py" <file> [...]          # explicit fi
 `--range` unions in the current working tree (including untracked files), so running it
 pre-commit still sees everything. The mapper reads `.harness.json` for this repo's paths and
 runner, and the generated docs index for `implements_in` — **not** the spec files. When the
-mapper prints `index: STALE`, run `pwsh docs/build.ps1`, then run the mapper again before you
+mapper prints `index: STALE`, run `node docs/build.mjs`, then run the mapper again before you
 read its output.
 
 Invocation argument (your prompt carries it) — when non-empty, use it as the range (or explicit file list).

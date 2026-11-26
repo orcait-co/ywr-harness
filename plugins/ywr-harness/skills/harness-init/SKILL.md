@@ -13,33 +13,32 @@ pipeline that regenerates `index.json` · `INDEX.md` · `docs.html` · `docs.art
 Run it:
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/harness-init/init.ps1" -Target <repo root>
+node "${CLAUDE_PLUGIN_ROOT}/skills/harness-init/init.mjs" --target <repo root>
 ```
 
-Add `-DryRun` to see the plan without writing. `-Target` defaults to the current directory.
-Requires pwsh 7 (plugin README §Prerequisites) — under Windows PowerShell 5.1 the script
-refuses explicitly rather than running.
+Add `--dry-run` to see the plan without writing. `--target` defaults to the current directory.
+Exit 0 = placed, 1 = a guard refused or a write failed, 2 = a usage error.
 
-**Pull before you scaffold (ywr-harness ADR 0135).** Do not run `git fetch` yourself: `init.ps1` fetches the
-branch's upstream remote and `origin` itself, `-DryRun` included (ywr-harness ADR 0137). A failed or timed-out
+**Pull before you scaffold (ywr-harness ADR 0135).** Do not run `git fetch` yourself: `init.mjs` fetches the
+branch's upstream remote and `origin` itself, `--dry-run` included (ywr-harness ADR 0137). A failed or timed-out
 fetch prints one `FETCH FAILED` line and the run goes on against the last fetch. When a remote-tracking ref (the
-branch's upstream, then `origin/HEAD`) carries a `.harness-version` change this checkout lacks, `init.ps1`
+branch's upstream, then `origin/HEAD`) carries a `.harness-version` change this checkout lacks, `init.mjs`
 prints `REFUSED — <ref> has commit(s) not in this checkout that change the scaffold` and writes
-nothing, `-DryRun` included: another clone already scaffolded or refreshed this repo and pushed.
-Tell the member to pull (merge or rebase that ref) and re-run. Pass `-AllowUpstreamAhead` only when
-the member confirms the branch deliberately diverges — never on your own. `-Force` does NOT bypass
+nothing, `--dry-run` included: another clone already scaffolded or refreshed this repo and pushed.
+Tell the member to pull (merge or rebase that ref) and re-run. Pass `--allow-upstream-ahead` only when
+the member confirms the branch deliberately diverges — never on your own. `--force` does NOT bypass
 this refusal; do not offer it here (it also arms first-run collision replacement).
 
-**On a repo that already has a `.harness-version` stamp, ALWAYS run `-DryRun` first** — not a
+**On a repo that already has a `.harness-version` stamp, ALWAYS run `--dry-run` first** — not a
 habit but a load-bearing order: if the dry run reports a same-version conflict, the upstream
 report must be drafted BEFORE the real run (§Same-version conflicts below), because the real run
 reverts exactly the drift the report needs to read.
 
-**Brownfield repos (an existing `docs/` or its own build scripts): run `-DryRun` first.** On a
+**Brownfield repos (an existing `docs/` or its own build scripts): run `--dry-run` first.** On a
 FIRST run (no `.harness-version` stamp yet), an existing file at a toolchain path whose content
 differs is REFUSED rather than replaced — it is not the canon's output, and overwriting it
 would be data loss (ywr-harness ADR 0055). Merge or move each refused file and re-run; a deliberate
-replacement re-runs with `-Force`. The version stamp is withheld until the collisions are
+replacement re-runs with `--force`. The version stamp is withheld until the collisions are
 resolved, so a later re-run cannot silently overwrite them either.
 
 ## What re-running does
@@ -55,6 +54,10 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
   line, ywr-harness ADR 0051). A seed this repo does not have yet — e.g. the root `.gitignore` (ywr-harness ADR 0053)
   on a repo scaffolded before it existed — IS placed by a re-run: creation is not an overwrite.
 - **Nothing is ever deleted.** Accumulated ADRs and specs are untouched.
+- **A retired file is named, never removed.** A file that an earlier release placed and this one no
+  longer places (today `docs/build.ps1`, replaced by `docs/build.mjs`) gets one `retired: <path> —`
+  line when it is still in the target, on a dry run and a real run alike. The line asks the member to
+  delete it with `git rm`. It changes neither the exit code nor the stamp.
 - **Placement writes LF** — no matter how the installed plugin cache was checked out
   (`core.autocrlf` can stamp CRLF onto it), CRLF in a template folds to LF on write (only the
   pair — a lone 0x0D is content and survives), and a file that differs from its template only in
@@ -71,16 +74,16 @@ the block, do this BEFORE the real run:
 
 1. Draft the report (nothing is filed):
    ```
-   pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.ps1" -Target <repo root> -Description "<which files were edited and why — name the files from the block, and what the member says the edit fixes>"
+   node "${CLAUDE_PLUGIN_ROOT}/skills/report-issue/report-issue.mjs" --target="<repo root>" --description="<which files were edited and why — name the files from the block, and what the member says the edit fixes>"
    ```
 2. Show the member the FULL body file it printed, and the `similar open reports:` line. A
    fingerprint hit there means this exact conflict is already filed — say so and default to NOT
    filing again.
 3. Ask ONE question: file it / skip. On file, run the exact FILE command the draft printed
-   (`report-issue.ps1 -File -BodyPath …`). On skip, print that command so the member can file later.
+   (`report-issue.mjs --file --body-path=…`). On skip, print that command so the member can file later.
    Never file without the confirmation, never change the body after showing it, never include
    diff text (ywr-harness ADR 0064).
-4. Only then run the real `init.ps1`. The revert is intended — the canon ships the fix in a
+4. Only then run the real `init.mjs`. The revert is intended — the canon ships the fix in a
    release. The real run's block names a `pre-revert copies:` dir where the local content
    survives, so the diff can still be attached in-thread when the canon asks for it.
 
@@ -120,10 +123,10 @@ no report.
    that the note does not name. The template value is the sure fix. When the note says
    `review.docs_only probe skipped`, `docs_only listing stopped` or `not compared`, the compare
    did not finish. Then check the value by hand: no entry may match `CLAUDE.md`, `AGENTS.md`,
-   `REVIEW.md`, a file under `docs/prompts/` or a `.py`, `.ps1` or `.sh` file under `docs/`.
+   `REVIEW.md`, a file under `docs/prompts/` or a `.py`, `.ps1`, `.mjs` or `.sh` file under `docs/`.
 
 If the run reported `SKIP build — python not on PATH`, the four surfaces do not exist yet: no
-tooling can query this repo's decisions until `pwsh docs/build.ps1` succeeds.
+tooling can query this repo's decisions until `node docs/build.mjs` succeeds.
 
 ## The execution layer
 

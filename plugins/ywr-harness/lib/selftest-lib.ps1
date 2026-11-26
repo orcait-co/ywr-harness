@@ -172,7 +172,7 @@ function Invoke-ScriptInRunspace([string]$Path, [hashtable]$Arguments = @{}) {
 $script:ArgvParamCache = @{}
 function Get-ScriptParamTable([string]$Path) {
     $f = Get-Item -LiteralPath $Path
-    # Keyed by content, not path: the init suite's script copies share init.ps1's parse (73 ms each, measured).
+    # Keyed by content, not path: a suite's copies of one script share its parse (73 ms each, measured).
     $key = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($f.FullName)))
     if (-not $script:ArgvParamCache.ContainsKey($key)) {
         # Get-Command reports a script that does not parse as one with no parameters (measured), so ask the parser.

@@ -1,17 +1,17 @@
 // Hooks module (Claude Mods; ywr-harness ADR 0142) — the PREREQUISITE check and its install command. `mods.mjs`, the
 // entry `hooks.json` names under `modules`, registers it beside the delegation ledger.
 //
-// The plugin needs three tools on PATH: `node` runs the settings hooks (ywr-harness ADR 0116), `pwsh` 7+ runs
-// the skills' scripts and every selftest, `python` 3.9+ runs the gate scripts. A settings hook cannot
+// The plugin needs two tools on PATH: `node` 22+ runs the settings hooks (ywr-harness ADR 0116), the skills' scripts
+// and the statusline installer (ywr-harness ADR 0220), `python` 3.9+ runs the gate scripts. A settings hook cannot
 // report its own runtime's absence, so this check is a mod: the host runs a mod in an engine
 // environment of its own, with no Node (ywr-harness fact 135), and `$.process.run` reaches the host's commands.
 //
 // What it does:
-// - `session.start`: after `next(e)` resolves it starts the three `--version` probes on a
+// - `session.start`: after `next(e)` resolves it starts the `--version` probes on a
 //   `$.clock.after(0, …)` timer and does not wait for them, so the probes never delay the session start
 //   (ywr-harness ADR 0164; a host without the call runs them directly). A probe that rejects with ENOENT / "not
 //   found", or a command that exits non-zero (the Windows Store `python` alias does), is MISSING; a
-//   `pwsh` below 7 or a `python` below 3.9 is OLD; anything else (a timeout, a surface without
+//   `node` below 22 or a `python` below 3.9 is OLD; anything else (a timeout, a surface without
 //   `$.process`) is UNKNOWN and never speaks. On Windows a not-found refusal is tried once more by the
 //   app execution alias path (`aliasPath`, ywr-harness ADR 0150): the runner refuses a bare alias name when the cwd
 //   is an ancestor of the alias folder, as the home folder is (ywr-harness fact 147).
@@ -51,14 +51,12 @@ export const WINGET_UP_TO_DATE = 0x8A15002B
 
 export const TOOLS = [
   {
-    name: 'node', argv: ['node', '--version'], min: null, winget: 'OpenJS.NodeJS.LTS',
-    other: 'macOS: `brew install node` · Linux: the distribution package or nodejs.org',
-    uses: 'the ywr-harness settings hooks (session start, config change, added directory, every Agent call, every question, every subagent stop) report a hook error',
-  },
-  {
-    name: 'pwsh', argv: ['pwsh', '--version'], min: [7, 0], winget: 'Microsoft.PowerShell',
-    other: 'macOS: `brew install --cask powershell` · Linux: learn.microsoft.com/powershell',
-    uses: 'the ywr-harness:harness-init and ywr-harness:report-issue skill scripts and every plugin selftest fail',
+    name: 'node', argv: ['node', '--version'], min: [22, 0], winget: 'OpenJS.NodeJS.LTS',
+    other: 'macOS: `brew install node` (an old Homebrew node: `brew upgrade node`) · Linux: a 22+ LTS from nodejs.org or a version manager such as nvm (a distribution package can be older than 22)',
+    uses: 'the ywr-harness settings hooks (session start, config change, added directory, every Agent call, every question) report a hook error, and the ywr-harness:harness-init and ywr-harness:report-issue skill scripts and the ywr-harness statusline installer fail',
+    // An OLD node is not known to break anything: nobody tested the hooks and the skill scripts below 22.0
+    // (ywr-harness ADR 0220). So the note and the band say that, not a failure.
+    oldUses: 'nobody tested the ywr-harness hooks and skill scripts below 22.0, and ywr-harness requires 22.0 (ywr-harness ADR 0220)',
   },
   {
     name: 'python', argv: ['python', '--version'], min: [3, 9], winget: 'Python.Python.3.13',
@@ -69,7 +67,7 @@ export const TOOLS = [
 
 const minText = t => (t.min ? `${t.min[0]}.${t.min[1]}` : '')
 
-// The first `major.minor` in a `--version` line: `PowerShell 7.6.6`, `v24.14.0`, `Python 3.13.13`.
+// The first `major.minor` in a `--version` line: `v24.14.0`, `Python 3.13.13`.
 export function parseVersion(text) {
   const m = /(\d+)\.(\d+)/.exec(String(text ?? ''))
   return m ? [Number(m[1]), Number(m[2])] : null
@@ -100,7 +98,7 @@ export function needsOf(verdicts) {
   return out
 }
 
-// The per-user folder of Windows app execution aliases. The Store `pwsh` and `winget` are aliases there
+// The per-user folder of Windows app execution aliases. The Store `python` and `winget` are aliases there
 // (0-byte reparse points). `$.process.run` refuses a bare alias name with the not-found error when the
 // session's cwd is an ancestor of that folder, the home folder included, and runs the same alias by its
 // absolute path (ywr-harness fact 147, ywr-harness ADR 0150). The Desktop session that showed it ran in the home folder.
@@ -139,19 +137,23 @@ async function probeAll($, win) {
 
 const needText = n => (n.state === 'old' ? `${n.tool.name} ${n.version} (${minText(n.tool)} 이상 필요)` : n.tool.name)
 
+// A tool with `oldUses` that is only OLD is not known to break anything, so a band that names only such tools says that
+// the version is below what ywr-harness requires, never that a feature fails.
 export function bandText(needs) {
-  return `[ywr-harness] ${needs.map(needText).join(' · ')} 이(가) 없어 일부 기능이 동작하지 않습니다. ` +
+  const fails = needs.some(n => n.state !== 'old' || !n.tool.oldUses)
+  return `[ywr-harness] ${needs.map(needText).join(' · ')} ` +
+    (fails ? '이(가) 없어 일부 기능이 동작하지 않습니다. ' : '은(는) ywr-harness 가 필요로 하는 버전보다 낮습니다. ') +
     `/ywr-harness:setup 을 입력하면 설치합니다.`
 }
 
 export function noteText(needs) {
   const lines = needs.map(n => n.state === 'old'
-    ? `- \`${n.tool.name}\` ${n.version} is older than the ${minText(n.tool)} the harness needs: ${n.tool.uses}.`
+    ? `- \`${n.tool.name}\` ${n.version} is older than the ${minText(n.tool)} the harness needs: ${n.tool.oldUses ?? n.tool.uses}.`
     : `- \`${n.tool.name}\` is not on PATH: ${n.tool.uses}.`)
   return [
     'ywr-harness prerequisite check (from the plugin, at session start):',
     ...lines,
-    'Those failures come from the missing tools, not from a defect in the repository. The user sees a band that names ' +
+    'Any such failure comes from these tools, not from a defect in the repository. The user sees a band that names ' +
     'the command `/ywr-harness:setup`. That command runs winget on Windows, and the plugin installs nothing until the ' +
     'user types it. A new tool is visible only after Claude Code restarts.',
   ].join('\n')

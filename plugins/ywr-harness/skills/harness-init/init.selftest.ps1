@@ -1,4 +1,4 @@
-# Selftest for init.ps1 — the scaffold writes into somebody's repo, so every terminal branch is
+# Selftest for init.mjs — the scaffold writes into somebody's repo, so every terminal branch is
 # enumerated here rather than trusted. The two that matter most are the ones a "it worked on my
 # empty directory" check would never reach: a locally-edited TOOLCHAIN file must be reverted, and
 # an existing SEED file must survive byte-identical. Getting those backwards either silently
@@ -8,54 +8,139 @@
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')   # assertion core
+# init.mjs is Node (ADR 0220): absent node is a reported skip locally and a FAIL on CI.
+Assert-NodeOrExit 'init'
 
-$init = Join-Path $PSScriptRoot 'init.ps1'
+$init = Join-Path $PSScriptRoot 'init.mjs'
 $templates = Join-Path $PSScriptRoot 'templates'
 $fxBase = New-FixtureRoot 'harness-init-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 
 $ok = $true
+$nodeExe = (Get-Command node -CommandType Application).Source
 # The git worker binary ahead of the cmd\git.exe launcher (lib Use-GitWorkerBinary, ADR 0111): the
-# in-process runspaces below inherit this PATH, so init.ps1's own git calls take the short path too.
+# node children below inherit this PATH, so init.mjs's own git calls take the short path too.
 # Left in place — under `pwsh -File` the process ends with it.
 $null = Use-GitWorkerBinary
-# In-process invocation (ADR 0071 option E, 2026-09-02): init.ps1 runs in a NEW RUNSPACE of this
-# pwsh through the lib's Invoke-ScriptInRunspace — no child process, no cold start (1.95 s → ~0.5 s
-# per run on the owner's box, paid on every Invoke-Init line — 57 when this landed), and a child's isolation kept (default
-# preferences, fresh $LASTEXITCODE, no scope leak). Contract in the lib: Code is init.ps1's own
-# `exit N`; an abort (missing script, `throw`, an unhandled error under init.ps1's own 'Stop') is
-# Code -1 with Aborted — never an exit code, so an infrastructure failure cannot pass as a G/H/S1
-# "exits 1" case. `-Script` runs a COPY of init.ps1 (cases H, R, X5 rewrite the plugin dir).
+# Child invocation (ADR 0220): init.mjs runs as a `node` child process, its stdout and stderr decoded
+# as UTF-8 bytes (a pwsh child read would use the console code page). Contract of the returned
+# Code/Out/Aborted shape, the one the suites keep from the in-process runner:
+#   Code    — init.mjs's own exit code: 0 placed, 1 a guard refused or a write failed, 2 a usage error.
+#   Aborted — $true with Code -1 when the script never ran or crashed: the file is missing, the child
+#             was stopped at the time bound, or it exited non-zero AND Node's uncaught-error report is on
+#             stderr. That report always ends with a `Node.js vNN.N.N` line, whether the cause is a throw,
+#             a rejected promise, a failed import or a syntax error, and init.mjs itself writes nothing
+#             to stderr (Z0), so the trailer separates a crash from the verdict 1 that cases G, H and S1
+#             accept as "refused as required" — an infrastructure failure can never pass as one of them.
+#   Out     — stdout, then stderr.
+function Invoke-NodeScript([string]$Path, [string[]]$NodeArgs = @()) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @{ Out = "script not found: $Path"; Code = -1; Aborted = $true }
+    }
+    $psi = [Diagnostics.ProcessStartInfo]::new($nodeExe)
+    $psi.ArgumentList.Add($Path)
+    foreach ($a in $NodeArgs) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $psi.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+    $p = [Diagnostics.Process]::Start($psi)
+    try {
+        $p.StandardInput.Close()
+        $so = $p.StandardOutput.ReadToEndAsync()
+        $se = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit(300000)) {
+            try { $p.Kill($true) } catch { }
+            return @{ Out = "child stopped after 300 s: $Path"; Code = -1; Aborted = $true }
+        }
+        $p.WaitForExit()
+        $out = $so.Result; $err = $se.Result
+        $srcCode = $p.ExitCode
+        if ($srcCode -ne 0 -and $err -match '(?m)^Node\.js v\d+\.\d+\.\d+\s*$') { return @{ Out = $out + $err; Code = -1; Aborted = $true } }
+        return @{ Out = $out + $err; Code = $srcCode; Aborted = $false }
+    } finally { $p.Dispose() }
+}
+# Call sites pass the pwsh-style argv arrays the suite always had ('-Target', $x, '-DryRun'); this is the ONE
+# place that maps them to init.mjs's flags: -DryRun -> --dry-run, -Target x -> --target=x. A switch takes no
+# value; any other name takes the next token, joined with '=' so a value that starts with '-' stays a value.
+function ConvertTo-InitArgv([string[]]$Arguments) {
+    $switches = @('DryRun', 'Force', 'AllowUpstreamAhead')
+    $argv = @()
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        if ($Arguments[$i] -cmatch '^-([A-Z][A-Za-z]*)$') { $name = $Matches[1] } else { throw "Invoke-Init: '$($Arguments[$i])' is not a -Name token" }
+        $flag = '--' + ($name -creplace '(?<=[a-z])(?=[A-Z])', '-').ToLowerInvariant()
+        if ($switches -ccontains $name) { $argv += $flag; continue }
+        if ($i + 1 -ge $Arguments.Count) { throw "Invoke-Init: '$($Arguments[$i])' has no value" }
+        $argv += "$flag=$($Arguments[$i + 1])"; $i++
+    }
+    return $argv
+}
+# `-Script` runs a COPY of init.mjs (cases H, R, X5, T8n, T8o, T8v rewrite the skill dir).
 function Invoke-Init([string[]]$Arguments, [string]$Script = $init) {
-    # Call sites pass argv-shaped arrays ('-Target', $x, '-DryRun'); the lib folds them by init.ps1's own
-    # parameter metadata: `-Name value` pairs and switches bind as in a `pwsh -File` child (cases Z0f).
-    return Invoke-ScriptArgv $Script $Arguments
+    return Invoke-NodeScript $Script (ConvertTo-InitArgv $Arguments)
 }
 
-# --- Z0: the two contracts the in-process adapter rests on (review 2026-09-02, low ×2) ------------
-# `*>&1` captures SIX streams where the child's console capture saw two, so a Write-Warning /
-# Write-Verbose / Write-Debug / Write-Information added to init.ps1 would surface in $out for the
-# first time and could flip a `-notmatch` assertion — or let a loose `-match` pass on text it never
-# meant. init.ps1 reports through Write-Host only; this pins that so the day it changes, the failure
-# names the reason instead of a distant assertion doing so.
-$widened = @(Select-String -LiteralPath $init -Pattern '\bWrite-(Warning|Verbose|Debug|Information)\b' | Where-Object { $_.Line -notmatch '^\s*#' })
-$ok = (Assert-True 'Z0 init.ps1 reports through Write-Host only (the *>&1 capture contract)' ($widened.Count -eq 0) "lines: $(($widened | ForEach-Object { $_.LineNumber }) -join ', ')") -and $ok
-# The runner is a runspace in THIS process: a process-exit API in init.ps1 would end the whole suite
-# where a child confined it. init.ps1 exits through `exit` only — pin it.
-$procExit = @(Select-String -LiteralPath $init -Pattern 'Environment\]::Exit|SetShouldExit' | Where-Object { $_.Line -notmatch '^\s*#' })
-$ok = (Assert-True 'Z0 init.ps1 never calls a process-exit API (runspace, not child)' ($procExit.Count -eq 0) "lines: $(($procExit | ForEach-Object { $_.LineNumber }) -join ', ')") -and $ok
-# An abort is NOT an exit code. No case reaches the abort path through init.ps1 — every fallible
-# step there ends in an explicit `exit 1` — so drive it with a script that throws, and with a path
-# that does not exist: both must come back -1/Aborted with the reason, never as the 1 that cases
-# G, H and S1 accept as "refused as required".
+# --- Z0: the contracts the child-process adapter rests on ------------------------------------------
+# init.mjs reports through ONE writer, `say`, to stdout, and never to stderr. Node's own crash report is the
+# only thing on stderr, so the crash trailer of Invoke-NodeScript can never be forged by init.mjs's own text.
+$srcLines = @(Get-Content -LiteralPath $init)
+$srcCode = @(for ($i = 0; $i -lt $srcLines.Count; $i++) { if ($srcLines[$i].Trim() -and $srcLines[$i].Trim() -notmatch '^//') { [pscustomobject]@{ N = $i + 1; Line = $srcLines[$i] } } })
+$stderrUse = @($srcCode | Where-Object { $_.Line -match '\bconsole\.(error|warn)\b|process\.stderr' })
+$stdoutUse = @($srcCode | Where-Object { $_.Line -match '\bconsole\.log\b|process\.stdout' })
+$ok = (Assert-True 'Z0 init.mjs reports through one stdout writer and never to stderr (the crash-trailer contract)' ($stderrUse.Count -eq 0 -and $stdoutUse.Count -eq 1) "stderr lines: $(($stderrUse | ForEach-Object { $_.N }) -join ', ') · stdout lines: $(($stdoutUse | ForEach-Object { $_.N }) -join ', ')") -and $ok
+# The verdict is the child's exit code, set once as process.exitCode. A process.exit() call would cut a piped
+# stdout short and could end the run before the report is whole.
+$procExit = @($srcCode | Where-Object { $_.Line -match 'process\.(exit|abort|reallyExit)\b' })
+$ok = (Assert-True 'Z0 init.mjs never calls a process-exit API (its exit code is its own verdict, set once)' ($procExit.Count -eq 0) "lines: $(($procExit | ForEach-Object { $_.N }) -join ', ')") -and $ok
+# A crash is NOT an exit code. No case reaches the crash path through init.mjs — every fallible step there ends
+# in an explicit `return 1` — so drive it with scripts that crash, and with a path that does not exist: each must
+# come back -1/Aborted with the reason, never as the 1 that cases G, H and S1 accept as "refused as required".
+$crashers = [ordered]@{
+    'an uncaught throw'            = "throw new Error('boom from the fixture')`n"
+    'a rejected promise'           = "await Promise.reject(new Error('boom from the fixture'))`n"
+    'a failed import'              = "import './no-such-module.mjs'`nconsole.log('boom from the fixture')`n"
+    'a syntax error'               = "const boom from the fixture = [`n"
+}
+foreach ($name in $crashers.Keys) {
+    $cf = Join-Path $fxBase ('crash-' + ($name -replace '\W+', '-') + '.mjs')
+    [IO.File]::WriteAllText($cf, $crashers[$name])
+    $rc = Invoke-Init @('-Target', $fxBase) -Script $cf
+    $ok = (Assert-True "Z0n $name is an abort (code -1), not an exit code" ($rc.Code -eq -1 -and $rc.Aborted) "code=$($rc.Code) aborted=$($rc.Aborted) out=$($rc.Out)") -and $ok
+}
+$thrower = Join-Path $fxBase 'thrower.mjs'
+[IO.File]::WriteAllText($thrower, "throw new Error('boom from the fixture')`n")
+$rZ0n = Invoke-Init @('-Target', $fxBase) -Script $thrower
+$ok = (Assert-True 'Z0n a crash keeps its message' ($rZ0n.Out -match 'boom from the fixture') $rZ0n.Out) -and $ok
+$rZ0nm = Invoke-Init @('-Target', $fxBase) -Script (Join-Path $fxBase 'no-such-init.mjs')
+$ok = (Assert-True 'Z0n a missing .mjs is an abort (code -1), not an exit code' ($rZ0nm.Code -eq -1 -and $rZ0nm.Aborted -and $rZ0nm.Out -match 'script not found') "code=$($rZ0nm.Code) out=$($rZ0nm.Out)") -and $ok
+# The verdicts stay codes: a script that exits 1 on purpose is Code 1 and not an abort, even though it wrote to
+# stderr; exit 2 and exit 0 are codes too. Only Node's own report makes an abort.
+$verdict = Join-Path $fxBase 'verdict.mjs'
+[IO.File]::WriteAllText($verdict, "console.error('refused on purpose')`nprocess.exitCode = Number(process.argv[2])`n")
+foreach ($want in 0, 1, 2) {
+    $rv = Invoke-NodeScript $verdict @([string]$want)
+    $ok = (Assert-True "Z0n a deliberate exit $want is code $want, not an abort" ($rv.Code -eq $want -and -not $rv.Aborted) "code=$($rv.Code) aborted=$($rv.Aborted) out=$($rv.Out)") -and $ok
+}
+# An unknown flag of the real script is a usage error (exit 2) with the usage line, and a value out of range is the same.
+$rZ0u = Invoke-NodeScript $init @('--bogus')
+$ok = (Assert-True 'Z0n an unknown flag is a usage error (exit 2) naming it, not an abort' ($rZ0u.Code -eq 2 -and -not $rZ0u.Aborted -and $rZ0u.Out -match "Unknown option '--bogus'" -and $rZ0u.Out -match 'usage: node init\.mjs') "code=$($rZ0u.Code) out=$($rZ0u.Out)") -and $ok
+foreach ($bad in '0', '601', 'ten', '1.5') {
+    $rZ0r = Invoke-Init @('-Target', $fxBase, '-FetchTimeoutSeconds', $bad)
+    $ok = (Assert-True "Z0n --fetch-timeout-seconds $bad is refused as a usage error (exit 2), range 1..600" ($rZ0r.Code -eq 2 -and -not $rZ0r.Aborted -and $rZ0r.Out -match 'from 1 to 600') "code=$($rZ0r.Code) out=$($rZ0r.Out)") -and $ok
+}
+# The lib's .ps1 runner keeps its own contract (the Z0 thrower, missing-script and binding cases below run it
+# directly, with .ps1 fixtures, exactly as before) — the pwsh suites outside this one still start scripts by it.
 $thrower = Join-Path $fxBase 'thrower.ps1'
 Set-Content -LiteralPath $thrower -Value "param([string]`$Target)`nthrow 'boom from the fixture'" -NoNewline
-$rZ0 = Invoke-Init @('-Target', $fxBase) -Script $thrower
+$rZ0 = Invoke-ScriptArgv $thrower @('-Target', $fxBase)
 $ok = (Assert-True 'Z0 a terminating error is an abort (code -1), not an exit code' ($rZ0.Code -eq -1 -and $rZ0.Aborted) "code=$($rZ0.Code) aborted=$($rZ0.Aborted)") -and $ok
 $ok = (Assert-True 'Z0 a terminating error keeps its message' ($rZ0.Out -match 'boom from the fixture') $rZ0.Out) -and $ok
-$rZ0m = Invoke-Init @('-Target', $fxBase) -Script (Join-Path $fxBase 'no-such-init.ps1')
+$rZ0m = Invoke-ScriptArgv (Join-Path $fxBase 'no-such-init.mjs') @('-Target', $fxBase)
 $ok = (Assert-True 'Z0 a missing script is an abort (code -1), not an exit code' ($rZ0m.Code -eq -1 -and $rZ0m.Aborted -and $rZ0m.Out -match 'script not found') "code=$($rZ0m.Code) out=$($rZ0m.Out)") -and $ok
-# init.ps1 is [CmdletBinding()]: a mistyped argument name at a call site is a binding failure — the
+# A [CmdletBinding()] script: a mistyped argument name at a call site is a binding failure — the
 # script never runs. A child exited 1 there, which cases G/H/S1 would have accepted as "refused as
 # required"; the runner must report an abort instead (re-review 2026-09-02, high).
 $binder = Join-Path $fxBase 'binder.ps1'
@@ -84,23 +169,23 @@ foreach ($fc in @(
     $okf = if ($wantRun) { $rf.Code -eq 0 -and -not $rf.Aborted } else { $rf.Code -eq -1 -and $rf.Aborted }
     $ok = (Assert-True "Z0f fold: $($fc.Name)" ($okf -and $rf.Out -match $fc.Rx) "code=$($rf.Code) aborted=$($rf.Aborted) out=$($rf.Out)") -and $ok
 }
-$rZ0g = Invoke-Init @('-Target', $fxBase) -Script $binder
+$rZ0g = Invoke-ScriptArgv $binder @('-Target', $fxBase)
 $ok = (Assert-True 'Z0 the same script with the right argument name runs and exits 0' ($rZ0g.Code -eq 0 -and -not $rZ0g.Aborted -and $rZ0g.Out -match 'ran') "code=$($rZ0g.Code) out=$($rZ0g.Out)") -and $ok
-# Code is what a child would have returned; init.ps1 ends in an explicit `exit`, so Code is always
-# its own verdict — pin the last statement so a trailing edit that drops it fails here by name.
-$lastStmt = @(Get-Content -LiteralPath $init | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^#' })[-1]
-$ok = (Assert-True 'Z0 init.ps1 ends in an explicit exit (Code is always its own verdict)' ($lastStmt -match '^\s*exit\s+\d+\s*$') "last statement: $lastStmt") -and $ok
+# Code is the child's exit code; init.mjs sets it once, on its last statement — pin that statement so a trailing
+# edit that drops it fails here by name.
+$lastStmt = ($srcCode | Select-Object -Last 1).Line
+$ok = (Assert-True 'Z0 init.mjs ends by setting its verdict explicitly (Code is always its own verdict)' ($lastStmt -match '^process\.exitCode = await main\(\)\s*$') "last statement: $lastStmt") -and $ok
 function New-Target([string]$Name) {
     $p = Join-Path $fxBase $Name
     New-Item -ItemType Directory -Force -Path $p | Out-Null
     return $p
 }
-# Every file init.ps1 places. Hardcoded on purpose: deriving it from init.ps1's own tables would
+# Every file init.mjs places. Hardcoded on purpose: deriving it from init.mjs's own tables would
 # make the test agree with a typo in the thing it is testing.
 $EXPECT = @(
     'docs/README.md', 'docs/adr/README.md', 'docs/adr/0000-template.md',
     'docs/spec/README.md', 'docs/spec/0000-template.md',
-    'docs/build.ps1', 'docs/build.sh', 'docs/build_docs.py', 'docs/check_docs.py',
+    'docs/build.mjs', 'docs/build.sh', 'docs/build_docs.py', 'docs/check_docs.py',
     'CLAUDE.md', '.gitattributes', '.harness.json',
     # Root ignore seed (ADR 0053). No REVIEW.md: the starter review canon is a section of the seed CLAUDE.md (ADR 0217).
     '.gitignore',
@@ -267,7 +352,7 @@ Remove-Item -LiteralPath (Join-Path $brokenSkill 'templates/docs/build.sh') -For
 New-Item -ItemType Directory -Force -Path (Join-Path $fxBase 'lib') | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1') -Destination (Join-Path $fxBase 'lib/selftest-lib.ps1') -Force
 $h = New-Target 'broken'
-$rH = Invoke-Init @('-Target', $h) -Script (Join-Path $brokenSkill 'init.ps1')
+$rH = Invoke-Init @('-Target', $h) -Script (Join-Path $brokenSkill 'init.mjs')
 $outH = $rH.Out
 $codeH = $rH.Code
 $ok = (Assert-True 'H missing template exits 1' ($codeH -eq 1) "exit=$codeH out=$outH") -and $ok
@@ -355,7 +440,7 @@ $ok = (Assert-True 'I6 run exits 0' ($rI6.Code -eq 0) "exit=$($rI6.Code)") -and 
 # The windows-latest failure this case pins: Python encodes stdout with the console codepage, so a
 # non-UTF-8 codepage makes the builder's OWN output raise UnicodeEncodeError and exit 1 — after
 # index.json has already been written, which is why "index.json exists" alone would still pass.
-# docs/build.ps1 sets the pin explicitly, so an inherited cp1252 must be overridden.
+# docs/build.mjs sets the pin explicitly, so an inherited cp1252 must be overridden.
 $j = New-Target 'cp1252'
 $prevIo = $env:PYTHONIOENCODING
 $env:PYTHONIOENCODING = 'cp1252'
@@ -371,9 +456,9 @@ if ($pyAvail) {
 }
 
 # --- K-O: core.hooksPath wiring (ADR 0015) -----------------------------------------------------
-# This is the ONLY thing init.ps1 does that is not a file write, so every branch is enumerated. The
+# This is the ONLY thing init.mjs does that is not a file write, so every branch is enumerated. The
 # case that matters most is M: a repo pointing hooksPath somewhere of its own must come out of a
-# scaffold run with that value intact, because init.ps1's whole credibility is "never clobbers what
+# scaffold run with that value intact, because init.mjs's whole credibility is "never clobbers what
 # it did not write".
 function New-GitTarget([string]$Name) {
     $p = New-Target $Name
@@ -592,7 +677,7 @@ foreach ($t in Get-ChildItem -LiteralPath (Join-Path $crlfSkill 'templates') -Re
     [IO.File]::WriteAllBytes($t.FullName, $latin1.GetBytes($stamped))
 }
 $r = New-Target 'crlf-cache'
-$rR = Invoke-Init @('-Target', $r) -Script (Join-Path $crlfSkill 'init.ps1')
+$rR = Invoke-Init @('-Target', $r) -Script (Join-Path $crlfSkill 'init.mjs')
 $outR = $rR.Out
 $codeR = $rR.Code
 $ok = (Assert-True 'R run against a CRLF cache exits 0' ($codeR -eq 0) "exit=$codeR out=$outR") -and $ok
@@ -607,16 +692,16 @@ $ok = (Assert-True 'R no placed file carries a CR' ($withCr.Count -eq 0) "CR fou
 # raw-compare regression (ADR 0036's rejected Option C — LF on disk vs a CRLF template differs
 # raw, so every re-run would re-report every placement as refreshed). A full revert passes this
 # assertion alone: verbatim run 1 makes run 2's raw compare byte-identical.
-$outR2 = (Invoke-Init @('-Target', $r) -Script (Join-Path $crlfSkill 'init.ps1')).Out
+$outR2 = (Invoke-Init @('-Target', $r) -Script (Join-Path $crlfSkill 'init.mjs')).Out
 $ok = (Assert-True 'R re-run refreshes nothing (CR-only delta is not a change)' ($outR2 -match 'refreshed=0' -and $outR2 -match 'created=0') $outR2) -and $ok
 # A LONE CR (0x0D with no LF after it) is also not a change: the compare is ADR 0033's fold
 # verbatim — drop every 0x0D — NOT a CRLF-pair fold, so the scaffold and the refresh nudge agree
 # on lone-CR deltas too (review 2026-08-06, medium: a CRLF-pair fold counted this as a refresh
 # the nudge stays silent on). The byte itself is left as placed: the compare only decides whether
 # a re-run would change anything, and line endings belong to git's attributes.
-$loneTarget = Join-Path $r 'docs/build.ps1'
+$loneTarget = Join-Path $r 'docs/build.mjs'
 [IO.File]::WriteAllBytes($loneTarget, [byte[]]([IO.File]::ReadAllBytes($loneTarget) + [byte]13))
-$outR3 = (Invoke-Init @('-Target', $r) -Script (Join-Path $crlfSkill 'init.ps1')).Out
+$outR3 = (Invoke-Init @('-Target', $r) -Script (Join-Path $crlfSkill 'init.mjs')).Out
 $ok = (Assert-True 'R lone-CR delta is not a change (0033 fold, not a CRLF-pair fold)' ($outR3 -match 'refreshed=0' -and $outR3 -match 'created=0') $outR3) -and $ok
 $ok = (Assert-True 'R the lone CR is left as placed, not rewritten' ($latin1.GetString([IO.File]::ReadAllBytes($loneTarget)).EndsWith("`r")) 'lone CR was rewritten away') -and $ok
 
@@ -657,9 +742,9 @@ $ok = (Assert-True 'S3 garbage stamp is rewritten to the plugin version' (((Get-
 # --- UA: upstream-ahead guard (ADR 0135) ---------------------------------------------------------
 # A teammate scaffolded the repo and pushed; this clone has not pulled. Scenario 2 (never scaffolded) is
 # the one with no stamp to look at: the clone is a plain repo whose origin carries the scaffold. ONE bare
-# remote, the stale clone (ua-c, one README commit) and the pusher (ua-b, a real init.ps1 run, committed
+# remote, the stale clone (ua-c, one README commit) and the pusher (ua-b, a real init.mjs run, committed
 # and pushed) carry every leg; the stale clone only fetches. Scenario 1 (an older stamp) reaches the
-# same guard through the same git query — UA6 below pins it through init.ps1, the hook suite's 10b legs
+# same guard through the same git query — UA6 below pins it through init.mjs, the hook suite's 10b legs
 # through the hook. The guard's path is the stamp ALONE (UA5): a toolchain-only upstream commit is a hand
 # edit, not a scaffold run. UA7 pins the patch-equivalence filter (a rebased or amended stamp commit).
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -687,7 +772,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Invoke-UaGit $fxBase @('clone', '-q', $uaRemote, $uaB)
     $rUAB = Invoke-Init @('-Target', $uaB)
     $ok = (Assert-True 'UA fixture: the pusher scaffolded its clone' ($rUAB.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $uaB '.harness-version') -PathType Leaf)) "exit=$($rUAB.Code) out=$($rUAB.Out)") -and $ok
-    Invoke-UaGit $uaB @('config', '--local', '--unset', 'core.hooksPath')   # init.ps1 wired the scaffold's hooks; the fixture commit bypasses them
+    Invoke-UaGit $uaB @('config', '--local', '--unset', 'core.hooksPath')   # init.mjs wired the scaffold's hooks; the fixture commit bypasses them
     Invoke-UaGit $uaB @('add', '-A')
     Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: scaffold')
     Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
@@ -729,7 +814,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
                 "exit=$($rUA2.Code) out=$($rUA2.Out)") -and $ok
         $ok = (Assert-True "UA2 $($mode.N): the remedy, the freshness limit and the override are named" `
                 ($rUA2.Out -match 'Remedy: pull first \(git pull, or merge/rebase origin/main\), then re-run' -and $rUA2.Out -match 'This run fetched the remote-tracking refs just before the check' -and
-                $rUA2.Out -match 'with -AllowUpstreamAhead') $rUA2.Out) -and $ok
+                $rUA2.Out -match 'with --allow-upstream-ahead') $rUA2.Out) -and $ok
         $ok = (Assert-True "UA2 $($mode.N): nothing was written (no stamp, no placement, no wiring, tree unchanged)" `
                 ((Get-TreeSnapshot $uaC) -eq $uaBefore -and -not (Test-Path -LiteralPath (Join-Path $uaC '.harness-version')) -and -not (Get-HooksPath $uaC)) 'the refused run changed the tree') -and $ok
     }
@@ -744,7 +829,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     # UA3: -AllowUpstreamAhead is the deliberate-divergence path — one Yellow line, then the normal run.
     $rUA3 = Invoke-Init @('-Target', $uaC, '-AllowUpstreamAhead')
     $ok = (Assert-True 'UA3 -AllowUpstreamAhead proceeds with exit 0 and says so once' `
-            ($rUA3.Code -eq 0 -and ([regex]::Matches($rUA3.Out, 'UPSTREAM AHEAD ALLOWED — origin/main has commit')).Count -eq 1 -and $rUA3.Out -match 'proceeding because -AllowUpstreamAhead was given \(ywr-harness ADR 0135\)' -and $rUA3.Out -cnotmatch 'REFUSED — origin/main') `
+            ($rUA3.Code -eq 0 -and ([regex]::Matches($rUA3.Out, 'UPSTREAM AHEAD ALLOWED — origin/main has commit')).Count -eq 1 -and $rUA3.Out -match 'proceeding because --allow-upstream-ahead was given \(ywr-harness ADR 0135\)' -and $rUA3.Out -cnotmatch 'REFUSED — origin/main') `
             "exit=$($rUA3.Code) out=$($rUA3.Out)") -and $ok
     $ok = (Assert-True 'UA3 the scaffold was placed and stamped' `
             ((Test-Path -LiteralPath (Join-Path $uaC '.harness-version') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $uaC 'scripts/harness/harness_gates.py') -PathType Leaf)) $rUA3.Out) -and $ok
@@ -766,7 +851,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $rUA5 = Invoke-Init @('-Target', $uaC, '-DryRun')
     $ok = (Assert-True 'UA5 a toolchain-only upstream commit: no refusal, exit 0 (the stamp is the only path)' `
             ($rUA5.Code -eq 0 -and $rUA5.Out -cnotmatch 'REFUSED —' -and $rUA5.Out -notmatch 'not in this checkout' -and $rUA5.Out -notmatch 'UPSTREAM AHEAD') "exit=$($rUA5.Code) out=$($rUA5.Out)") -and $ok
-    # UA6: scenario 1 through init.ps1 itself — the clone has an OLDER stamp committed and upstream bumped it: REFUSED.
+    # UA6: scenario 1 through init.mjs itself — the clone has an OLDER stamp committed and upstream bumped it: REFUSED.
     Set-Content -LiteralPath (Join-Path $uaB '.harness-version') -Value '0.0.1'
     Invoke-UaGit $uaB @('add', '-A')
     Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: old stamp')
@@ -988,34 +1073,47 @@ $ok = (Assert-True 'T8l an unbalanced match claims nothing, so the corpus gap st
     ($rT8l.Out -match ("no group claiming $t8Corpus$t8Gate" + 'docs-corpus\)')) $rT8l.Out) -and $ok
 # T8m: the template side is ours — a template match .NET refused would silence the probe for
 # every consumer, so every one must compile here, alone and wrapped.
-$t8mBad = @(foreach ($g in (Get-Content -LiteralPath (Join-Path $templates 'harness.json') -Raw | ConvertFrom-Json).groups) {
-    try { [void][regex]::new($g.match); [void][regex]::new("\A(?:$($g.match))") } catch { $g.name } })
-$ok = (Assert-True 'T8m every template group match compiles in .NET' ($t8mBad.Count -eq 0) "refused: $($t8mBad -join ', ')") -and $ok
+# The engine is JavaScript's now: one node run compiles every template match and docs_only pattern the way init.mjs
+# does (Python's (?P<n> spellings translated, alone and wrapped in ^(?:...)) and prints the refused ones.
+$rxCheck = Join-Path $fxBase 'template-regex-check.mjs'
+[IO.File]::WriteAllText($rxCheck, @'
+import fs from 'node:fs'
+const t = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+const tr = (s) => s.replace(/\(\?P</g, '(?<').replace(/\(\?P=(\w+)\)/g, '\\k<$1>')
+const groups = []; const docs = []
+for (const g of t.groups) { try { new RegExp(tr(g.match)); new RegExp('^(?:' + tr(g.match) + ')') } catch { groups.push(g.name) } }
+for (const p of t.review.docs_only) { try { new RegExp(tr(p)) } catch { docs.push(p) } }
+console.log(JSON.stringify({ groups, docs }))
+'@)
+$rxRun = Invoke-NodeScript $rxCheck @((Join-Path $templates 'harness.json'))
+$rxRefused = $rxRun.Out | ConvertFrom-Json
+$t8mBad = @($rxRefused.groups)
+$ok = (Assert-True 'T8m every template group match compiles in the engine init.mjs uses' ($rxRun.Code -eq 0 -and $t8mBad.Count -eq 0) "refused: $($t8mBad -join ', ') run: $($rxRun.Out)") -and $ok
 # T8n: a template gate on a script the scaffold does not place is the repo's own, never a
 # scaffold gate. Runs a COPY of the skill with that gate added; the real plugin is never modified.
 $ownSkill = Join-Path $fxBase 'own-gate-skill'
 Copy-Item -LiteralPath $PSScriptRoot -Destination $ownSkill -Recurse -Force
 $ownDecl = Get-Content -LiteralPath (Join-Path $ownSkill 'templates/harness.json') -Raw | ConvertFrom-Json
 foreach ($g in $ownDecl.groups) { if ($g.name -eq 'docs-corpus') { $g.gates += [pscustomobject]@{ runner = 'python'; script = 'scripts/own_check.py'; files = $true } } }
-# The copy also carries T9k: a template docs_only pattern .NET cannot read (ADR 0191).
+# The copy also carries T9k: a template docs_only pattern the regex engine cannot read (ADR 0191).
 $ownDecl.review.docs_only = @($ownDecl.review.docs_only) + @('^zz*+')
 [IO.File]::WriteAllText((Join-Path $ownSkill 'templates/harness.json'), ($ownDecl | ConvertTo-Json -Depth 16))
 $t8n = New-T8Seed 'seed-gate-own-script' { param($d) $d.review.docs_only = @('^CLAUDE\.md$') }
-$rT8n = Invoke-Init @('-Target', $t8n) -Script (Join-Path $ownSkill 'init.ps1')
+$rT8n = Invoke-Init @('-Target', $t8n) -Script (Join-Path $ownSkill 'init.mjs')
 $ok = (Assert-True 'T8n a template gate on a non-TOOLCHAIN script is never a scaffold gate' `
     ($rT8n.Code -eq 0 -and $rT8n.Out -notmatch 'own_check' -and $rT8n.Out -notmatch 'declares the scaffold gate') "exit=$($rT8n.Code) out=$($rT8n.Out)") -and $ok
 # T8o: an unforeseen throw inside the probe is a reported skip, never a non-zero exit (ADR 0051).
 # Runs a COPY of the skill whose probe throws; the real plugin is never modified.
 $throwSkill = Join-Path $fxBase 'gate-throw-skill'
 Copy-Item -LiteralPath $PSScriptRoot -Destination $throwSkill -Recurse -Force
-$throwInit = Join-Path $throwSkill 'init.ps1'
+$throwInit = Join-Path $throwSkill 'init.mjs'
 $throwSrc = [IO.File]::ReadAllText($throwInit)
-$throwHook = 'function Get-ScaffoldGateNote([object]$Template, [object]$Repo) {'
+$throwHook = 'function getScaffoldGateNote(template, repo) {'
 $ok = (Assert-True 'T8o the probe function signature is where the injection expects it' $throwSrc.Contains($throwHook) 'signature moved — update the injection') -and $ok
 # The copy also carries T9g: the docs_only probe throws too (ADR 0191).
-$t9gHook = 'function Get-DocsOnlyNote([object]$Template, [object]$Repo) {'
+$t9gHook = 'function getDocsOnlyNote(template, repo) {'
 $ok = (Assert-True 'T9g the probe function signature is where the injection expects it' $throwSrc.Contains($t9gHook) 'signature moved — update the injection') -and $ok
-[IO.File]::WriteAllText($throwInit, $throwSrc.Replace($throwHook, "$throwHook throw 'injected probe failure';").Replace($t9gHook, "$t9gHook throw 'injected docs_only failure';"))
+[IO.File]::WriteAllText($throwInit, $throwSrc.Replace($throwHook, "$throwHook throw new Error('injected probe failure');").Replace($t9gHook, "$t9gHook throw new Error('injected docs_only failure');"))
 $t8o = New-T8Seed 'seed-gate-throw' { param($d) }
 $rT8o = Invoke-Init @('-Target', $t8o) -Script $throwInit
 $ok = (Assert-True 'T8o a throwing probe is a reported skip, the run exits 0 and still stamps' `
@@ -1041,8 +1139,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $t8q 'docs/spec') | Out-Nul
 [IO.File]::WriteAllText((Join-Path $t8q 'docs/spec/0002-docs.md'), "# real spec`n")
 $rT8q = Invoke-Init @('-Target', $t8q, '-DryRun')
 $ok = (Assert-True 'T8q a backreference keeps its own group numbering (no false gap)' ($rT8q.Out -notmatch 'declares the scaffold gate') $rT8q.Out) -and $ok
-# T8r: a conditional `(?(1)…)` reads a group by number too, so it keeps per-group regexes as well
-# (re-review 2026-10-09, low): in one alternation the spec group's (?(1) would test (adr).
+# T8r: a conditional `(?(1)…)` is a Python construct that JavaScript cannot compile (the .NET engine could, and
+# this case once pinned that the spec group's (?(1) kept its own numbering). It is refused like any pattern
+# the engine refuses: the group claims nothing, so the note speaks and names the real spec it cannot cover.
 $t8r = New-T8Seed 'seed-gate-conditional' { param($d)
     foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = '^docs/(adr)/.*\.md$' } }
     $d.groups += [pscustomobject]@{ name = 'specs'; match = '^(docs)?(?(1)/spec/.*\.md|zz)$'; cwd = ''; strip_prefix = ''
@@ -1050,7 +1149,7 @@ $t8r = New-T8Seed 'seed-gate-conditional' { param($d)
 New-Item -ItemType Directory -Force -Path (Join-Path $t8r 'docs/spec') | Out-Null
 [IO.File]::WriteAllText((Join-Path $t8r 'docs/spec/0002-real.md'), "# real spec`n")
 $rT8r = Invoke-Init @('-Target', $t8r, '-DryRun')
-$ok = (Assert-True 'T8r a conditional group reference keeps its own numbering (no false gap)' ($rT8r.Out -notmatch 'declares the scaffold gate') $rT8r.Out) -and $ok
+$ok = (Assert-True 'T8r a conditional group reference claims nothing in JavaScript: the note speaks and names the real spec, the run exits 0' ($rT8r.Code -eq 0 -and $rT8r.Out -match 'no group claiming [^;]*docs/spec/0002-real\.md[^;]*declares the scaffold gate') "exit=$($rT8r.Code) out=$($rT8r.Out)") -and $ok
 # T8s: the index's own directory is not listed — the index path itself is the probe. Listing docs/
 # would name docs/INDEX.md, which the template's docs-generated claims and this repo narrowed away.
 $t8s = New-T8Seed 'seed-gate-index-dir' { param($d) foreach ($g in $d.groups) { if ($g.name -eq 'docs-generated') { $g.match = '^docs/index\.json$' } } }
@@ -1085,14 +1184,14 @@ $ok = (Assert-True "T8u a hidden draft$(if ($t8uLinked) { ' and a linked directo
 # 2026-10-09, low). Runs a COPY of the skill whose listing throws; the real plugin is never modified.
 $listSkill = Join-Path $fxBase 'gate-list-throw-skill'
 Copy-Item -LiteralPath $PSScriptRoot -Destination $listSkill -Recurse -Force
-$listInit = Join-Path $listSkill 'init.ps1'
+$listInit = Join-Path $listSkill 'init.mjs'
 $listSrc = [IO.File]::ReadAllText($listInit)
-$listHook = "[IO.Directory]::EnumerateFiles(`$full, '*', `$eo)"
+$listHook = 'listFiles(full, true)'
 $ok = (Assert-True 'T8v the listing call is where the injection expects it' $listSrc.Contains($listHook) 'listing call moved — update the injection') -and $ok
 # The copy also carries T9i: the docs_only listing throws too (ADR 0191).
-$t9iHook = "[IO.Directory]::EnumerateFiles(`$full, '*', `$(if (`$d) { `$deep } else { `$flat }))"
+$t9iHook = "listFiles(full, d !== '')"
 $ok = (Assert-True 'T9i the docs_only listing call is where the injection expects it' $listSrc.Contains($t9iHook) 'listing call moved — update the injection') -and $ok
-[IO.File]::WriteAllText($listInit, $listSrc.Replace($listHook, "`$(throw 'injected listing failure')").Replace($t9iHook, "`$(throw 'injected docs_only listing failure')"))
+[IO.File]::WriteAllText($listInit, $listSrc.Replace($listHook, "(() => { throw new Error('injected listing failure') })()").Replace($t9iHook, "(() => { throw new Error('injected docs_only listing failure') })()"))
 $t8v = New-T8Seed 'seed-gate-list-throw' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates = @() } }; $d.review.docs_only = @('^CLAUDE\.md$') }
 $rT8v = Invoke-Init @('-Target', $t8v) -Script $listInit
 $ok = (Assert-True 'T8v a throwing listing keeps the sample gaps and names where it stopped' `
@@ -1104,7 +1203,7 @@ $ok = (Assert-True 'T4 a template-complete seed names no scaffold gate' ($rT4.Ou
 # probe names each probe path the repo exempts and the template reviews; the narrower direction is
 # safe and silent. T9a is the reported seed value. T9b, T9f, T9g, T9i, T9j and T9k assert on the T8
 # runs above, whose seeds or skill copies carry their case: a skill copy costs about a second.
-$t9Tmpl = [regex]::Escape('(template: ["^docs/(?!prompts/)(?!.*\\.(py|ps1|sh)$)","^(?!(CLAUDE|AGENTS|REVIEW)\\.md$)[^/]*\\.md$"])')
+$t9Tmpl = [regex]::Escape('(template: ["^docs/(?!prompts/)(?!.*\\.(py|ps1|sh|mjs)$)","^(?!(CLAUDE|AGENTS|REVIEW)\\.md$)[^/]*\\.md$"])')
 function New-T9Seed([string]$Name, [object[]]$DocsOnly) {
     return New-T8Seed $Name ({ param($d) $d.review.docs_only = $DocsOnly }.GetNewClosure())
 }
@@ -1119,10 +1218,10 @@ $rT9a = Invoke-Init @('-Target', $t9a, '-DryRun')
 $t9aLine = (($rT9a.Out -split "`n") | Where-Object { $_ -match '= \.harness\.json ' }) -join ' '
 $ok = (Assert-True 'T9a the old docs_only value names the count, the first paths and the template value' `
     ($rT9a.Code -eq 0 -and $t9aLine -match ('\(existing seed preserved — review\.docs_only exempts 9 probed path\(s\) the template reviews: ' +
-        'docs/build\.ps1, docs/build\.sh, docs/build_docs\.py, docs/check_docs\.py, CLAUDE\.md, docs/prompts/review-start\.md, \+3 more ' + $t9Tmpl + '\)')) `
+        'docs/build\.mjs, docs/build\.sh, docs/build_docs\.py, docs/check_docs\.py, CLAUDE\.md, docs/prompts/review-start\.md, \+3 more ' + $t9Tmpl + '\)')) `
     "exit=$($rT9a.Code) line=$t9aLine") -and $ok
-$t9aProbe = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'init.ps1') -Raw
-$ok = (Assert-True 'T9a the probe holds no copy of the template exclusions' ($t9aProbe -notmatch 'CLAUDE\|AGENTS') 'init.ps1 names the exclusion regex') -and $ok
+$t9aProbe = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'init.mjs') -Raw
+$ok = (Assert-True 'T9a the probe holds no copy of the template exclusions' ($t9aProbe -notmatch 'CLAUDE\|AGENTS') 'init.mjs names the exclusion regex') -and $ok
 $ok = (Assert-True 'T9b a narrower docs_only gets no note' ($rT8c.Code -eq 0 -and $rT8c.Out -notmatch 'review\.docs_only') $rT8c.Out) -and $ok
 $ok = (Assert-True 'T9b a template-complete seed gets no docs_only note' ($rT4.Out -notmatch 'review\.docs_only') $rT4.Out) -and $ok
 # T9c: one seed for the pattern forms. `prompts/` is unanchored and matches mid-path, as the emitter's
@@ -1136,7 +1235,7 @@ $t9c = New-T9Seed 'seed-docs-only-forms' @('prompts/', '^(?P<n>CLAUDE)\.md$', '^
 $rT9c = Invoke-Init @('-Target', $t9c, '-DryRun')
 $ok = (Assert-True 'T9c unanchored and named-group patterns compare; a refused pattern and a non-string item are not compared' `
     ($rT9c.Code -eq 0 -and $rT9c.Out -match ('review\.docs_only exempts 5 probed path\(s\) the template reviews: CLAUDE\.md, ' +
-        'docs/prompts/review-start\.md, docs/prompts/ready-report\.md, AGENTS\.md, REVIEW\.md \(template: [^;]*\); review\.docs_only: 2 pattern\(s\) \.NET cannot read, not compared')) $rT9c.Out) -and $ok
+        'docs/prompts/review-start\.md, docs/prompts/ready-report\.md, AGENTS\.md, REVIEW\.md \(template: [^;]*\); review\.docs_only: 2 pattern\(s\) the regex engine cannot read, not compared')) $rT9c.Out) -and $ok
 $ok = (Assert-True 'T9f a non-list docs_only is named as not compared, the run exits 0' `
     ($rT8d.Code -eq 0 -and $rT8d.Out -match '; review\.docs_only is not a list, not compared\)') "exit=$($rT8d.Code) out=$($rT8d.Out)") -and $ok
 $ok = (Assert-True 'T9g a throwing probe is a reported skip, the run exits 0 and still stamps' `
@@ -1146,13 +1245,12 @@ $ok = (Assert-True 'T9i a throwing listing keeps the placed-path gap and names w
      $rT8v.Out -match 'docs_only listing stopped under \. \(injected docs_only listing failure\)') "exit=$($rT8v.Code) out=$($rT8v.Out)") -and $ok
 $ok = (Assert-True 'T9j a backtracking pattern is a reported skip, the run exits 0' `
     ($rT8e.Code -eq 0 -and $rT8e.Out -match 'review\.docs_only probe skipped: [^\r\n]*timed out') "exit=$($rT8e.Code) out=$($rT8e.Out)") -and $ok
-$ok = (Assert-True 'T9k a template pattern .NET cannot read is a skip line, never a false list' `
-    ($rT8n.Code -eq 0 -and $rT8n.Out -match 'review\.docs_only probe skipped: a template pattern \.NET cannot read' -and
+$ok = (Assert-True 'T9k a template pattern the regex engine cannot read is a skip line, never a false list' `
+    ($rT8n.Code -eq 0 -and $rT8n.Out -match 'review\.docs_only probe skipped: a template pattern the regex engine cannot read' -and
      $rT8n.Out -notmatch 'review\.docs_only exempts') "exit=$($rT8n.Code) out=$($rT8n.Out)") -and $ok
 # T9h: the template side is ours — a template pattern .NET refused would compare nothing.
-$t9hBad = @(foreach ($p in (Get-Content -LiteralPath (Join-Path $templates 'harness.json') -Raw | ConvertFrom-Json).review.docs_only) {
-    try { [void][regex]::new($p) } catch { $p } })
-$ok = (Assert-True 'T9h every template docs_only pattern compiles in .NET' ($t9hBad.Count -eq 0) "refused: $($t9hBad -join ', ')") -and $ok
+$t9hBad = @($rxRefused.docs)
+$ok = (Assert-True 'T9h every template docs_only pattern compiles in the engine init.mjs uses' ($t9hBad.Count -eq 0) "refused: $($t9hBad -join ', ')") -and $ok
 
 # --- U: first-run TOOLCHAIN collision refuses (ADR 0055, issue #50) ----------------------------
 # The measured brownfield loss: a repo's own docs/README.md silently replaced and labeled
@@ -1187,7 +1285,7 @@ $ok = (Assert-True 'U3 dry run shows the refusal too' ($rU3.Out -match 'REFUSED 
 # U4: -Force replaces, labeled truthfully (never "refreshed"), and the run then stamps.
 $rU4 = Invoke-Init @('-Target', $u, '-Force')
 $ok = (Assert-True 'U4 -Force replaces with the truthful label' `
-    ($rU4.Code -eq 0 -and $rU4.Out -match 'docs/README\.md \(REPLACED a pre-existing non-canon file under -Force' -and $rU4.Out -match 'replaced=1') "exit=$($rU4.Code) out=$($rU4.Out)") -and $ok
+    ($rU4.Code -eq 0 -and $rU4.Out -match 'docs/README\.md \(REPLACED a pre-existing non-canon file under --force' -and $rU4.Out -match 'replaced=1') "exit=$($rU4.Code) out=$($rU4.Out)") -and $ok
 $ok = (Assert-True 'U4 the canon copy is placed' `
     ((Get-Content -LiteralPath (Join-Path $u 'docs/README.md') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/README.md') -Raw)) 'forced run did not place the canon copy') -and $ok
 $ok = (Assert-True 'U4 the stamp is written once resolved' `
@@ -1251,13 +1349,13 @@ Set-Content -LiteralPath $aaBuilder -Value '# locally hacked, old-path file' -No
 $rAA1 = Invoke-Init @('-Target', $aa)
 $ok = (Assert-True 'AA1 run exits 0' ($rAA1.Code -eq 0) "exit=$($rAA1.Code)") -and $ok
 $ok = (Assert-True 'AA1 REFUSED names the path' ($rAA1.Out -match 'docs/check_docs\.py REFUSED') $rAA1.Out) -and $ok
-# The introducing version is the $INTRODUCED_IN entry for the path, read from init.ps1 itself —
+# The introducing version is the INTRODUCED_IN entry for the path, read from placement.mjs itself —
 # NOT the manifest version. The first cut asserted `new in $manifestVer`, which was true only while
 # the plugin version still equalled the version that introduced the path; the first bump after
 # 0.47.0 (0.48.0, 2026-09-14) turned AA1 red on a correct refusal. A missing entry fails loudly
 # here rather than letting the assertion pass on an empty pattern.
-$aaIntroducedM = [regex]::Match((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'init.ps1') -Raw), "'docs/check_docs\.py'\s*=\s*'(\d+\.\d+\.\d+)'")
-$ok = (Assert-True 'AA1 init.ps1 carries an $INTRODUCED_IN entry for docs/check_docs.py' $aaIntroducedM.Success 'no entry parsed — the guard under test has no version to name') -and $ok
+$aaIntroducedM = [regex]::Match((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'placement.mjs') -Raw), "\['docs/check_docs\.py',\s*'(\d+\.\d+\.\d+)'\]")
+$ok = (Assert-True 'AA1 placement.mjs carries an INTRODUCED_IN entry for docs/check_docs.py' $aaIntroducedM.Success 'no entry parsed — the guard under test has no version to name') -and $ok
 $aaIntroduced = if ($aaIntroducedM.Success) { $aaIntroducedM.Groups[1].Value } else { 'NO-ENTRY-PARSED' }
 $ok = (Assert-True 'AA1 the introducing version is named' ($rAA1.Out -match "new in $([regex]::Escape($aaIntroduced))") "want 'new in $aaIntroduced' in: $($rAA1.Out)") -and $ok
 $ok = (Assert-True 'AA1 the repo''s stamped version is named' ($rAA1.Out -match 'stamped 0\.46\.0') $rAA1.Out) -and $ok
@@ -1451,14 +1549,14 @@ $ok = (Assert-True 'X6 the refresh still proceeded (copy failure never blocks th
 
 # X5: in-tree run (the canon dogfood shape, ADR 0018) — the verdict folds to the visible note:
 # no report prompt, no pre-revert copies. Fixture: this whole skill dir + the plugin manifest
-# copied INSIDE the target, then THAT init.ps1 is run against the target.
+# copied INSIDE the target, then THAT init.mjs is run against the target.
 $x5 = New-Target 'dogfood-intree'
 $x5Skill = Join-Path $x5 'plugins/p/skills/harness-init'
 New-Item -ItemType Directory -Force -Path (Split-Path $x5Skill -Parent) | Out-Null
 Copy-Item -LiteralPath $PSScriptRoot -Destination $x5Skill -Recurse -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $x5 'plugins/p/.claude-plugin') | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../.claude-plugin/plugin.json') -Destination (Join-Path $x5 'plugins/p/.claude-plugin/plugin.json')
-$x5Init = Join-Path $x5Skill 'init.ps1'
+$x5Init = Join-Path $x5Skill 'init.mjs'
 Invoke-Init @('-Target', $x5) -Script $x5Init | Out-Null
 Set-Content -LiteralPath (Join-Path $x5 'scripts/harness/harness_gates.py') -Value '# canon-side propagation edit' -NoNewline
 $rX5 = (Invoke-Init @('-Target', $x5) -Script $x5Init).Out
@@ -1468,6 +1566,27 @@ $rX5 = (Invoke-Init @('-Target', $x5) -Script $x5Init).Out
 $ok = (Assert-True 'X5 in-tree run prints the dogfood note, not the report prompt' `
     ($rX5 -match 'canon dogfood' -and $rX5 -cnotmatch 'SAME-VERSION drift' -and $rX5 -notmatch 'ywr-harness:report-issue') $rX5) -and $ok
 $ok = (Assert-True 'X5 in-tree run makes no pre-revert copies' ($rX5 -notmatch 'pre-revert copies:') $rX5) -and $ok
+
+# --- RT1: a retired file is named, never removed (ADR 0220) -----------------------------------------
+# docs/build.ps1 is the docs wrapper that 0.84.0 replaced with docs/build.mjs. A re-run never deletes a
+# file, so a repo that took the older scaffold still holds it: init names it once, on a dry run and a real
+# run alike, asks for `git rm`, leaves the file byte-identical, and changes neither the exit code nor the
+# stamp. The line starts with neither `~` nor `!`, the two shapes report-issue reads as drift or foreign.
+$rt = New-Target 'retired-file'
+$rtFirst = Invoke-Init @('-Target', $rt)
+$rtOld = "# the wrapper an older scaffold placed`n"
+Set-Content -LiteralPath (Join-Path $rt 'docs/build.ps1') -Value $rtOld -NoNewline
+$rtLine = '(?m)^  retired: docs/build\.ps1 — ywr-harness no longer places this file since 0\.84\.0 \(ywr-harness ADR 0220\); delete it with git rm\r?$'
+foreach ($mode in @(@{ N = 'dry run'; A = @('-Target', $rt, '-DryRun') }, @{ N = 'real run'; A = @('-Target', $rt) })) {
+    $rRT = Invoke-Init $mode.A
+    $ok = (Assert-True "RT1 $($mode.N): the retired file is named once, with the git rm advice" `
+            ($rRT.Code -eq 0 -and ([regex]::Matches($rRT.Out, $rtLine)).Count -eq 1 -and ([regex]::Matches($rRT.Out, 'retired:')).Count -eq 1) "exit=$($rRT.Code) out=$($rRT.Out)") -and $ok
+    $ok = (Assert-True "RT1 $($mode.N): the line starts with neither ~ nor !, and the file is left byte-identical" `
+            ($rRT.Out -notmatch '(?m)^\s*[~!] .*docs/build\.ps1' -and (Get-Content -LiteralPath (Join-Path $rt 'docs/build.ps1') -Raw) -eq $rtOld) "out=$($rRT.Out)") -and $ok
+    $ok = (Assert-True "RT1 $($mode.N): the stamp still names this plugin and nothing else is refused" `
+            (((Get-Content -LiteralPath (Join-Path $rt '.harness-version') -Raw).Trim()) -eq $manifestVer -and $rRT.Out -match 'refused=0') "out=$($rRT.Out)") -and $ok
+}
+$ok = (Assert-True 'RT1 a target without the retired file gets no retired line' ($rB.Out -notmatch 'retired:' -and $rtFirst.Out -notmatch 'retired:') "out=$($rB.Out)") -and $ok
 
 # --- P: a non-git target places the hooks and says they will not run ---------------------------
 # The fixture targets in A-J are plain directories, so this is the branch they all exercised

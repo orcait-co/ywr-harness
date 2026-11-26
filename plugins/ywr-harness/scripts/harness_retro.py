@@ -484,7 +484,7 @@ def build_findings(root: Path, cfg: dict, warns: list[str], rev_range: str | Non
         index_rel = hc.norm(cfg["index"])
         if need and index_rel not in fileset:
             f.append(f"BUILD: docs frontmatter changed but {index_rel} untouched — run: "
-                     "pwsh docs/build.ps1")
+                     "node docs/build.mjs")
 
     # 5) FEAT — a feat commit with no docs change at all. Coarse on purpose: the backstop for
     #    everything the structural checks cannot see.

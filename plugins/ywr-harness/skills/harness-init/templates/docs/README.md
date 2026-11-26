@@ -26,7 +26,7 @@ the one that goes stale silently.
 ## After editing
 
 ```
-pwsh docs/build.ps1        # or: bash docs/build.sh
+node docs/build.mjs        # or: bash docs/build.sh
 ```
 
 Regenerates four surfaces from the `.md` sources:

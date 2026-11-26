@@ -30,7 +30,7 @@ if (-not $py) {
 # The builder deliberately does NOT self-pin its stdout encoding — the build WRAPPERS own that
 # (CLAUDE.md: `harness_config.pin_utf8()` and the wrappers own it; no second copy in the
 # builder). This selftest bypasses the wrapper and invokes python directly, so it owns the pin
-# exactly as build.ps1 does: on a cp1252 runner console the builder's Korean output otherwise
+# exactly as build.mjs does: on a cp1252 runner console the builder's Korean output otherwise
 # dies with UnicodeEncodeError AFTER writing index.json — fact-4's shape, caught by this
 # suite's FIRST windows-latest CI run (PR #35); a local cp949 console can encode Korean, which
 # is why the same suite was green here. Process-scoped only: the runner spawns each selftest
@@ -109,7 +109,7 @@ $ok = (Assert-True 'D a body-only edit does NOT flip the digest' ($rD.Out -notma
 Write-Doc 'adr/0002-second.md' "---`nid: `"0002`"`ntype: adr`ntitle: `"second`"`nstatus: accepted`n---`n# 0002`nbody`n"
 $rE = Invoke-Map
 $ok = (Assert-True 'E a frontmatter edit reads as STALE' ($rE.Out -match 'index: STALE') $rE.Out) -and $ok
-$ok = (Assert-True 'E the stale line names the rebuild command' ($rE.Out -match 'docs/build\.ps1') $rE.Out) -and $ok
+$ok = (Assert-True 'E the stale line names the rebuild command' ($rE.Out -match 'docs/build\.mjs') $rE.Out) -and $ok
 $null = Invoke-Build
 $rE2 = Invoke-Map
 $ok = (Assert-True 'E2 rebuilding clears the stale signal' ($rE2.Out -notmatch 'index: STALE') $rE2.Out) -and $ok
@@ -747,7 +747,7 @@ $ok = (Assert-True 'CK4 a CRLF checkout of a generated surface is tolerated (not
 [IO.File]::WriteAllText($indexMdCK, $indexMdText)
 
 # CK4b: a LONE 0x0D (appended at end of file, so it is not followed by 0x0A) must also fold —
-# init.ps1/manifest-gate.mjs's ADR 0033 rule drops EVERY 0x0D verbatim, paired or not, and the
+# init.mjs/manifest-gate.mjs's ADR 0033 rule drops EVERY 0x0D verbatim, paired or not, and the
 # check must match that rule rather than a narrower CRLF-pair-only fold (Finding 7). Mutation
 # anchor: a pair-only fold (`.replace(b"\r\n", b"\n")`) leaves this trailing byte in place and
 # flips the case to DRIFT.
@@ -1469,6 +1469,61 @@ $pyFiles = @($pyControl) + @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot
 $rPY1 = & $py.Source $pyScan @pyFiles 2>&1 | Out-String
 $ok = (Assert-True 'PY1 every shipped docs/verify_map/harness_config module that annotates with X | Y imports annotations from __future__ (the 3.9 floor)' `
     ($LASTEXITCODE -eq 0 -and $rPY1.Trim() -eq "BAD|$pyControl") $rPY1) -and $ok
+
+# --- BW: the docs wrapper templates/docs/build.mjs (ADR 0220) ---------------------------------------
+# The wrapper finds python, pins the child's encoding and hands the builder's exit code back unchanged. It is
+# run from a fixture docs tree like the builder above, as a node child with stdout and stderr read as UTF-8.
+$bwNode = Resolve-NodeVerdict ([bool](Get-Command node -ErrorAction SilentlyContinue)) ([bool]$env:CI)
+if ($bwNode.Verdict -ne 'run') {
+    if ($bwNode.Verdict -eq 'fail') { $ok = (Assert-True 'BW node is present on CI' $false $bwNode.Message) -and $ok }
+    else { Write-Host "SKIP [BW build.mjs]: $($bwNode.Message)" -ForegroundColor Yellow }
+} else {
+    $bwExe = (Get-Command node -CommandType Application).Source
+    $bw = Join-Path $fx 'bw'
+    $bwDocs = Join-Path $bw 'docs'
+    New-Item -ItemType Directory -Force -Path (Join-Path $bwDocs 'adr'), (Join-Path $bwDocs 'spec') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'templates/docs/build.mjs') -Destination (Join-Path $bwDocs 'build.mjs')
+    Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $bwDocs 'build_docs.py')
+    [IO.File]::WriteAllText((Join-Path $bwDocs 'adr/0001-first.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"first`"`nstatus: accepted`n---`n# 0001`nbody`n")
+    function Invoke-Wrapper([hashtable]$EnvVars = @{}) {
+        $psi = [Diagnostics.ProcessStartInfo]::new($bwExe)
+        $psi.ArgumentList.Add((Join-Path $bwDocs 'build.mjs'))
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false); $psi.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+        foreach ($k in $EnvVars.Keys) { $psi.Environment[$k] = $EnvVars[$k] }
+        $p = [Diagnostics.Process]::Start($psi)
+        $p.StandardInput.Close()
+        $so = $p.StandardOutput.ReadToEndAsync(); $se = $p.StandardError.ReadToEndAsync()
+        $p.WaitForExit()
+        return @{ Code = $p.ExitCode; Out = $so.Result + $se.Result }
+    }
+    Remove-Item -LiteralPath (Join-Path $bwDocs 'index.json') -ErrorAction SilentlyContinue
+    $rBW1 = Invoke-Wrapper
+    $ok = (Assert-True 'BW1 a clean corpus builds through the wrapper: exit 0 and index.json exists' `
+        ($rBW1.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $bwDocs 'index.json') -PathType Leaf)) "exit=$($rBW1.Code) out=$($rBW1.Out)") -and $ok
+    # The pin lives in the wrapper: an inherited cp1252 stdout encoding would otherwise kill the builder's own
+    # output after index.json is written. The pin is on the child only, never on the caller.
+    Remove-Item -LiteralPath (Join-Path $bwDocs 'index.json') -ErrorAction SilentlyContinue
+    $rBW2 = Invoke-Wrapper @{ PYTHONIOENCODING = 'cp1252'; PYTHONUTF8 = '0' }
+    $ok = (Assert-True 'BW2 an inherited cp1252 PYTHONIOENCODING does not break the build (the wrapper pins UTF-8)' `
+        ($rBW2.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $bwDocs 'index.json') -PathType Leaf)) "exit=$($rBW2.Code) out=$($rBW2.Out)") -and $ok
+    # The builder's exit code is handed back unchanged: a duplicate id is a deterministic build failure, and a wrapper
+    # that turned it into 0 would remove the gate on exactly the path a person runs.
+    [IO.File]::WriteAllText((Join-Path $bwDocs 'adr/0002-rival.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"rival`"`nstatus: proposed`n---`n# 0001 again`n")
+    $bwDirect = & $py.Source (Join-Path $bwDocs 'build_docs.py') 2>&1 | Out-String
+    $bwDirectCode = $LASTEXITCODE
+    $rBW3 = Invoke-Wrapper
+    $ok = (Assert-True 'BW3 the builder exit code passes through unchanged (a duplicate id is non-zero, equal to the direct run)' `
+        ($bwDirectCode -ne 0 -and $rBW3.Code -eq $bwDirectCode) "direct=$bwDirectCode wrapper=$($rBW3.Code) out=$($rBW3.Out)") -and $ok
+    Remove-Item -LiteralPath (Join-Path $bwDocs 'adr/0002-rival.md') -Force
+    # No python on PATH: the same Korean error as before, exit 1. PATH is an empty directory; node is started by its full path.
+    $bwEmpty = Join-Path $fx 'bw-empty-path'
+    New-Item -ItemType Directory -Force -Path $bwEmpty | Out-Null
+    $rBW4 = Invoke-Wrapper @{ PATH = $bwEmpty }
+    $ok = (Assert-True 'BW4 no python on PATH: the named error and exit 1' `
+        ($rBW4.Code -eq 1 -and $rBW4.Out -match 'Python을 찾을 수 없습니다') "exit=$($rBW4.Code) out=$($rBW4.Out)") -and $ok
+}
 
 Remove-FixtureRoot $fx
 

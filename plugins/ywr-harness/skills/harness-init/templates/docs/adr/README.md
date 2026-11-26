@@ -18,7 +18,7 @@
 ```powershell
 Copy-Item docs/adr/0000-template.md docs/adr/0003-new-decision-title.md   # 파일명은 ASCII 로 쓴다
 # 1) YAML frontmatter 채움(id·status·관계·tags)  2) 본문 산문 작성  3) 관련 스펙과 양방향 연결
-pwsh docs/build.ps1   # (또는 bash docs/build.sh) → index.json·INDEX.md·docs.html·docs.artifact.html 재생성
+node docs/build.mjs   # (또는 bash docs/build.sh) → index.json·INDEX.md·docs.html·docs.artifact.html 재생성
 ```
 
 상태/날짜/관계는 **frontmatter가 단일 진실원**이다(본문 중복 금지 → 드리프트 방지).

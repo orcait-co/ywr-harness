@@ -10,7 +10,7 @@ The ready-made Artifact `check` (ywr-harness ADR 0068) for this repo's generated
 mirror of the builder. Default mode IS the drift check: exit 0 on a match,
 exit 1 on drift, writes nothing. A flag (any argument starting with `-`) is misuse
 and exits 2 — there is deliberately no `--write` here; regeneration is
-`pwsh docs/build.ps1` (or `bash docs/build.sh`).
+`node docs/build.mjs` (or `bash docs/build.sh`).
 
 Path arguments are TRIGGERS, not a scope (ywr-harness ADR 0094): a `.harness.json` group may
 declare this script with `files: true` so the pre-commit hook runs it on a staged
