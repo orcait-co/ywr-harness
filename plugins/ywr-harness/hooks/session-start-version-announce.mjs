@@ -319,8 +319,8 @@ function main(payload) {
     // this protects nothing the dist README does not already carry, so a failed seed is silent
     // — and a seed lost to a concurrent first run is a failed seed (newStateExclusive).
     if (newStateExclusive(stateDir, stateFile, currentRaw)) {
-      const sys = `[hook:version-announce] ywr-harness v${curShown} 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 변경 이력: 플러그인의 CHANGELOG.md · 릴리스 노트 탭(가이드 개정 시 갱신) ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
-      const ctx = `The ywr-harness plugin v${curShown} is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ywr-harness ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the artifact release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). This welcome appears once per machine; do not repeat it unprompted.`
+      const sys = `[hook:version-announce] ywr-harness v${curShown} 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 변경 이력: 플러그인의 CHANGELOG.md · 릴리스 노트 탭(하네스 관리자가 재발행할 때만 갱신) ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
+      const ctx = `The ywr-harness plugin v${curShown} is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ywr-harness ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the artifact release-notes tab at ${rnUrl} (refreshed only when the harness owner republishes it, so it may lag CHANGELOG.md — ywr-harness ADR 0224). This welcome appears once per machine; do not repeat it unprompted.`
       emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
     }
     return
@@ -357,13 +357,13 @@ function main(payload) {
   } else {
     body += ' '
   }
-  body += `릴리스 노트 탭(가이드 개정 시 갱신 — 이 버전 항목은 CHANGELOG.md 에 먼저 실립니다): ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
+  body += `릴리스 노트 탭(하네스 관리자가 재발행할 때만 갱신 — 이 버전 항목은 CHANGELOG.md 에 먼저 실립니다): ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
 
   if (!writeState(stateDir, stateFile, currentRaw)) {
     body += `\n(안내 기록 실패: ${inline(stateFile, 300)} 에 쓸 수 없어 이 안내가 반복될 수 있습니다 — ${inline(configDir, 300)} 권한을 확인하세요.)`
   }
 
-  const ctx = `The ywr-harness plugin loaded in this session is v${curShown}; the last version announced on this machine was v${inline(storedRaw)} (marketplace auto-update, ywr-harness ADR 0026 — an update applies at the next session start or at /reload-plugins). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at ${rnUrl} (refreshed only when the onboarding guide itself changes, so it may lag CHANGELOG.md — ywr-harness ADR 0078). If the user asks what changed, read the CHANGELOG entry for v${curShown} rather than answering from memory. This announcement is once-per-version (ywr-harness ADR 0030); do not repeat it unprompted.`
+  const ctx = `The ywr-harness plugin loaded in this session is v${curShown}; the last version announced on this machine was v${inline(storedRaw)} (marketplace auto-update, ywr-harness ADR 0026 — an update applies at the next session start or at /reload-plugins). Member release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the onboarding artifact's release-notes tab at ${rnUrl} (refreshed only when the harness owner republishes it, so it may lag CHANGELOG.md — ywr-harness ADR 0224). If the user asks what changed, read the CHANGELOG entry for v${curShown} rather than answering from memory. This announcement is once-per-version (ywr-harness ADR 0030); do not repeat it unprompted.`
   emit({ systemMessage: body, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
 }
 

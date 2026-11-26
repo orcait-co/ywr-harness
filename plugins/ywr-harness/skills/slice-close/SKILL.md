@@ -60,8 +60,8 @@ later *fix diff* triggers nothing (its gate and `ungrouped:` output still apply,
 | tier | action |
 |---|---|
 | `skip` | No LLM review. Deterministic gates suffice. Record "review skipped: docs-only". |
-| `small` | `Skill({skill: 'code-review', args: 'medium'})` |
-| `full` | `Skill({skill: 'code-review', args: 'medium'})` |
+| `small` | `Skill({skill: 'code-review', args: 'medium --max-findings default'})` |
+| `full` | `Skill({skill: 'code-review', args: 'medium --max-findings default'})` |
 
 The review is the built-in `/code-review` command (ywr-harness ADR 0215). It runs on the session
 model, at `medium` for both review tiers (ywr-harness ADR 0218), on every session model. Ultracode changes nothing. Call it
@@ -71,7 +71,9 @@ commits with `git log --oneline origin/HEAD..HEAD`. When `origin/HEAD` does not 
 command fails: record that the commit list and the review's base are unknown.
 `git remote set-head origin --auto` sets `origin/HEAD` from the remote. When the list holds commits
 of an earlier slice, pushed to a branch or not, those enter the review too: record that, and give
-their findings buckets like any other. Pass no `--max-findings`: the close keeps the default cap.
+their findings buckets like any other. Pass `--max-findings default` as written: `/code-review` keeps a
+`--max-findings` value from an earlier call until that flag resets it, so the close always runs at the
+default cap. The reset also clears a value that the person saved for their own `/code-review` runs.
 In an interactive session the review runs as a background agent. Wait for its task notification
 before you edit anything; the notification carries the findings, each with a file, a line, a
 summary, a failure scenario and a severity.

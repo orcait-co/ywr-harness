@@ -46,7 +46,7 @@ the slice is rebased onto, or merges, a base that other commits advanced after t
    exactly those files. This includes a hand-resolved file outside the reviewed scope, because
    resolved conflict text is code nobody reviewed. Run the emitter over exactly those files. A `skip`
    tier needs no review. A `small` or `full` tier runs `medium` (ywr-harness ADR 0218), with the files
-   as a path target: `Skill({skill: 'code-review', args: 'medium <file> <file> ...'})`. Two probes,
+   as a path target: `Skill({skill: 'code-review', args: 'medium --max-findings default <file> <file> ...'})`. Two probes,
    recorded as ywr-harness facts 251 and 255, gave the command three files at `high` and at `medium`.
    Each reviewed each named file, whether the file was tracked, untracked or only committed, and no
    other file. Each also reported a defect in an unchanged line of a named file. Nobody probed many files, a hand-resolved conflict file or a repeat run.

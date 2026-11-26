@@ -175,6 +175,81 @@ Commit $d 'docs: append an addendum (body only)'
 $rD2 = Invoke-Retro $d @()
 $ok = (Assert-True 'D2 BUILD is SILENT for a body-only edit — the subtle one' ($rD2.Out -notmatch 'BUILD:') $rD2.Out) -and $ok
 
+# D4/D5: the frontmatter of every modified doc is read in one batch. D4 puts the one frontmatter
+# change after two body-only edits, so a batch that misaligned its replies or stopped early would
+# stay silent. D5 edits three bodies only and must stay silent. D6: a changed index answers the
+# check, so the same frontmatter change is silent when the commit also touches the index.
+Write-F $d 'docs/adr/0002-b.md' "---`nid: `"0002`"`ntype: adr`n---`n# 0002`nv1`n"
+Write-F $d 'docs/adr/0003-c.md' "---`nid: `"0003`"`ntype: adr`nstatus: proposed`n---`n# 0003`nv1`n"
+Commit $d 'docs: add two adrs'
+Write-F $d 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`nstatus: accepted`n---`n# 0001`nbody v2`n"
+Write-F $d 'docs/adr/0002-b.md' "---`nid: `"0002`"`ntype: adr`n---`n# 0002`nv2`n"
+Write-F $d 'docs/adr/0003-c.md' "---`nid: `"0003`"`ntype: adr`nstatus: accepted`n---`n# 0003`nv2`n"
+Commit $d 'docs: two bodies and one frontmatter'
+$rD4 = Invoke-Retro $d @()
+$ok = (Assert-True 'D4 BUILD fires when the last of three modified docs changed its frontmatter' ($rD4.Out -match 'BUILD:') $rD4.Out) -and $ok
+Write-F $d 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`nstatus: accepted`n---`n# 0001`nbody v3`n"
+Write-F $d 'docs/adr/0002-b.md' "---`nid: `"0002`"`ntype: adr`n---`n# 0002`nv3`n"
+Write-F $d 'docs/adr/0003-c.md' "---`nid: `"0003`"`ntype: adr`nstatus: accepted`n---`n# 0003`nv3`n"
+Commit $d 'docs: three bodies only'
+$rD5 = Invoke-Retro $d @()
+$ok = (Assert-True 'D5 BUILD is SILENT when three modified docs keep their frontmatter' ($rD5.Out -notmatch 'BUILD:' -and $rD5.Code -eq 0) "exit=$($rD5.Code): $($rD5.Out)") -and $ok
+Write-F $d 'docs/adr/0003-c.md' "---`nid: `"0003`"`ntype: adr`nstatus: superseded`n---`n# 0003`nv3`n"
+Write-F $d 'docs/index.json' "{}`n"
+Commit $d 'docs: frontmatter change with the index'
+$rD6 = Invoke-Retro $d @()
+$ok = (Assert-True 'D6 BUILD is SILENT when the commit also changes the index' ($rD6.Out -notmatch 'BUILD:') $rD6.Out) -and $ok
+
+# D7: the git boundary starts the real git.exe of a Git for Windows install, never its `cmd`
+# launcher, because a hidden start through the launcher costs about 26 ms more per call. Layout
+# `a` has both binaries. Layout `b` has only the launcher. A git outside a `cmd` folder and an
+# empty PATH answer pass through. Off Windows every path passes through.
+$gl = Join-Path $fxBase 'git-layout'
+foreach ($dir in 'a/cmd', 'a/mingw64/bin', 'b/cmd') { $null = New-Item -ItemType Directory -Force -Path (Join-Path $gl $dir) }
+foreach ($file in 'a/cmd/git.exe', 'a/mingw64/bin/git.exe', 'b/cmd/git.exe') { Set-Content -LiteralPath (Join-Path $gl $file) -Value 'x' }
+$d7Script = Join-Path $fxBase 'real-git.mjs'
+Set-Content -LiteralPath $d7Script -NoNewline -Value @'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+const g = await import(pathToFileURL(path.join(process.argv[2], 'harness_git.mjs')).href)
+const r = process.argv[3]
+const cases = [path.join(r, 'a', 'cmd', 'git.exe'), path.join(r, 'b', 'cmd', 'git.exe'), path.join(r, 'a', 'mingw64', 'bin', 'git.exe'), '']
+console.log('D7:' + cases.map((c) => (g._real_git(c) === c ? 'same' : path.relative(r, g._real_git(c)).split(path.sep).join('/'))).join('|'))
+'@
+$rD7 = (& $node.Source $d7Script $PSScriptRoot $gl 2>&1 | Out-String)
+$d7Want = if ($IsWindows) { 'D7:a/mingw64/bin/git.exe|same|same|same' } else { 'D7:same|same|same|same' }
+$ok = (Assert-True 'D7 a Git for Windows cmd launcher resolves to the real git.exe beside it, and every other path passes through' ($rD7.Trim() -eq $d7Want) "want $d7Want, got $rD7") -and $ok
+
+# D8: the batch read never confuses two paths. git drops a CR before the LF of each batch line, so
+# `x.md` + CR would read `x.md`: such a path takes the per-path read. The index entry is made with
+# --cacheinfo, so no file system has to hold the CR. A non-ASCII path that is absent reads as null,
+# not as a throw. The last call shows that the batch refuses a CR outright.
+$d8 = New-Repo 'batch-names' $CFG
+$d8a = ("---`nid: plain`n---`n" | & git -C $d8 hash-object -w --stdin).Trim()
+$d8b = ("---`nid: carriage`n---`n" | & git -C $d8 hash-object -w --stdin).Trim()
+& git -C $d8 update-index --add --cacheinfo "100644,$d8a,docs/adr/x.md" 2>$null
+# Git for Windows refuses a CR in a path by default (core.protectNTFS), so the fixture lifts it.
+& git -C $d8 -c core.protectNTFS=false update-index --add --cacheinfo "100644,$d8b,docs/adr/x.md`r" 2>$null
+$d8Built = $LASTEXITCODE -eq 0
+& git -C $d8 commit -q -m 'docs: two names one CR apart' 2>$null # no add -A: the entries have no files
+$d8Script = Join-Path $fxBase 'batch-names.mjs'
+Set-Content -LiteralPath $d8Script -NoNewline -Value @'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+const retro = await import(pathToFileURL(path.join(process.argv[2], 'harness_retro.mjs')).href)
+const g = await import(pathToFileURL(path.join(process.argv[2], 'harness_git.mjs')).href)
+const root = process.argv[3]
+const fm = retro.frontmatters_at(root, [['HEAD', 'docs/adr/x.md\r'], ['HEAD', 'docs/adr/x.md']])
+const absent = g.git_objects(root, ['HEAD:docs/spec/0001-한글.md'])
+let refused = 'no'
+try { g.git_objects(root, ['HEAD:docs/adr/x.md\r']) } catch (e) { refused = e.name }
+console.log(JSON.stringify({ fm, absent, refused }))
+'@
+$rD8 = (& $node.Source $d8Script $PSScriptRoot $d8 2>&1 | Out-String)
+$ok = (Assert-True 'D8 fixture: the index took the CR-ended path' $d8Built "update-index exit $LASTEXITCODE") -and $ok
+$d8Want = '{"fm":["id: carriage","id: plain"],"absent":[null],"refused":"ValueError"}'
+$ok = (Assert-True 'D8 a CR-ended path reads its own blob, an absent non-ASCII path is null, and the batch refuses a CR' ($rD8.Trim() -eq $d8Want) "want $d8Want, got $rD8") -and $ok
+
 # D3: a rename OUT of docs/ drops an index entry, so it must fire even though the final path is
 # not a doc. This is why every path field is matched, not just the last.
 $d3 = New-Repo 'build-rename' $CFG
@@ -532,7 +607,7 @@ $ok = (Assert-True 'O2 --coverage: the U+2028 path is ONE unowned file (ls-files
 # --- P: frontmatter_at — absence is asked structurally, every other git fatal is LOUD ------------
 # `git show pre:path` exited 128 both for "absent at pre" and for any fatal, so a missing blob
 # read as "absent" (a silent difference). P1 deletes the loose object of the pre-side ADR blob:
-# ls-tree still lists the path, `git show` must fail → FAILED marker, exit 1. P2 is the silence
+# ls-tree still lists the path, the batch reply is `missing`, and `git show` must fail → FAILED marker, exit 1. P2 is the silence
 # half: an ADR ADDED in the commit (absent at pre) still reads as a difference, not a failure.
 $p1 = New-Repo 'fm-missing-blob' $CFG
 Write-F $p1 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`nstatus: proposed`n---`n# 0001`n"
@@ -552,7 +627,23 @@ $p2 = New-Repo 'fm-added' $CFG
 Write-F $p2 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`n---`n# 0001`n"
 Commit $p2 'docs: add adr, no index'
 $rP2 = Invoke-Retro $p2 @()
-$ok = (Assert-True 'P2 an ADR absent at pre (added) is a difference: BUILD fires, exit 0' ($rP2.Code -eq 0 -and $rP2.Out -match 'BUILD:' -and $rP2.Out -notmatch 'FAILED') "exit=$($rP2.Code): $($rP2.Out)") -and $ok
+# P3: a commit that also changes the index answers BUILD, so the retro reads no frontmatter. The
+# missing pre-side blob of P1 then raises nothing: the finding would be silent either way.
+$p3 = New-Repo 'fm-missing-blob-index' $CFG
+Write-F $p3 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`nstatus: proposed`n---`n# 0001`n"
+Commit $p3 'docs: add adr'
+$p3Blob = (& git -C $p3 rev-parse 'HEAD:docs/adr/0001-a.md').Trim()
+Write-F $p3 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`nstatus: accepted`n---`n# 0001`n"
+Write-F $p3 'docs/index.json' "{}`n"
+Commit $p3 'docs: accept it, with the index'
+$p3Obj = Join-Path $p3 ".git/objects/$($p3Blob.Substring(0,2))/$($p3Blob.Substring(2))"
+$p3Had = Test-Path -LiteralPath $p3Obj
+if ($p3Had) { Set-ItemProperty -LiteralPath $p3Obj -Name IsReadOnly -Value $false; Remove-Item -LiteralPath $p3Obj -Force }
+$rP3 = Invoke-Retro $p3 @()
+$ok = (Assert-True 'P3 fixture: the pre-side blob was a loose object and is now gone' $p3Had $p3Obj) -and $ok
+$ok = (Assert-True 'P3 a changed index reads no frontmatter: no FAILED marker, no BUILD, exit 0' ($rP3.Code -eq 0 -and $rP3.Out -notmatch 'FAILED|BUILD:') "exit=$($rP3.Code): $($rP3.Out)") -and $ok
+
+$ok = (Assert-True 'P2 an ADR absent at pre (added) is a difference: BUILD fires, exit 0'($rP2.Code -eq 0 -and $rP2.Out -match 'BUILD:' -and $rP2.Out -notmatch 'FAILED') "exit=$($rP2.Code): $($rP2.Out)") -and $ok
 
 # --- Q: git absent from PATH is the FAILED marker, never a traceback -----------------------------
 # PATH is one empty directory: python is invoked by absolute path, and python's own directory is no

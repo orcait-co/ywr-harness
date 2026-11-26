@@ -56,12 +56,12 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
-  GIT_PINS, git_run, git_lines, git_paths, git_result, git_absent, which_on_path,
+  GIT_PINS, git_run, git_lines, git_paths, git_objects, batchable, git_result, git_absent, which_on_path,
   decode_utf8_backslashreplace, py_strip, _repr_str,
 } from './harness_git.mjs'
 
 export {
-  GIT_PINS, git_run, git_lines, git_paths, git_result, git_absent, which_on_path,
+  GIT_PINS, git_run, git_lines, git_paths, git_objects, batchable, git_result, git_absent, which_on_path,
   decode_utf8_backslashreplace, py_strip, _repr_str,
 }
 

@@ -489,6 +489,32 @@ export function frontmatter_at(root, rev, p) {
   return block
 }
 
+/**
+ * `frontmatter_at` for many [rev, path] pairs, read in ONE `git cat-file --batch` call: each git
+ * start costs tens of milliseconds on Windows, and a slice can touch dozens of docs. A path that
+ * cannot travel on the batch's input, one with a line feed or a carriage return, goes through
+ * `frontmatter_at`, and so does an
+ * object that is no blob or that git reports `missing`, so each reads exactly as before.
+ * @param {string} root @param {Array<[string, string]>} sides
+ * @returns {string[]}
+ */
+export function frontmatters_at(root, sides) {
+  const batch = sides.filter(([rev, p]) => hc.batchable(`${rev}:${p}`))
+  const objs = hc.git_objects(root, batch.map(([rev, p]) => `${rev}:${p}`))
+  const got = new Map(batch.map(([rev, p], i) => [`${rev}:${p}`, objs[i]]))
+  return sides.map(([rev, p]) => {
+    const key = `${rev}:${p}`
+    if (!got.has(key)) return frontmatter_at(root, rev, p)
+    const o = got.get(key)
+    // `missing` is an absent path or a missing object: frontmatter_at tells them apart and throws
+    // for the second. An M change has both sides, so this second read is rare.
+    if (o === null || o.type !== 'blob') return frontmatter_at(root, rev, p)
+    if (o.text === '') return '' // an empty file reads as `git show` read it
+    const block = hc.fm_block(o.text)
+    return block === null ? '<no-frontmatter>' : block
+  })
+}
+
 export const LOG_BODY_FMT = '--format=%x01%h%x00%B'
 
 /**
@@ -740,24 +766,24 @@ export function build_findings(root, cfg, warns, rev_range) {
   // 4) BUILD — doc FRONTMATTER changed but the index was not regenerated. Matched on ANY path
   //    field, not just the last: a rename OUT of docs/ drops an entry from the index, and keying
   //    on the final path alone would miss it.
+  //    A changed index answers the check, so it reads no frontmatter then. The first difference
+  //    decides it, so a non-M change reads none either.
   const doc_changes = changes.filter(([, ps]) => ps.some((p) => DOCS_RX.test(p)))
-  if (doc_changes.length) {
+  const index_rel = hc.norm(cfg.index)
+  if (doc_changes.length && !fileset.has(index_rel)) {
     let need = false
     if (!pre || !hc.py_strip(git(root, ['rev-parse', '-q', '--verify', `${pre}^{commit}`], [1]))) {
       need = true // no comparable endpoint — do not suppress what cannot be checked
+    } else if (doc_changes.some(([st]) => !st.startsWith('M'))) {
+      need = true // add/delete/rename/copy changes the entry set or its path field
     } else {
-      for (const [st, ps] of doc_changes) {
-        const old = ps[0]
-        const cur = ps[ps.length - 1]
-        if (st.startsWith('M')) {
-          if (frontmatter_at(root, pre, old) !== frontmatter_at(root, post, cur)) need = true
-        } else {
-          need = true // add/delete/rename/copy changes the entry set or its path field
-        }
+      const sides = doc_changes.flatMap(([, ps]) => [[pre, ps[0]], [post, ps[ps.length - 1]]])
+      const fm = frontmatters_at(root, sides)
+      for (let i = 0; i < fm.length; i += 2) {
+        if (fm[i] !== fm[i + 1]) { need = true; break }
       }
     }
-    const index_rel = hc.norm(cfg.index)
-    if (need && !fileset.has(index_rel)) {
+    if (need) {
       f.push(`BUILD: docs frontmatter changed but ${index_rel} untouched — run: ` +
              'node docs/build.mjs')
     }

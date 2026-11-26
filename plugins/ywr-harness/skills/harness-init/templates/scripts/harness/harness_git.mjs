@@ -2,7 +2,7 @@
 // Node built-ins only, ESM, no install step: this file is copied into consumer repositories as
 // `scripts/harness/harness_git.mjs`, where no plugin exists, so it imports nothing but `node:` modules.
 //
-// Every git call whose output is parsed goes through `git_run`, `git_lines`, `git_paths` or
+// Every git call whose output is parsed goes through `git_run`, `git_lines`, `git_paths`, `git_objects` or
 // `git_result`. The pins, the UTF-8 decode and the NUL framing live here and nowhere else. Why:
 //   - The argv is an array and no shell runs, so a repo-supplied value is never re-split or expanded.
 //   - Both pipes are bytes. A text-mode pipe would translate newlines on Windows and turn a
@@ -114,8 +114,29 @@ export function which_on_path(name, envPath = process.env.PATH) {
 
 let _gitExe
 function _git() {
-  if (_gitExe === undefined) _gitExe = which_on_path('git')
+  if (_gitExe === undefined) _gitExe = _real_git(which_on_path('git'))
   return _gitExe
+}
+
+/**
+ * Git for Windows puts a launcher, `<install>\cmd\git.exe`, on PATH. The launcher starts the real
+ * `git.exe` from the install's MinGW tree. Every start is hidden (`windowsHide`), because a hook or
+ * a background command can run without a console, and then each git would flash a window. Through
+ * the launcher, a hidden start cost about 26 ms more per call, a quarter of a git-heavy run. So the
+ * real binary is started directly when it sits where the installer puts it. Any other layout keeps
+ * the PATH entry.
+ * @param {string} exe the git that PATH resolved
+ * @returns {string}
+ */
+export function _real_git(exe) {
+  if (!exe || process.platform !== 'win32') return exe
+  const dir = path.dirname(exe)
+  if (path.basename(dir).toLowerCase() !== 'cmd' || path.basename(exe).toLowerCase() !== 'git.exe') return exe
+  for (const tree of ['mingw64', 'clangarm64', 'mingw32']) {
+    const real = path.join(path.dirname(dir), tree, 'bin', 'git.exe')
+    try { if (fs.statSync(real).isFile()) return real } catch { /* not this layout */ }
+  }
+  return exe
 }
 
 /** True when no git is on PATH. The first call resolves git, and later calls reuse the answer. */
@@ -210,14 +231,30 @@ function _spawn_error(name, message, props = {}) {
  * @returns {{status: number, stdout: string, stderr: string, cmd: string[]}}
  */
 export function git_result(root, args, { stdin = null, env = null } = {}) {
+  const r = _spawn(root, args, stdin === null || stdin === undefined ? undefined : Buffer.from(stdin, 'utf8'), env)
+  return {
+    status: r.status,
+    stdout: decode_utf8_backslashreplace(r.stdout),
+    stderr: decode_utf8_backslashreplace(r.stderr),
+    cmd: r.cmd,
+  }
+}
+
+/**
+ * The one spawn of git. Returns `{status, stdout, stderr, cmd}` with both streams as raw bytes.
+ * @param {string} root @param {string[]} args @param {Buffer|undefined} input
+ * @param {Object<string,string>|null} env
+ * @returns {{status: number, stdout: Buffer, stderr: Buffer, cmd: string[]}}
+ */
+function _spawn(root, args, input, env) {
   const exe = _git()
   if (!exe) throw _spawn_error('FileNotFoundError', 'git was not found on PATH', { code: 'ENOENT' })
   const cmd = ['git', ...GIT_PINS, ...args]
   const r = spawnSync(exe, [...GIT_PINS, ...args], {
     cwd: root,
-    input: stdin === null || stdin === undefined ? undefined : Buffer.from(stdin, 'utf8'),
+    input,
     env: env === null || env === undefined ? undefined : { ...process.env, ...env },
-    windowsHide: true,
+    windowsHide: true, // no console window, even under a parent without one (see `_real_git`)
     maxBuffer: _MAX_BUFFER,
   })
   if (r.error) {
@@ -229,12 +266,65 @@ export function git_result(root, args, { stdin = null, env = null } = {}) {
   }
   let status = r.status
   if (status === null) status = -(os.constants.signals[r.signal] ?? 1)
-  return {
-    status,
-    stdout: decode_utf8_backslashreplace(r.stdout ?? Buffer.alloc(0)),
-    stderr: decode_utf8_backslashreplace(r.stderr ?? Buffer.alloc(0)),
-    cmd,
+  return { status, stdout: r.stdout ?? Buffer.alloc(0), stderr: r.stderr ?? Buffer.alloc(0), cmd }
+}
+
+/**
+ * True when `<rev>:<path>` can travel on the line-based stdin of `git cat-file --batch`.
+ * @param {string} spec
+ * @returns {boolean}
+ */
+export function batchable(spec) {
+  return !spec.includes('\n') && !spec.includes('\r')
+}
+
+/**
+ * Many `<rev>:<path>` objects in ONE `git cat-file --batch` call. Each git start costs tens of
+ * milliseconds on Windows, so a caller that reads one file at several revisions asks once. The
+ * result has one entry per spec, in order: `null` when git answers `missing`, else `{type, text}`
+ * with the content decoded like every other output. `missing` covers an absent path and a missing
+ * object alike, so a caller that must tell them apart asks again for that spec alone. Any other
+ * reply that is no object throws. A spec that holds a line feed or a carriage return cannot
+ * travel on the batch's stdin: git splits lines on LF and drops a CR before it, so `a.md\r` would
+ * read `a.md`. Such a spec throws before git starts. A non-zero exit or a reply that does not
+ * parse throws `CalledProcessError`.
+ * @param {string} root
+ * @param {string[]} specs `<rev>:<path>` object names
+ * @returns {Array<{type: string, text: string}|null>}
+ */
+export function git_objects(root, specs) {
+  if (!specs.length) return []
+  for (const s of specs) {
+    if (!batchable(s)) throw _spawn_error('ValueError', `object name holds a line feed or a carriage return: ${_repr_str(s)}`)
   }
+  const args = ['cat-file', '--batch']
+  const r = _spawn(root, args, Buffer.from(specs.join('\n') + '\n', 'utf8'), null)
+  const fail = (why) => _spawn_error('CalledProcessError',
+    `Command '[${r.cmd.map(_repr_str).join(', ')}]' ${why}.`,
+    { status: r.status, returncode: r.status, stdout: '', output: '',
+      stderr: decode_utf8_backslashreplace(r.stderr), args, cmd: r.cmd })
+  if (r.status !== 0) throw fail(`returned non-zero exit status ${r.status}`)
+  const out = r.stdout
+  const res = []
+  let at = 0
+  for (const spec of specs) {
+    const nl = out.indexOf(0x0a, at)
+    if (nl === -1) throw fail(`ended before the reply for ${_repr_str(spec)}`)
+    const head = decode_utf8_backslashreplace(out.subarray(at, nl))
+    at = nl + 1
+    // git answers `<name> missing` both for an absent path and for a path whose object is gone,
+    // as in a shallow clone. Only the caller can tell them apart, so both read as `null`. The
+    // name is compared as decoded text, so a non-ASCII path matches too.
+    if (head === `${spec} missing`) { res.push(null); continue }
+    if (head.endsWith(' missing') || head.endsWith(' ambiguous')) throw fail(`could not read ${_repr_str(spec)}: ${_repr_str(head)}`)
+    const m = /^[0-9a-f]+ (\S+) (\d+)$/.exec(head)
+    if (!m) throw fail(`gave an unreadable reply header ${_repr_str(head)}`)
+    const size = Number(m[2])
+    if (at + size + 1 > out.length || out[at + size] !== 0x0a) throw fail(`gave a short reply for ${_repr_str(spec)}`)
+    res.push({ type: m[1], text: decode_utf8_backslashreplace(out.subarray(at, at + size)) })
+    at += size + 1
+  }
+  return res
 }
 
 /**

@@ -1,6 +1,6 @@
 ---
 name: artifact-publish
-description: Republish this repo's declared claude.ai Artifacts safely — and only when needed. Lists every artifacts.items[] entry from .harness.json (url · title · committed source · drift check), runs each declared check, shows the LIVE state (the served body hashed against the source's committed history — one tool result line, no page read; already live = stop), and after ONE confirmation performs the Artifact-tool publish with the measured read-before-republish sequence and a byte-level lockstep proof against the committed source. Use after regenerating a committed Artifact source (onboarding guide, docs page, customer page) or at a release step whose verdict says the Artifact is next.
+description: Republish this repo's declared claude.ai Artifacts safely — and only when needed. Lists every artifacts.items[] entry from .harness.json (url · title · committed source · drift check), runs each declared check, shows the LIVE state (the served body hashed against the source's committed history — one tool result line, no page read; already live = stop), and after ONE confirmation performs the Artifact-tool publish with the measured read-before-republish sequence and a byte-level lockstep proof against the committed source. Use after regenerating a committed Artifact source (onboarding guide, docs page, customer page), when the person asks for a publish.
 disable-model-invocation: true
 ---
 
@@ -84,10 +84,9 @@ twice between publishes is the ordinary case, and only the search tells which st
   publishing over it is the member's decision, not a step.
 
 A repo may have its own reason to decline even when the page differs. ywr-harness's onboarding
-page changes at EVERY release by construction (release notes + version strings), so its release
-script prints whether the release REQUIRES a republish — the guide template changed — and a
-CHANGELOG-only release does not (ywr-harness ADR 0078); the live-state line above verifies that
-verdict's assumption (the release it names is what is live).
+page changes at EVERY release by construction (release notes + version strings), and its owner
+publishes it only on a direct request (ywr-harness ADR 0224). So in that repo, run this skill for
+the onboarding page only when the owner asks for it.
 
 Then show the member, per item: the title, the target URL, the source path, the check result
 (passed / not declared), and live → new (the two commits). Ask ONE question: publish / stop.
