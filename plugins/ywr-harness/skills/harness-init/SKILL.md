@@ -55,7 +55,8 @@ Safe by construction, and the split is the reason to re-run rather than diff by 
   on a repo scaffolded before it existed — IS placed by a re-run: creation is not an overwrite.
 - **Nothing is ever deleted.** Accumulated ADRs and specs are untouched.
 - **A retired file is named, never removed.** A file that an earlier release placed and this one no
-  longer places (today `docs/build.ps1`, replaced by `docs/build.mjs`) gets one `retired: <path> —`
+  longer places (today `docs/build.ps1`, replaced by `docs/build.mjs`, and the seven Python files that
+  `docs/build_docs.mjs`, `docs/check_docs.mjs` and `scripts/harness/*.mjs` replaced) gets one `retired: <path> —`
   line when it is still in the target, on a dry run and a real run alike. The line asks the member to
   delete it with `git rm`. It changes neither the exit code nor the stamp.
 - **Placement writes LF** — no matter how the installed plugin cache was checked out
@@ -125,21 +126,22 @@ no report.
    did not finish. Then check the value by hand: no entry may match `CLAUDE.md`, `AGENTS.md`,
    `REVIEW.md`, a file under `docs/prompts/` or a `.py`, `.ps1`, `.mjs` or `.sh` file under `docs/`.
 
-If the run reported `SKIP build — python not on PATH`, the four surfaces do not exist yet: no
-tooling can query this repo's decisions until `node docs/build.mjs` succeeds.
+If the run reported `SKIP build — docs/build.mjs exited <code>` or `SKIP build — docs/build.mjs is not in
+this repo`, the four surfaces do not exist yet: no tooling can query this repo's decisions until
+`node docs/build.mjs` succeeds.
 
 ## The execution layer
 
 Beyond the docs shape, the scaffold vendors the pieces that actually run the gates:
 
-- `.github/workflows/harness-gates.yml` + `scripts/harness/*.py` — CI. Vendored rather than a
+- `.github/workflows/harness-gates.yml` + `scripts/harness/*.mjs` — CI. Vendored rather than a
   reusable workflow because `${CLAUDE_PLUGIN_ROOT}` does not exist in a CI step and cross-repo
   Actions access is closed (ywr-harness ADR 0014).
 - `.githooks/pre-commit` — runs the emitter's **file-scoped** gates on staged files. Whole-program
   gates (tests, typecheck) are deferred to CI and the deferral is reported.
 - `.githooks/pre-push` — scans **added lines** of the pushed range for secrets. A false positive is
   exempted per line with the marker `harness:allow-secret`, not with `--no-verify`.
-- `.githooks/post-commit` + `scripts/harness/harness_retro.py` — the slice retro gate: seven
+- `.githooks/post-commit` + `scripts/harness/harness_retro.mjs` — the slice retro gate: seven
   deterministic docs-drift checks plus SIZE at zero token cost, advisory, silent when clean (ywr-harness ADR 0017).
   Placed **GUARDED** — an existing `post-commit` without the `ywr-harness:post-commit` marker is
   refused rather than overwritten, and the one-line manual wiring is printed instead.
@@ -149,7 +151,7 @@ Beyond the docs shape, the scaffold vendors the pieces that actually run the gat
 made that choice for reasons this scaffold cannot see.
 
 It lives in `.git/config`, which is per-clone and never committed, so this wires only the machine
-that ran the scaffold. Every other clone is caught by the `hooks:` line `harness_gates.py` prints
+that ran the scaffold. Every other clone is caught by the `hooks:` line `harness_gates.mjs` prints
 on each `/ywr-harness:slice-close` and CI run:
 
 ```

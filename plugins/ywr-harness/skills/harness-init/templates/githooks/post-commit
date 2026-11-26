@@ -12,20 +12,20 @@
 # then passes the gate silently.
 #
 # Skip once:        SLICE_RETRO=0 git commit ...
-# Whole slice:      python scripts/harness/harness_retro.py main~3..HEAD
-# Coverage audit:   python scripts/harness/harness_retro.py --coverage
+# Whole slice:      node scripts/harness/harness_retro.mjs main~3..HEAD
+# Coverage audit:   node scripts/harness/harness_retro.mjs --coverage
 #
 # Copyright (c) 2026 YWR Labs Inc. All rights reserved.
 
 [ "$SLICE_RETRO" = "0" ] && exit 0
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-RETRO="$ROOT/scripts/harness/harness_retro.py"
+RETRO="$ROOT/scripts/harness/harness_retro.mjs"
 [ -f "$RETRO" ] || exit 0
 
-PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || command -v py 2>/dev/null)
-if [ -z "$PY" ]; then
-    echo "[slice-retro] SKIP — no python on PATH (reported, not silent)."
+NODE=$(command -v node 2>/dev/null)
+if [ -z "$NODE" ]; then
+    echo "[slice-retro] SKIP — no node on PATH (reported, not silent)."
     exit 0
 fi
 
@@ -37,5 +37,5 @@ fi
 # post-commit logic does not belong here. If you must have it: delete the marker line — the file
 # becomes yours and stops refreshing, the trade the header describes — and keep your block ABOVE
 # the final `exit 0`; appended after it, a block looks wired and never runs.
-"$PY" "$RETRO" --repo "$ROOT" || true
+"$NODE" "$RETRO" --repo "$ROOT" || true
 exit 0

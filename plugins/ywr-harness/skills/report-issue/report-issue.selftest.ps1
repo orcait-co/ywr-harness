@@ -34,7 +34,7 @@ if (-not $gitOk) {
 $gitDir = Split-Path (Get-Command git).Source -Parent
 # ADR 0149 §2 (L2): on Windows the PATH `git` is the cmd\git.exe LAUNCHER (one extra process per git call);
 # the narrowed PATHs below carry the worker's directory (mingw64\bin) in its place — but ONLY when that
-# directory holds no gh, claude, python (python3 and py too: init.mjs probes them) or node under any
+# directory holds no gh, claude, python (python3 and py too: kept in the guard's list) or node under any
 # extension PowerShell would resolve: those names
 # are the "unreachable" premise of every narrowed-PATH case here. A directory that shadows one keeps the
 # launcher directory and says so with a visible WARN line (never silent). Non-Windows: '' — unchanged.
@@ -341,20 +341,19 @@ $scaff = Join-Path $fx 'scaff'
 New-Item -ItemType Directory -Force -Path $scaff | Out-Null
 Invoke-GitQ $scaff @('-c', 'init.defaultBranch=main', 'init', '-q')
 Invoke-GitQ $scaff @('remote', 'add', 'origin', 'git@github.com:acme/scaffolded.git')
-# Real scaffold run, python OFF the PATH so the docs build is a reported skip rather than a dependency.
+# Real scaffold run with gh off the PATH; the docs build runs on the Node that runs init.mjs.
 $env:PATH = $pathNoGh
 try { & $nodeExe $initMjs "--target=$scaff" 2>&1 | Out-Null; $initExit = $LASTEXITCODE } finally { $env:PATH = $savedPath }
-$gatesPy = Join-Path $scaff 'scripts/harness/harness_gates.py'
+$gatesPy = Join-Path $scaff 'scripts/harness/harness_gates.mjs'
 $scaffReady = ($initExit -eq 0) -and (Test-Path -LiteralPath $gatesPy) -and (Test-Path -LiteralPath (Join-Path $scaff '.harness-version'))
 $ok = (Assert-True 'B0 fixture: init.mjs scaffolded the repo (stamp + vendored gate script present)' $scaffReady "init exit=$initExit") -and $ok
 if ($scaffReady) {
     # --no-verify on the fixture's commits: init.mjs wires core.hooksPath, and since ADR 0094 the
-    # seeded docs groups run check_docs.py at pre-commit — this scaffold ran with python off the PATH,
-    # so no index was built and the hook (correctly) refuses the commit. This suite tests the
-    # feedback draft, not the hooks; a refused commit left the history block empty (B1/B6 red).
+    # seeded docs groups run check_docs.mjs at pre-commit, and a hook that refuses the commit would leave the
+    # history block empty (B1/B6 red). This suite tests the feedback draft, not the hooks.
     Invoke-GitQ $scaff @('add', '-A'); Invoke-GitQ $scaff @('commit', '-q', '--no-verify', '-m', 'scaffold via harness-init')
     $marker = 'LOCAL-PATCH-MARKER-7f3e9a'
-    Add-Content -LiteralPath $gatesPy -Value "# REPO-LOCAL: $marker — report upstream" -Encoding utf8
+    Add-Content -LiteralPath $gatesPy -Value "// REPO-LOCAL: $marker — report upstream" -Encoding utf8
     Invoke-GitQ $scaff @('add', '-A'); Invoke-GitQ $scaff @('commit', '-q', '--no-verify', '-m', 'local patch: fix gate emitter (REPO-LOCAL, report upstream)')
     # a second, UNCOMMITTED toolchain edit
     Add-Content -LiteralPath (Join-Path $scaff '.githooks/pre-commit') -Value '# uncommitted local tweak' -Encoding utf8
@@ -364,10 +363,10 @@ if ($scaffReady) {
     $bodyB = Get-BodyPath $out
     $textB = Read-Body $bodyB
     $ok = (Assert-Text 'B1 scaffolded + patched: nudge verdict quoted, dry run names both files, history names the local commit, marker never leaks' ("$out`n=====`n$textB") `
-            @('\[hook:scaffold-refresh-nudge\]', 'scripts/harness/harness_gates\.py', '\.githooks/pre-commit',
-              'harness-init -> .*\(dry run — nothing written\)', '~ scripts/harness/harness_gates\.py \(toolchain refreshed from canon\)',
-              '## Local history', '(?m)^scripts/harness/harness_gates\.py$', 'local patch: fix gate emitter',
-              '(?m)^\.githooks/pre-commit · uncommitted changes present$', '2 toolchain file\(s\) a re-run would change: `\.githooks/pre-commit`, `scripts/harness/harness_gates\.py`',
+            @('\[hook:scaffold-refresh-nudge\]', 'scripts/harness/harness_gates\.mjs', '\.githooks/pre-commit',
+              'harness-init -> .*\(dry run — nothing written\)', '~ scripts/harness/harness_gates\.mjs \(toolchain refreshed from canon\)',
+              '## Local history', '(?m)^scripts/harness/harness_gates\.mjs$', 'local patch: fix gate emitter',
+              '(?m)^\.githooks/pre-commit · uncommitted changes present$', '2 toolchain file\(s\) a re-run would change: `\.githooks/pre-commit`, `scripts/harness/harness_gates\.mjs`',
               ('stamp: ' + [regex]::Escape($manifestVer)), 'repo: `acme/scaffolded`', 'similar open reports: none') `
             @('LOCAL-PATCH-MARKER', '@@', '\+\+\+ ', 'Traceback', 'uncommitted local tweak', 'not a scaffolded repo') `
             @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }), $(if (-not $bodyB) { 'no body: line' }))) -and $ok
@@ -391,8 +390,8 @@ if ($scaffReady) {
         $textB1c = Read-Body (Get-BodyPath $out)
         $ok = (Assert-Text 'B1c no node on PATH: the nudge section says the hook could not run; the dry run still names both files' ("$out`n=====`n$textB1c") `
                 @('the refresh nudge could not run: node is not on PATH', 'no toolchain-drift verdict was read',
-                  'harness-init -> .*\(dry run — nothing written\)', '~ scripts/harness/harness_gates\.py \(toolchain refreshed from canon\)',
-                  '2 toolchain file\(s\) a re-run would change: `\.githooks/pre-commit`, `scripts/harness/harness_gates\.py`') `
+                  'harness-init -> .*\(dry run — nothing written\)', '~ scripts/harness/harness_gates\.mjs \(toolchain refreshed from canon\)',
+                  '2 toolchain file\(s\) a re-run would change: `\.githooks/pre-commit`, `scripts/harness/harness_gates\.mjs`') `
                 @('\[hook:scaffold-refresh-nudge\]', 'silent — the refresh nudge reported no toolchain drift', 'hook invocation failed', 'hook output was not JSON', 'Traceback') `
                 @($(if ($script:Exit -ne 0) { "exit $script:Exit (want 0)" }), $(if (-not $textB1c) { 'no body written' }))) -and $ok
     }

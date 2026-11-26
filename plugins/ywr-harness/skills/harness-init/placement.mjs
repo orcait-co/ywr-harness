@@ -30,18 +30,19 @@ export const TOOLCHAIN = pairs([
   ['docs/spec/0000-template.md', 'docs/spec/0000-template.md'],
   ['docs/build.mjs', 'docs/build.mjs'],
   ['docs/build.sh', 'docs/build.sh'],
-  ['docs/build_docs.py', 'docs/build_docs.py'],
-  ['docs/check_docs.py', 'docs/check_docs.py'],
+  ['docs/build_docs.mjs', 'docs/build_docs.mjs'],
+  ['docs/check_docs.mjs', 'docs/check_docs.mjs'],
   // Vendored so CI needs no access to the canon repo. `${CLAUDE_PLUGIN_ROOT}` is substituted when
   // Claude Code spawns a hook and does not exist in a CI step, and the canon is private with
   // cross-repo Actions access closed — a reusable workflow would require widening that. Byte
   // identity with the plugin's own copies is enforced by manifest-gate.mjs (ywr-harness ADR 0014).
-  ['scripts/harness/harness_config.py', 'scripts/harness/harness_config.py'],
-  ['scripts/harness/harness_gates.py', 'scripts/harness/harness_gates.py'],
-  ['scripts/harness/harness_retro.py', 'scripts/harness/harness_retro.py'],
-  ['scripts/harness/verify_map.py', 'scripts/harness/verify_map.py'],
+  ['scripts/harness/harness_config.mjs', 'scripts/harness/harness_config.mjs'],
+  ['scripts/harness/harness_git.mjs', 'scripts/harness/harness_git.mjs'],
+  ['scripts/harness/harness_gates.mjs', 'scripts/harness/harness_gates.mjs'],
+  ['scripts/harness/harness_retro.mjs', 'scripts/harness/harness_retro.mjs'],
+  ['scripts/harness/verify_map.mjs', 'scripts/harness/verify_map.mjs'],
   // Not a CI script: the session names this path from CLAUDE.md to record its decisions (ywr-harness ADR 0172).
-  ['scripts/harness/slice_note.py', 'scripts/harness/slice_note.py'],
+  ['scripts/harness/slice_note.mjs', 'scripts/harness/slice_note.mjs'],
   // CI 의 PR base 해석 단일 소스(ywr-harness ADR 0043) — 벤더링된 워크플로가 직접 sh 로 부른다.
   ['scripts/harness/resolve-base.sh', 'scripts/harness/resolve-base.sh'],
   ['.github/workflows/harness-gates.yml', '.github/workflows/harness-gates.yml'],
@@ -64,8 +65,14 @@ export const TOOLCHAIN = pairs([
 // in, so a stamped repo's pre-existing file at that new path is guarded the same as a first-run
 // collision instead of being silently overwritten and reported as "refreshed".
 export const INTRODUCED_IN = pairs([
-  ['docs/check_docs.py', '0.47.0'],
-  ['scripts/harness/slice_note.py', '0.69.14'],
+  ['docs/check_docs.mjs', '0.85.0'],
+  ['docs/build_docs.mjs', '0.85.0'],
+  ['scripts/harness/harness_config.mjs', '0.85.0'],
+  ['scripts/harness/harness_git.mjs', '0.85.0'],
+  ['scripts/harness/harness_gates.mjs', '0.85.0'],
+  ['scripts/harness/harness_retro.mjs', '0.85.0'],
+  ['scripts/harness/verify_map.mjs', '0.85.0'],
+  ['scripts/harness/slice_note.mjs', '0.85.0'],
   ['docs/build.mjs', '0.84.0'],
 ])
 
@@ -110,6 +117,13 @@ export const SEED = pairs([
 // decision record that says why.
 export const RETIRED = Object.freeze([
   Object.freeze({ dest: 'docs/build.ps1', since: '0.84.0', adr: '0220' }),
+  Object.freeze({ dest: 'docs/build_docs.py', since: '0.85.0', adr: '0223' }),
+  Object.freeze({ dest: 'docs/check_docs.py', since: '0.85.0', adr: '0223' }),
+  Object.freeze({ dest: 'scripts/harness/harness_config.py', since: '0.85.0', adr: '0223' }),
+  Object.freeze({ dest: 'scripts/harness/harness_gates.py', since: '0.85.0', adr: '0223' }),
+  Object.freeze({ dest: 'scripts/harness/harness_retro.py', since: '0.85.0', adr: '0223' }),
+  Object.freeze({ dest: 'scripts/harness/verify_map.py', since: '0.85.0', adr: '0223' }),
+  Object.freeze({ dest: 'scripts/harness/slice_note.py', since: '0.85.0', adr: '0223' }),
 ])
 
 // Placed ONLY when docs/adr/ holds no record yet. Two reasons, both load-bearing:

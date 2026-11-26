@@ -5,7 +5,7 @@
 # TOOLCHAIN (ywr-harness ADR 0010/0015): placed by /ywr-harness:harness-init and OVERWRITTEN on
 # every re-run. Do not hand-edit — fix it in the canon and re-run the scaffold.
 #
-# What it does: asks scripts/harness/harness_gates.py which gates the staged files earn, then runs
+# What it does: asks scripts/harness/harness_gates.mjs which gates the staged files earn, then runs
 # them. The emitter only prints; this is where the printing turns into enforcement.
 #
 # WHAT IT DELIBERATELY DOES NOT DO:
@@ -38,7 +38,7 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 # Three deliberate properties:
 #   * It reads STAGED content, not the working tree. What lands in the commit is the whole question.
 #   * It runs BEFORE the emitter and interpreter checks below, so a repo with no harness scripts and
-#     no python on PATH is still protected. This gate must not be skippable by environment.
+#     no node on PATH is still protected. This gate must not be skippable by environment.
 #   * That is also its limit: a literal match cannot see a `\uXXXX`-escaped spelling of the key,
 #     which is valid JSON the host still honors. CI parses the file and catches that; this hook is
 #     the floor, not the authority (same split as ywr-harness ADR 0015).
@@ -62,10 +62,10 @@ for _cfg in .claude/settings.json .claude/settings.local.json; do
     fi
 done
 
-EMITTER="$ROOT/scripts/harness/harness_gates.py"
+EMITTER="$ROOT/scripts/harness/harness_gates.mjs"
 
 if [ ! -f "$EMITTER" ]; then
-    echo "[harness] SKIP pre-commit gates — scripts/harness/harness_gates.py not found."
+    echo "[harness] SKIP pre-commit gates — scripts/harness/harness_gates.mjs not found."
     echo "[harness]   Run /ywr-harness:harness-init to place it (reported, not silent)."
     exit 0
 fi
@@ -83,9 +83,11 @@ fi
 STAGED=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMR)
 [ -n "$STAGED" ] || exit 0
 
-PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || command -v py 2>/dev/null)
-if [ -z "$PY" ]; then
-    echo "[harness] SKIP pre-commit gates — no python on PATH (reported, not silent). CI still gates this commit."
+# The harness scripts need Node 22 or later (ywr-harness ADR 0220). Nothing here checks the version: an
+# older node runs the gates on a runtime nobody tested, and only CI, which installs Node 22, holds the floor.
+NODE=$(command -v node 2>/dev/null)
+if [ -z "$NODE" ]; then
+    echo "[harness] SKIP pre-commit gates — no node on PATH (reported, not silent). CI still gates this commit."
     exit 0
 fi
 
@@ -101,7 +103,7 @@ fi
 # The emitter takes explicit files, which is what keeps this scoped to the slice rather than the
 # tree. NUL-delimited via `xargs -0` (portable; `xargs -d` is GNU-only) so a path with spaces
 # survives. Its warnings go to stderr and are shown; only stdout is parsed.
-OUT=$(printf '%s\n' "$STAGED" | tr '\n' '\0' | xargs -0 "$PY" "$EMITTER" --repo "$ROOT")
+OUT=$(printf '%s\n' "$STAGED" | tr '\n' '\0' | xargs -0 "$NODE" "$EMITTER" --repo "$ROOT")
 EMIT_RC=$?
 if [ $EMIT_RC -ne 0 ]; then
     echo "[harness] pre-commit: the gate emitter failed (exit $EMIT_RC) — not blocking the commit, but NO GATE RAN."

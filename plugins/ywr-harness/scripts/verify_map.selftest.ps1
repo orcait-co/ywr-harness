@@ -7,19 +7,19 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
-$mapper = Join-Path $PSScriptRoot 'verify_map.py'
+$mapper = Join-Path $PSScriptRoot 'verify_map.mjs'
 $fxBase = New-FixtureRoot 'verify-map-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 
-$py = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+$py = @('node') | ForEach-Object { Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue } | Select-Object -First 1
 if (-not $py) {
-    # Reported skip, never silent: CI has python, so absence THERE would mean the gate stopped running.
+    # Reported skip, never silent: CI has node, so absence THERE would mean the gate stopped running.
     if ($env:CI) {
-        Write-Host 'FAIL — python absent on CI; a missing interpreter is not a pass' -ForegroundColor Red
+        Write-Host 'FAIL — node absent on CI; a missing interpreter is not a pass' -ForegroundColor Red
         Remove-FixtureRoot $fxBase
         exit 1
     }
-    Write-Host 'SKIP [verify_map] python absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
+    Write-Host 'SKIP [verify_map] node absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
     Remove-FixtureRoot $fxBase
     exit 0
 }

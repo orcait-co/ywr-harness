@@ -60,7 +60,7 @@ const TREE_LINE = 'tree: ' + 'a'.repeat(40) + ' · HEAD ' + 'b'.repeat(40)
 const FAILED_TREE = { isError: true, text: 'tree: FAILED — not a git work tree' }
 const ok = (extra = {}) => ({ ref: 'x', result: {}, text: TREE_LINE, ...extra })
 const measure = (E, context) => through(E, 'session.measure', { context, rateLimits: [], changed: ['context'] }, { changed: ['context'] })
-const TREE = 'python scripts/harness/harness_gates.py --tree'
+const TREE = 'node scripts/harness/harness_gates.mjs --tree'
 
 // --- pure half ---
 {
@@ -75,7 +75,10 @@ const TREE = 'python scripts/harness/harness_gates.py --tree'
   eq('no percentage yet: no zone', [M.zoneOf({ window: 200000 }), M.zoneOf(null), M.zoneOf({ percent: NaN })], [null, null, null])
   eq('constants match the org guide', [M.START_BELOW, M.SCOPED_UPTO, M.NO_PLAN_FROM, M.LARGE_WINDOW, M.FOLLOW_ON_PAST], [35, 60, 85, 1000000, 200000])
 
-  const yes = [TREE, 'python3 harness_gates.py --tree', 'py "C:/r/scripts/harness/harness_gates.py" --tree',
+  // the Node script is the run now; the Python forms stay accepted for a member whose scaffold still places the old script
+  const yes = [TREE, 'python scripts/harness/harness_gates.py --tree', 'node harness_gates.mjs --tree', 'node.exe "C:/r/scripts/harness/harness_gates.mjs" --tree',
+    'node --no-warnings scripts/harness/harness_gates.mjs --staged --tree', 'node scripts/harness/harness_gates.mjs --tree 2>&1 | tail -1',
+    'cd /c/r && node scripts/harness/harness_gates.mjs --tree', 'python3 harness_gates.py --tree', 'py "C:/r/scripts/harness/harness_gates.py" --tree',
     'cd /c/r && python scripts/harness/harness_gates.py --tree', 'python scripts/harness/harness_gates.py --staged --tree',
     'python -I scripts/harness/harness_gates.py --tree', 'python.exe "C:/Program Files/h/harness_gates.py" --tree',
     'scripts/harness/harness_gates.py --tree', 'sed -i s/a/b/ f.md && python harness_gates.py --tree', '& python harness_gates.py --tree',
@@ -83,7 +86,9 @@ const TREE = 'python scripts/harness/harness_gates.py --tree'
     'python harness_gates.py --tree 2>&1 | Select-Object -Last 1', 'python harness_gates.py --tree | Out-String',
     'python harness_gates.py --tree; echo "exit $?"', 'python harness_gates.py --tree 2>$null; Write-Host done',
     'python harness_gates.py --tree 2>&1 | head -n 5', 'python harness_gates.py --tree | Select-Object -Last 1 | Out-String']
-  const no = ['python scripts/harness/harness_gates.py', 'python harness_gates.py --tree-x', 'python harness_gates.py; echo --tree',
+  const no = ['node scripts/harness/harness_gates.mjs', 'node harness_gates.mjs --tree-x', 'node harness_gates.mjsx --tree', 'node harness_gates.mjs --tree | tee out.txt',
+    'node harness_gates.mjs --tree > out.txt', 'node harness_gates.mjs --tree; echo x > f', 'echo harness_gates.mjs --tree',
+    'python scripts/harness/harness_gates.py', 'python harness_gates.py --tree-x', 'python harness_gates.py; echo --tree',
     'python harness_gates.pyc --tree', 'python harness_gates.py --all', 42, undefined,
     'python harness_gates.py --tree | tee out.txt', 'python harness_gates.py --tree 2>&1 > out.txt', 'python harness_gates.py --tree; Remove-Item x',
     'python harness_gates.py --tree | sort > x', 'python harness_gates.py --tree || python gen.py', 'python harness_gates.py --tree; echo x > f',

@@ -1,17 +1,17 @@
 // Hooks module (Claude Mods; ywr-harness ADR 0142) — the PREREQUISITE check and its install command. `mods.mjs`, the
 // entry `hooks.json` names under `modules`, registers it beside the delegation ledger.
 //
-// The plugin needs two tools on PATH: `node` 22+ runs the settings hooks (ywr-harness ADR 0116), the skills' scripts
-// and the statusline installer (ywr-harness ADR 0220), `python` 3.9+ runs the gate scripts. A settings hook cannot
-// report its own runtime's absence, so this check is a mod: the host runs a mod in an engine
+// The plugin needs one tool on PATH: `node` 22+ runs the settings hooks (ywr-harness ADR 0116), the skills' scripts,
+// the gate scripts, the docs builder and the statusline installer (ywr-harness ADR 0220, ywr-harness ADR 0223). No
+// script runs Python on a member machine. A settings hook cannot report its own runtime's absence, so this check is a mod: the host runs a mod in an engine
 // environment of its own, with no Node (ywr-harness fact 135), and `$.process.run` reaches the host's commands.
 //
 // What it does:
 // - `session.start`: after `next(e)` resolves it starts the `--version` probes on a
 //   `$.clock.after(0, …)` timer and does not wait for them, so the probes never delay the session start
 //   (ywr-harness ADR 0164; a host without the call runs them directly). A probe that rejects with ENOENT / "not
-//   found", or a command that exits non-zero (the Windows Store `python` alias does), is MISSING; a
-//   `node` below 22 or a `python` below 3.9 is OLD; anything else (a timeout, a surface without
+//   found", or a command that exits non-zero (a Windows Store alias stub does), is MISSING; a
+//   tool below its minimum (`node` below 22) is OLD; anything else (a timeout, a surface without
 //   `$.process`) is UNKNOWN and never speaks. On Windows a not-found refusal is tried once more by the
 //   app execution alias path (`aliasPath`, ywr-harness ADR 0150): the runner refuses a bare alias name when the cwd
 //   is an ancestor of the alias folder, as the home folder is (ywr-harness fact 147).
@@ -53,21 +53,16 @@ export const TOOLS = [
   {
     name: 'node', argv: ['node', '--version'], min: [22, 0], winget: 'OpenJS.NodeJS.LTS',
     other: 'macOS: `brew install node` (an old Homebrew node: `brew upgrade node`) · Linux: a 22+ LTS from nodejs.org or a version manager such as nvm (a distribution package can be older than 22)',
-    uses: 'the ywr-harness settings hooks (session start, config change, added directory, every Agent call, every question) report a hook error, and the ywr-harness:harness-init and ywr-harness:report-issue skill scripts and the ywr-harness statusline installer fail',
+    uses: 'the ywr-harness settings hooks (session start, config change, added directory, every Agent call, every question) report a hook error, and the ywr-harness:harness-init and ywr-harness:report-issue skill scripts, the gate scripts (pre-commit, post-commit, ywr-harness:verify) and the ywr-harness statusline installer fail',
     // An OLD node is not known to break anything: nobody tested the hooks and the skill scripts below 22.0
     // (ywr-harness ADR 0220). So the note and the band say that, not a failure.
     oldUses: 'nobody tested the ywr-harness hooks and skill scripts below 22.0, and ywr-harness requires 22.0 (ywr-harness ADR 0220)',
-  },
-  {
-    name: 'python', argv: ['python', '--version'], min: [3, 9], winget: 'Python.Python.3.13',
-    other: 'macOS: `brew install python` · Linux: the distribution package (the command must be `python`)',
-    uses: 'the gate scripts fail (harness_gates.py in pre-commit, harness_retro.py in post-commit, verify_map.py in /ywr-harness:verify)',
   },
 ]
 
 const minText = t => (t.min ? `${t.min[0]}.${t.min[1]}` : '')
 
-// The first `major.minor` in a `--version` line: `v24.14.0`, `Python 3.13.13`.
+// The first `major.minor` in a `--version` line: `v24.14.0`.
 export function parseVersion(text) {
   const m = /(\d+)\.(\d+)/.exec(String(text ?? ''))
   return m ? [Number(m[1]), Number(m[2])] : null
@@ -98,7 +93,7 @@ export function needsOf(verdicts) {
   return out
 }
 
-// The per-user folder of Windows app execution aliases. The Store `python` and `winget` are aliases there
+// The per-user folder of Windows app execution aliases. `winget` and a Store stub of a tool are aliases there
 // (0-byte reparse points). `$.process.run` refuses a bare alias name with the not-found error when the
 // session's cwd is an ancestor of that folder, the home folder included, and runs the same alias by its
 // absolute path (ywr-harness fact 147, ywr-harness ADR 0150). The Desktop session that showed it ran in the home folder.
@@ -171,15 +166,14 @@ export function wingetArgv(tool, exe = 'winget') {
     '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity', '--silent']
 }
 
-// A winget exit 0 does not prove the command resolves on PATH: whether the python installer puts
-// `python` on PATH, and whether the Windows Store alias of `python` shadows it, is unmeasured (ywr-harness ADR 0142).
-// The next session's probe is the check, so the report says what a returning band means.
+// A winget exit 0 does not prove the command resolves on PATH: whether the installer puts the command on PATH
+// is unmeasured (ywr-harness ADR 0142). The next session's probe is the check, so the report says what a
+// returning band means.
 const PATH_HINT = '재시작한 뒤에도 안내 줄에 다시 나오면, 설치는 됐지만 PATH 에서 찾지 못하는 것입니다.'
-const ALIAS_HINT = ' python 이면 Windows 설정 > 앱 > 고급 앱 설정 > 앱 실행 별칭에서 python.exe 별칭을 끄고, PATH 에 Python 폴더가 있는지 확인하세요.'
 // For a tool the probe found OLD, a band after the restart means the old binary still comes first on
 // PATH (winget installs the new one beside it), not that the new one is missing from PATH.
 const OLD_HINT = old => `재시작한 뒤에도 안내 줄에 다시 나오면, 이전 버전(${old})이 PATH 에서 먼저 잡히는 것입니다. 이전 버전을 지우거나 PATH 순서를 바꾸세요.`
-const hintFor = (tool, old) => (old ? OLD_HINT(old) : PATH_HINT + (tool.name === 'python' ? ALIAS_HINT : ''))
+const hintFor = (tool, old) => (old ? OLD_HINT(old) : PATH_HINT)
 const isUpToDate = code => typeof code === 'number' && (code >>> 0) === WINGET_UP_TO_DATE
 
 // One install's report line (Korean, for the member) from the exit code `$.process.spawn` returned

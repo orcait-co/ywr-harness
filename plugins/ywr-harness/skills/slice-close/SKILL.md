@@ -20,8 +20,8 @@ may run first and report.
 ## 1. Scope and gates (one command)
 
 ```
-python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py"                       # working tree vs HEAD
-python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py" --range <a>..<b>      # slice range ∪ working tree
+node "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.mjs"                       # working tree vs HEAD
+node "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.mjs" --range <a>..<b>      # slice range ∪ working tree
 ```
 
 `$ARGUMENTS`, when non-empty, is the range; pass it to `--range` as given — the emitter is the
@@ -126,7 +126,7 @@ one site gets a bucket per site:
 - **valid, no action** — only for a `nit` whose fix would change a design or a coverage. The claim is
   true, and the change waits for a slice that owns it. The reason says why and
   names the record that keeps it, an open item:
-  `python "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.py" add risk "open item: <file:line> <change>; <why>"`.
+  `node "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.mjs" add risk "open item: <file:line> <change>; <why>"`.
   A true claim with no record is not this bucket.
 - **false on reading** — the closer read the claim against the code and it does not hold. The
   reason quotes the line or guard that shows it.
@@ -149,7 +149,7 @@ one site gets a bucket per site:
 
 **The fix diff does not re-enter the review** (ywr-harness ADR 0028, ywr-harness ADR 0200). Close each fix by:
 
-1. **Gates**: `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py" <every file the fix touched>`
+1. **Gates**: `node "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.mjs" <every file the fix touched>`
    and every command it prints — never a default run, which re-covers the whole uncommitted slice.
    Its gate, `ungrouped:` and `ignored-tree claims:` output count exactly as in stage 1; its
    `review tier:` line is **not** an input to the table above. While iterating, run the touched
@@ -169,7 +169,7 @@ one site gets a bucket per site:
 **No fix gets a re-review in this slice** (ywr-harness ADR 0200, which narrows ywr-harness ADR 0028). A patch
 and a new mechanism close the same way: steps 1 and 2 above. When you judge that a fix needs more
 review, record the need when you decide it:
-`python "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.py" add risk "open item: review <files and lines> of the <file:line> fix; <why>"`.
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.mjs" add risk "open item: review <files and lines> of the <file:line> fix; <why>"`.
 Stage 5 puts that note in the handoff as an open item. The next slice that touches those files puts
 those hunks in its review. The close record names each fix that went to an open item, or says
 `none`. This is your decision. It is no owner question. The rebase re-arm below is a separate
@@ -185,7 +185,7 @@ the review standing, recorded as `review basis:`. **→ Rebased or merged after 
 Run the mapper first (zero tokens), over the stage-1 range when there was one:
 
 ```
-python "${CLAUDE_PLUGIN_ROOT}/scripts/verify_map.py" [--range <a>..<b>]
+node "${CLAUDE_PLUGIN_ROOT}/scripts/verify_map.mjs" [--range <a>..<b>]
 ```
 
 - **`scope: FAILED`** or **`index: FAILED`** → stop, as in stage 1. **`index: STALE`** → rebuild the docs index (stage
@@ -217,7 +217,7 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   `docs/handoff-archive/<same filename>`, newest first; a decision worth keeping goes to an ADR or
   spec.
 - **Slice notes** (ywr-harness ADR 0172): run
-  `python "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.py" show [--range <a>..<b>]` with the stage-1
+  `node "${CLAUDE_PLUGIN_ROOT}/scripts/slice_note.mjs" show [--range <a>..<b>]` with the stage-1
   range. When it also counts notes at other HEADs and a rebase brought in a commit that touched the
   handoff, or the repo declares no handoff, run `show --all` and read those notes too. Each note is the session's own claim, written during the
   slice: input, never proof (ywr-harness ADR 0105). Check each one against the tree and the stage outputs. Keep the decisions, rejected
@@ -242,7 +242,7 @@ is written **once**, in that commit's message body (ywr-harness ADR 0090).
   record for this code commit. Paraphrase it ("the skip-ci marker").
 - **After the commit**, quote the post-commit retro's output (or that it printed nothing) in the
   close report; if the emitter's `hooks:` line says the hooks do not run here, run
-  `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_retro.py"` by hand. A follow-up commit only when a
+  `node "${CLAUDE_PLUGIN_ROOT}/scripts/harness_retro.mjs"` by hand. A follow-up commit only when a
   retro finding changes an ADR, a spec or the docs index (ywr-harness ADR 0017); a "no change" result is not
   resume state and never gets a commit.
 

@@ -71,7 +71,7 @@ The stages before the close are ordinary session work (ywr-harness ADR 0105). A 
 1–3 before the close runs, typed by the owner or called by the main session (ywr-harness ADR 0201), and end with a ready report: the emitter's
 output and the result of every command it printed, the review's level, item count and usage line, every
 finding's severity and bucket, every fix verdict, the verify verdict, and LAST the line
-`harness_gates.py --tree` printed after the final edit.
+`harness_gates.mjs --tree` printed after the final edit.
 It writes no handoff and makes no commit. Reuse needs those lines verbatim in THIS session's context.
 A summary left by compaction, or a report from another session, is no report: run every stage.
 The report is the session's own record, trusted as a close record is. The snapshot proves only
@@ -80,7 +80,7 @@ that the tree did not change after it.
 1. Take a fresh snapshot:
 
    ```
-   python "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.py" --tree
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.mjs" --tree
    ```
 
    `tree: FAILED` → nothing is reused; run every stage.

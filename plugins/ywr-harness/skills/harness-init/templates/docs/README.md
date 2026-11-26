@@ -108,7 +108,7 @@ numbered section that holds the change. If no numbered heading holds the change,
 the nearest heading above it. Rewrite all of that section, its table cells included. Keep text
 that a script reads byte-identical, such as a parsed line or a matched row name.
 
-A gate checks R3 and R5. `docs/check_docs.py` runs it at pre-commit on each staged spec and new
+A gate checks R3 and R5. `docs/check_docs.mjs` runs it at pre-commit on each staged spec and new
 ADR, as ywr-harness ADR 0128 records. The gate checks each changed spec section
 whole. A section whose heading names change notes or a ledger is a records section, and the gate
 does not check it. The line `<!-- ste-lite: records -->` marks any

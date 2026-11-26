@@ -77,7 +77,7 @@ This repo keeps two document sets.
   index. A drift gate makes a stale index impossible to merge.
 
 **후속 작업 / 트리거**
-- The scaffold declares `docs/check_docs.py` as the drift gate of the docs groups in
+- The scaffold declares `docs/check_docs.mjs` as the drift gate of the docs groups in
   `.harness.json`. Pre-commit and CI run that gate when a document or a generated index changes.
   Keep that declaration when you edit the groups.
 - Write the first spec when this repo has behavior worth describing apart from its rationale.

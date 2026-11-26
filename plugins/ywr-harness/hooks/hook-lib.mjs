@@ -12,48 +12,28 @@
 // a hook returns and lets Node end naturally.
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { git_result, which_on_path } from '../scripts/harness_git.mjs'
 
 /**
- * The first launchable `name` on PATH, as an absolute path, or '' — the lookup PowerShell's
- * `Get-Command` made, which never looked outside PATH. A bare-name spawn does more: libuv searches
- * the CURRENT directory first on Windows (a `git.exe` planted in the repo would run), and on Unix an
- * unset PATH falls back to the default `/usr/bin:/bin`, so a PATH without git still found it (CI
- * parity image, 2026-10-01). Windows: `<name>.exe` / `<name>.com` only — a `.cmd`/`.bat` shim needs a
- * shell. Elsewhere: an executable regular file `<name>`, symlinks followed.
+ * The first launchable `name` on PATH, as an absolute path, or '' (ywr-harness ADR 0220 decision 9
+ * names `harness_git.mjs` as its one owner). Re-exported so a hook finds `gh` or `claude` with the same
+ * rule that finds git.
  */
-export function whichOnPath(name, envPath = process.env.PATH) {
-  const win = process.platform === 'win32'
-  const exts = win ? ['.exe', '.com'] : ['']
-  for (let dir of String(envPath ?? '').split(path.delimiter)) {
-    dir = dir.trim()
-    if (dir.length >= 2 && dir.startsWith('"') && dir.endsWith('"')) dir = dir.slice(1, -1)
-    if (!dir || !path.isAbsolute(dir)) continue
-    for (const ext of exts) {
-      const p = path.join(dir, name + ext)
-      try {
-        if (!fs.statSync(p).isFile()) continue
-        if (!win) fs.accessSync(p, fs.constants.X_OK)
-        return p
-      } catch { /* absent, dangling or not executable: keep looking */ }
-    }
-  }
-  return ''
-}
+export const whichOnPath = which_on_path
 
-let gitExe
 /**
- * One git call at the parse boundary (CLAUDE.md's git subprocess rule): `-c core.quotepath=false`,
- * no shell, stdout captured as bytes and decoded once as UTF-8. git is resolved on PATH by
- * `whichOnPath` and spawned by absolute path. { absent } is true when no git is on PATH or the spawn
- * reports ENOENT; { status } is the exit code (null when the call could not complete).
+ * One git call at the parse boundary (CLAUDE.md's git subprocess rule), run through `harness_git.mjs`:
+ * the pins, no shell, stdout captured as bytes and decoded once as UTF-8, git spawned by absolute path.
+ * { absent } is true when no git is on PATH or the spawn reports ENOENT; { status } is the exit code
+ * (null when the call could not complete). stderr is read and dropped.
  */
 export function gitRun(args) {
-  if (gitExe === undefined) gitExe = whichOnPath('git')
-  if (!gitExe) return { absent: true, status: null, text: '' }
-  const r = spawnSync(gitExe, ['-c', 'core.quotepath=false', ...args], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
-  if (r.error) return { absent: r.error.code === 'ENOENT', status: null, text: '' }
-  return { absent: false, status: r.status, text: r.stdout ? r.stdout.toString('utf8') : '' }
+  try {
+    const r = git_result(process.cwd(), args)
+    return { absent: false, status: r.status, text: r.stdout }
+  } catch (e) {
+    return { absent: Boolean(e && e.code === 'ENOENT'), status: null, text: '' }
+  }
 }
 
 // A `.git` entry that can move the work tree away from the folders above cwd: a gitfile (its git dir

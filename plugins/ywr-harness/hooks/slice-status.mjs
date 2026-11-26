@@ -9,7 +9,7 @@
 //   35–60 % only a scoped slice, over 60 % close, past ~85 % plan nothing new; in a 1M window, a
 //   follow-on phase past ~200k tokens starts in a fresh session). The higher zone wins.
 // - the `--tree` FRESHNESS of the prepared close (ywr-harness ADR 0105: the ready report's last line is what
-//   `harness_gates.py --tree` printed after the final edit), from `tool.call`: after a successful
+//   `harness_gates.mjs --tree` printed after the final edit), from `tool.call`: after a successful
 //   `--tree` run (a shell call that ENDS with it, `isTreeRun`), the distinct files under the project
 //   root an Edit / Write / NotebookEdit changed, and the Bash / PowerShell calls the engine did not mark
 //   `isReadOnly`, failed ones included, less the PowerShell reads of ywr-harness ADR 0139's list. Before the first `--tree` run there is no `--tree` half, and a
@@ -60,9 +60,10 @@ export function zoneOf(ctx) {
   return z
 }
 
-// The head of a `--tree` run: an optional `python` / `python3` / `py` with flags, then the script by any
-// path (quoted or bare), then its arguments.
-const TREE_RUN = /^(?:(?:python3?|py)(?:\.exe)?\s+(?:-[A-Za-z]\S*\s+)*)?(?:"[^"]*harness_gates\.py"|'[^']*harness_gates\.py'|[^\s"']*harness_gates\.py)((?:\s+\S+)*)$/
+// The head of a `--tree` run: an optional `node` with flags, then the script by any path (quoted or bare),
+// then its arguments. The older `harness_gates.py` form and its `python` / `python3` / `py` interpreter stay
+// recognised, because a member can still run a scaffold that placed the Python script.
+const TREE_RUN = /^(?:(?:node|python3?|py)(?:\.exe)?\s+(?:-{1,2}[A-Za-z]\S*\s+)*)?(?:"[^"]*harness_gates\.(?:mjs|py)"|'[^']*harness_gates\.(?:mjs|py)'|[^\s"']*harness_gates\.(?:mjs|py))((?:\s+\S+)*)$/
 // Redirections a `--tree` run may carry: stderr folded into stdout or discarded. Any other redirection
 // writes a file, so the run is not recognised.
 const STDERR_ONLY = /(?:^|\s)2>(?:&1|\s*\/dev\/null|\s*\$null|\s*nul)(?=\s|$)/gi
@@ -106,8 +107,8 @@ export function splitSimple(command) {
   return out
 }
 
-// Whether a shell command's LAST effective step is a `harness_gates.py --tree` run (ywr-harness ADR 0138): one simple
-// command runs the script (directly or through python / python3 / py) with `--tree` as an argument and no
+// Whether a shell command's LAST effective step is a `harness_gates.mjs --tree` run (ywr-harness ADR 0138): one simple
+// command runs the script (directly or through node, or the older python / python3 / py) with `--tree` as an argument and no
 // redirection beyond stderr; every simple command after it is a filter reached by a single pipe or a
 // printer; none holds a redirection or a substitution. Commands before it are free (`cd … &&`): the tree
 // line it prints already covers what they did. This is the SHAPE alone: `hasTreeLine` must also find the
@@ -239,7 +240,7 @@ export function isPwshReadOnly(command) {
   })
 }
 
-// Whether a call's output ENDS its `tree:` lines with the one `harness_gates.py --tree` prints for a
+// Whether a call's output ENDS its `tree:` lines with the one `harness_gates.mjs --tree` prints for a
 // snapshot it took: `tree: <hex id> · HEAD …`. The LAST `tree:` line decides, so a failed run's
 // `tree: FAILED` outweighs an older line that a command before it printed; `--help` prints none.
 export function hasTreeLine(r) {

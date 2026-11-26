@@ -11,9 +11,9 @@ Selection is deterministic. Never guess which verify script covers a change.
 ## 1. Map changed files to verify scripts (advisory, zero tokens)
 
 ```
-python "<PLUGIN_ROOT>/scripts/verify_map.py"                       # working tree vs HEAD + untracked
-python "<PLUGIN_ROOT>/scripts/verify_map.py" --range main~3..HEAD  # slice range ∪ working tree
-python "<PLUGIN_ROOT>/scripts/verify_map.py" <file> [...]          # explicit files
+node "<PLUGIN_ROOT>/scripts/verify_map.mjs"                       # working tree vs HEAD + untracked
+node "<PLUGIN_ROOT>/scripts/verify_map.mjs" --range main~3..HEAD  # slice range ∪ working tree
+node "<PLUGIN_ROOT>/scripts/verify_map.mjs" <file> [...]          # explicit files
 ```
 
 `--range` unions in the current working tree (including untracked files), so running it

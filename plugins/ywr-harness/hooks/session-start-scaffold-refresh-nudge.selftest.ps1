@@ -12,7 +12,7 @@
 # cwd-fallback carries the same verdicts. Only the subdirectory-resolution case needs git and
 # is a reported SKIP without it (the Linux container), never a silent pass.
 #
-# Slice-note rule (ADR 0172): a scaffold that holds scripts/harness/slice_note.py is no longer silent when it
+# Slice-note rule (ADR 0172): a scaffold that holds scripts/harness/slice_note.mjs is no longer silent when it
 # has no drift: the hook then states the rule as additionalContext, and only that. The cases that used to assert
 # byte-silence on a clean scaffold assert the rule instead (Assert-RuleOnly, the rule text pinned verbatim);
 # the drift cases also assert the rule follows the drift text (Assert-RuleTail); the SCHEMA-DRIFT, EXTRACTION-DRIFT,
@@ -24,6 +24,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core + fixture lifecycle
 $hook = Join-Path $PSScriptRoot 'session-start-scaffold-refresh-nudge.mjs'
 $hookLib = Join-Path $PSScriptRoot 'hook-lib.mjs'   # the hook imports it: every copied hook needs it beside it
+$gitLib = Join-Path $PSScriptRoot '../scripts/harness_git.mjs'   # hook-lib imports it from <plugin>/scripts: a copied tree needs it there
 $init = Join-Path $PSScriptRoot '../skills/harness-init/init.mjs'
 $placement = Join-Path $PSScriptRoot '../skills/harness-init/placement.mjs'   # the placement map the hook imports
 $templates = Join-Path $PSScriptRoot '../skills/harness-init/templates'
@@ -63,7 +64,7 @@ function Assert-Nudge([string]$Name, [string]$Out, [string[]]$MustMatch, [string
     catch { $pre += 'stdout is not valid JSON' }
     if (-not $sys) { $pre += 'no systemMessage' }
     if ($ctx -and $evName -ne 'SessionStart') { $pre += "hookSpecificOutput.hookEventName is '$evName' (want SessionStart — the runtime drops the context otherwise)" }
-    # The slice rules name harness_gates.py; a placeholder keeps the file-list patterns about the file list.
+    # The slice rules name harness_gates.mjs; a placeholder keeps the file-list patterns about the file list.
     $ctx = $ctx.Replace($sliceRules, '<SLICE_RULES>')
     $script:LastFails = Get-AssertionFailure -Text "$sys`n$ctx" -MustMatch $MustMatch -MustNotMatch $MustNotMatch `
         -NoNegative $NoNegative -PreFail $pre -Label 'output'
@@ -80,14 +81,14 @@ function Assert-EmptyStdout([string]$Name, [string]$Out) {
     return $true
 }
 # The slice-note rule (ADR 0172), copied VERBATIM as a pin: a reword in the hook must fail here and be a decision.
-$noteRule = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `python scripts/harness/slice_note.py add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner''s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
+$noteRule = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `node scripts/harness/slice_note.mjs add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner''s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
 $ruleMark = 'Slice notes \(ywr-harness ADR 0172\)'   # a regex for a MustNotMatch: the rule's own first words
 # The slice rules (ADR 0183), copied VERBATIM as a pin: the head line, then one line per rule, joined by LF.
 $sliceHead = 'ywr-harness slice rules for this repo (ywr-harness ADR 0183). The org guide states the general rules; this repo''s CLAUDE.md states its own facts.'
 $sliceRuleLines = @(
     '- Review: before a slice closes, run `/code-review` through the Skill tool: `medium` for a small tier and for a full tier (ywr-harness ADR 0215, ywr-harness ADR 0218). `/ywr-harness:slice-close` makes the call. Every finding gets a bucket: fixed, valid with no action, or false on reading. The review invariants are in the file that `.harness.json` `review.canon` names: the `## Review canon` section of `CLAUDE.md` in a new scaffold, where this repo''s own invariants replace the harness-init starters (ywr-harness ADR 0217).'
-    '- The review runs once per slice. Every finding gets one of three buckets. The severity limits the bucket: an `important`, `pre_existing` or ungraded finding ends fixed or false on reading, only a `nit` whose fix would change a design or a coverage ends valid with no action with an open item, and a fix that rests on an untested host behaviour gets a probe first; when the owner defers that probe, the finding ends valid with no action as an owner decision, with an open item (ywr-harness ADR 0216). A fix closes with re-run gates over its own files, and every fixed finding except a `nit` gets one fix check (ywr-harness ADR 0215). No fix gets a re-review. When a fix needs more review, record an open item: `python scripts/harness/slice_note.py add risk "open item: review <files and lines> of the <file:line> fix; <why>"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).'
-    '- The close: `/ywr-harness:slice-close` writes the handoff and the one commit. The person types it, or the main session calls it; a subagent never calls it (ywr-harness ADR 0201). The session prepares the close: it runs every command that `python scripts/harness/harness_gates.py` printed, the review with its fix checks, and verify. It writes no handoff and makes no commit itself. Its ready report ends with the line that `python scripts/harness/harness_gates.py --tree` printed after the final edit. After the report the session asks each open owner question with AskUserQuestion, then calls the skill. The close reuses the report only while it is verbatim in the same session and that line is unchanged; a new session or a compaction summary runs the full close (ywr-harness ADR 0105).'
+    '- The review runs once per slice. Every finding gets one of three buckets. The severity limits the bucket: an `important`, `pre_existing` or ungraded finding ends fixed or false on reading, only a `nit` whose fix would change a design or a coverage ends valid with no action with an open item, and a fix that rests on an untested host behaviour gets a probe first; when the owner defers that probe, the finding ends valid with no action as an owner decision, with an open item (ywr-harness ADR 0216). A fix closes with re-run gates over its own files, and every fixed finding except a `nit` gets one fix check (ywr-harness ADR 0215). No fix gets a re-review. When a fix needs more review, record an open item: `node scripts/harness/slice_note.mjs add risk "open item: review <files and lines> of the <file:line> fix; <why>"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).'
+    '- The close: `/ywr-harness:slice-close` writes the handoff and the one commit. The person types it, or the main session calls it; a subagent never calls it (ywr-harness ADR 0201). The session prepares the close: it runs every command that `node scripts/harness/harness_gates.mjs` printed, the review with its fix checks, and verify. It writes no handoff and makes no commit itself. Its ready report ends with the line that `node scripts/harness/harness_gates.mjs --tree` printed after the final edit. After the report the session asks each open owner question with AskUserQuestion, then calls the skill. The close reuses the report only while it is verbatim in the same session and that line is unchanged; a new session or a compaction summary runs the full close (ywr-harness ADR 0105).'
     '- Handoff: the `handoff` key in `.harness.json` names the resume file. A value that ends in `/` names a directory with one resume file per work line, named after the work line, never after a person. The close that supersedes a `## Current state` section moves it to `docs/handoff-archive/<same filename>`, newest first (ywr-harness ADR 0040).'
     '- Artifacts: a claude.ai Artifact that this repo publishes has the title `<repo-name> · <purpose>` and is declared under `artifacts` in `.harness.json`; CI then fails when the README lacks its link. A generated Artifact also declares its committed `source` file and a `check` drift gate, and `/ywr-harness:artifact-publish` republishes it with one confirmation, never headless (ywr-harness ADR 0032, ywr-harness ADR 0068).'
 )
@@ -96,7 +97,7 @@ $sliceRules = (@($sliceHead) + $sliceRuleLines) -join "`n"
 $sliceRulesNoReview = (@($sliceHead) + $sliceRuleLines[1..4]) -join "`n"
 # The copy note (ADR 0183): the whole text where the repo CLAUDE.md copies every part.
 $copyNote = 'This repo''s CLAUDE.md or .claude/CLAUDE.md holds its own copy of part of the ywr-harness slice rules, so the plugin does not repeat that part here. After that copy is deleted, the plugin states the current rules at each session start (ywr-harness ADR 0183).'
-# A fresh scaffold holds `.harness.json`, `slice_note.py` and a seed CLAUDE.md with no copy: both parts, a blank line between.
+# A fresh scaffold holds `.harness.json`, `slice_note.mjs` and a seed CLAUDE.md with no copy: both parts, a blank line between.
 $ruleText = $sliceRules + "`n`n" + $noteRule
 # A repo with the vendored script and NO drift: the rule is the WHOLE output — additionalContext equal to the
 # rule, event SessionStart, and no systemMessage (nothing for a person to act on). Never "silent" any more.
@@ -150,7 +151,7 @@ New-Item -ItemType Directory -Force -Path $base | Out-Null
 if ($gitOk) { & git -c init.defaultBranch=main init -q $base 2>$null | Out-Null }
 & $nodeExe $init --target $base *> $null
 $ok = (Assert-True 'fixture: real init.mjs scaffolded the base repo' `
-        ((Test-Path -LiteralPath (Join-Path $base 'scripts/harness/harness_gates.py')) -and
+        ((Test-Path -LiteralPath (Join-Path $base 'scripts/harness/harness_gates.mjs')) -and
         (Test-Path -LiteralPath (Join-Path $base '.githooks/post-commit'))) `
         'init.mjs did not place the files this suite mutates — every later verdict would be about a broken fixture') -and $ok
 
@@ -165,7 +166,7 @@ foreach ($v in @($fresh, $stale, $seed, $crlf, $foreignpc, $ourspc, $many)) {
     Copy-Item -LiteralPath $base -Destination $v -Recurse -Force
 }
 # stale: one modified vendored script + one deleted CI workflow (differs AND missing in one verdict)
-Add-Content -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.py') -Value '# selftest drift'
+Add-Content -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.mjs') -Value '# selftest drift'
 Remove-Item -LiteralPath (Join-Path $stale '.github/workflows/harness-gates.yml') -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $stale 'subA/subB') | Out-Null
 # seed edits only: every SEED family touched, no TOOLCHAIN file
@@ -185,7 +186,7 @@ Set-Content -LiteralPath (Join-Path $foreignpc '.githooks/post-commit') -Value "
 Add-Content -LiteralPath (Join-Path $ourspc '.githooks/post-commit') -Value 'echo extra'
 # manydrift: seven TOOLCHAIN placements drifted -> the list caps at 5 and STATES the cap
 foreach ($rel in @('docs/README.md', 'docs/adr/README.md', 'docs/spec/README.md', 'docs/build.mjs',
-        'docs/build.sh', 'docs/build_docs.py', 'scripts/harness/harness_config.py')) {
+        'docs/build.sh', 'docs/build_docs.mjs', 'scripts/harness/harness_config.mjs')) {
     Add-Content -LiteralPath (Join-Path $many $rel) -Value '# drift'
 }
 # not-ours: a scripts/harness/ directory that is NOT a scaffold (file-level sentinel must gate)
@@ -201,8 +202,8 @@ if ($gitOk) {
 $plain = Join-Path $fx 'plain-dir'
 New-Item -ItemType Directory -Force -Path $plain | Out-Null
 # non-mutation baseline (asserted at the end): the hook must never write
-$freshHash = (Get-FileHash -LiteralPath (Join-Path $fresh 'docs/build_docs.py')).Hash
-$staleHash = (Get-FileHash -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.py')).Hash
+$freshHash = (Get-FileHash -LiteralPath (Join-Path $fresh 'docs/build_docs.mjs')).Hash
+$staleHash = (Get-FileHash -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.mjs')).Hash
 
 # 1. the drifted repo nudges — the fixture was scaffolded by THIS plugin and then hand-mutated,
 #    so its .harness-version stamp EQUALS the running version and the ADR 0042 verdict is the
@@ -211,7 +212,7 @@ $staleHash = (Get-FileHash -LiteralPath (Join-Path $stale 'scripts/harness/harne
 $out = Invoke-Hook (New-Payload @{ cwd = $stale })
 $ok = (Assert-Nudge 'drifted scaffold at the same version reads as a hand-edit' $out `
         @('\[hook:scaffold-refresh-nudge\]', 'repo-stale', '2개의 벤더링된 툴체인 파일', 'v\d+\.\d+\.\d+',
-        'harness_gates\.py', 'harness-gates\.yml \(missing\)', 'EQUALS', 'hand-edit',
+        'harness_gates\.mjs', 'harness-gates\.yml \(missing\)', 'EQUALS', 'hand-edit',
         'REVERT', '제안만 합니다') `
         @('SCHEMA DRIFT', 'EXTRACTION DRIFT', '\+\d+ more', '기준이 STALE', 'direction-blind',
         '리프레시: 이 저장소에서', 'NEWER합니다', 'OLDER합니다', 'ADR 0135', '다른 클론')) -and $ok
@@ -331,7 +332,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $sdir '.harness-version') |
 $out = Invoke-Hook (New-Payload @{ cwd = $sdir })
 $ok = (Assert-Nudge '1g a .harness-version directory is no stamp' $out @('direction-blind') @('NEWER합니다', 'OLDER합니다', 'EQUALS', 'SCHEMA DRIFT')) -and $ok
 
-# 2. freshly scaffolded repo -> NO drift, but the scaffold holds slice_note.py (the template map places it), so
+# 2. freshly scaffolded repo -> NO drift, but the scaffold holds slice_note.mjs (the template map places it), so
 #    the slice-note rule (ADR 0172) is the whole output: additionalContext only, exactly the rule, no systemMessage.
 $out = Invoke-Hook (New-Payload @{ cwd = $fresh })
 $ok = (Assert-RuleOnly 'fresh scaffold states only the slice-note rule' $out) -and $ok
@@ -348,17 +349,17 @@ foreach ($src in @('compact', 'startup', 'resume', 'clear', 'fork')) {
 #     name is no script (isFile), the same drift and the same absence of the rule.
 $noNote = Join-Path $fx 'repo-nonote'
 Copy-Item -LiteralPath $base -Destination $noNote -Recurse -Force
-Remove-Item -LiteralPath (Join-Path $noNote 'scripts/harness/slice_note.py') -Force
+Remove-Item -LiteralPath (Join-Path $noNote 'scripts/harness/slice_note.mjs') -Force
 $out = Invoke-Hook (New-Payload @{ cwd = $noNote })
-$ok = (Assert-Nudge '2b identical placements but slice_note.py absent: drift (missing), no rule' $out `
-        @('1개의 벤더링된 툴체인 파일', 'slice_note\.py \(missing\)', '제안만 합니다') `
-        @($ruleMark, 'SCHEMA DRIFT', 'EXTRACTION DRIFT', 'python scripts/harness/slice_note\.py add')) -and $ok
+$ok = (Assert-Nudge '2b identical placements but slice_note.mjs absent: drift (missing), no rule' $out `
+        @('1개의 벤더링된 툴체인 파일', 'slice_note\.mjs \(missing\)', '제안만 합니다') `
+        @($ruleMark, 'SCHEMA DRIFT', 'EXTRACTION DRIFT', 'node scripts/harness/slice_note\.mjs add')) -and $ok
 $noteDir = Join-Path $fx 'repo-notedir'
 Copy-Item -LiteralPath $noNote -Destination $noteDir -Recurse -Force
-New-Item -ItemType Directory -Force -Path (Join-Path $noteDir 'scripts/harness/slice_note.py') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $noteDir 'scripts/harness/slice_note.mjs') | Out-Null
 $out = Invoke-Hook (New-Payload @{ cwd = $noteDir })
-$ok = (Assert-Nudge '2b a directory named slice_note.py is no script: drift (missing), no rule' $out `
-        @('slice_note\.py \(missing\)') @($ruleMark, 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
+$ok = (Assert-Nudge '2b a directory named slice_note.mjs is no script: drift (missing), no rule' $out `
+        @('slice_note\.mjs \(missing\)') @($ruleMark, 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # 2c. a repo that is scaffolded and DRIFTED, with the script present: the drift text first, then the rule
 #     (see the Assert-RuleTail calls beside the drift cases 1, 1b, 1c, 1d, 10b-2 and 13b for each branch).
@@ -382,7 +383,7 @@ $oldSeed = @'
 - The review runs once per slice ... recorded in the close as `review basis:` (ywr-harness ADR 0072).
 - The close is owner-typed: `/ywr-harness:slice-close` writes the handoff (ywr-harness ADR 0105).
 - A claude.ai Artifact this repo publishes is titled **`<repo-name> · <purpose>`** (ywr-harness ADR 0032).
-- Record each decision: `python scripts/harness/slice_note.py add <decision|rejected|owner|fact|risk> "<what and why>"`.
+- Record each decision: `node scripts/harness/slice_note.mjs add <decision|rejected|owner|fact|risk> "<what and why>"`.
 - the close moves it to `docs/handoff-archive/<same filename>`, newest first (ywr-harness ADR 0040).
 '@
 # One copy serves every 3a case (a full copy per case cost about 0.3 s each); each case rewrites only the files
@@ -539,7 +540,7 @@ foreach ($f in $retFiles.Keys) {
 }
 Remove-Item -LiteralPath (Join-Path $cp '.claude') -Recurse -Force
 
-Set-CopyClaude '- Notes: `python scripts/harness/slice_note.py add <decision|rejected|owner|fact|risk> "x"`'
+Set-CopyClaude '- Notes: `node scripts/harness/slice_note.mjs add <decision|rejected|owner|fact|risk> "x"`'
 $out = Invoke-Hook (New-Payload @{ cwd = $cp } 'compact')
 $ok = (Assert-RuleOnly '3a slice-note copy only: the slice rules and the copy note' $out ($sliceRules + "`n`n" + $copyNote)) -and $ok
 
@@ -556,7 +557,7 @@ $ok = (Assert-True '3a the new-wording-only case: CLAUDE.md holds no owner-typed
     ((-not ([IO.File]::ReadAllText($cpClaude)).Contains('owner-typed')) -and ($out -notmatch 'The close: `/ywr-harness:slice-close`') -and ($out -match 'The review runs once per slice')) 'the premise of the new-wording case does not hold') -and $ok
 Remove-Item -LiteralPath (Join-Path $cp '.claude') -Recurse -Force
 
-Set-CopyClaude 'Run /code-review on PRs. We call slice_note.py add by hand.'
+Set-CopyClaude 'Run /code-review on PRs. We call slice_note.mjs add by hand.'
 $out = Invoke-Hook (New-Payload @{ cwd = $cp })
 $ok = (Assert-RuleOnly '3a a bare mention of the review command is no copy: the full text' $out) -and $ok
 
@@ -704,18 +705,29 @@ $ok = (Assert-RuleOnly 'foreign post-commit is no drift (the rule only)' $out) -
 $out = Invoke-Hook (New-Payload @{ cwd = $ourspc })
 $ok = (Assert-Nudge 'guarded post-commit with marker counts' $out `
         @('1개의 벤더링된 툴체인 파일', '\.githooks[\\/]post-commit') `
-        @('harness_gates\.py', 'SCHEMA DRIFT', '\(missing\)')) -and $ok
+        @('harness_gates\.mjs', 'SCHEMA DRIFT', '\(missing\)')) -and $ok
 
 # 7. seven drifts -> five named, cap STATED (a silent truncation reads as full coverage)
 $out = Invoke-Hook (New-Payload @{ cwd = $many })
 $ok = (Assert-Nudge 'file list caps at five and says so' $out `
         @('7개의 벤더링된 툴체인 파일', '\+2 more') `
-        @('SCHEMA DRIFT', 'harness_config\.py')) -and $ok
+        @('SCHEMA DRIFT', 'harness_config\.mjs')) -and $ok
 
 # 8. scripts/harness/ that is not ours -> silent (file-level sentinel, not the directory gate:
 #    counting a stranger's tree as "all missing" would be a false nudge)
 $out = Invoke-Hook (New-Payload @{ cwd = $notours })
 $ok = (Assert-EmptyStdout 'foreign scripts/harness silent' $out) -and $ok
+
+# 8b. a repo that holds only a Python script an older scaffold placed (no .mjs yet) is still ours: it is the repo
+#     this nudge must tell to refresh (ywr-harness ADR 0223)
+$oldpy = Join-Path $fx 'repo-oldpy'
+New-Item -ItemType Directory -Force -Path (Join-Path $oldpy 'scripts/harness') | Out-Null
+Set-Content -LiteralPath (Join-Path $oldpy 'scripts/harness/harness_gates.py') -Value 'pass'
+if ($gitOk) { & git -c init.defaultBranch=main init -q $oldpy 2>$null | Out-Null }
+$out = Invoke-Hook (New-Payload @{ cwd = $oldpy })
+$ok = (Assert-Nudge '8b a repo with only the old .py scaffold script still gets the nudge' $out `
+        @('\[hook:scaffold-refresh-nudge\]', 'repo-oldpy', '벤더링된 툴체인 파일', 'docs/README\.md \(missing\)') `
+        @('SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 
 # A `node -r` preload that wraps spawnSync and logs each git call, so "spawns no git" is observed, not assumed.
 $spyLog = Join-Path $fx 'git-spy.log'
@@ -775,7 +787,7 @@ if ($gitOk) {
     $uaA = Join-Path $fx 'up-a'
     $uaB = Join-Path $fx 'up-b'
     Copy-Item -LiteralPath $base -Destination $uaA -Recurse -Force
-    Add-Content -LiteralPath (Join-Path $uaA 'scripts/harness/harness_gates.py') -Value '# selftest drift'
+    Add-Content -LiteralPath (Join-Path $uaA 'scripts/harness/harness_gates.mjs') -Value '# selftest drift'
     Set-Content -LiteralPath (Join-Path $uaA '.harness-version') -Value '0.0.1'
     Invoke-UaGit $uaA @('config', '--local', '--unset', 'core.hooksPath')   # init.mjs wired the scaffold's hooks; the fixture commits bypass them
     Invoke-UaGit $uaA @('add', '-A')
@@ -783,7 +795,7 @@ if ($gitOk) {
     Invoke-UaGit $uaA @('remote', 'add', 'origin', $uaRemote)
     Invoke-UaGit $uaA @('push', '-q', '-u', 'origin', 'main')
     Invoke-UaGit $fx @('clone', '-q', $uaRemote, $uaB)
-    Copy-Item -LiteralPath (Join-Path $base 'scripts/harness/harness_gates.py') -Destination (Join-Path $uaB 'scripts/harness/harness_gates.py') -Force
+    Copy-Item -LiteralPath (Join-Path $base 'scripts/harness/harness_gates.mjs') -Destination (Join-Path $uaB 'scripts/harness/harness_gates.mjs') -Force
     Set-Content -LiteralPath (Join-Path $uaB '.harness-version') -Value $mfVer
     Invoke-UaGit $uaB @('add', '-A')
     Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: scaffold refresh')
@@ -803,7 +815,7 @@ if ($gitOk) {
     $uaSha = (& git -C $uaA log -1 --format=%h origin/main 2>$null | Out-String).Trim()
     $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
     $ok = (Assert-Nudge '10b-2 fetched upstream ahead: pull first, never re-run init (ADR 0135)' $out `
-            @('1개의 벤더링된 툴체인 파일', 'harness_gates\.py', 'origin/main', [regex]::Escape($uaSha), '\d{4}-\d{2}-\d{2}', '다른 클론이',
+            @('1개의 벤더링된 툴체인 파일', 'harness_gates\.mjs', 'origin/main', [regex]::Escape($uaSha), '\d{4}-\d{2}-\d{2}', '다른 클론이',
             '/ywr-harness:harness-init을 실행하지 마세요', 'pull', '마지막 fetch', 'ADR 0135',
             'Do NOT run or suggest /ywr-harness:harness-init', 'Offer pulling', '제안만 합니다') `
             @('OLDER합니다', '측정된 것입니다', '리프레시: 이 저장소에서', 'genuinely behind', 'NEWER합니다', 'EQUALS',
@@ -833,13 +845,13 @@ if ($gitOk) {
     # UNCOMMITTED edit, so the stamp equals the running version (the ADR 0042 EQUALS / hand-edit branch is the no-hit
     # baseline) and only the REMOTE moves between legs. origin/HEAD stays set, so origin/main is the candidate ref.
     Invoke-UaGit $uaA @('reset', '-q', '--hard', 'origin/main')
-    Add-Content -LiteralPath (Join-Path $uaA 'scripts/harness/harness_gates.py') -Value '# selftest drift'
+    Add-Content -LiteralPath (Join-Path $uaA 'scripts/harness/harness_gates.mjs') -Value '# selftest drift'
     $uaStampPath = Join-Path $uaA '.harness-version'
     $uaStampText = Get-Content -LiteralPath $uaStampPath -Raw
 
     # 10b-5. a toolchain-only upstream commit (a hand edit on main — no stamp change) is NOT a scaffold run: no hit,
     #        the equal-version hand-edit advice stands.
-    Add-Content -LiteralPath (Join-Path $uaB 'scripts/harness/harness_gates.py') -Value '# upstream hand edit'
+    Add-Content -LiteralPath (Join-Path $uaB 'scripts/harness/harness_gates.mjs') -Value '# upstream hand edit'
     Invoke-UaGit $uaB @('add', '-A')
     Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: hand edit of a toolchain file')
     Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
@@ -849,7 +861,7 @@ if ($gitOk) {
             ($uaToolOnly -match '^[0-9a-f]{4,}$' -and -not (& git -C $uaA log -1 --format=%h HEAD..origin/main -- .harness-version 2>$null)) "tool-only='$uaToolOnly'") -and $ok
     $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
     $ok = (Assert-Nudge '10b-5 toolchain-only upstream commit: no hit, the hand-edit advice stands (stamp is the only path)' $out `
-            @('1개의 벤더링된 툴체인 파일', 'harness_gates\.py', 'EQUALS', 'hand-edit') `
+            @('1개의 벤더링된 툴체인 파일', 'harness_gates\.mjs', 'EQUALS', 'hand-edit') `
             @('ADR 0135', '다른 클론', '/ywr-harness:harness-init을 실행하지 마세요', 'SCHEMA DRIFT')) -and $ok
 
     # 10b-6. patch-equivalence: A amends the commit that carries the stamp (a rebase does the same). The pre-rewrite commit is
@@ -859,7 +871,7 @@ if ($gitOk) {
             ([bool](& git -C $uaA log -1 --format=%h HEAD..origin/main -- .harness-version 2>$null)) 'the amend did not diverge from origin/main') -and $ok
     $out = Invoke-Hook (New-Payload @{ cwd = $uaA })
     $ok = (Assert-Nudge '10b-6 an amended stamp commit is patch-equivalent: no hit' $out `
-            @('harness_gates\.py', 'EQUALS', 'hand-edit') @('ADR 0135', '다른 클론', 'SCHEMA DRIFT')) -and $ok
+            @('harness_gates\.mjs', 'EQUALS', 'hand-edit') @('ADR 0135', '다른 클론', 'SCHEMA DRIFT')) -and $ok
 
     # 10b-7. positive control: B pushes a NEW stamp commit the clone lacks -> the hit replaces the equal-version branch.
     Set-Content -LiteralPath (Join-Path $uaB '.harness-version') -Value '0.0.9'
@@ -937,25 +949,27 @@ function New-FakeTree([string]$Name, [string]$PlacementText) {
     New-Item -ItemType Directory -Force -Path (Join-Path $t 'skills/harness-init') | Out-Null
     Copy-Item -LiteralPath $hook -Destination (Join-Path $t 'hooks/session-start-scaffold-refresh-nudge.mjs')
     Copy-Item -LiteralPath $hookLib -Destination (Join-Path $t 'hooks/hook-lib.mjs')
+    New-Item -ItemType Directory -Force -Path (Join-Path $t 'scripts') | Out-Null
+    Copy-Item -LiteralPath $gitLib -Destination (Join-Path $t 'scripts/harness_git.mjs')
     Copy-Item -LiteralPath $templates -Destination (Join-Path $t 'skills/harness-init/templates') -Recurse
     [IO.File]::WriteAllText((Join-Path $t 'skills/harness-init/placement.mjs'), $PlacementText)
     return (Join-Path $t 'hooks/session-start-scaffold-refresh-nudge.mjs')
 }
 $gLit = "export const GUARDED = [['githooks/post-commit', '.githooks/post-commit']]`nexport const GUARD_MARKER = 'ywr-harness:post-commit'`n"
-$tcOne = "export const TOOLCHAIN = [['scripts/harness/harness_gates.py', 'scripts/harness/harness_gates.py']]`n"
+$tcOne = "export const TOOLCHAIN = [['scripts/harness/harness_gates.mjs', 'scripts/harness/harness_gates.mjs']]`n"
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-broken' ("export const TOOLCHAIN = 'not a table'`n" + $gLit))
 $ok = (Assert-Nudge 'unreadable placement map reports EXTRACTION DRIFT, not silence' $out `
         @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵') `
-        @('템플릿과 다릅니다', '제안만 합니다', 'SCHEMA DRIFT', $ruleMark)) -and $ok   # $stale holds slice_note.py, yet no rule here
+        @('템플릿과 다릅니다', '제안만 합니다', 'SCHEMA DRIFT', $ruleMark)) -and $ok   # $stale holds slice_note.mjs, yet no rule here
 
 # 12b. a PARTIAL entry — a pair whose destination is not a string — must fail extraction WHOLE, never
 #      contribute the fragment to the map (the ADR 0033 lesson: a fragment is a wrong path compared quietly).
-$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-partial' ("export const TOOLCHAIN = [['scripts/harness/harness_gates.py', 'scripts/harness/' + 5]]`n" + $gLit))
+$out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-partial' ("export const TOOLCHAIN = [['scripts/harness/harness_gates.mjs', 'scripts/harness/' + 5]]`n" + $gLit))
 $ok = (Assert-Nudge 'partial entry fails extraction whole, never a fragment' $out `
         @('EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵') `
         @('템플릿과 다릅니다', '\(missing\)', 'SCHEMA DRIFT')) -and $ok
 
-# 12c. a fully valid map with NO scripts/harness/*.py destination -> the ownership sentinel
+# 12c. a fully valid map with NO scripts/harness/*.mjs destination -> the ownership sentinel
 #      is gone; an unchecked empty list would silently disable the hook on every repo forever.
 #      The banner, not silence, is the contract.
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-nosentinel' ("export const TOOLCHAIN = [['docs/README.md', 'docs/README.md']]`n" + $gLit))
@@ -970,12 +984,14 @@ New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmpl 'hooks') | Out-Nu
 New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmpl 'skills/harness-init') | Out-Null
 Copy-Item -LiteralPath $hook -Destination (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.mjs')
 Copy-Item -LiteralPath $hookLib -Destination (Join-Path $fakeTmpl 'hooks/hook-lib.mjs')
+New-Item -ItemType Directory -Force -Path (Join-Path $fakeTmpl 'scripts') | Out-Null
+Copy-Item -LiteralPath $gitLib -Destination (Join-Path $fakeTmpl 'scripts/harness_git.mjs')
 Copy-Item -LiteralPath $placement -Destination (Join-Path $fakeTmpl 'skills/harness-init/placement.mjs')
 Copy-Item -LiteralPath $templates -Destination (Join-Path $fakeTmpl 'skills/harness-init/templates') -Recurse
-Remove-Item -LiteralPath (Join-Path $fakeTmpl 'skills/harness-init/templates/docs/build_docs.py') -Force
+Remove-Item -LiteralPath (Join-Path $fakeTmpl 'skills/harness-init/templates/docs/build_docs.mjs') -Force
 $out = Invoke-Hook (New-Payload @{ cwd = $fresh }) (Join-Path $fakeTmpl 'hooks/session-start-scaffold-refresh-nudge.mjs')
 $ok = (Assert-Nudge 'missing template reports EXTRACTION DRIFT naming the file' $out `
-        @('EXTRACTION DRIFT', '템플릿이 없습니다', 'templates/docs/build_docs\.py') `
+        @('EXTRACTION DRIFT', '템플릿이 없습니다', 'templates/docs/build_docs\.mjs') `
         @('템플릿과 다릅니다', 'SCHEMA DRIFT')) -and $ok
 
 # 12d-12e. WHAT THE HOOK ACCEPTS. One fake plugin tree (real templates, the hook + hook-lib) per placement.mjs shape.
@@ -983,14 +999,14 @@ $ok = (Assert-Nudge 'missing template reports EXTRACTION DRIFT naming the file' 
 #     (EXTRACTION DRIFT, never a fragment and never silence): an empty table, an entry of the wrong arity, a
 #     source repeated in another letter case, a marker that is not a string, a missing GUARDED export, a module
 #     that throws at import and a module that does not parse.
-$tcDecoys = "// a comment above the table`nconst dir = 'scripts'`nexport const TOOLCHAIN = [`n  [dir + '/harness/harness_gates.py', 'scripts/harness/harness_gates.py'], // trailing comment`n  ['docs/README.md', 'docs/README.md'],`n]`n"
+$tcDecoys = "// a comment above the table`nconst dir = 'scripts'`nexport const TOOLCHAIN = [`n  [dir + '/harness/harness_gates.mjs', 'scripts/harness/harness_gates.mjs'], // trailing comment`n  ['docs/README.md', 'docs/README.md'],`n]`n"
 $ok = (Assert-Nudge '12d a minimal table behind a comment is read, and only its two files are compared' `
         (Invoke-Hook (New-Payload @{ cwd = $stale }) (New-FakeTree 'fake-decoys' ($tcDecoys + $gLit))) `
-        @('1개의 벤더링된 툴체인 파일', 'harness_gates\.py') @('EXTRACTION DRIFT', 'SCHEMA DRIFT', 'harness-gates\.yml', 'decoy')) -and $ok
+        @('1개의 벤더링된 툴체인 파일', 'harness_gates\.mjs') @('EXTRACTION DRIFT', 'SCHEMA DRIFT', 'harness-gates\.yml', 'decoy')) -and $ok
 $refused = [ordered]@{
     'an empty table'                        = ("export const TOOLCHAIN = []`n" + $gLit)
-    'an entry of the wrong arity'           = ("export const TOOLCHAIN = [['scripts/harness/harness_gates.py']]`n" + $gLit)
-    'a source repeated in another letter case' = ("export const TOOLCHAIN = [['scripts/harness/harness_gates.py', 'scripts/harness/harness_gates.py'], ['SCRIPTS/harness/harness_gates.py', 'scripts/harness/harness_gates.py']]`n" + $gLit)
+    'an entry of the wrong arity'           = ("export const TOOLCHAIN = [['scripts/harness/harness_gates.mjs']]`n" + $gLit)
+    'a source repeated in another letter case' = ("export const TOOLCHAIN = [['scripts/harness/harness_gates.mjs', 'scripts/harness/harness_gates.mjs'], ['SCRIPTS/harness/harness_gates.mjs', 'scripts/harness/harness_gates.mjs']]`n" + $gLit)
     'a marker that is not a string'         = ($tcOne + "export const GUARDED = [['githooks/post-commit', '.githooks/post-commit']]`nexport const GUARD_MARKER = ['ywr-harness:post-commit']`n")
     'a missing GUARDED export'              = ($tcOne + "export const GUARD_MARKER = 'ywr-harness:post-commit'`n")
     'a module that throws at import'        = ($tcOne + $gLit + "throw new Error('boom')`n")
@@ -1018,6 +1034,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy '.claude-plugin'
 New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy 'skills/harness-init') | Out-Null
 Copy-Item -LiteralPath $hook -Destination (Join-Path $staleCopy 'hooks/session-start-scaffold-refresh-nudge.mjs')
 Copy-Item -LiteralPath $hookLib -Destination (Join-Path $staleCopy 'hooks/hook-lib.mjs')
+New-Item -ItemType Directory -Force -Path (Join-Path $staleCopy 'scripts') | Out-Null
+Copy-Item -LiteralPath $gitLib -Destination (Join-Path $staleCopy 'scripts/harness_git.mjs')
 Copy-Item -LiteralPath $placement -Destination (Join-Path $staleCopy 'skills/harness-init/placement.mjs')
 Copy-Item -LiteralPath $templates -Destination (Join-Path $staleCopy 'skills/harness-init/templates') -Recurse
 Set-Content -LiteralPath (Join-Path $staleCopy '.claude-plugin/plugin.json') -Value '{"name":"ywr-harness","version":"0.0.1"}'
@@ -1040,7 +1058,7 @@ Set-FakeRegistry @(
 $out = Invoke-Hook (New-Payload @{ cwd = $stale }) $staleHook
 $ok = (Assert-Nudge 'superseded cache copy reports STALE basis, reload not refresh' $out `
         @('비교 기준이 STALE합니다', 'v0\.0\.1', 'v9\.9\.9', '/reload-plugins', '/ywr-harness:harness-init을 실행하지 마세요',
-        '2개의 벤더링된 툴체인 파일', 'harness_gates\.py', 'REVERT', '제안만 합니다') `
+        '2개의 벤더링된 툴체인 파일', 'harness_gates\.mjs', 'REVERT', '제안만 합니다') `
         @('v8\.8\.8', '리프레시: 이 저장소에서', '시드는 보존', 'SCHEMA DRIFT', 'EXTRACTION DRIFT')) -and $ok
 $ok = (Assert-RuleTail '13b stale-basis branch: the rule follows the drift text' $out) -and $ok
 # Both versions must survive in the HUMAN banner alone, not only in the English context half:
@@ -1238,11 +1256,11 @@ finally { $env:PATH = $savedPath }
 #     provable by the suite. Both directions matter: the hook must not "refresh" the drifted
 #     file and must not touch the clean one.
 $ok = (Assert-True 'non-mutation: clean placement untouched' `
-        ((Get-FileHash -LiteralPath (Join-Path $fresh 'docs/build_docs.py')).Hash -eq $freshHash) `
-        'repo-fresh/docs/build_docs.py changed — the hook wrote to the repo') -and $ok
+        ((Get-FileHash -LiteralPath (Join-Path $fresh 'docs/build_docs.mjs')).Hash -eq $freshHash) `
+        'repo-fresh/docs/build_docs.mjs changed — the hook wrote to the repo') -and $ok
 $ok = (Assert-True 'non-mutation: drifted placement not "refreshed"' `
-        ((Get-FileHash -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.py')).Hash -eq $staleHash) `
-        'repo-stale/scripts/harness/harness_gates.py changed — the hook reverted the drift it only reports') -and $ok
+        ((Get-FileHash -LiteralPath (Join-Path $stale 'scripts/harness/harness_gates.mjs')).Hash -eq $staleHash) `
+        'repo-stale/scripts/harness/harness_gates.mjs changed — the hook reverted the drift it only reports') -and $ok
 
 Remove-FixtureRoot $fx
 

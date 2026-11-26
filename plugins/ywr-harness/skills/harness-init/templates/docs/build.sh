@@ -10,14 +10,6 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-py=""
-for cand in python3 python py; do
-  if command -v "$cand" >/dev/null 2>&1; then py="$cand"; break; fi
-done
-[ -n "$py" ] || { echo "Python을 찾을 수 없습니다 (python3/python/py)." >&2; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "Node를 찾을 수 없습니다 (Node 22 이상이 PATH에 있어야 합니다)." >&2; exit 1; }
 
-# Encoding pin, same as build.mjs. Harmless where the locale is already UTF-8. Without it a
-# non-UTF-8 locale turns the builder's own output into exit 1 after index.json is written.
-export PYTHONUTF8=1
-export PYTHONIOENCODING=utf-8
-exec "$py" "$here/build_docs.py"
+exec node "$here/build_docs.mjs"

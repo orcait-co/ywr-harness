@@ -44,7 +44,7 @@ calls the scripts directly and never goes through the host's component registry.
 | `session-start-githooks-nudge.mjs` | `SessionStart` | Suggest-only (ADR 0029). Speaks exactly when the work tree carries `.githooks/` and this clone's `core.hooksPath` is unset — the state where no git hook runs and nothing else says so until slice close or CI. Names the one-line fix; never sets it. A wired clone, a repo without `.githooks/`, and a deliberate foreign `hooksPath` are all silent. |
 | `session-start-model-route-guard.mjs` | `SessionStart` (matcher `startup\|resume\|fork`) | Warn-only (ADR 0107, ADR 0130, ADR 0132). Speaks exactly when a setting can move a model alias to an older model, or a `CLAUDE_CODE_EFFORT_LEVEL` overrides every worker effort pin: an `ANTHROPIC_DEFAULT_*_MODEL`, a `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (any value; the second moves every workflow agent, the model of each `agent()` call included), a full id in `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_MODEL` / a settings `model`, a non-empty `modelOverrides`, or a `CLAUDE_CODE_USE_*` cloud provider; or a non-empty `CLAUDE_CODE_EFFORT_LEVEL`, which beats an agent's frontmatter `effort`, a per-call Agent `effort` (both per the docs) and a Workflow `agent()` `effort` (measured on 2.1.295) — read from the environment and the user, project and local settings files. One Korean line naming each setting and where it is set; never model context, never a change. Silent otherwise. `node session-start-model-route-guard.mjs --preflight` is the environment-only half the eval runner uses to refuse a paid run (one line per finding, exit 1; `preflight: clear`, exit 0); it never reads the effort variable, which the runner's wrapper sets itself. |
 | `session-start-scaffold-refresh-nudge.mjs` | `SessionStart` | Suggest-only (ADR 0033). Speaks exactly when the work tree carries a ywr-harness scaffold whose TOOLCHAIN placements differ from the installed plugin's templates — the stale-vendor state ADR 0014 recorded as undetected. Byte comparison, EOL-insensitive (the seed `.gitattributes` makes CRLF/LF checkout variance legitimate); the placement map is imported from `skills/harness-init/placement.mjs`, the one module that `init.mjs` also reads (a failed import or an empty map is EXTRACTION DRIFT), so no second copy exists to drift. Comparison is exact apart from line endings — letter case, a BOM, U+00AD and NUL all count. Names the count, the files (capped list, cap stated), and the remedy; writes nothing. Seeds are never compared; a marker-less `post-commit` is skipped exactly as the scaffold refuses it. The one read of a seed is the retired-text scan (ADR 0207): the hook names each seed file that still holds a rule phrase that a later release changed, because `harness-init` never overwrites a seed. The advice is DIRECTION-AWARE (ADR 0042) via the repo's `.harness-version` stamp (written by `harness-init` on every successful run): repo ahead of this install → update the plugin, `harness-init` forbidden; repo behind → refresh, direction stated as measured; same version → hand-edit named; no readable stamp → the direction-blind caveat on the human banner AND the model context (a canon working tree mid-slice, or a multi-writer repo refreshed by a newer plugin, is *newer* than the installed copy and a re-run would revert it). When the running copy is itself a superseded cache install (a session that outlived a plugin update — ADR 0039), the advice flips: same file list, but the basis is named STALE, `/reload-plugins` (or a restart) is instructed, and `harness-init` is forbidden from that session — the loaded skill would place the old templates. The registry probe is best-effort; any failure returns the normal nudge. |
-| `session-start-slice-notes.mjs` | `SessionStart` (matcher `compact`) | Context only (ADR 0172). After a context compaction it runs `scripts/harness/slice_note.py show` and hands the session's own slice notes back to the model, so a decision made before the compaction keeps its reason. The other session sources never start it. Silent when the cwd is not in a work tree, when git is absent, and when there are no notes. |
+| `session-start-slice-notes.mjs` | `SessionStart` (matcher `compact`) | Context only (ADR 0172). After a context compaction it runs `scripts/harness/slice_note.mjs show` and hands the session's own slice notes back to the model, so a decision made before the compaction keeps its reason. The other session sources never start it. Silent when the cwd is not in a work tree, when git is absent, and when there are no notes. |
 | `session-start-version-announce.mjs` | `SessionStart` | Announce-once-per-version (ADR 0030). At the first session that loads a new plugin version it says so once — old → new, up to three bullets from `CHANGELOG.md` (the member release-notes canon, Korean), and the onboarding artifact's release-notes tab — then records the version in `<config dir>/ywr-harness/announced-version` (the config dir is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`; ADR 0136), the plugin's only user-scope write. A machine's very first run gets a one-time link-only welcome instead (ADR 0031) — "업데이트됨" is claimed only when a previous version was recorded. Steady state and downgrades are silent; `manifest-gate.mjs` refuses a release whose top CHANGELOG entry does not match `plugin.json`. |
 
 ### Hooks modules (Claude Mods)
@@ -65,19 +65,18 @@ No prompt, task description or answer is written. It writes only in a repo whose
 `.harness.json`. Hosts below 2.1.287, `disableAllHooks`, `--safe-mode` and `--bare` drop it, and
 the hooks in the table above keep running.
 
-`hooks/prerequisites.mjs` checks the two tools the plugin needs on a member machine (ADR 0142): `node` 22+
-(ADR 0220) for the hooks in the table above and the skills' scripts, `python` 3.9+ for the gate scripts.
-A mod needs no `node`, so it can report either of them missing. At
-session start it runs each tool's `--version` in the background, so the start never waits for it.
-On a missing or too-old tool it shows one Korean band above the prompt naming the tools and
+`hooks/prerequisites.mjs` checks the one tool the plugin needs on a member machine (ADR 0142): `node` 22+
+(ADR 0220) for the hooks in the table above, the skills' scripts and the gate scripts (ADR 0223 took `python`
+out of the list). A mod needs no `node`, so it can report it missing. At
+session start it runs the tool's `--version` in the background, so the start never waits for it.
+On a missing or too-old tool it shows one Korean band above the prompt naming the tool and
 `/ywr-harness:setup`, and adds one note for Claude to the conversation (hidden from you) naming
 the same. It installs nothing on its own. `/ywr-harness:setup` is the install, and typing it is
-your consent: on Windows it runs `winget install` for each missing tool (a UAC prompt can
+your consent: on Windows it runs `winget install` for the missing tool (a UAC prompt can
 appear), shows the progress in the status line with a warning not to press Esc (an interrupt
 may cut the install off part-way; unmeasured — the next session's band shows what is left), reports each result and asks you to restart
 Claude Code — a running session keeps its old `PATH`. It never claims a tool is on `PATH`: the
-next session's check is the proof, and a band that comes back means installed-but-not-found (for
-`python`, possibly the Windows Store app execution alias; unmeasured). Off Windows, or without `winget`, it
+next session's check is the proof, and a band that comes back means installed-but-not-found (unmeasured). Off Windows, or without `winget`, it
 prints the commands and runs nothing. Where a host drops the module, `/ywr-harness:setup` runs
 as an ordinary skill and Claude does the same steps.
 
@@ -86,7 +85,7 @@ turns it on for this checkout only: the state lives under the git directory, so 
 and other clones stay off. `/ywr-harness:auto off` and `status` do the rest; no command runs a model
 turn. While it is on, and `.harness.json` declares `decision_prompts`, the module adds the declared
 `.md` prompt to Claude's input at two stages: the `/code-review` Skill call of the slice close
-(`review-start`) and the `harness_gates.py --tree` run (`ready-report`). The `review-start` stage data is
+(`review-start`) and the `harness_gates.mjs --tree` run (`ready-report`). The `review-start` stage data is
 the review level, so its side check has little to judge. A `.harness.json` that still declares
 `review-digest` gets a problem line in `status`: ywr-harness ADR 0215 retired that stage. An
 entry with `"check": true` also asks one `sonnet` model call about that stage's data and adds the
@@ -200,14 +199,14 @@ from the `retro` block in `.harness.json`. **An empty list disables the checks i
 `--coverage` says so** — silence must mean clean, never "not configured".
 
 ```
-python scripts/harness/harness_retro.py main~3..HEAD   # whole slice — absorbs mid-slice splits
-python scripts/harness/harness_retro.py --coverage     # unowned files + dead implements_in
+node scripts/harness/harness_retro.mjs main~3..HEAD   # whole slice — absorbs mid-slice splits
+node scripts/harness/harness_retro.mjs --coverage     # unowned files + dead implements_in
 SLICE_RETRO=0 git commit ...                           # skip once
 ```
 
 `core.hooksPath` lives in `.git/config`, which is per-clone and never committed — so the scaffold
 wires exactly the machine it ran on. That gap is closed by reporting, not by wiring harder:
-`harness_gates.py` prints a `hooks:` line on every `/ywr-harness:slice-close` and CI run, so an
+`harness_gates.mjs` prints a `hooks:` line on every `/ywr-harness:slice-close` and CI run, so an
 unwired clone can never look identical to a wired one.
 
 The emitter also checks any **declared claude.ai Artifact** (ADR 0032): the `artifacts` section
@@ -218,7 +217,7 @@ it fails on `artifact: VIOLATION`. The gate cannot see claude.ai, so an undeclar
 unchecked, and that state is reported rather than silent.
 
 The hooks degrade the way everything else here does. In `pre-commit` and `post-commit`, a missing
-`python`, `awk`, or emitter is a **reported skip, never a silent pass** — an unparsed emitter would otherwise read as "no gates
+`node`, `awk`, or emitter is a **reported skip, never a silent pass** — an unparsed emitter would otherwise read as "no gates
 matched", which is the hardest kind of gate failure to notice.
 
 ## Status line (user scope)
@@ -372,13 +371,11 @@ do not run it.
   actually run.
 - `pwsh` (PowerShell 7+) — only the plugin's own selftests below, which a member never runs. No hook or
   skill script runs on it, so the prerequisite check does not name it (ADR 0220).
-- `python` 3.9+ (stdlib only) — every gate script under `scripts/` requires it:
-  `harness_gates.py` (invoked by the `pre-commit` hook), `harness_retro.py` (by the
-  `post-commit` hook), `verify_map.py` (by `ywr-harness:verify`), and `slice_note.py` (by the session, the
-  `session-start-slice-notes.mjs` hook and `/ywr-harness:slice-close`).
+- `python` — no script of the plugin runs it since 0.85.0 (ADR 0223). A repository that took an older scaffold keeps its
+  `scripts/harness/*.py` files; `/ywr-harness:harness-init` names each one with a `retired:` line and never deletes it.
 
-The prerequisite check (`hooks/prerequisites.mjs`, above) names either of the two that is missing
-or too old at each session start, and `/ywr-harness:setup` installs them on your command.
+The prerequisite check (`hooks/prerequisites.mjs`, above) names `node` when it is missing
+or too old at each session start, and `/ywr-harness:setup` installs it on your command.
 
 Hooks run wherever the session runs; the gates and selftests are also exercised on Linux pwsh,
 so nothing here may assume Windows.
@@ -463,7 +460,7 @@ consuming repo's gates run on Linux, and the same `.ps1` serves both.
 
 A consuming repo's CI cannot reach these scripts through the plugin — `${CLAUDE_PLUGIN_ROOT}`
 is substituted when Claude Code spawns a hook, not in an arbitrary CI step. So the scaffold
-**vendors** them instead (ADR 0014): `/ywr-harness:harness-init` copies `scripts/harness/*.py`
+**vendors** them instead (ADR 0014): `/ywr-harness:harness-init` copies `scripts/harness/*.mjs`
 and `.github/workflows/harness-gates.yml` into the consumer, and `manifest-gate.mjs` enforces
 byte identity between the two copies so a fix here cannot silently fail to reach them. A
 reusable workflow (`on: workflow_call`) was rejected — it needs cross-repo Actions access
@@ -477,7 +474,7 @@ the runner, the gate, or the shared lib would narrow the population without sayi
 is how a partial count comes to read as full coverage.
 
 Currently uncovered: `selftest-lib.ps1` (its selftest exists in `ywr-platform` and has not been
-ported), `harness_config.py` (exercised only through the scripts that import it),
+ported), `harness_config.mjs` and `harness_git.mjs` (exercised only through the scripts that import them),
 `lib/runner-signal.ps1` and `hooks/mods.mjs`. The gate's own `UNCOVERED` line is the list of record. `resolve-base.sh` left this list with ADR 0043 — its selftest is ported
 hermetic (fixture repos, all ten cases deterministic on every platform).
 

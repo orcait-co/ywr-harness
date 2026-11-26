@@ -1,10 +1,10 @@
-# Selftest for templates/docs/build_docs.py — the duplicate-id refusal and the fm_digest
-# staleness stamp (ADR 0043), including the PAIRING with scripts/verify_map.py's recomputation.
+# Selftest for templates/docs/build_docs.mjs — the duplicate-id refusal and the fm_digest
+# staleness stamp (ADR 0043), including the PAIRING with scripts/verify_map.mjs's recomputation.
 #
 # Runs the TEMPLATE copy (payload this plugin ships; byte identity with the canon's
-# docs/build_docs.py is enforced by manifest-gate's dogfood placement sweep), copied into a
+# docs/build_docs.mjs is enforced by manifest-gate's dogfood placement sweep), copied into a
 # fixture docs tree — the builder resolves its corpus relative to its own file, so it must sit
-# at <fixture>/docs/build_docs.py. No git needed anywhere: verify_map is driven with --repo and
+# at <fixture>/docs/build_docs.mjs. No git needed anywhere: verify_map is driven with --repo and
 # explicit files, which skips scope resolution entirely.
 #
 # The two subtle cases are D (a BODY-only edit must NOT flip the digest — the same cry-wolf
@@ -16,27 +16,15 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot '../../lib/selftest-lib.ps1')
 
-$builderTemplate = Join-Path $PSScriptRoot 'templates/docs/build_docs.py'
-$verifyMap = Join-Path $PSScriptRoot '../../scripts/verify_map.py'
-$harnessConfigSrc = Join-Path $PSScriptRoot '../../scripts/harness_config.py'
+$builderTemplate = Join-Path $PSScriptRoot 'templates/docs/build_docs.mjs'
+$verifyMap = Join-Path $PSScriptRoot '../../scripts/verify_map.mjs'
+$harnessConfigSrc = Join-Path $PSScriptRoot '../../scripts/harness_config.mjs'
+$harnessGitSrc = Join-Path $PSScriptRoot '../../scripts/harness_git.mjs'
 
-$py = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-if (-not $py) {
-    if ($env:CI) { Write-Host 'FAIL — python absent on CI; a missing interpreter is not a pass' -ForegroundColor Red; exit 1 }
-    Write-Host 'SKIP [build-docs] python absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
-    exit 0
+$node = (Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+if (-not $node) {
+    Write-Host 'FAIL — node absent; the builder and the checker run on Node' -ForegroundColor Red; exit 1
 }
-
-# The builder deliberately does NOT self-pin its stdout encoding — the build WRAPPERS own that
-# (CLAUDE.md: `harness_config.pin_utf8()` and the wrappers own it; no second copy in the
-# builder). This selftest bypasses the wrapper and invokes python directly, so it owns the pin
-# exactly as build.mjs does: on a cp1252 runner console the builder's Korean output otherwise
-# dies with UnicodeEncodeError AFTER writing index.json — fact-4's shape, caught by this
-# suite's FIRST windows-latest CI run (PR #35); a local cp949 console can encode Korean, which
-# is why the same suite was green here. Process-scoped only: the runner spawns each selftest
-# in its own pwsh process, so nothing needs restoring.
-$env:PYTHONUTF8 = '1'
-$env:PYTHONIOENCODING = 'utf-8'
 
 $fx = New-FixtureRoot 'build-docs-selftest'
 trap { Remove-FixtureRoot $fx; break }
@@ -44,17 +32,17 @@ trap { Remove-FixtureRoot $fx; break }
 $repo = Join-Path $fx 'repo'
 $docs = Join-Path $repo 'docs'
 New-Item -ItemType Directory -Force -Path (Join-Path $docs 'adr'), (Join-Path $docs 'spec') | Out-Null
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docs 'build_docs.py')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docs 'build_docs.mjs')
 
 function Write-Doc([string]$Rel, [string]$Body) {
     [IO.File]::WriteAllText((Join-Path $docs $Rel), ($Body -replace "`r`n", "`n"))
 }
 function Invoke-Build {
-    $out = & $py.Source (Join-Path $docs 'build_docs.py') 2>&1 | Out-String
+    $out = & $node (Join-Path $docs 'build_docs.mjs') 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 function Invoke-Map {
-    $out = & $py.Source $verifyMap --repo $repo 'x.py' 2>&1 | Out-String
+    $out = & $node $verifyMap --repo $repo 'x.py' 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 
@@ -129,16 +117,16 @@ $ok = (Assert-True 'F a missing stamp is reported (not silent, not STALE)' `
 $repo2 = Join-Path $fx 'repo-moved'
 $docs2 = Join-Path $repo2 'platform-docs'
 New-Item -ItemType Directory -Force -Path (Join-Path $docs2 'adr'), (Join-Path $docs2 'spec') | Out-Null
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docs2 'build_docs.py')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docs2 'build_docs.mjs')
 [IO.File]::WriteAllText((Join-Path $repo2 '.harness.json'), '{ "docs": { "index": "platform-docs/index.json" } }')
 [IO.File]::WriteAllText((Join-Path $docs2 'adr/0001-a.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"a`"`nstatus: accepted`n---`n# 0001`n")
-$rG = & $py.Source (Join-Path $docs2 'build_docs.py') 2>&1 | Out-String
+$rG = & $node (Join-Path $docs2 'build_docs.mjs') 2>&1 | Out-String
 $gOk = $LASTEXITCODE -eq 0
-$rGmap = & $py.Source $verifyMap --repo $repo2 'x.py' 2>&1 | Out-String
+$rGmap = & $node $verifyMap --repo $repo2 'x.py' 2>&1 | Out-String
 $ok = (Assert-True 'G a relocated corpus builds and reads as current (no false STALE)' `
     ($gOk -and $rGmap -notmatch 'index: STALE' -and $rGmap -notmatch 'no staleness stamp') "build: $rG`nmap: $rGmap") -and $ok
 [IO.File]::WriteAllText((Join-Path $docs2 'adr/0001-a.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"a`"`nstatus: superseded`n---`n# 0001`n")
-$rG2 = & $py.Source $verifyMap --repo $repo2 'x.py' 2>&1 | Out-String
+$rG2 = & $node $verifyMap --repo $repo2 'x.py' 2>&1 | Out-String
 $ok = (Assert-True 'G2 the relocated corpus still yields a real signal on a frontmatter edit' ($rG2 -match 'index: STALE') $rG2) -and $ok
 
 # --- H: site title resolution (ADR 0050) — the declaration is the source, env a one-off override
@@ -149,10 +137,10 @@ $ok = (Assert-True 'G2 the relocated corpus still yields a real signal on a fron
 $repo3 = Join-Path $fx 'repo-title'
 $docs3 = Join-Path $repo3 'docs'
 New-Item -ItemType Directory -Force -Path (Join-Path $docs3 'adr'), (Join-Path $docs3 'spec') | Out-Null
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docs3 'build_docs.py')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docs3 'build_docs.mjs')
 [IO.File]::WriteAllText((Join-Path $docs3 'adr/0001-a.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"a`"`nstatus: accepted`n---`n# 0001`n")
 function Invoke-TitleBuild {
-    $out = & $py.Source (Join-Path $docs3 'build_docs.py') 2>&1 | Out-String
+    $out = & $node (Join-Path $docs3 'build_docs.mjs') 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 
@@ -192,9 +180,9 @@ $outer = Join-Path $fx 'outer-tree'
 $inner = Join-Path $outer 'repo\docs'
 New-Item -ItemType Directory -Force -Path (Join-Path $inner 'adr'), (Join-Path $inner 'spec'), (Join-Path $outer 'repo\.git') | Out-Null
 [IO.File]::WriteAllText((Join-Path $outer '.harness.json'), '{ "docs": { "site_title": "ancestor title MUST NOT leak" } }')
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $inner 'build_docs.py')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $inner 'build_docs.mjs')
 [IO.File]::WriteAllText((Join-Path $inner 'adr/0001-a.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"a`"`nstatus: accepted`n---`n# 0001`n")
-& $py.Source (Join-Path $inner 'build_docs.py') 2>&1 | Out-Null
+& $node (Join-Path $inner 'build_docs.mjs') 2>&1 | Out-Null
 $h5 = [IO.File]::ReadAllText((Join-Path $inner 'docs.html'))
 $ok = (Assert-True 'H5 a .git boundary without a declaration stops the walk at the default' `
     ($h5 -match '<title>Docs · ADR &amp; Spec</title>' -and $h5 -notmatch 'ancestor title') $h5.Substring(0, 300)) -and $ok
@@ -202,14 +190,14 @@ $ok = (Assert-True 'H5 a .git boundary without a declaration stops the walk at t
 # the ancestor declaration is the intended behavior (relocated-corpus class, case G) — this pins
 # that H5 measures the boundary, not a broken walk.
 Remove-Item -Recurse -Force (Join-Path $outer 'repo\.git')
-& $py.Source (Join-Path $inner 'build_docs.py') 2>&1 | Out-Null
+& $node (Join-Path $inner 'build_docs.mjs') 2>&1 | Out-Null
 $h5b = [IO.File]::ReadAllText((Join-Path $inner 'docs.html'))
 $ok = (Assert-True 'H5b without the boundary the ancestor declaration is honored (walk intact)' `
     ($h5b -match 'ancestor title MUST NOT leak') $h5b.Substring(0, 300)) -and $ok
 
 # --- I: the customer-corpus surface (ADR 0060) --------------------------------------------
 # Fixture: a repo with the two-program pjems-shaped corpus + a copy of the vendored
-# harness_config.py the builder imports. "xgglbsrp" carries a menu (25.x, groups to the
+# harness_config.mjs the builder imports. "xgglbsrp" carries a menu (25.x, groups to the
 # declared 25.x label) and 3 release entries — two same-date [UAT] (dedupe + tie-break) and
 # one older [FUT]; "batchjob" carries NO menu (falls to unkeyed_label) and one [PROD] entry
 # (posture 완료, and a recency-group member since it still has release history).
@@ -219,14 +207,15 @@ $custI = Join-Path $docsI 'customer'
 New-Item -ItemType Directory -Force -Path (Join-Path $docsI 'adr'), (Join-Path $docsI 'spec'), `
     (Join-Path $custI 'xgglbsrp'), (Join-Path $custI 'batchjob'), `
     (Join-Path $repoI 'scripts/harness') | Out-Null
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsI 'build_docs.py')
-Copy-Item -LiteralPath $harnessConfigSrc -Destination (Join-Path $repoI 'scripts/harness/harness_config.py')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsI 'build_docs.mjs')
+Copy-Item -LiteralPath $harnessConfigSrc -Destination (Join-Path $repoI 'scripts/harness/harness_config.mjs')
+Copy-Item -LiteralPath $harnessGitSrc -Destination (Join-Path $repoI 'scripts/harness/harness_git.mjs')
 
 function Write-IDoc([string]$Rel, [string]$Body) {
     [IO.File]::WriteAllText((Join-Path $docsI $Rel), ($Body -replace "`r`n", "`n"))
 }
 function Invoke-IBuild {
-    $out = & $py.Source (Join-Path $docsI 'build_docs.py') 2>&1 | Out-String
+    $out = & $node (Join-Path $docsI 'build_docs.mjs') 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 
@@ -450,8 +439,8 @@ $rI11 = Invoke-IBuild
 # reader_path is built with os.path.join, so on Windows it is backslash-separated — match
 # either separator rather than the forward-slash form the OTHER exit messages use (those are
 # built by plain "%s/%s/%s" string formatting over the DECLARED dir, never os.path.join).
-$ok = (Assert-True 'I11 an absent reader exits 1 naming scripts/harness/harness_config.py' `
-    ($rI11.Code -ne 0 -and $rI11.Out -match 'scripts[\\/]harness[\\/]harness_config\.py') $rI11.Out) -and $ok
+$ok = (Assert-True 'I11 an absent reader exits 1 naming scripts/harness/harness_config.mjs' `
+    ($rI11.Code -ne 0 -and $rI11.Out -match 'scripts[\\/]harness[\\/]harness_config\.mjs') $rI11.Out) -and $ok
 Rename-Item -LiteralPath $hcMoved -NewName 'harness'
 
 # I12: the `declared` contract — an explicit "" stays blank; an absent key gets the builder's
@@ -493,12 +482,13 @@ $ok = (Assert-True 'I12 eyebrow ABSENT falls back to the builder default 고객 
 [IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), $declFull)
 $null = Invoke-IBuild
 
-# I13: _selfcheck_release_helpers() passes standalone via python -c.
+# I13: _selfcheck_release_helpers() passes standalone via a node import probe.
 # The sentinel is ASSEMBLED at runtime and the exit code is asserted too: Python 3.13's traceback
 # for `-c` code echoes the command source, so a literal sentinel in the command matched ITSELF
 # on a failing run — the 0.38.0 selfcheck was broken and this case read green locally (3.13)
 # while CI (3.12, no source echo) failed. A gate judged from the wrong observable.
-$rI13 = & $py.Source -c "import sys; sys.path.insert(0, r'$docsI'); import build_docs; build_docs._selfcheck_release_helpers(); print('SELF' + 'CHECK-' + 'OK')" 2>&1 | Out-String
+$bdUrl = [Uri]::new((Join-Path $docsI 'build_docs.mjs')).AbsoluteUri
+$rI13 = & $node --input-type=module -e "import { _selfcheck_release_helpers } from '$bdUrl'; _selfcheck_release_helpers(); console.log('SELF' + 'CHECK-' + 'OK')" 2>&1 | Out-String
 $i13Code = $LASTEXITCODE
 $ok = (Assert-True 'I13 _selfcheck_release_helpers() passes standalone (exit 0, sentinel printed, no traceback)' `
     ($i13Code -eq 0 -and $rI13 -match 'SELFCHECK-OK' -and $rI13 -notmatch 'Traceback') "exit=$i13Code $rI13") -and $ok
@@ -506,14 +496,14 @@ $ok = (Assert-True 'I13 _selfcheck_release_helpers() passes standalone (exit 0, 
 # I14: panels — a declared module contributes a top-level tab; a missing module exits 1.
 $panelsDir = Join-Path $repoI 'scripts/panels'
 New-Item -ItemType Directory -Force -Path $panelsDir | Out-Null
-[IO.File]::WriteAllText((Join-Path $panelsDir 'demo.py'), (
-    "CSS = `".demo{color:red}`"`n`ndef render_panel(root):`n    return '<p class=`"demo`">PANEL-OK</p>'`n" `
+[IO.File]::WriteAllText((Join-Path $panelsDir 'demo.mjs'), (
+    "export const CSS = '.demo{color:red}'`nexport function render_panel(root) { return '<p class=`"demo`">PANEL-OK</p>' }`n" `
     -replace "`r`n", "`n"))
 [IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), '{
   "docs": { "customer": {
     "dir": "docs/customer", "chip_field": "program_file", "chip_suffix": ".p",
     "groups": [{ "label": "g", "keys": [25] }],
-    "panels": [{ "module": "scripts/panels/demo.py", "label": "데모" }]
+    "panels": [{ "module": "scripts/panels/demo.mjs", "label": "데모" }]
   } }
 }')
 $rI14 = Invoke-IBuild
@@ -534,12 +524,12 @@ $ok = (Assert-True 'I14 no new keys → docs first + selected, derived id panel-
   "docs": { "customer": {
     "dir": "docs/customer", "chip_field": "program_file", "chip_suffix": ".p",
     "groups": [{ "label": "g", "keys": [25] }],
-    "panels": [{ "module": "scripts/panels/missing.py", "label": "없음" }]
+    "panels": [{ "module": "scripts/panels/missing.mjs", "label": "없음" }]
   } }
 }')
 $rI14b = Invoke-IBuild
 $ok = (Assert-True 'I14b a missing panel module exits 1 naming it' `
-    ($rI14b.Code -ne 0 -and $rI14b.Out -match [regex]::Escape('scripts/panels/missing.py')) $rI14b.Out) -and $ok
+    ($rI14b.Code -ne 0 -and $rI14b.Out -match [regex]::Escape('scripts/panels/missing.mjs')) $rI14b.Out) -and $ok
 [IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), $declFull)
 
 # I15: generic markdown fixes, asserted on the base fixture's own docs.html — a hard-wrapped
@@ -567,11 +557,11 @@ $ok = (Assert-True 'I15n a heading directly after a list item is not swallowed' 
 $hcReal = Join-Path $repoI 'scripts/harness'
 Rename-Item -LiteralPath $hcReal -NewName 'harness-real'
 New-Item -ItemType Directory -Force -Path $hcReal | Out-Null
-[IO.File]::WriteAllText((Join-Path $hcReal 'harness_config.py'), "def load(root):`n    return ({'index': 'docs/index.json'}, [])`n")
+[IO.File]::WriteAllText((Join-Path $hcReal 'harness_config.mjs'), "export function load(root) { return [{ index: 'docs/index.json' }, []] }`n")
 Remove-Item -LiteralPath (Join-Path $docsI 'index.json') -ErrorAction SilentlyContinue
 $rI16 = Invoke-IBuild
 $ok = (Assert-True 'I16 a stale reader (no customer support) exits 1 naming it as 구버전, no traceback' `
-    ($rI16.Code -ne 0 -and $rI16.Out -match '구버전' -and $rI16.Out -match 'harness_config\.py' -and $rI16.Out -notmatch 'Traceback') $rI16.Out) -and $ok
+    ($rI16.Code -ne 0 -and $rI16.Out -match '구버전' -and $rI16.Out -match 'harness_config\.mjs' -and $rI16.Out -notmatch 'Traceback') $rI16.Out) -and $ok
 # I17: write order — a refused customer build must not leave the 4 internal surfaces freshly
 # written next to a stale customer page (review 2026-08-27, medium): index.json was deleted above
 # and the refusal fired, so it must still be absent.
@@ -582,12 +572,12 @@ Rename-Item -LiteralPath (Join-Path $repoI 'scripts/harness-real') -NewName 'har
 
 # I14c: a panel module whose render_panel() RAISES is a named exit, not a traceback (review
 # 2026-08-27, medium — the import was guarded, the call was not).
-[IO.File]::WriteAllText((Join-Path $panelsDir 'boom.py'), "def render_panel(root):`n    raise RuntimeError('boom')`n")
+[IO.File]::WriteAllText((Join-Path $panelsDir 'boom.mjs'), "export function render_panel(root) { throw new Error('boom') }`n")
 [IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), '{
   "docs": { "customer": {
     "dir": "docs/customer", "chip_field": "program_file", "chip_suffix": ".p",
     "groups": [{ "label": "g", "keys": [25] }],
-    "panels": [{ "module": "scripts/panels/boom.py", "label": "붐" }]
+    "panels": [{ "module": "scripts/panels/boom.mjs", "label": "붐" }]
   } }
 }')
 $rI14c = Invoke-IBuild
@@ -602,20 +592,21 @@ $ok = (Assert-True 'I14c a raising render_panel() exits 1 naming the module, no 
 # canon classes `.mono` / `.chip.on` with no panel-owned class in the selector (the pjems leak) →
 # warned; its `.panel-leak .chip` and `.own .clip` rules (scoped by a panel-owned class), its own
 # `.pf-x`, and demo's own `.demo` are NOT (unique names leak into nothing).
-[IO.File]::WriteAllText((Join-Path $panelsDir 'first.py'), (
-    "UPDATED = '2026-09-01'`nTAB_CHIPS = ['칩A', '칩<B>']`nCSS = `".panel-first .pf{color:blue}`"`n`ndef render_panel(root):`n    return '<p class=`"pf`">FIRST-OK</p>'`n" `
+[IO.File]::WriteAllText((Join-Path $panelsDir 'first.mjs'), (
+    "export const UPDATED = '2026-09-01'`nexport const TAB_CHIPS = ['칩A', '칩<B>']`nexport const CSS = '.panel-first .pf{color:blue}'`nexport function render_panel(root) { return '<p class=`"pf`">FIRST-OK</p>' }`n" `
     -replace "`r`n", "`n"))
-[IO.File]::WriteAllText((Join-Path $panelsDir 'leak.py'), (
-    "CSS = `"/* .clip in a comment */ .mono{color:red} .chip.on{x:y} .panel-leak .chip{color:blue} .own .clip{x:y} .pf-x{background:url(a.png)} a[href$='.clip']{x:y} [data-k='.tblwrap'] b{x:y}`"`n`ndef render_panel(root):`n    return '<p>LEAK</p>'`n" `
-    -replace "`r`n", "`n"))
+[IO.File]::WriteAllText((Join-Path $panelsDir 'leak.mjs'), (@'
+export const CSS = "/* .clip in a comment */ .mono{color:red} .chip.on{x:y} .panel-leak .chip{color:blue} .own .clip{x:y} .pf-x{background:url(a.png)} a[href$='.clip']{x:y} [data-k='.tblwrap'] b{x:y}"
+export function render_panel(root) { return '<p>LEAK</p>' }
+'@ -replace "`r`n", "`n"))
 [IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), '{
   "docs": { "customer": {
     "dir": "docs/customer", "chip_field": "program_file", "chip_suffix": ".p",
     "groups": [{ "label": "g", "keys": [25] }],
     "panels": [
-      { "module": "scripts/panels/demo.py", "label": "데모", "id": "demo" },
-      { "module": "scripts/panels/first.py", "label": "첫 탭", "id": "first", "position": "before-docs" },
-      { "module": "scripts/panels/leak.py", "label": "누출", "id": "leak" }
+      { "module": "scripts/panels/demo.mjs", "label": "데모", "id": "demo" },
+      { "module": "scripts/panels/first.mjs", "label": "첫 탭", "id": "first", "position": "before-docs" },
+      { "module": "scripts/panels/leak.mjs", "label": "누출", "id": "leak" }
     ],
     "default_tab": "first",
     "footer_date_label": "최종 갱신"
@@ -638,23 +629,24 @@ $ok = (Assert-True 'I19 footer = declared footer_date_label + max(corpus updated
     ($c19 -match '<span>최종 갱신 2026-09-01</span>') ($c19 -replace '(?s).*<footer', '<footer')) -and $ok
 $ok = (Assert-True 'I19 a panel selector reusing a canon class outside .panel-<id> is warned about (naming the fix), unique/scoped names are not, never refused' `
     ($rI19.Code -eq 0 -and $rI19.Out -match [regex]::Escape("'.mono'") -and $rI19.Out -match [regex]::Escape("'.mono' 를") `
-     -and $rI19.Out -match [regex]::Escape('.panel-leak .mono') -and $rI19.Out -match [regex]::Escape('scripts/panels/leak.py') `
+     -and $rI19.Out -match [regex]::Escape('.panel-leak .mono') -and $rI19.Out -match [regex]::Escape('scripts/panels/leak.mjs') `
      -and $rI19.Out -match [regex]::Escape("'.chip.on'") -and $rI19.Out -notmatch [regex]::Escape("'.panel-leak .chip'") `
      -and $rI19.Out -notmatch [regex]::Escape("'.demo'") -and $rI19.Out -notmatch 'pf-x' -and $rI19.Out -notmatch 'clip' -and $rI19.Out -notmatch 'tblwrap' `
      -and ([regex]::Matches($rI19.Out, '\[경고\] 패널 CSS').Count -eq 2)) $rI19.Out) -and $ok
 # I19c (review 2026-08-27, medium): the builder's OWN id fallback — the path a pre-0061 reader leaves
 # it on (entries without `id`) — must not hand two panels one data-top: labels "Env"/"env" both
 # slugify to `env`, so the second takes the first free panel-<n>. Direct call, like I13.
-$rI19c = & $py.Source -c "import sys; sys.path.insert(0, r'$docsI'); import build_docs; ps = build_docs._load_panels({'panels': [{'module': 'scripts/panels/demo.py', 'label': 'Env'}, {'module': 'scripts/panels/demo.py', 'label': 'env'}, {'module': 'scripts/panels/demo.py', 'label': '데모'}]}, r'$repoI'); print('IDS=' + ','.join(p['id'] for p in ps))" 2>&1 | Out-String
+$repoIFwd = $repoI -replace '\\', '/'
+$rI19c = & $node --input-type=module -e "import { _load_panels } from '$bdUrl'; const ps = await _load_panels({ panels: [{ module: 'scripts/panels/demo.mjs', label: 'Env' }, { module: 'scripts/panels/demo.mjs', label: 'env' }, { module: 'scripts/panels/demo.mjs', label: '데모' }] }, '$repoIFwd'); console.log('IDS=' + ps.map(p => p.id).join(','))" 2>&1 | Out-String
 $ok = (Assert-True 'I19c builder fallback ids (no reader id) stay unique: env, panel-1, panel-2' `
     ($LASTEXITCODE -eq 0 -and $rI19c -match 'IDS=env,panel-1,panel-2') $rI19c) -and $ok
 # I19b: a malformed UPDATED is a named refusal (the module's contract, like a non-str CSS).
-[IO.File]::WriteAllText((Join-Path $panelsDir 'baddate.py'), "UPDATED = '2026/09/01'`ndef render_panel(root):`n    return '<p>x</p>'`n")
+[IO.File]::WriteAllText((Join-Path $panelsDir 'baddate.mjs'), "export const UPDATED = '2026/09/01'`nexport function render_panel(root) { return '<p>x</p>' }`n")
 [IO.File]::WriteAllText((Join-Path $repoI '.harness.json'), '{
   "docs": { "customer": {
     "dir": "docs/customer", "chip_field": "program_file", "chip_suffix": ".p",
     "groups": [{ "label": "g", "keys": [25] }],
-    "panels": [{ "module": "scripts/panels/baddate.py", "label": "날짜" }]
+    "panels": [{ "module": "scripts/panels/baddate.mjs", "label": "날짜" }]
   } }
 }')
 $rI19b = Invoke-IBuild
@@ -666,23 +658,23 @@ $ok = (Assert-True 'I18 the fixture builds clean again after the failure cases (
     ($rFinal.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $docsI 'index.json')) -and (Test-Path -LiteralPath $custHtml)) $rFinal.Out) -and $ok
 
 # --- CK: --check mode (ADR 0074) — same corpus assembly as a normal build, compare-only, and
-# the check_docs.py wrapper that runs it with no consumer-side mirror of the builder. A fresh,
+# the check_docs.mjs wrapper that runs it with no consumer-side mirror of the builder. A fresh,
 # minimal fixture (no customer declaration) keeps the 4-surface set the cases below reason about.
 $repoCK = Join-Path $fx 'repo-check'
 $docsCK = Join-Path $repoCK 'docs'
 New-Item -ItemType Directory -Force -Path (Join-Path $docsCK 'adr'), (Join-Path $docsCK 'spec') | Out-Null
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsCK 'build_docs.py')
-$checkDocsTemplate = Join-Path $PSScriptRoot 'templates/docs/check_docs.py'
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsCK 'build_docs.mjs')
+$checkDocsTemplate = Join-Path $PSScriptRoot 'templates/docs/check_docs.mjs'
 
 function Write-CKDoc([string]$Rel, [string]$Body) {
     [IO.File]::WriteAllText((Join-Path $docsCK $Rel), ($Body -replace "`r`n", "`n"))
 }
 function Invoke-CKBuild {
-    $out = & $py.Source (Join-Path $docsCK 'build_docs.py') 2>&1 | Out-String
+    $out = & $node (Join-Path $docsCK 'build_docs.mjs') 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 function Invoke-CKCheck {
-    $out = & $py.Source (Join-Path $docsCK 'build_docs.py') '--check' 2>&1 | Out-String
+    $out = & $node (Join-Path $docsCK 'build_docs.mjs') '--check' 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 
@@ -760,7 +752,7 @@ $ok = (Assert-True 'CK4b a lone (unpaired) trailing CR in a generated surface is
 
 # CK5: --check together with --customer is refused — docs/customer.html embeds date.today() and
 # can never be byte-checked. Exit 2, distinct from drift's exit 1.
-$rCK5 = & $py.Source (Join-Path $docsCK 'build_docs.py') '--check' '--customer' 2>&1 | Out-String
+$rCK5 = & $node (Join-Path $docsCK 'build_docs.mjs') '--check' '--customer' 2>&1 | Out-String
 $ck5Code = $LASTEXITCODE
 $ok = (Assert-True 'CK5 --check --customer is refused with exit 2 (not 1 — 1 means drift)' `
     ($ck5Code -eq 2 -and $rCK5 -match 'customer') $rCK5) -and $ok
@@ -783,19 +775,19 @@ Remove-Item -LiteralPath (Join-Path $docsCK 'adr/0002-rival.md')
 # anything is written: index.json is removed first, so a build that ran past the typo would
 # recreate it. A malformed or second date, and a --version without a value, are refused the same way.
 Remove-Item -LiteralPath $idxCK
-$rCK9 = & $py.Source (Join-Path $docsCK 'build_docs.py') '--chek' 2>&1 | Out-String
+$rCK9 = & $node (Join-Path $docsCK 'build_docs.mjs') '--chek' 2>&1 | Out-String
 $ck9Code = $LASTEXITCODE
 $ok = (Assert-True 'CK9 an unknown flag (--chek) exits 2, names it and writes nothing' `
     ($ck9Code -eq 2 -and $rCK9 -match '--chek' -and -not (Test-Path -LiteralPath $idxCK)) "exit=${ck9Code}: $rCK9") -and $ok
 $ck9Bad = @(@('2026-1-1'), @('2026-01-01', '2026-01-02'), @('--version'), @('--version', '--check')) | ForEach-Object {
     $ck9Args = $_
-    $o = & $py.Source (Join-Path $docsCK 'build_docs.py') @ck9Args 2>&1 | Out-String
+    $o = & $node (Join-Path $docsCK 'build_docs.mjs') @ck9Args 2>&1 | Out-String
     if ($LASTEXITCODE -ne 2 -or (Test-Path -LiteralPath $idxCK)) { "$($ck9Args -join ' '): exit=$LASTEXITCODE $o" }
 }
 $ok = (Assert-True 'CK9 a malformed date, a second date and a --version without a value each exit 2 and write nothing' `
     (-not $ck9Bad) ($ck9Bad -join "`n")) -and $ok
 # CK9 control + restore: the date an older wrapper still passes is accepted and ignored (a full build).
-$rCK9d = & $py.Source (Join-Path $docsCK 'build_docs.py') '2026-01-01' 2>&1 | Out-String
+$rCK9d = & $node (Join-Path $docsCK 'build_docs.mjs') '2026-01-01' 2>&1 | Out-String
 $ok = (Assert-True 'CK9 a single YYYY-MM-DD argument still builds (exit 0, index.json written)' `
     ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $idxCK)) $rCK9d) -and $ok
 
@@ -820,44 +812,44 @@ $ok = (Assert-True 'CK8 an empty corpus makes the assembly refuse: exit 2, REFUS
 Rename-Item -LiteralPath (Join-Path $docsCK 'adr/0001-a.md.bak') -NewName '0001-a.md'
 $null = Invoke-CKBuild   # restore a clean build after the empty-corpus fixture
 
-# CK6: the check_docs.py wrapper — no args runs the check; a flag is a usage refusal; path
+# CK6: the check_docs.mjs wrapper — no args runs the check; a flag is a usage refusal; path
 # arguments are triggers that run the same full check (ADR 0094 — the docs groups declare it
 # `files: true` so pre-commit runs it on a staged ADR/spec).
 # Mutation anchor: a wrapper that treats a path as a refusal (the pre-0094 `if sys.argv[1:]`), that
 # reads only argv[1], or that lets a path narrow or skip the check turns CK6d/CK6e/CK6f red — CK6f
 # is the multi-path shape the hook actually sends (a flag AFTER a path must still refuse).
-Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $docsCK 'check_docs.py')
-$rCK6a = & $py.Source (Join-Path $docsCK 'check_docs.py') 2>&1 | Out-String
+Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $docsCK 'check_docs.mjs')
+$rCK6a = & $node (Join-Path $docsCK 'check_docs.mjs') 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper, clean fixture, no args: exit 0 with the [check] OK line' `
     ($LASTEXITCODE -eq 0 -and $rCK6a -match '\[check\] OK') $rCK6a) -and $ok
 Add-Content -LiteralPath $idxCK -Value 'x' -NoNewline
-$rCK6b = & $py.Source (Join-Path $docsCK 'check_docs.py') 2>&1 | Out-String
+$rCK6b = & $node (Join-Path $docsCK 'check_docs.mjs') 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper on the drifted fixture: exit 1' ($LASTEXITCODE -eq 1) $rCK6b) -and $ok
 $null = Invoke-CKBuild
-$rCK6c = & $py.Source (Join-Path $docsCK 'check_docs.py') '--write' 2>&1 | Out-String
+$rCK6c = & $node (Join-Path $docsCK 'check_docs.mjs') '--write' 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper with a flag: exit 2 (usage refusal — the check is the only mode)' `
     ($LASTEXITCODE -eq 2) $rCK6c) -and $ok
-$rCK6d = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' 2>&1 | Out-String
+$rCK6d = & $node (Join-Path $docsCK 'check_docs.mjs') 'docs/adr/0001-a.md' 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper with a path argument, clean fixture: exit 0 with the [check] OK line (a trigger, not a refusal)' `
     ($LASTEXITCODE -eq 0 -and $rCK6d -match '\[check\] OK') $rCK6d) -and $ok
 Add-Content -LiteralPath $idxCK -Value 'x' -NoNewline
-$rCK6e = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' 2>&1 | Out-String
+$rCK6e = & $node (Join-Path $docsCK 'check_docs.mjs') 'docs/adr/0001-a.md' 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper with a path argument on the drifted fixture: exit 1 (the path does not narrow the check)' `
     ($LASTEXITCODE -eq 1) $rCK6e) -and $ok
-$rCK6f = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' 'docs/spec/0001-s.md' 'docs/index.json' 2>&1 | Out-String
+$rCK6f = & $node (Join-Path $docsCK 'check_docs.mjs') 'docs/adr/0001-a.md' 'docs/spec/0001-s.md' 'docs/index.json' 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper with the multi-path list pre-commit sends, drifted fixture: exit 1' `
     ($LASTEXITCODE -eq 1) $rCK6f) -and $ok
 $null = Invoke-CKBuild
-$rCK6g = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' 'docs/spec/0001-s.md' 2>&1 | Out-String
+$rCK6g = & $node (Join-Path $docsCK 'check_docs.mjs') 'docs/adr/0001-a.md' 'docs/spec/0001-s.md' 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper with several paths, clean fixture: exit 0 with the [check] OK line' `
     ($LASTEXITCODE -eq 0 -and $rCK6g -match '\[check\] OK') $rCK6g) -and $ok
-$rCK6h = & $py.Source (Join-Path $docsCK 'check_docs.py') 'docs/adr/0001-a.md' '--write' 2>&1 | Out-String
+$rCK6h = & $node (Join-Path $docsCK 'check_docs.mjs') 'docs/adr/0001-a.md' '--write' 2>&1 | Out-String
 $ok = (Assert-True 'CK6 wrapper with a flag after a path: exit 2 (every argument is inspected, not argv[1])' `
     ($LASTEXITCODE -eq 2) $rCK6h) -and $ok
 
-# --- SL: the STE-lite gate (ADR 0128) — check_docs.py with path arguments reads each passed spec
+# --- SL: the STE-lite gate (ADR 0128) — check_docs.mjs with path arguments reads each passed spec
 # and NEW ADR against HEAD, selects the changed sections, and checks R5 (sentence length) and R3
-# (claims in parentheses). A git fixture with the vendored harness_config.py, because the gate
+# (claims in parentheses). A git fixture with the vendored harness_config.mjs, because the gate
 # takes its diff through git_run() and its mode through load(). Each case edits the committed
 # tree, runs the gate from the fixture root with the relative paths pre-commit sends, and resets.
 # Mutation anchors: a gate that checks only the changed lines turns SL3 green-for-the-wrong-reason
@@ -867,9 +859,10 @@ $ok = (Assert-True 'CK6 wrapper with a flag after a path: exit 2 (every argument
 $repoSL = Join-Path $fx 'repo-ste'
 $docsSL = Join-Path $repoSL 'docs'
 New-Item -ItemType Directory -Force -Path (Join-Path $docsSL 'adr'), (Join-Path $docsSL 'spec'), (Join-Path $repoSL 'scripts/harness') | Out-Null
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsSL 'build_docs.py')
-Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $docsSL 'check_docs.py')
-Copy-Item -LiteralPath $harnessConfigSrc -Destination (Join-Path $repoSL 'scripts/harness/harness_config.py')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsSL 'build_docs.mjs')
+Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $docsSL 'check_docs.mjs')
+Copy-Item -LiteralPath $harnessConfigSrc -Destination (Join-Path $repoSL 'scripts/harness/harness_config.mjs')
+Copy-Item -LiteralPath $harnessGitSrc -Destination (Join-Path $repoSL 'scripts/harness/harness_git.mjs')
 $long = 'This sentence is deliberately long so that it runs past the limit of twenty five words that the rule sets for every descriptive sentence in a spec.'
 # ADR 0208: the base spec holds one unchanged placeholder (in section 2), so SL18 can prove that
 # the check reads changed lines only. U+2026 is built, never typed, in this file.
@@ -926,7 +919,7 @@ function Invoke-SLGit {
 }
 function Invoke-SLCheck {
     Push-Location -LiteralPath $repoSL
-    try { $out = & $py.Source 'docs/check_docs.py' @args 2>&1 | Out-String; $code = $LASTEXITCODE }
+    try { $out = & $node 'docs/check_docs.mjs' @args 2>&1 | Out-String; $code = $LASTEXITCODE }
     finally { Pop-Location }
     return @{ Out = $out; Code = $code }
 }
@@ -940,7 +933,7 @@ function Reset-SL {
 Write-SL 'docs/spec/0001-s.md' ($slSpec.Replace('``````diff', '```diff') + "`n")
 Write-SL 'docs/adr/0001-a.md' "---`nid: `"0001`"`ntype: adr`ntitle: `"a`"`nstatus: accepted`n---`n# 0001. A`n`nShort.`n"
 $null = & git init -q $repoSL 2>&1
-$null = & $py.Source (Join-Path $docsSL 'build_docs.py') 2>&1
+$null = & $node (Join-Path $docsSL 'build_docs.mjs') 2>&1
 Remove-Item -LiteralPath (Join-Path $docsSL 'docs.html'), (Join-Path $docsSL 'docs.artifact.html') -ErrorAction SilentlyContinue
 Write-SL '.gitignore' "docs/docs.html`ndocs/docs.artifact.html`n__pycache__/`n"
 Invoke-SLGit add -A
@@ -1038,34 +1031,35 @@ Reset-SL
 $repoN = Join-Path $fx 'repo-ste-nested'
 $svc = Join-Path $repoN 'svc'
 New-Item -ItemType Directory -Force -Path (Join-Path $svc 'docs/spec'), (Join-Path $svc 'docs/adr'), (Join-Path $svc 'scripts/harness') | Out-Null
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $svc 'docs/build_docs.py')
-Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $svc 'docs/check_docs.py')
-Copy-Item -LiteralPath $harnessConfigSrc -Destination (Join-Path $svc 'scripts/harness/harness_config.py')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $svc 'docs/build_docs.mjs')
+Copy-Item -LiteralPath $checkDocsTemplate -Destination (Join-Path $svc 'docs/check_docs.mjs')
+Copy-Item -LiteralPath $harnessConfigSrc -Destination (Join-Path $svc 'scripts/harness/harness_config.mjs')
+Copy-Item -LiteralPath $harnessGitSrc -Destination (Join-Path $svc 'scripts/harness/harness_git.mjs')
 Copy-Item -LiteralPath $specSL -Destination (Join-Path $svc 'docs/spec/0001-s.md')
 [IO.File]::WriteAllText((Join-Path $svc '.harness.json'), '{"docs": {"ste_lite": true}}')
 [IO.File]::WriteAllText((Join-Path $repoN '.gitignore'), "__pycache__/`nsvc/docs/docs.html`nsvc/docs/docs.artifact.html`n")
 $null = & git init -q $repoN 2>&1
-$null = & $py.Source (Join-Path $svc 'docs/build_docs.py') 2>&1
+$null = & $node (Join-Path $svc 'docs/build_docs.mjs') 2>&1
 Remove-Item -LiteralPath (Join-Path $svc 'docs/docs.html'), (Join-Path $svc 'docs/docs.artifact.html') -ErrorAction SilentlyContinue
 $null = & git -C $repoN -c core.autocrlf=false add -A 2>&1
 $null = & git -C $repoN -c user.name=t -c user.email=t@t commit -qm base 2>&1
 $specN = Join-Path $svc 'docs/spec/0001-s.md'
 [IO.File]::WriteAllText($specN, [IO.File]::ReadAllText($specN).Replace('A short sentence stands here.', 'A short sentence stands here, edited.'))
 Push-Location -LiteralPath $svc
-try { $rSL11 = & $py.Source 'docs/check_docs.py' 'docs/spec/0001-s.md' 2>&1 | Out-String; $sl11Code = $LASTEXITCODE } finally { Pop-Location }
+try { $rSL11 = & $node 'docs/check_docs.mjs' 'docs/spec/0001-s.md' 2>&1 | Out-String; $sl11Code = $LASTEXITCODE } finally { Pop-Location }
 $ok = (Assert-True 'SL11 a .harness.json below the git root: only the changed section is checked (exit 0)' `
     ($sl11Code -eq 0 -and $rSL11 -match '1\. Clean \(whole\)' -and $rSL11 -notmatch '2\. Old' -and $rSL11 -match 'OK - 1 section') $rSL11) -and $ok
 
-# SL12 (review, low): advisory mode never blocks. A missing harness_config.py prints NOT CHECKED
+# SL12 (review, low): advisory mode never blocks. A missing harness_config.mjs prints NOT CHECKED
 # and exits 0; a non-boolean docs.ste_lite prints a WARN line and stays advisory.
 Edit-SL 'Old short sentence.' 'Old short sentence, edited.'
-$hcSL = Join-Path $repoSL 'scripts/harness/harness_config.py'
+$hcSL = Join-Path $repoSL 'scripts/harness/harness_config.mjs'
 Move-Item -LiteralPath $hcSL -Destination "$hcSL.off"
 try { $rSL12 = Invoke-SLCheck 'docs/spec/0001-s.md' } finally { Move-Item -LiteralPath "$hcSL.off" -Destination $hcSL }
 # ADR 0208 (owner answer 2026-11-16): the placeholder check never passes a file unread. With no
-# harness_config.py it reads every line, so the base fixture's UNCHANGED placeholder now fails the run.
-$ok = (Assert-True 'SL12 harness_config.py missing: STE-lite NOT CHECKED; the placeholder check reads the whole file and fails on the unchanged base placeholder (exit 1)' `
-    ($rSL12.Code -eq 1 -and $rSL12.Out -match '\[ste-lite\] NOT CHECKED' -and $rSL12.Out -match '\[placeholder\] WHOLE FILES \(scripts/harness/harness_config\.py unusable' `
+# harness_config.mjs it reads every line, so the base fixture's UNCHANGED placeholder now fails the run.
+$ok = (Assert-True 'SL12 harness_config.mjs missing: STE-lite NOT CHECKED; the placeholder check reads the whole file and fails on the unchanged base placeholder (exit 1)' `
+    ($rSL12.Code -eq 1 -and $rSL12.Out -match '\[ste-lite\] NOT CHECKED' -and $rSL12.Out -match '\[placeholder\] WHOLE FILES \(scripts/harness/harness_config\.mjs unusable' `
      -and $rSL12.Out -match '\[placeholder\] FAIL - 1 finding' -and $rSL12.Out -notmatch '\[placeholder\] NOT CHECKED') $rSL12.Out) -and $ok
 Write-SL '.harness.json' '{"docs": {"ste_lite": "true"}}'
 $rSL12b = Invoke-SLCheck 'docs/spec/0001-s.md'
@@ -1167,7 +1161,7 @@ $seedSL = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'templates/docs/adr/00
 if (-not $seedSL.Contains('id: "0001"')) { throw 'SL17 fixture: the seed ADR has no id: "0001" line' }
 Write-SL 'docs/adr/0002-adopt-docs-as-code.md' $seedSL.Replace('id: "0001"', 'id: "0002"')
 Write-SL '.harness.json' '{"docs": {"ste_lite": true, "ste_marks": true}}'
-$null = & $py.Source (Join-Path $docsSL 'build_docs.py') 2>&1
+$null = & $node (Join-Path $docsSL 'build_docs.mjs') 2>&1
 Remove-Item -LiteralPath (Join-Path $docsSL 'docs.html'), (Join-Path $docsSL 'docs.artifact.html') -ErrorAction SilentlyContinue
 $rSL17 = Invoke-SLCheck 'docs/adr/0002-adopt-docs-as-code.md'
 $ok = (Assert-True 'SL17 the harness-init seed ADR passes R3, R5, R8 and the option count under both keys (exit 0)' `
@@ -1215,7 +1209,7 @@ Reset-SL
 $repoFL = Join-Path $fx 'repo-lists'
 $docsFL = Join-Path $repoFL 'docs'
 New-Item -ItemType Directory -Force -Path (Join-Path $docsFL 'adr'), (Join-Path $docsFL 'spec') | Out-Null
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsFL 'build_docs.py')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsFL 'build_docs.mjs')
 function Write-FLSpec([string]$Id, [string]$Lists) {
     [IO.File]::WriteAllText((Join-Path $docsFL "spec/$Id-s.md"), ("---`nid: `"$Id`"`ntype: spec`ntitle: `"s$Id`"`nstatus: active`n$Lists`ntags: [x]`n---`n# $Id`n" -replace "`r`n", "`n"))
 }
@@ -1260,7 +1254,7 @@ tags: [x]
 [IO.File]::WriteAllText((Join-Path $docsFL 'spec/0010-s.md'), ($fl10 -replace "`r`n", "`n"))
 # 0001 ADR: a bare integer in related_spec (D8) — the builder joined the list as strings.
 [IO.File]::WriteAllText((Join-Path $docsFL 'adr/0001-r.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"r`"`nstatus: accepted`nrelated_spec: [10]`nrelated_adr: [2]`n---`n# 0001`n")
-$rFL = & $py.Source (Join-Path $docsFL 'build_docs.py') 2>&1 | Out-String
+$rFL = & $node (Join-Path $docsFL 'build_docs.mjs') 2>&1 | Out-String
 $flCode = $LASTEXITCODE
 $flJson = $null
 try { $flJson = Get-Content -LiteralPath (Join-Path $docsFL 'index.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
@@ -1313,7 +1307,7 @@ $ok = (Assert-True 'FL17 a bare integer in related_spec builds and lists as text
     ($flCode -eq 0 -and $flIdxMd -match '0001-r\.md\)[^\n]*\| 10 \|') "exit=${flCode}: $rFL") -and $ok
 # FL5: the consumer the null crashed — verify_map over the index this builder wrote now maps the
 # changed file to every spec that lists it, whatever shape the spec used.
-$rFL5 = & $py.Source $verifyMap --repo $repoFL 'src/b.py' 2>&1 | Out-String
+$rFL5 = & $node $verifyMap --repo $repoFL 'src/b.py' 2>&1 | Out-String
 $fl5Code = $LASTEXITCODE
 $ok = (Assert-True 'FL5 verify_map maps src/b.py to the block, flow and compact specs (exit 0, no traceback)' `
     ($fl5Code -eq 0 -and $rFL5 -notmatch 'Traceback' -and $rFL5 -match 'spec 0001 ' -and $rFL5 -match 'spec 0002 ' -and $rFL5 -match 'spec 0004 ' -and $rFL5 -notmatch 'spec 0003 ') "exit=${fl5Code}: $rFL5") -and $ok
@@ -1336,7 +1330,7 @@ $ok = (Assert-True 'FL10 verify_map warns the comment-only spec as null and name
 $repoNR = Join-Path $fx 'repo-narrows'
 $docsNR = Join-Path $repoNR 'docs'
 New-Item -ItemType Directory -Force -Path (Join-Path $docsNR 'adr'), (Join-Path $docsNR 'spec') | Out-Null
-Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsNR 'build_docs.py')
+Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $docsNR 'build_docs.mjs')
 function Write-NRDoc([string]$Rel, [string]$Body) {
     [IO.File]::WriteAllText((Join-Path $docsNR $Rel), ($Body -replace "`r`n", "`n"))
 }
@@ -1344,7 +1338,7 @@ function Write-NRAdr([string]$Num, [string]$Status, [string]$Extra) {
     Write-NRDoc "adr/$Num-x.md" "---`nid: `"$Num`"`ntype: adr`ntitle: `"adr $Num`"`nstatus: $Status`n$Extra---`n# $Num`nbody`n"
 }
 function Invoke-NRBuild {
-    $out = & $py.Source (Join-Path $docsNR 'build_docs.py') 2>&1 | Out-String
+    $out = & $node (Join-Path $docsNR 'build_docs.mjs') 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 Write-NRAdr '0001' 'accepted' ''
@@ -1417,7 +1411,7 @@ $ok = (Assert-True 'NR3 docs.html holds four narrows rows and one reverse row, n
 # _resolve_narrows turns that kind's case red.
 function Get-NREscaped([string]$Word) { return (($Word.ToCharArray() | ForEach-Object { if ([int]$_ -ge 128) { '\u{0:x4}' -f [int]$_ } else { [string]$_ } }) -join '') }
 function Invoke-NRCheck {
-    $out = & $py.Source (Join-Path $docsNR 'build_docs.py') '--check' 2>&1 | Out-String
+    $out = & $node (Join-Path $docsNR 'build_docs.mjs') '--check' 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 Write-NRAdr '0002' 'accepted' "narrows: [99]`n"
@@ -1437,53 +1431,35 @@ $rNR4d = Invoke-NRCheck
 $ok = (Assert-True 'NR4 an item that is not an ADR number: --check exits 2 with REFUSED, naming the file and the value' `
     ($rNR4d.Code -eq 2 -and $rNR4d.Out -match '\[check\] REFUSED' -and $rNR4d.Out -match '0002-x\.md' -and $rNR4d.Out -match 'x7' -and $rNR4d.Out.Contains((Get-NREscaped '번호가 아닙'))) $rNR4d.Out) -and $ok
 
-# --- PY1: the Python 3.9 floor, checked statically. No 3.9 interpreter is
-# guaranteed on a runner, so the case reads the syntax tree: a module that annotates with `X | Y`
-# must carry `from __future__ import annotations`, or it does not import on 3.9. One python child
-# for every file; the control file proves the detector flags a violation (and names only it).
-$pyScan = Join-Path $fx 'annotation_scan.py'
-[IO.File]::WriteAllText($pyScan, @'
-import ast, sys
-bad = []
-for p in sys.argv[1:]:
-    tree = ast.parse(open(p, encoding="utf-8").read(), p)
-    fut = any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
-              and any(a.name == "annotations" for a in n.names) for n in tree.body)
-    anns = []
-    for n in ast.walk(tree):
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            a = n.args
-            anns += [x.annotation for x in a.posonlyargs + a.args + a.kwonlyargs + [y for y in (a.vararg, a.kwarg) if y]]
-            anns.append(n.returns)
-        elif isinstance(n, ast.AnnAssign):
-            anns.append(n.annotation)
-    pipe = any(isinstance(m, ast.BinOp) and isinstance(m.op, ast.BitOr)
-               for x in anns if x is not None for m in ast.walk(x))
-    if pipe and not fut:
-        bad.append(p)
-print("BAD|" + "|".join(bad))
-'@)
-$pyControl = Join-Path $fx 'annotation_control.py'
-[IO.File]::WriteAllText($pyControl, "def f(x: int | None) -> str | None:`n    return None`n")
-$pyFiles = @($pyControl) + @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'templates/docs') -Filter '*.py' | ForEach-Object { $_.FullName }) + @($verifyMap, $harnessConfigSrc)
-$rPY1 = & $py.Source $pyScan @pyFiles 2>&1 | Out-String
-$ok = (Assert-True 'PY1 every shipped docs/verify_map/harness_config module that annotates with X | Y imports annotations from __future__ (the 3.9 floor)' `
-    ($LASTEXITCODE -eq 0 -and $rPY1.Trim() -eq "BAD|$pyControl") $rPY1) -and $ok
+# --- PY1: no shipped docs or scaffold script is Python (ywr-harness ADR 0223) -------------------------
+# The case held the Python 3.9 floor of the shipped modules (a module that annotates with `X | Y` needs
+# `from __future__ import annotations`). Those modules are Node files now, so it holds the property that
+# replaced the floor: no `.py` ships under templates/docs or templates/scripts/harness, where a member's
+# repo would run it. The control file proves the scan sees a `.py` where one is.
+$pyControlDir = Join-Path $fx 'py-control'
+New-Item -ItemType Directory -Force -Path $pyControlDir | Out-Null
+[IO.File]::WriteAllText((Join-Path $pyControlDir 'control.py'), "print(1)`n")
+$pyScanDirs = @((Join-Path $PSScriptRoot 'templates/docs'), (Join-Path $PSScriptRoot 'templates/scripts/harness'), (Join-Path $PSScriptRoot '../../scripts'))
+$pyShipped = @($pyScanDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.py' -File -ErrorAction SilentlyContinue } | ForEach-Object { $_.FullName })
+$pyControlSeen = @(Get-ChildItem -LiteralPath $pyControlDir -Filter '*.py' -File).Count
+$ok = (Assert-True 'PY1 no .py file ships under templates/docs, templates/scripts/harness or the plugin scripts (the scan sees the control file)' `
+    ($pyControlSeen -eq 1 -and $pyShipped.Count -eq 0) "shipped python: $($pyShipped -join ', ')") -and $ok
 
 # --- BW: the docs wrapper templates/docs/build.mjs (ADR 0220) ---------------------------------------
-# The wrapper finds python, pins the child's encoding and hands the builder's exit code back unchanged. It is
+# The wrapper runs the builder with this Node and hands the builder's exit code back unchanged. It is
 # run from a fixture docs tree like the builder above, as a node child with stdout and stderr read as UTF-8.
 $bwNode = Resolve-NodeVerdict ([bool](Get-Command node -ErrorAction SilentlyContinue)) ([bool]$env:CI)
 if ($bwNode.Verdict -ne 'run') {
     if ($bwNode.Verdict -eq 'fail') { $ok = (Assert-True 'BW node is present on CI' $false $bwNode.Message) -and $ok }
     else { Write-Host "SKIP [BW build.mjs]: $($bwNode.Message)" -ForegroundColor Yellow }
 } else {
-    $bwExe = (Get-Command node -CommandType Application).Source
+    # -CommandType Application lists every node on PATH (CI has the runner's and setup-node's): take the first.
+    $bwExe = (Get-Command node -CommandType Application | Select-Object -First 1).Source
     $bw = Join-Path $fx 'bw'
     $bwDocs = Join-Path $bw 'docs'
     New-Item -ItemType Directory -Force -Path (Join-Path $bwDocs 'adr'), (Join-Path $bwDocs 'spec') | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'templates/docs/build.mjs') -Destination (Join-Path $bwDocs 'build.mjs')
-    Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $bwDocs 'build_docs.py')
+    Copy-Item -LiteralPath $builderTemplate -Destination (Join-Path $bwDocs 'build_docs.mjs')
     [IO.File]::WriteAllText((Join-Path $bwDocs 'adr/0001-first.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"first`"`nstatus: accepted`n---`n# 0001`nbody`n")
     function Invoke-Wrapper([hashtable]$EnvVars = @{}) {
         $psi = [Diagnostics.ProcessStartInfo]::new($bwExe)
@@ -1511,18 +1487,19 @@ if ($bwNode.Verdict -ne 'run') {
     # The builder's exit code is handed back unchanged: a duplicate id is a deterministic build failure, and a wrapper
     # that turned it into 0 would remove the gate on exactly the path a person runs.
     [IO.File]::WriteAllText((Join-Path $bwDocs 'adr/0002-rival.md'), "---`nid: `"0001`"`ntype: adr`ntitle: `"rival`"`nstatus: proposed`n---`n# 0001 again`n")
-    $bwDirect = & $py.Source (Join-Path $bwDocs 'build_docs.py') 2>&1 | Out-String
+    $bwDirect = & $node (Join-Path $bwDocs 'build_docs.mjs') 2>&1 | Out-String
     $bwDirectCode = $LASTEXITCODE
     $rBW3 = Invoke-Wrapper
     $ok = (Assert-True 'BW3 the builder exit code passes through unchanged (a duplicate id is non-zero, equal to the direct run)' `
         ($bwDirectCode -ne 0 -and $rBW3.Code -eq $bwDirectCode) "direct=$bwDirectCode wrapper=$($rBW3.Code) out=$($rBW3.Out)") -and $ok
     Remove-Item -LiteralPath (Join-Path $bwDocs 'adr/0002-rival.md') -Force
-    # No python on PATH: the same Korean error as before, exit 1. PATH is an empty directory; node is started by its full path.
+    # No python on PATH: the wrapper builds anyway, because the builder is Node. PATH is an empty directory; node is started by its full path.
     $bwEmpty = Join-Path $fx 'bw-empty-path'
     New-Item -ItemType Directory -Force -Path $bwEmpty | Out-Null
+    Remove-Item -LiteralPath (Join-Path $bwDocs 'index.json') -ErrorAction SilentlyContinue
     $rBW4 = Invoke-Wrapper @{ PATH = $bwEmpty }
-    $ok = (Assert-True 'BW4 no python on PATH: the named error and exit 1' `
-        ($rBW4.Code -eq 1 -and $rBW4.Out -match 'Python을 찾을 수 없습니다') "exit=$($rBW4.Code) out=$($rBW4.Out)") -and $ok
+    $ok = (Assert-True 'BW4 no python on PATH: the build still succeeds (exit 0, index.json exists)' `
+        ($rBW4.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $bwDocs 'index.json') -PathType Leaf)) "exit=$($rBW4.Code) out=$($rBW4.Out)") -and $ok
 }
 
 Remove-FixtureRoot $fx

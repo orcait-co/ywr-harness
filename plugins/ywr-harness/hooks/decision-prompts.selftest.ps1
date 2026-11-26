@@ -143,7 +143,7 @@ eq('PS2 parseSwitch: on false, a string, a number, a missing key, an array, null
 eq('PS3 switchText: one JSON line with on and at, newline-terminated', [M.switchText(true, 'T'), M.switchText(false, 'T')], ['{"on":true,"at":"T"}\n', '{"on":false,"at":"T"}\n'])
 
 // ST: stageOfToolCall
-const GATES = 'python scripts/harness/harness_gates.py --tree'
+const GATES = 'node scripts/harness/harness_gates.mjs --tree'
 const REVIEW_YES = ['code-review', '/code-review', 'Code-Review', 'CODE-REVIEW', '  code-review  ', ' /code-review ']
 const REVIEW_NO = ['ywr-harness:code-review', 'other-plugin:code-review', 'code-reviewer', 'my-code-review', 'code_review', 'code-review x', 'code-review:high', '//code-review', 'review', 'simplify',
   'ywr-harness:slice-close', 'ywr-harness:adversarial-review', '', ' ', '/', 'code-review' + ch(10) + 'x']

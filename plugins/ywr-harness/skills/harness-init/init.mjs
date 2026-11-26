@@ -45,6 +45,7 @@ import vm from 'node:vm'
 import { spawn, spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import { git_result, git_absent, which_on_path } from '../../scripts/harness_git.mjs'
 import { TOOLCHAIN, INTRODUCED_IN, GUARD_MARKER, GUARDED, SEED, SEED_CORPUS, RETIRED } from './placement.mjs'
 
 const WIN = process.platform === 'win32'
@@ -69,24 +70,27 @@ const isDir = (p) => { try { return fs.statSync(p).isDirectory() } catch { retur
 const psTruthy = (v) => !(v === null || v === undefined || v === false || v === 0 || v === '')
 const lines = (text) => { const l = text.split(/\r?\n/); if (l.length && l[l.length - 1] === '') l.pop(); return l }
 
-// --- git: the one subprocess boundary of this script ---------------------------------------------
-// An argv array and no shell. The output is bytes, decoded once as UTF-8 (a text-mode pipe would
-// translate newlines on Windows). `core.quotepath=false` is pinned so a path that git prints is never
-// octal-quoted, whatever the member's global config says. A path LIST would travel NUL-separated; this
-// script parses no path list, only single values.
+// --- git: every parsed call goes through harness_git.mjs, the one subprocess boundary -------------
+// An argv array and no shell, git spawned by absolute path, the output decoded once as UTF-8 and
+// `core.quotepath=false` pinned, so a path that git prints is never octal-quoted whatever the member's
+// global config says (ywr-harness ADR 0077). This script parses no path list, only single values. The
+// one git call outside the boundary is the detached candidate fetch below: it needs its own process
+// group and a timeout that kills the whole tree, which a synchronous call cannot give.
 function git(args) {
-  const r = spawnSync('git', ['-c', 'core.quotepath=false', ...args], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
-  if (r.error) return { absent: r.error.code === 'ENOENT', status: -1, out: '' }
-  return { absent: false, status: r.status ?? -1, out: r.stdout.toString('utf8') }
+  try {
+    const r = git_result(process.cwd(), args)
+    return { absent: false, status: r.status, out: r.stdout }
+  } catch (e) {
+    return { absent: Boolean(e && e.code === 'ENOENT'), status: -1, out: '' }
+  }
 }
-let gitAbsentMemo
-const gitAbsent = () => (gitAbsentMemo ??= Boolean(spawnSync('git', ['--version'], { stdio: 'ignore', windowsHide: true }).error))
+const gitAbsent = () => git_absent()
 
 // `Get-Command`: a name found on PATH, the first match in PATH order (PATHEXT on Windows).
 function findOnPath(name) {
   const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)
-  // The same rule as docs/build.mjs, which runs the Python found here: on Windows a program or a batch
-  // file in PATHEXT order, never an extensionless file, which cannot start there.
+  // On Windows a program or a batch file in PATHEXT order, never an extensionless file, which cannot
+  // start there.
   const exts = WIN
     ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map(e => e.toUpperCase()).filter(e => ['.COM', '.EXE', '.BAT', '.CMD'].includes(e))
     : ['']
@@ -122,9 +126,9 @@ function cmpVersion(a, b) {
   return 0
 }
 
-// --- regex translation (the gate emitter's `re.match` patterns -> a JavaScript RegExp) ---------------
-// Group regexes are Python's `re.match` in the emitter: anchored at the start only, so `^(?:…)` is that
-// anchor here. The pattern compiles ALONE first: wrapped unchecked, `x)|(.*` would escape the group
+// --- regex translation (a declared pattern written in Python syntax -> a JavaScript RegExp) ---------
+// Group regexes keep the `re.match` rule of harness_config.mjs: anchored at the start only, so `^(?:…)`
+// is that anchor here. The pattern compiles ALONE first: wrapped unchecked, `x)|(.*` would escape the group
 // and claim every path where Python refuses it. Python's named-group spellings `(?P<n>` and `(?P=n)`
 // become JavaScript's; a leading `(?i)` / `(?s)` / `(?m)` becomes a flag. Python's `\A` and `\Z` (start
 // and end of the string) become lookarounds that mean the same. A letter escape that a non-unicode
@@ -451,7 +455,9 @@ async function main() {
     const args = ['-C', root, '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', 'fetch', '--quiet', '--no-tags', '--no-prune',
       '--no-recurse-submodules', '--multiple', '--', ...remotes]
     let child
-    try { child = spawn('git', args, { env, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true, detached: !WIN }) } catch { return 'could not start git' }
+    const gitExe = which_on_path('git')
+    if (!gitExe) return 'could not start git'
+    try { child = spawn(gitExe, args, { env, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true, detached: !WIN }) } catch { return 'could not start git' }
     const done = new Promise((resolve) => {
       child.once('error', () => resolve({ error: true }))
       child.once('exit', (code, signal) => resolve({ code, signal }))
@@ -714,7 +720,7 @@ async function main() {
     // needs to hear about the foreign ones even when docs/adr/ is populated.
     if (existingRecords.length > 0) {
       let msg = `corpus seed not placed — docs/adr/ already holds ${existingRecords.length} record(s)`
-      // The builder indexes only `NNNN-*.md` (build_docs.py FILE_RE). Suppressing the seed over
+      // The builder indexes only `NNNN-*.md` (build_docs.mjs FILE_RE). Suppressing the seed over
       // records the builder cannot see leaves the corpus unbuildable — the report must carry
       // the cause, or the later 'SKIP build' line states a failure with no explanation.
       const indexable = existingRecords.filter((n) => /^\d{4}-/.test(n))
@@ -764,10 +770,10 @@ async function main() {
 
   // Scaffold gate lines (ywr-harness ADR 0129). Arrays are leaves above, so a repo whose docs group predates
   // ywr-harness ADR 0094 (`gates: []`, or the gate with `files: false`) never learns the file-scoped line — and the
-  // STE-lite gate (ywr-harness ADR 0128) runs only when pre-commit hands check_docs.py the staged paths. The
+  // STE-lite gate (ywr-harness ADR 0128) runs only when pre-commit hands check_docs.mjs the staged paths. The
   // template is the list, never a second copy here: each script gate it declares on a TOOLCHAIN
   // script must run, in the repo too, on every path the template routes to it. The emitter runs the
-  // gates of EVERY group whose `match` claims a path (harness_gates.py), so a path is covered when
+  // gates of EVERY group whose `match` claims a path (harness_gates.mjs), so a path is covered when
   // SOME repo group claiming it carries the gate — group names are the repo's to choose. A line
   // merely present somewhere is not coverage: in docs-generated alone it never sees a staged spec.
   // The probe paths are the scaffold's own placements, the template's docs.index unless the repo
@@ -925,7 +931,7 @@ async function main() {
       // which JavaScript text cannot reproduce exactly, so such an item is not compared.
       if (typeof p === 'string' && !p) continue
       if (typeof p !== 'string') { out.bad++; continue }
-      // Unanchored: the emitter's docs_exempt is `rx.search` (harness_gates.py). A match is bounded
+      // Unanchored: the emitter's docs_exempt is `rx.search` (harness_gates.mjs). A match is bounded
       // by timedTest: a timeout throws, and the caller reports a probe skip.
       try { const { p: src, flags } = translatePattern(p); out.rx.push(new RegExp(src, flags)) } catch { out.bad++ }
     }
@@ -1076,7 +1082,7 @@ async function main() {
     say('      It is doing something this scaffold did not write, so it was left alone.')
     say('      To get the retro too, add this line to it ABOVE any early exit — a line after an')
     say('      exit looks wired and never runs (the retro itself never blocks a commit):')
-    say('        [ "$SLICE_RETRO" = "0" ] || python scripts/harness/harness_retro.py || true')
+    say('        [ "$SLICE_RETRO" = "0" ] || node scripts/harness/harness_retro.mjs || true')
   }
   for (const f of skippedSeed) say(`  - ${f}`)
   // A file an earlier release placed and this one no longer does: named so the reader removes it. Never
@@ -1147,7 +1153,7 @@ async function main() {
   //   anything else -> REFUSE and report the existing value
   // `core.hooksPath` lives in .git/config, which is per-clone and never committed, so this wires the
   // machine that ran the scaffold and nothing else. The clone that never ran it is caught by the
-  // `hooks:` line harness_gates.py prints — that report, not this block, is what closes the gap.
+  // `hooks:` line harness_gates.mjs prints — that report, not this block, is what closes the gap.
   const hookFiles = ['.githooks/pre-commit', '.githooks/pre-push', '.githooks/post-commit']
 
   if (!dryRun && !WIN) {
@@ -1179,7 +1185,7 @@ async function main() {
   function resolveRealPath(p) {
     // realpath: every component's link — an NTFS junction or a directory symlink — followed to its
     // final target, lexical from the first component that does not exist. A lexical path alone would
-    // differ from the emitter's `_hooks_path_is`, which compares Python `Path.resolve()` and DOES
+    // differ from the emitter's `_hooks_path_is`, which compares a resolved real path and DOES
     // follow links — so a `.githooks` reached through a junction (or a repo root mounted through
     // one) with core.hooksPath written as the real target would say REFUSED where the emitter says
     // wired.
@@ -1306,28 +1312,19 @@ async function main() {
   }
 
   if (!dryRun) {
-    // Generating the four surfaces needs python. Absent python is a REPORTED skip, never silent:
-    // a repo with no index.json cannot be queried by tooling, and the reader must know why.
-    // Invoke the WRAPPER, not build_docs.py directly: docs/build.mjs owns the Python encoding pin.
-    // The builder prints non-ASCII and Python on Windows encodes stdout with the console codepage,
-    // so on a cp1252 console `print()` raises UnicodeEncodeError and the process exits 1 AFTER
-    // index.json is written — a half-built corpus reported as a failure. Measured on GitHub's
-    // windows-latest runner. Calling the builder from here as well would need a second copy of that
-    // pin, and two copies of one rule is how they end up disagreeing.
-    const py = ['python', 'python3', 'py'].map(findOnPath).find(Boolean)
+    // Generating the four surfaces runs the wrapper with this Node, so no tool lookup can skip it.
+    // Invoke the WRAPPER, not build_docs.mjs directly: docs/build.mjs is the one entry that the
+    // member and the CI run, and a second caller would be a second copy of its contract.
     const wrapper = path.join(root, 'docs/build.mjs')
-    if (py && fs.existsSync(wrapper)) {
+    if (fs.existsSync(wrapper)) {
       const r = spawnSync(process.execPath, [wrapper], { cwd: root, stdio: 'ignore', windowsHide: true })
       const code = r.error ? 1 : (r.status ?? 1)
       // All FOUR surfaces — docs.artifact.html is the artifact-publish path's input
       // (ywr-harness ADR 0032/0048) and omitting it here taught readers a three-surface pipeline (issue #45).
       if (code === 0) say('  built: index.json · INDEX.md · docs.html · docs.artifact.html')
       else say(`  SKIP build — docs/build.mjs exited ${code}; run it directly and read the error`)
-    } else if (!py) {
-      say('  SKIP build — python not on PATH (reported, not silent); run: node docs/build.mjs')
     } else {
-      // A refused first-run collision or a failed write can leave the wrapper unplaced; the cause is
-      // the wrapper then, never Python.
+      // A refused first-run collision or a failed write can leave the wrapper unplaced.
       say('  SKIP build — docs/build.mjs is not in this repo (reported, not silent); resolve its line above, then run: node docs/build.mjs')
     }
   }

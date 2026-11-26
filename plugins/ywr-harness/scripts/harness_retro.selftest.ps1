@@ -1,4 +1,4 @@
-# Selftest for harness_retro.py — the slice retro gate (ADR 0017).
+# Selftest for harness_retro.mjs — the slice retro gate (ADR 0017).
 #
 # The gate is advisory and exits 0 (except a git failure, case N), so every case asserts on OUTPUT. Two properties are
 # asserted for each of the eight checks: that it fires when it should, and that it stays SILENT
@@ -13,14 +13,14 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
-$retro = Join-Path $PSScriptRoot 'harness_retro.py'
+$retro = Join-Path $PSScriptRoot 'harness_retro.mjs'
 $fxBase = New-FixtureRoot 'harness-retro-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 
-$py = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-if (-not $py) {
-    if ($env:CI) { Write-Host 'FAIL — python absent on CI; a missing interpreter is not a pass' -ForegroundColor Red; Remove-FixtureRoot $fxBase; exit 1 }
-    Write-Host 'SKIP [harness_retro] python absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
+$node = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $node) {
+    if ($env:CI) { Write-Host 'FAIL — node absent on CI; a missing interpreter is not a pass' -ForegroundColor Red; Remove-FixtureRoot $fxBase; exit 1 }
+    Write-Host 'SKIP [harness_retro] node absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
     Remove-FixtureRoot $fxBase; exit 0
 }
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -50,7 +50,7 @@ $CFG = @'
 
 function Invoke-Retro([string]$Repo, [string[]]$Extra) {
     $a = @($retro, '--repo', $Repo) + $Extra
-    $out = & $py.Source @a 2>&1 | Out-String
+    $out = & $node.Source @a 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 function Write-F([string]$Repo, [string]$Rel, [string]$Body) {
@@ -209,7 +209,7 @@ $ok = (Assert-True 'CL1 a body with a digest and no class line gives no finding'
 $rCL2 = Invoke-Retro $e2 @('--coverage')
 $ok = (Assert-True 'CL2 --coverage prints no class-line tally and still prints the ignore register' ($rCL2.Code -eq 0 -and $rCL2.Out -notmatch 'class lines' -and $rCL2.Out -match 'ignore register') "exit=$($rCL2.Code) out=$($rCL2.Out)") -and $ok
 # The call has the older hook's shape: the message file alone, no --repo.
-$rCL3 = @{ Out = (& $py.Source $retro '--class-message' (Join-Path $e2 'cl1.txt') 2>&1 | Out-String) }
+$rCL3 = @{ Out = (& $node.Source $retro '--class-message' (Join-Path $e2 'cl1.txt') 2>&1 | Out-String) }
 $rCL3.Code = $LASTEXITCODE
 $ok = (Assert-True 'CL3 --class-message is accepted and ignored: exit 0, silent, so an older commit-msg hook never refuses a message' ($rCL3.Code -eq 0 -and [string]::IsNullOrWhiteSpace($rCL3.Out)) "exit=$($rCL3.Code) out=$($rCL3.Out)") -and $ok
 # CL9: a bare revision is the commits after it, the same span its file diff covers. On the E repo the feat commit is
@@ -225,7 +225,7 @@ $rCL4 = Invoke-Retro $e2 @('--coverage', '--class-message', (Join-Path $e2 'cl1.
 $ok = (Assert-True 'CL4 --class-message with another mode is refused, exit 2, so a coverage run never ends silent' ($rCL4.Code -eq 2 -and $rCL4.Out -match 'takes no other argument') "exit=$($rCL4.Code) out=$($rCL4.Out)") -and $ok
 # The refusal text says "no other argument", so --repo is refused too (dist #18). An older commit-msg hook passes the
 # message file alone, so this refuses no hook call. The call names --repo itself, so it does not rest on Invoke-Retro.
-$rCL4b = @{ Out = (& $py.Source $retro '--class-message' (Join-Path $e2 'cl1.txt') '--repo' $e2 2>&1 | Out-String) }
+$rCL4b = @{ Out = (& $node.Source $retro '--class-message' (Join-Path $e2 'cl1.txt') '--repo' $e2 2>&1 | Out-String) }
 $rCL4b.Code = $LASTEXITCODE
 $ok = (Assert-True 'CL4b --class-message with --repo is refused, exit 2' ($rCL4b.Code -eq 2 -and $rCL4b.Out -match 'takes no other argument') "exit=$($rCL4b.Code) out=$($rCL4b.Out)") -and $ok
 
@@ -320,7 +320,7 @@ $ok = (Assert-True 'G3 --coverage agrees: no dead mappings' ($rG3c.Out -match 'd
 # G4: PAIRING — this parser against the docs builder's, shape by shape. They are two parsers of one
 # field by necessity (the retro reads committed sources, not an index that may not be rebuilt), and
 # until 0.54.0 they disagreed on three shapes (dist issue #6). The builder is the TEMPLATE copy the
-# plugin ships (byte-identical to the canon's docs/build_docs.py — manifest-gate's dogfood sweep).
+# plugin ships (byte-identical to the canon's docs/build_docs.mjs — manifest-gate's dogfood sweep).
 # Each shape carries the EXPECTED builder value, compared TYPED (type name + value, so an int 7 is
 # not a string '7'): the retro must equal it as a list, or [] where the builder indexes a non-list,
 # and the builder must equal it exactly — so a rule dropped from BOTH parsers (the column-0 key
@@ -328,57 +328,58 @@ $ok = (Assert-True 'G3 --coverage agrees: no dead mappings' ($rG3c.Out -match 'd
 # "flow unclosed before a key" is the guard's pin: without the guard both parsers swallow `next: 3`
 # into the list and close it at the stray `]`. The "ends in ]" shapes are the balance rule's pin: the
 # old rule (first line ending in `]` closes) truncated `app/[slug]` to `app/[slug` in both parsers.
-$g4Script = Join-Path $fxBase 'pairing.py'
+$g4Script = Join-Path $fxBase 'pairing.mjs'
 Set-Content -LiteralPath $g4Script -NoNewline -Value @'
-import importlib.util, sys
-sys.dont_write_bytecode = True
-sys.path.insert(0, sys.argv[1])
-import harness_retro as retro
-spec = importlib.util.spec_from_file_location("build_docs", sys.argv[2])
-bd = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bd)
-AB = ["src/a.py", "src/b.py"]
-shapes = {
-    "one-line": ('implements_in: ["src/a.py", "src/b.py"]', AB),
-    "one-line bracket item": ('implements_in: [app/api/auth/[...nextauth]/route.ts, src/c.py]',
-                              ["app/api/auth/[...nextauth]/route.ts", "src/c.py"]),
-    "one-line empty": ('implements_in: []', []),
-    "template comment": ('implements_in: [ ]         # x (예: ["docs/build_docs.py"]), y', []),
-    "block": ('implements_in:\n  - src/a.py\n  - "src/b.py"', AB),
-    "block compact": ('implements_in:\n- src/a.py\n- src/b.py', AB),
-    "block commented": ('implements_in:   # files\n  - src/a.py   # why\n\n  # between\n  - "src/b.py"  # quoted\n  -\n  - # empty\nnext: 1', AB),
-    "flow multi-line": ('implements_in: [\n  "src/a.py",\n  src/b.py,   # c\n]\nnext: 2', AB),
-    "flow first item inline": ('implements_in: ["src/a.py",\n  "src/b.py"]', AB),
-    "flow last item ends in ]": ('implements_in: [\n  src/a.py,\n  app/[slug]\n]\nnext: 5', ["src/a.py", "app/[slug]"]),
-    "flow head line ends in ]": ('implements_in: [src/a.py, app/[slug]\n]\nnext: 6', ["src/a.py", "app/[slug]"]),
-    "flow bracketed dir mid-path": ('implements_in: [\n  app/[slug]/page.tsx\n]', ["app/[slug]/page.tsx"]),
-    "flow quoted item carrying ]": ('implements_in: [\n  "src/x]y.py",\n  src/a.py\n]', ["src/x]y.py", "src/a.py"]),
-    "flow unterminated": ('implements_in: [\n  "src/a.py",\nnext: 3', "["),
-    "flow unclosed before a key": ('implements_in: [\n  "src/a.py",\nnext: 3\n]', "["),
-    "flow closed with trailing text": ('implements_in: [\n  src/a.py,\n] x\nnext: 7', "["),
-    "comment-only value": ('implements_in:   # TBD\nnext: 8', None),
-    "empty then key": ('implements_in:\nnext: 4', None),
-    "numeric items": ('implements_in: [7, "0001", 0002, src/a.py]', [7, "0001", 2, "src/a.py"]),
-    "block numeric items": ('implements_in:\n  - 7\n  - "8"', [7, "8"]),
-    "quoted empty item": ('implements_in: ["", src/a.py]', ["", "src/a.py"]),
-    "duplicate key, last wins": ('implements_in: [src/a.py]\nimplements_in:\n  - src/z.py', ["src/z.py"]),
-    "absent": ('title: x', None),
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+const retro = await import(pathToFileURL(path.join(process.argv[2], 'harness_retro.mjs')).href)
+const bd = await import(pathToFileURL(process.argv[3]).href)
+const AB = ['src/a.py', 'src/b.py']
+// [name, block, expected builder value]; a null expectation is the builder's absent value
+const shapes = [
+  ['one-line', 'implements_in: ["src/a.py", "src/b.py"]', AB],
+  ['one-line bracket item', 'implements_in: [app/api/auth/[...nextauth]/route.ts, src/c.py]',
+    ['app/api/auth/[...nextauth]/route.ts', 'src/c.py']],
+  ['one-line empty', 'implements_in: []', []],
+  ['template comment', 'implements_in: [ ]         # x (예: ["docs/build_docs.mjs"]), y', []],
+  ['block', 'implements_in:\n  - src/a.py\n  - "src/b.py"', AB],
+  ['block compact', 'implements_in:\n- src/a.py\n- src/b.py', AB],
+  ['block commented', 'implements_in:   # files\n  - src/a.py   # why\n\n  # between\n  - "src/b.py"  # quoted\n  -\n  - # empty\nnext: 1', AB],
+  ['flow multi-line', 'implements_in: [\n  "src/a.py",\n  src/b.py,   # c\n]\nnext: 2', AB],
+  ['flow first item inline', 'implements_in: ["src/a.py",\n  "src/b.py"]', AB],
+  ['flow last item ends in ]', 'implements_in: [\n  src/a.py,\n  app/[slug]\n]\nnext: 5', ['src/a.py', 'app/[slug]']],
+  ['flow head line ends in ]', 'implements_in: [src/a.py, app/[slug]\n]\nnext: 6', ['src/a.py', 'app/[slug]']],
+  ['flow bracketed dir mid-path', 'implements_in: [\n  app/[slug]/page.tsx\n]', ['app/[slug]/page.tsx']],
+  ['flow quoted item carrying ]', 'implements_in: [\n  "src/x]y.py",\n  src/a.py\n]', ['src/x]y.py', 'src/a.py']],
+  ['flow unterminated', 'implements_in: [\n  "src/a.py",\nnext: 3', '['],
+  ['flow unclosed before a key', 'implements_in: [\n  "src/a.py",\nnext: 3\n]', '['],
+  ['flow closed with trailing text', 'implements_in: [\n  src/a.py,\n] x\nnext: 7', '['],
+  ['comment-only value', 'implements_in:   # TBD\nnext: 8', null],
+  ['empty then key', 'implements_in:\nnext: 4', null],
+  ['numeric items', 'implements_in: [7, "0001", 0002, src/a.py]', [7, '0001', 2, 'src/a.py']],
+  ['block numeric items', 'implements_in:\n  - 7\n  - "8"', [7, '8']],
+  ['quoted empty item', 'implements_in: ["", src/a.py]', ['', 'src/a.py']],
+  ['duplicate key, last wins', 'implements_in: [src/a.py]\nimplements_in:\n  - src/z.py', ['src/z.py']],
+  ['absent', 'title: x', null],
+]
+// a value with its type name, so a number 7 is not the string '7'
+const typed = (v) => (Array.isArray(v) ? v.map(x => [typeof x, x]) : [v === null || v === undefined ? 'null' : typeof v, v ?? null])
+const fails = []
+for (const [name, block, want] of shapes) {
+  const [meta] = bd.parse_frontmatter('---\n' + block + '\n---\n')
+  const got = meta.has('implements_in') ? meta.get('implements_in') : null
+  if (JSON.stringify(typed(got)) !== JSON.stringify(typed(want))) {
+    fails.push(`${name}: builder ${JSON.stringify(got)} != expected ${JSON.stringify(want)}`)
+  }
+  const mine = retro.implements_in(block.split('\n'))
+  if (JSON.stringify(typed(mine)) !== JSON.stringify(typed(Array.isArray(want) ? want : []))) {
+    fails.push(`${name}: retro ${JSON.stringify(mine)} != builder-as-list ${JSON.stringify(want)}`)
+  }
 }
-def typed(v):
-    return [(type(x).__name__, x) for x in v] if isinstance(v, list) else (type(v).__name__, v)
-fails = []
-for name, (block, want) in shapes.items():
-    meta, _ = bd.parse_frontmatter("---\n" + block + "\n---\n")
-    got = meta.get("implements_in")
-    if typed(got) != typed(want):
-        fails.append(f"{name}: builder {got!r} != expected {want!r}")
-    mine = retro.implements_in(block.split("\n"))
-    if typed(mine) != typed(want if isinstance(want, list) else []):
-        fails.append(f"{name}: retro {mine!r} != builder-as-list {want!r}")
-print("G4-OK" if not fails else "G4-FAIL: " + " | ".join(fails))
+console.log(fails.length ? 'G4-FAIL: ' + fails.join(' | ') : 'G4-OK')
 '@
-$builderTmpl = Join-Path $PSScriptRoot '../skills/harness-init/templates/docs/build_docs.py'
-$rG4 = (& $py.Source $g4Script $PSScriptRoot $builderTmpl 2>&1 | Out-String)
+$builderTmpl = Join-Path $PSScriptRoot '../skills/harness-init/templates/docs/build_docs.mjs'
+$rG4 = (& $node.Source $g4Script $PSScriptRoot $builderTmpl 2>&1 | Out-String)
 $ok = (Assert-True 'G4 the retro parser and the docs builder agree, typed, with the expected value of every implements_in shape' ($rG4 -match 'G4-OK') $rG4) -and $ok
 
 # G5: the multi-line form of G2's class, end to end — a last item ending in `]` (a Next.js dynamic

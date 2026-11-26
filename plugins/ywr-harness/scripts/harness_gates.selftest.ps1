@@ -1,4 +1,4 @@
-# Selftest for harness_gates.py. It exits 0 (advisory) with ONE exception — an unresolvable
+# Selftest for harness_gates.mjs. It exits 0 (advisory) with ONE exception — an unresolvable
 # changed-file scope exits non-zero with a stdout marker (ADR 0041, case Y) — so every other
 # case asserts on output.
 #
@@ -9,17 +9,17 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
-$gates = Join-Path $PSScriptRoot 'harness_gates.py'
+$gates = Join-Path $PSScriptRoot 'harness_gates.mjs'
 $fxBase = New-FixtureRoot 'harness-gates-selftest'
 trap { if ($script:gatesDriver) { try { $script:gatesDriver.Kill($true); $null = $script:gatesDriver.WaitForExit(5000) } catch { } }; Remove-FixtureRoot $fxBase; if ($null -ne $gitPathBefore) { $env:PATH = $gitPathBefore }; break }
 
-$py = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-if (-not $py) {
+$node = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $node) {
     if ($env:CI) {
-        Write-Host 'FAIL — python absent on CI; a missing interpreter is not a pass' -ForegroundColor Red
+        Write-Host 'FAIL — node absent on CI; a missing interpreter is not a pass' -ForegroundColor Red
         Remove-FixtureRoot $fxBase; exit 1
     }
-    Write-Host 'SKIP [harness_gates] python absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
+    Write-Host 'SKIP [harness_gates] node absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
     Remove-FixtureRoot $fxBase; exit 0
 }
 
@@ -91,79 +91,69 @@ $ok = $true
 #     cache, a mutated table) is a FAIL: the next call would see it, and a child never does. A reply
 #     whose stream order a child could print differently (stdout flushed, or past 4 KiB, under the
 #     8 KiB pipe buffer) is run again as a child, counted in the closing note.
-$drvScript = Join-Path $fxBase 'gates_driver.py'
+$drvScript = Join-Path $fxBase 'gates_driver.mjs'
 Set-Content -LiteralPath $drvScript -NoNewline -Value @'
-import contextlib, io, json, os, sys, traceback, types
-sys.path[0] = sys.argv[1]
-home = os.getcwd()
-proto_in = os.fdopen(os.dup(0), "r", encoding="utf-8")
-proto_out = os.fdopen(os.dup(1), "w", encoding="utf-8")
-os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
-stray = os.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "gates_driver.stray"), os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0))
-os.dup2(stray, 1)
-os.dup2(stray, 2)
-sys.argv = [os.path.join(sys.argv[1], "harness_gates.py")]
-import harness_gates
-def state():
-    snap = {"sys.path": repr(sys.path)}
-    for mod in (harness_gates, harness_gates.hc):
-        for k, v in vars(mod).items():
-            if k.startswith("__") or isinstance(v, (types.ModuleType, type)):
-                continue
-            if hasattr(v, "cache_info"):
-                snap[mod.__name__ + "." + k] = repr(v.cache_info().currsize)
-            elif not callable(v):
-                snap[mod.__name__ + "." + k] = type(v).__name__ + " " + repr(v)
-    return snap
-baseline = state()
-class Out(io.StringIO):
-    flushed = False
-    def flush(self):
-        if self.getvalue():
-            self.flushed = True
-def exit_code(value, err):
-    if value is None:
-        return 0
-    if isinstance(value, int):
-        v = int(value)
-        return ((v + 2**31) % 2**32) - 2**31 if os.name == "nt" else v & 0xFF
-    print(value, file=err)
-    return 1
-while True:
-    line = proto_in.readline()
-    if not line:
-        break
-    req = json.loads(line)
-    os.environ.clear()
-    os.environ.update(req["env"])
-    os.chdir(req["cwd"])
-    sys.argv = [harness_gates.__file__] + req["argv"]
-    out, err = Out(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        try:
-            code = exit_code(harness_gates.main(), err)
-        except SystemExit as e:
-            code = exit_code(e.code, err)
-        except BaseException:
-            traceback.print_exc()
-            code = 1
-    os.chdir(home)
-    os.lseek(stray, 0, 0)
-    chunks = []
-    while True:
-        b = os.read(stray, 65536)
-        if not b:
-            break
-        chunks.append(b)
-    os.ftruncate(stray, 0)
-    os.lseek(stray, 0, 0)
-    now = state()
-    leaked = sorted(k for k in set(baseline) | set(now) if baseline.get(k) != now.get(k))
-    unordered = out.flushed or len(out.getvalue().encode("utf-8")) > 4096
-    proto_out.write(json.dumps({"out": out.getvalue(), "err": err.getvalue(), "code": code,
-                                "stray": b"".join(chunks).decode("utf-8", "backslashreplace"),
-                                "leaked": leaked, "unordered": unordered}) + "\n")
-    proto_out.flush()
+import fs from 'node:fs'
+import path from 'node:path'
+import readline from 'node:readline'
+import { pathToFileURL } from 'node:url'
+const scripts = process.argv[2]
+const home = process.cwd()
+const entry = path.join(scripts, 'harness_gates.mjs')
+const protoOut = process.stdout.write.bind(process.stdout)
+const hg = await import(pathToFileURL(entry).href)
+const hc = await import(pathToFileURL(path.join(scripts, 'harness_config.mjs')).href)
+const ops0 = { ...hg.ops }
+const repr = (v) => JSON.stringify(v, (k, x) => x instanceof Set ? { set: [...x] } : x instanceof Map ? { map: [...x] } : x instanceof RegExp ? String(x) : x)
+function state() {
+  const snap = { 'harness_gates.ops': Object.keys(ops0).map((k) => hg.ops[k] === ops0[k]).join() }
+  for (const [name, ns] of [['harness_gates', hg], ['harness_config', hc]]) {
+    for (const [k, v] of Object.entries(ns)) {
+      if (typeof v === 'function') continue
+      snap[name + '.' + k] = String(repr(v))
+    }
+  }
+  return snap
+}
+const baseline = state()
+const text = (c) => (typeof c === 'string' ? c : Buffer.from(c).toString('utf8'))
+const done = (e, cb) => { const f = typeof e === 'function' ? e : cb; if (typeof f === 'function') f() }
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity })
+for await (const line of rl) {
+  const req = JSON.parse(line)
+  for (const k of Object.keys(process.env)) delete process.env[k]
+  Object.assign(process.env, req.env)
+  process.chdir(req.cwd)
+  process.argv[1] = entry
+  let out = ''
+  let err = ''
+  let all = ''
+  let stray = ''
+  const wOut = process.stdout.write
+  const wErr = process.stderr.write
+  const wSync = fs.writeSync
+  process.stdout.write = (c, e, cb) => { const t = text(c); out += t; all += t; done(e, cb); return true }
+  process.stderr.write = (c, e, cb) => { const t = text(c); err += t; all += t; done(e, cb); return true }
+  fs.writeSync = (fd, ...rest) => { if (fd === 1 || fd === 2) { stray += text(rest[0]); return 0 } return wSync(fd, ...rest) }
+  let code
+  try {
+    const r = hg.main(req.argv)
+    code = r === undefined || r === null ? 0 : r
+  } catch (e) {
+    const t = String((e && e.stack) || e) + '\n'
+    err += t
+    all += t
+    code = 1
+  } finally {
+    process.stdout.write = wOut
+    process.stderr.write = wErr
+    fs.writeSync = wSync
+  }
+  process.chdir(home)
+  const now = state()
+  const leaked = Object.keys({ ...baseline, ...now }).sort().filter((k) => baseline[k] !== now[k])
+  protoOut(JSON.stringify({ out, err, all, code, stray, leaked, unordered: false }) + '\n')
+}
 '@
 $runnerMode = if ($env:HARNESS_GATES_SELFTEST_RUNNER -in @('child', 'both')) { $env:HARNESS_GATES_SELFTEST_RUNNER } else { 'driver' }
 $script:gatesDriver = $null
@@ -173,7 +163,7 @@ function Stop-GatesDriver {
     $script:gatesDriver.Dispose(); $script:gatesDriver = $null
 }
 function Start-GatesDriver {
-    $psi = [Diagnostics.ProcessStartInfo]::new($py.Source)
+    $psi = [Diagnostics.ProcessStartInfo]::new($node.Source)
     foreach ($x in @($drvScript, $PSScriptRoot)) { $psi.ArgumentList.Add($x) }
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
@@ -192,7 +182,7 @@ function ConvertTo-ChildText([string]$Text) {
 }
 function Invoke-GatesChild([string]$Repo, [string[]]$Extra) {
     $a = @($gates, '--repo', $Repo) + $Extra
-    $out = & $py.Source @a 2>&1 | Out-String
+    $out = & $node.Source @a 2>&1 | Out-String
     return @{ Out = $out; Code = $LASTEXITCODE }
 }
 # The RUN cases compare each stream on its own. `2>&1` joins stdout and stderr in the order the two
@@ -205,7 +195,7 @@ function Split-ChildStreams([object[]]$Records) {
 }
 function Invoke-GatesChildSplit([string]$Repo, [string[]]$Extra) {
     $a = @($gates, '--repo', $Repo) + $Extra
-    $all = @(& $py.Source @a 2>&1)
+    $all = @(& $node.Source @a 2>&1)
     $code = $LASTEXITCODE
     $s = Split-ChildStreams $all
     return @{ StdOut = $s.StdOut; Err = $s.Err; Code = $code }
@@ -229,7 +219,7 @@ function Invoke-GatesDriver([string]$Repo, [string[]]$Extra) {
     $r = $line | ConvertFrom-Json
     if ([string]$r.stray) { throw "the emitter wrote past sys.stdout/sys.stderr: $([string]$r.stray)" }
     if (@($r.leaked).Count) { throw "the call changed module state that the next call would see: $(@($r.leaked) -join ', ')" }
-    return @{ Out = (ConvertTo-ChildText ([string]$r.err + [string]$r.out)); StdOut = (ConvertTo-ChildText ([string]$r.out)); Err = (ConvertTo-ChildText ([string]$r.err)); Code = [int]$r.code; Unordered = [bool]$r.unordered }
+    return @{ Out = (ConvertTo-ChildText ([string]$r.all)); StdOut = (ConvertTo-ChildText ([string]$r.out)); Err = (ConvertTo-ChildText ([string]$r.err)); Code = [int]$r.code; Unordered = [bool]$r.unordered }
 }
 $script:childRerun = 0
 function Invoke-Gates([string]$Repo, [string[]]$Extra, [switch]$Child) {
@@ -514,6 +504,8 @@ $rCm = Invoke-Gates $cm @()
 $ok = (Assert-True 'I3 an undeclared canon and no REVIEW.md: the default is CLAUDE.md, loaded at session start' ($rCm.Out -match $cmSession) $rCm.Out) -and $ok
 
 # --- J: non-ASCII output survives a hostile console codepage ------------------------------------
+# Node writes UTF-8 to a pipe whatever PYTHONIOENCODING says, so the variable set below no longer reaches a
+# subject: the case checks that non-ASCII output arrives intact and no longer proves a codepage defence.
 $prevIo = $env:PYTHONIOENCODING
 $env:PYTHONIOENCODING = 'cp1252'
 try { $rJ = Invoke-Gates $a @() -Child }
@@ -1225,48 +1217,63 @@ $ok = (Assert-True 'T6b the untracked count equals numstat''s own after git add 
 # T6d, same process (bounded re-review, low): the measure runs only in the size branch, so a
 # critical verdict never calls it — case F's fixture through main() with changed_lines made to
 # raise. Red if the measure is hoisted above the tier chain again; no tier line would show it.
-$t6cScript = Join-Path $fxBase 'untracked_direct.py'
+$t6cScript = Join-Path $fxBase 'untracked_direct.mjs'
 Set-Content -LiteralPath $t6cScript -NoNewline -Value @'
-import contextlib, io, os, sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-import harness_gates as hg
-root, crit = Path(sys.argv[2]), Path(sys.argv[3])
-fails = []
-if hg.changed_lines(root, None, None, []) is None:
-    fails.append("the numstat half failed on its own, so the unknown check below proves nothing")
-if hg.changed_lines(root, None, None, ["no-such-untracked.py"]) is not None:
-    fails.append("an unreadable untracked path did not make the measure unknown")
-tgt = root / "t6c-target.txt"
-tgt.write_text("".join(f"l{i}\n" for i in range(50)), encoding="utf-8")
-try:
-    os.symlink(tgt, root / "t6c-link")
-    os.symlink(root / "t6c-missing", root / "t6c-dangling")
-except (OSError, NotImplementedError) as e:
-    print("T6c-SKIP-SYMLINK " + type(e).__name__)
-else:
-    for name in ("t6c-link", "t6c-dangling"):
-        try:
-            n = hg.added_lines(root / name)
-        except OSError as e:
-            n = type(e).__name__
-        if n != 1:
-            fails.append(f"{name} counted {n}, not 1")
-print("T6c-OK" if not fails else "T6c-FAIL: " + "; ".join(fails))
-def boom(*a, **k):
-    raise RuntimeError("changed_lines ran on a critical verdict")
-hg.changed_lines = boom
-sys.argv = ["harness_gates.py", "--repo", str(crit)]
-out = io.StringIO()
-try:
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-        hg.main()
-    tier_ok = "review tier: full — critical surface touched" in out.getvalue()
-    print("T6d-OK" if tier_ok else "T6d-FAIL: the fixture did not read critical")
-except RuntimeError as e:
-    print("T6d-FAIL: " + str(e))
+import fs from 'node:fs'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+const hg = await import(pathToFileURL(path.join(process.argv[2], 'harness_gates.mjs')).href)
+const root = process.argv[3]
+const crit = process.argv[4]
+const fails = []
+if (hg.changed_lines(root, null, null, []) === null) {
+  fails.push('the numstat half failed on its own, so the unknown check below proves nothing')
+}
+if (hg.changed_lines(root, null, null, ['no-such-untracked.py']) !== null) {
+  fails.push('an unreadable untracked path did not make the measure unknown')
+}
+const tgt = path.join(root, 't6c-target.txt')
+fs.writeFileSync(tgt, Array.from({ length: 50 }, (_, i) => `l${i}\n`).join(''), 'utf8')
+let skip = null
+try {
+  fs.symlinkSync(tgt, path.join(root, 't6c-link'))
+  fs.symlinkSync(path.join(root, 't6c-missing'), path.join(root, 't6c-dangling'))
+} catch (e) {
+  skip = e.code === 'EPERM' || e.code === 'EACCES' ? 'PermissionError' : (e.code || e.name)
+}
+if (skip !== null) {
+  console.log('T6c-SKIP-SYMLINK ' + skip)
+} else {
+  for (const name of ['t6c-link', 't6c-dangling']) {
+    let n
+    try {
+      n = hg.added_lines(path.join(root, name))
+    } catch (e) {
+      n = e.name
+    }
+    if (n !== 1) fails.push(`${name} counted ${n}, not 1`)
+  }
+}
+console.log(fails.length ? 'T6c-FAIL: ' + fails.join('; ') : 'T6c-OK')
+hg.ops.changed_lines = () => { throw new Error('changed_lines ran on a critical verdict') }
+let captured = ''
+const realWrite = process.stdout.write
+const realErrWrite = process.stderr.write
+process.stdout.write = (c) => { captured += String(c); return true }
+process.stderr.write = () => true
+let failure = null
+try {
+  hg.main(['--repo', crit])
+} catch (e) {
+  failure = e
+} finally {
+  process.stdout.write = realWrite
+  process.stderr.write = realErrWrite
+}
+if (failure) console.log('T6d-FAIL: ' + failure.message)
+else console.log(captured.includes('review tier: full — critical surface touched') ? 'T6d-OK' : 'T6d-FAIL: the fixture did not read critical')
 '@
-$rT6c = (& $py.Source $t6cScript $PSScriptRoot $t6 (Join-Path $fxBase 'critical') 2>&1 | Out-String)
+$rT6c = (& $node.Source $t6cScript $PSScriptRoot $t6 (Join-Path $fxBase 'critical') 2>&1 | Out-String)
 $ok = (Assert-True 'T6c an unreadable untracked path makes the measure unknown; a symlink counts 1 line' ($rT6c -match 'T6c-OK') $rT6c) -and $ok
 $ok = (Assert-True 'T6d a critical verdict never runs the line measure (it runs only in the size branch)' ($rT6c -match 'T6d-OK') $rT6c) -and $ok
 if ($rT6c -match 'T6c-SKIP-SYMLINK (\S+)') {
@@ -1301,36 +1308,37 @@ $ok = (Assert-True 'U the gate itself is kept (a key defect degrades the key, ne
 # cwd before compose() sees it. The queue's point is exactly that the guarantee must not DEPEND
 # on that — so this case imports the module directly (the ADR 0013 direct-selftest follow-up,
 # applied narrowly to the two queued guarantees).
-$vScript = Join-Path $fxBase 'direct_checks.py'
+$vScript = Join-Path $fxBase 'direct_checks.mjs'
 Set-Content -LiteralPath $vScript -NoNewline -Value @'
-import sys
-sys.path.insert(0, sys.argv[1])
-import harness_config as hc
-fails = []
-if hc.token_ok("a.py\n"):
-    fails.append("token_ok accepted a trailing newline (the $-anchor admission)")
-if not hc.token_ok("a.py"):
-    fails.append("token_ok rejected a clean token")
-w = []
-if hc.compose(["echo", "x"], "bad dir", w) != "echo x":
-    fails.append("a refused cwd still composed a cd")
-if not any("refused at composition" in m for m in w):
-    fails.append("a refused cwd was dropped SILENTLY (no warn appended)")
-w2 = []
-if hc.compose(["echo", "x"], "sub/dir", w2) != "cd sub/dir && echo x" or w2:
-    fails.append("a clean cwd mis-composed or spuriously warned")
-if hc.compose(["echo", "x"], "bad dir") != "echo x":
-    fails.append("the warns-less call changed behavior")
-# CONTROL's class pinned to EXPECTED code points over every UTF-16 code unit, as hook-lib.selftest pins
-# inline() and report-issue.selftest I1 pins Inline(): C0, DEL, NEL, U+2028, U+2029 (no backtick here).
-want = set(range(0x20)) | {0x7F, 0x85, 0x2028, 0x2029}
-got = {m.start() for m in hc.CONTROL.finditer("".join(map(chr, range(0x10000))))}
-if got != want:
-    fails.append("CONTROL off its class: missing " + ",".join("U+%04X" % c for c in sorted(want - got)) +
-                 " extra " + ",".join("U+%04X" % c for c in sorted(got - want)[:8]))
-print("V-OK" if not fails else "V-FAIL: " + "; ".join(fails))
+import fs from 'node:fs'
+import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { pathToFileURL } from 'node:url'
+const hc = await import(pathToFileURL(path.join(process.argv[2], 'harness_config.mjs')).href)
+const fails = []
+const same = isDeepStrictEqual
+const show = (v) => JSON.stringify(v)
+if (hc.token_ok('a.py\n')) fails.push('token_ok accepted a trailing newline (the $-anchor admission)')
+if (!hc.token_ok('a.py')) fails.push('token_ok rejected a clean token')
+const w = []
+if (hc.compose(['echo', 'x'], 'bad dir', w) !== 'echo x') fails.push('a refused cwd still composed a cd')
+if (!w.some(m => m.includes('refused at composition'))) fails.push('a refused cwd was dropped SILENTLY (no warn appended)')
+const w2 = []
+if (hc.compose(['echo', 'x'], 'sub/dir', w2) !== 'cd sub/dir && echo x' || w2.length) fails.push('a clean cwd mis-composed or spuriously warned')
+if (hc.compose(['echo', 'x'], 'bad dir') !== 'echo x') fails.push('the warns-less call changed behavior')
+// CONTROL's class pinned to EXPECTED code points over every UTF-16 code unit, as hook-lib.selftest pins
+// inline() and report-issue.selftest I1 pins Inline(): C0, DEL, NEL, U+2028, U+2029 (no backtick here).
+const want = new Set([...Array(0x20).keys(), 0x7f, 0x85, 0x2028, 0x2029])
+const got = new Set()
+for (let c = 0; c < 0x10000; c++) if (hc.CONTROL.test(String.fromCharCode(c))) got.add(c)
+const minus = (a, b) => [...a].filter(x => !b.has(x)).sort((x, y) => x - y)
+const hex = c => 'U+' + c.toString(16).toUpperCase().padStart(4, '0')
+if (minus(want, got).length || minus(got, want).length) {
+  fails.push('CONTROL off its class: missing ' + minus(want, got).map(hex).join(',') + ' extra ' + minus(got, want).slice(0, 8).map(hex).join(','))
+}
+console.log(fails.length ? 'V-FAIL: ' + fails.join('; ') : 'V-OK')
 '@
-$rV = (& $py.Source $vScript $PSScriptRoot 2>&1 | Out-String)
+$rV = (& $node.Source $vScript $PSScriptRoot 2>&1 | Out-String)
 $ok = (Assert-True 'V token_ok refuses a trailing newline; compose warns on a refused cwd (never silent); CONTROL is exactly its class' ($rV -match 'V-OK') $rV) -and $ok
 
 # --- W: derived-copy exemption (ADR 0037) — byte-identical placements stop counting -------------
@@ -1510,8 +1518,8 @@ $ok = (Assert-True 'Y1 the stderr diagnostic is legible text, not bytes-repr' ($
 # path at all.
 New-Item -ItemType Directory -Force -Path (Join-Path $y1 'docs') | Out-Null
 Set-Content -LiteralPath (Join-Path $y1 'docs/index.json') -Value '{"spec": []}' -NoNewline
-$vmap = Join-Path $PSScriptRoot 'verify_map.py'
-$rY2out = & $py.Source @($vmap, '--repo', $y1, '--range', 'no-such-ref..HEAD') 2>&1 | Out-String
+$vmap = Join-Path $PSScriptRoot 'verify_map.mjs'
+$rY2out = & $node.Source @($vmap, '--repo', $y1, '--range', 'no-such-ref..HEAD') 2>&1 | Out-String
 $rY2code = $LASTEXITCODE
 $ok = (Assert-True 'Y2 verify_map fails loudly on an unresolvable range too' ($rY2code -ne 0 -and $rY2out -match 'scope: FAILED') "exit=$rY2code out=$rY2out") -and $ok
 
@@ -1683,13 +1691,9 @@ if ($zNodeVerdict.Verdict -eq 'skip') {
 }
 if ($zExtractOk) {
     $zExpected = @($zDests + '.harness-version' | Sort-Object -Unique)
-    $zSavedPP = $env:PYTHONPATH
-    $env:PYTHONPATH = $PSScriptRoot
-    try {
-        $zActual = @(& $py.Source -c "import harness_config; print('\n'.join(sorted(harness_config.SCAFFOLD_CLAIMS)))" 2>&1) |
-            ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }
-    }
-    finally { $env:PYTHONPATH = $zSavedPP }
+    $zClaimsCode = 'const u = (await import("node:url")).pathToFileURL(process.argv[1]).href; const m = await import(u); console.log([...m.SCAFFOLD_CLAIMS].sort().join("\n"))'
+    $zActual = @(& node --input-type=module -e $zClaimsCode (Join-Path $PSScriptRoot 'harness_config.mjs') 2>&1) |
+        ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }
     $zMissing = @($zExpected | Where-Object { $zActual -notcontains $_ })
     $zExtra = @($zActual | Where-Object { $zExpected -notcontains $_ })
     $ok = (Assert-True 'Z4 SCAFFOLD_CLAIMS == placement.mjs destinations + .harness-version (both directions)' `
@@ -1698,194 +1702,212 @@ if ($zExtractOk) {
 }
 
 # --- AA: the customer-corpus declaration (ADR 0060) — validated by the reader, off by default ---
-# `docs.customer` is the schema the client-pjems build_docs.py fork upstreams into. Three states
+# `docs.customer` is the schema the client-pjems build_docs fork upstreams into. Three states
 # must stay distinguishable (off / malformed / validated); a traversal `dir` must be REFUSED into
 # the malformed state, never defaulted (a default would build a customer page from a directory
 # nobody named — and `..` would publish files from outside the repo into it); and every degraded
 # sub-value must warn while dropping only the entry — the fork carried these rules as constants
 # that no canon fix could ever reach. Direct import, like case V: the emitter prints no parsed
 # config, so shape assertions need the dict itself.
-$aaScript = Join-Path $fxBase 'customer_checks.py'
+$aaScript = Join-Path $fxBase 'customer_checks.mjs'
 Set-Content -LiteralPath $aaScript -NoNewline -Value @'
-import json, sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-import harness_config as hc
-root = Path(sys.argv[2])
-(root / "docs" / "customer" / "prog").mkdir(parents=True, exist_ok=True)
-fails = []
-def load(decl):
-    (root / ".harness.json").write_text(json.dumps(decl), encoding="utf-8")
-    return hc.load(root)
-# 1 absent and null are both OFF, with no warning
-for decl in ({"docs": {"index": "docs/index.json"}}, {"docs": {"customer": None}}):
-    cfg, w = load(decl)
-    if cfg["customer"] is not None or any("customer" in m for m in w):
-        fails.append("absent/null did not read as OFF without warnings: %r" % w)
-# 2 a valid block validates silently; defaults fill; a trailing slash on dir is normalized
-cfg, w = load({"docs": {"customer": {"dir": "docs/customer/", "title": "r · 고객 문서",
-    "chip_field": "program_file", "chip_suffix": ".p",
-    "groups": [{"label": "A (25.x)", "keys": [25]}, {"label": "B", "keys": [27, 28]}],
-    "other_label": "기타", "unkeyed_label": "배치", "projects_md": True}}})
-c = cfg["customer"]
-if w or c["malformed"] or c["dir"] != "docs/customer" or c["group_field"] != "menu" \
-   or c["groups"] != [{"label": "A (25.x)", "keys": [25]}, {"label": "B", "keys": [27, 28]}] \
-   or c["projects_md"] is not True or [s["tag"] for s in c["release_stages"]] != ["FUT", "UAT", "PROD"]:
-    fails.append("a valid block did not validate cleanly: %r %r" % (c, w))
-# 3 a traversal dir is REFUSED into the malformed state, never defaulted
-cfg, w = load({"docs": {"customer": {"dir": "../outside"}}})
-if cfg["customer"]["malformed"] != "dir refused" or not any("CANNOT be built" in m for m in w):
-    fails.append("traversal dir was not refused as malformed: %r %r" % (cfg["customer"], w))
-# 4 a non-object block is malformed
-cfg, w = load({"docs": {"customer": "yes"}})
-if not cfg["customer"]["malformed"] or not any("expected an object" in m for m in w):
-    fails.append("non-object block was not malformed")
-# 5 a missing corpus dir warns and is KEPT (the builder refuses at build time and names it)
-cfg, w = load({"docs": {"customer": {"dir": "docs/nope"}}})
-if cfg["customer"]["malformed"] or not any("does not exist" in m for m in w):
-    fails.append("missing dir did not warn, or was wrongly malformed: %r" % w)
-# 6 every degraded sub-value warns; the ENTRY is dropped, never the block
-cfg, w = load({"docs": {"customer": {"dir": "docs/customer", "bogus": 1, "//c": "x",
-    "projects_md": "false", "chip_field": "bad key!", "required_frontmatter": ["ok_key", "bad-key"],
-    "groups": [{"label": "a"}, {"label": "b", "keys": ["25"]}, {"label": "c", "keys": [1, True]},
-               "str", {"label": "e", "keys": [9], "x": 1}],
-    "release_stages": [{"tag": "FUT"}, {"tag": "FUT", "label": "dup"}, {"tag": "bad tag"},
-                       {"tag": "PROD", "label": "완료"}],
-    "title": 5, "eyebrow": "line\ntwo"}}})
-c = cfg["customer"]
-joined = "\n".join(w)
-expect = ["unknown key 'bogus' ignored (known: dir, title", "projects_md: must be a JSON boolean",
-          "treated as false", "chip_field: 'bad key!' is not a frontmatter key name",
-          "required_frontmatter: 'bad-key' is not a frontmatter key name",
-          "groups[0]: needs a non-empty 'label' and 'keys'", "groups[1]: needs", "refused: 25",
-          "groups[2]: needs", "refused: True", "groups[3]: expected an object",
-          "groups[4]: unknown key 'x' ignored (known: label, keys)",
-          "release_stages[1]: duplicate tag 'FUT'", "release_stages[2]: tag 'bad tag' must be",
-          "title: must be a string", "eyebrow: control character(s)"]
-for e in expect:
-    if e not in joined:
-        fails.append("missing warning: %s" % e)
-if "'//c'" in joined:
-    fails.append("a //-prefixed key warned")
-if c["malformed"] or c["projects_md"] is not False or c["chip_field"] != "" \
-   or c["required_frontmatter"] != ["ok_key"] or c["groups"] != [{"label": "e", "keys": [9]}] \
-   or c["release_stages"] != [{"tag": "FUT", "label": "FUT"}, {"tag": "PROD", "label": "완료"}] \
-   or c["title"] != "" or c["eyebrow"] != "line\\ntwo":
-    fails.append("degraded values were not dropped/defaulted as declared: %r" % c)
-if "\n" in c["eyebrow"]:
-    fails.append("a raw newline survived into a display value")
-# 7 wrong container types are ignored with a warning; defaults stay
-cfg, w = load({"docs": {"customer": {"groups": "no", "release_stages": [{"tag": "!!"}],
-                                     "required_frontmatter": "x"}}})
-c = cfg["customer"]
-if c["groups"] != [] or c["required_frontmatter"] != [] \
-   or [s["tag"] for s in c["release_stages"]] != ["FUT", "UAT", "PROD"] \
-   or not any("groups: expected a list" in m for m in w) \
-   or not any("every entry was rejected — using the default vocabulary" in m for m in w):
-    fails.append("wrong container types were not defaulted with warnings: %r %r" % (c, w))
-# 8 an EXPLICIT empty value warns and defaults — "" is something the declarer wrote, never
-#   "absent" (review 2026-08-27, high: this was the one silent path in the block)
-cfg, w = load({"docs": {"customer": {"dir": "", "chip_field": "", "group_field": "", "title": "",
-                                     "required_frontmatter": ["", "ok"], "release_stages": []}}})
-c = cfg["customer"]
-joined = "\n".join(w)
-for e in ["dir: declared empty — using the default 'docs/customer'", "chip_field: declared empty — ignored",
-          "group_field: declared empty — using the default 'menu'",
-          "required_frontmatter: declared empty — ignored",
-          "release_stages: declared empty — using the default vocabulary"]:
-    if e not in joined:
-        fails.append("missing empty-value warning: %s" % e)
-if "every entry was rejected" in joined:
-    fails.append("an EMPTY release_stages list was reported as 'every entry was rejected'")
-if c["malformed"] or c["dir"] != "docs/customer" or c["group_field"] != "menu" \
-   or c["required_frontmatter"] != ["ok"] or [s["tag"] for s in c["release_stages"]] != ["FUT", "UAT", "PROD"]:
-    fails.append("explicit empties did not take the defaults: %r" % c)
-# 9 declared-vs-unset is carried: the explicit "" title IS declared, the absent eyebrow is NOT
-if "title" not in c["declared"] or "eyebrow" in c["declared"] or "dir" not in c["declared"]:
-    fails.append("`declared` does not distinguish an explicit \"\" from an absent key: %r" % c["declared"])
-# 10 defaults are copied per load — mutating a returned value cannot poison the next load
-#    (review 2026-08-27, medium: the shallow list copy aliased the default stage dicts)
-cfg, w = load({"docs": {"customer": {}}})
-if w or cfg["customer"]["declared"] != [] or cfg["customer"]["malformed"]:
-    fails.append("an empty object did not read as ON-with-defaults, silently: %r %r" % (cfg["customer"], w))
-cfg["customer"]["release_stages"][0]["label"] = "POISON"
-cfg2, _ = load({"docs": {"customer": {}}})
-if cfg2["customer"]["release_stages"][0]["label"] != "FUT":
-    fails.append("a mutation of a returned default poisoned the next load")
-# 11 panels (the extension point): a module path is a script-gate-class value — the builder
-#    IMPORTS it — so traversal / leading dash / non-.py are refused per entry; a missing file is
-#    kept and warned (the builder refuses at build time); a blank label drops the entry
-(root / "scripts" / "panels").mkdir(parents=True, exist_ok=True)
-(root / "scripts" / "panels" / "ok.py").write_text("CSS=''\ndef render_panel(root):\n    return '<p>x</p>'\n", encoding="utf-8")
-cfg, w = load({"docs": {"customer": {"panels": [
-    {"module": "scripts/panels/ok.py", "label": "환경 차이"},
-    {"module": "../evil.py", "label": "t"},
-    {"module": "-x.py", "label": "t"},
-    {"module": "scripts/panels/notpy.txt", "label": "t"},
-    {"module": "scripts/panels/missing.py", "label": "later"},
-    {"module": "scripts/panels/ok.py", "label": ""},
-    "str", {"module": "scripts/panels/ok.py", "label": "k", "z": 1}]}}})
-c = cfg["customer"]
-joined = "\n".join(w)
-if [p["module"] for p in c["panels"]] != ["scripts/panels/ok.py", "scripts/panels/missing.py", "scripts/panels/ok.py"] \
-   or c["panels"][0]["label"] != "환경 차이":
-    fails.append("panels did not keep exactly the safe entries: %r" % c["panels"])
-for e in ["panels[1]: module '../evil.py' refused", "panels[2]: module '-x.py' refused",
-          "panels[3]: module 'scripts/panels/notpy.txt' refused",
-          "panels[4]: module 'scripts/panels/missing.py' does not exist",
-          "panels[5]: needs a non-empty 'label'", "panels[6]: expected an object",
-          "panels[7]: unknown key 'z' ignored (known: module, label, id, position)"]:
-    if e not in joined:
-        fails.append("missing panels warning: %s" % e)
-cfg, w = load({"docs": {"customer": {"panels": "no"}}})
-if cfg["customer"]["panels"] != [] or not any("panels: expected a list" in m for m in w):
-    fails.append("a non-list panels value was not defaulted with a warning")
-# 12 ADR 0061 — panel id / position / default_tab / footer_date_label: a declared id is used
-#    verbatim; a refused or duplicate id drops the ENTRY (a published deep link is never silently
-#    renamed); 'docs' is reserved; an absent id derives (label slug, else panel-<n> over the KEPT
-#    entries); a bad position degrades to after-docs; default_tab is validated against the FINAL ids
-cfg, w = load({"docs": {"customer": {"panels": [
-    {"module": "scripts/panels/ok.py", "label": "프로세스 맵", "id": "process", "position": "before-docs"},
-    {"module": "scripts/panels/ok.py", "label": "환경 차이"},
-    {"module": "scripts/panels/ok.py", "label": "Env Diff", "position": "sideways"},
-    {"module": "scripts/panels/ok.py", "label": "dup", "id": "process"},
-    {"module": "scripts/panels/ok.py", "label": "res", "id": "docs"},
-    {"module": "scripts/panels/ok.py", "label": "bad", "id": "Top-1"}],
-    "default_tab": "env-diff", "footer_date_label": "최종 갱신"}}})
-c = cfg["customer"]
-if [(p["id"], p["position"]) for p in c["panels"]] != [("process", "before-docs"), ("panel-1", "after-docs"), ("env-diff", "after-docs")]:
-    fails.append("panel ids/positions: %r" % c["panels"])
-if c["default_tab"] != "env-diff" or c["footer_date_label"] != "최종 갱신" or "default_tab" not in c["declared"]:
-    fails.append("default_tab/footer_date_label not carried: %r %r" % (c["default_tab"], c["footer_date_label"]))
-for e in ["panels[2]: position 'sideways' is not one of before-docs, after-docs — using 'after-docs'",
-          "panels[3]: id 'process' is already taken — entry ignored",
-          "panels[4]: id 'docs' is reserved for the documents tab — entry ignored",
-          "panels[5]: id 'Top-1' must match ^[a-z][a-z0-9_-]*$ — entry ignored"]:
-    if not any(e in m for m in w):
-        fails.append("missing 0061 warning: %s" % e)
-cfg, w = load({"docs": {"customer": {"panels": [{"module": "scripts/panels/ok.py", "label": "x", "id": "x"}], "default_tab": "nope"}}})
-if cfg["customer"]["default_tab"] != "" or not any("default_tab: 'nope' is not a tab id (docs, x)" in m for m in w):
-    fails.append("an unknown default_tab was not warned + unset: %r" % w)
-cfg, w = load({"docs": {"customer": {"panels": [{"module": "scripts/panels/ok.py", "label": "A"}, {"module": "scripts/panels/ok.py", "label": "a"}]}}})
-if [p["id"] for p in cfg["customer"]["panels"]] != ["a", "panel-1"] or not any("derived id 'a' collides" in m for m in w):
-    fails.append("a colliding derived id did not fall back to panel-<n> with a warning: %r %r" % (cfg["customer"]["panels"], w))
-# review 2026-08-27 (high): the fallback must skip an id an EARLIER entry declared — `id: "panel-1"`
-#    followed by a Korean label (empty slug) would otherwise give two tabs one data-top / scope class
-cfg, w = load({"docs": {"customer": {"panels": [{"module": "scripts/panels/ok.py", "label": "A", "id": "panel-1"}, {"module": "scripts/panels/ok.py", "label": "데모"}]}}})
-if [p["id"] for p in cfg["customer"]["panels"]] != ["panel-1", "panel-2"]:
-    fails.append("a derived fallback collided with a declared id: %r" % [p["id"] for p in cfg["customer"]["panels"]])
-# review 2026-08-27 (medium): a non-string display value is IGNORED — so it must also leave `declared`,
-#    or the builder reads the untouched "" as an intentional blank instead of filling its default
-cfg, w = load({"docs": {"customer": {"footer_date_label": 123, "title": ["x"]}}})
-c = cfg["customer"]
-if c["footer_date_label"] != "" or "footer_date_label" in c["declared"] or "title" in c["declared"] \
-   or not any("footer_date_label: must be a string — ignored" in m for m in w):
-    fails.append("an ignored non-string display value stayed in declared: %r %r" % (c["declared"], w))
-print("AA-OK" if not fails else "AA-FAIL: " + "; ".join(fails))
+import fs from 'node:fs'
+import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { pathToFileURL } from 'node:url'
+const hc = await import(pathToFileURL(path.join(process.argv[2], 'harness_config.mjs')).href)
+const fails = []
+const same = isDeepStrictEqual
+const show = (v) => JSON.stringify(v)
+const root = process.argv[3]
+fs.mkdirSync(path.join(root, 'docs', 'customer', 'prog'), { recursive: true })
+const load = (decl) => {
+  fs.writeFileSync(path.join(root, '.harness.json'), JSON.stringify(decl), 'utf8')
+  return hc.load(root)
+}
+const tags = (c) => c.release_stages.map(x => x.tag)
+let cfg, w, c, joined
+// 1 absent and null are both OFF, with no warning
+for (const decl of [{ docs: { index: 'docs/index.json' } }, { docs: { customer: null } }]) {
+  ;[cfg, w] = load(decl)
+  if (cfg.customer !== null || w.some(m => m.includes('customer'))) fails.push('absent/null did not read as OFF without warnings: ' + show(w))
+}
+// 2 a valid block validates silently; defaults fill; a trailing slash on dir is normalized
+;[cfg, w] = load({ docs: { customer: { dir: 'docs/customer/', title: 'r · 고객 문서',
+  chip_field: 'program_file', chip_suffix: '.p',
+  groups: [{ label: 'A (25.x)', keys: [25] }, { label: 'B', keys: [27, 28] }],
+  other_label: '기타', unkeyed_label: '배치', projects_md: true } } })
+c = cfg.customer
+if (w.length || c.malformed || c.dir !== 'docs/customer' || c.group_field !== 'menu' ||
+    !same(c.groups, [{ label: 'A (25.x)', keys: [25] }, { label: 'B', keys: [27, 28] }]) ||
+    c.projects_md !== true || !same(tags(c), ['FUT', 'UAT', 'PROD'])) {
+  fails.push('a valid block did not validate cleanly: ' + show(c) + ' ' + show(w))
+}
+// 3 a traversal dir is REFUSED into the malformed state, never defaulted
+;[cfg, w] = load({ docs: { customer: { dir: '../outside' } } })
+if (cfg.customer.malformed !== 'dir refused' || !w.some(m => m.includes('CANNOT be built'))) {
+  fails.push('traversal dir was not refused as malformed: ' + show(cfg.customer) + ' ' + show(w))
+}
+// 4 a non-object block is malformed
+;[cfg, w] = load({ docs: { customer: 'yes' } })
+if (!cfg.customer.malformed || !w.some(m => m.includes('expected an object'))) fails.push('non-object block was not malformed')
+// 5 a missing corpus dir warns and is KEPT (the builder refuses at build time and names it)
+;[cfg, w] = load({ docs: { customer: { dir: 'docs/nope' } } })
+if (cfg.customer.malformed || !w.some(m => m.includes('does not exist'))) fails.push('missing dir did not warn, or was wrongly malformed: ' + show(w))
+// 6 every degraded sub-value warns; the ENTRY is dropped, never the block
+;[cfg, w] = load({ docs: { customer: { dir: 'docs/customer', bogus: 1, '//c': 'x',
+  projects_md: 'false', chip_field: 'bad key!', required_frontmatter: ['ok_key', 'bad-key'],
+  groups: [{ label: 'a' }, { label: 'b', keys: ['25'] }, { label: 'c', keys: [1, true] },
+    'str', { label: 'e', keys: [9], x: 1 }],
+  release_stages: [{ tag: 'FUT' }, { tag: 'FUT', label: 'dup' }, { tag: 'bad tag' },
+    { tag: 'PROD', label: '완료' }],
+  title: 5, eyebrow: 'line\ntwo' } } })
+c = cfg.customer
+joined = w.join('\n')
+for (const e of ["unknown key 'bogus' ignored (known: dir, title", 'projects_md: must be a JSON boolean',
+  'treated as false', "chip_field: 'bad key!' is not a frontmatter key name",
+  "required_frontmatter: 'bad-key' is not a frontmatter key name",
+  "groups[0]: needs a non-empty 'label' and 'keys'", 'groups[1]: needs', 'refused: 25',
+  'groups[2]: needs', 'refused: True', 'groups[3]: expected an object',
+  "groups[4]: unknown key 'x' ignored (known: label, keys)",
+  "release_stages[1]: duplicate tag 'FUT'", "release_stages[2]: tag 'bad tag' must be",
+  'title: must be a string', 'eyebrow: control character(s)']) {
+  if (!joined.includes(e)) fails.push('missing warning: ' + e)
+}
+if (joined.includes("'//c'")) fails.push('a //-prefixed key warned')
+if (c.malformed || c.projects_md !== false || c.chip_field !== '' ||
+    !same(c.required_frontmatter, ['ok_key']) || !same(c.groups, [{ label: 'e', keys: [9] }]) ||
+    !same(c.release_stages, [{ tag: 'FUT', label: 'FUT' }, { tag: 'PROD', label: '완료' }]) ||
+    c.title !== '' || c.eyebrow !== 'line\\ntwo') {
+  fails.push('degraded values were not dropped/defaulted as declared: ' + show(c))
+}
+if (c.eyebrow.includes('\n')) fails.push('a raw newline survived into a display value')
+// 7 wrong container types are ignored with a warning; defaults stay
+;[cfg, w] = load({ docs: { customer: { groups: 'no', release_stages: [{ tag: '!!' }], required_frontmatter: 'x' } } })
+c = cfg.customer
+if (!same(c.groups, []) || !same(c.required_frontmatter, []) || !same(tags(c), ['FUT', 'UAT', 'PROD']) ||
+    !w.some(m => m.includes('groups: expected a list')) ||
+    !w.some(m => m.includes('every entry was rejected — using the default vocabulary'))) {
+  fails.push('wrong container types were not defaulted with warnings: ' + show(c) + ' ' + show(w))
+}
+// 8 an EXPLICIT empty value warns and defaults — "" is something the declarer wrote, never
+//   "absent" (review 2026-08-27, high: this was the one silent path in the block)
+;[cfg, w] = load({ docs: { customer: { dir: '', chip_field: '', group_field: '', title: '',
+  required_frontmatter: ['', 'ok'], release_stages: [] } } })
+c = cfg.customer
+joined = w.join('\n')
+for (const e of ["dir: declared empty — using the default 'docs/customer'", 'chip_field: declared empty — ignored',
+  "group_field: declared empty — using the default 'menu'",
+  'required_frontmatter: declared empty — ignored',
+  'release_stages: declared empty — using the default vocabulary']) {
+  if (!joined.includes(e)) fails.push('missing empty-value warning: ' + e)
+}
+if (joined.includes('every entry was rejected')) fails.push("an EMPTY release_stages list was reported as 'every entry was rejected'")
+if (c.malformed || c.dir !== 'docs/customer' || c.group_field !== 'menu' ||
+    !same(c.required_frontmatter, ['ok']) || !same(tags(c), ['FUT', 'UAT', 'PROD'])) {
+  fails.push('explicit empties did not take the defaults: ' + show(c))
+}
+// 9 declared-vs-unset is carried: the explicit "" title IS declared, the absent eyebrow is NOT
+if (!c.declared.includes('title') || c.declared.includes('eyebrow') || !c.declared.includes('dir')) {
+  fails.push('`declared` does not distinguish an explicit "" from an absent key: ' + show(c.declared))
+}
+// 10 defaults are copied per load — mutating a returned value cannot poison the next load
+//    (review 2026-08-27, medium: the shallow list copy aliased the default stage dicts)
+;[cfg, w] = load({ docs: { customer: {} } })
+if (w.length || !same(cfg.customer.declared, []) || cfg.customer.malformed) {
+  fails.push('an empty object did not read as ON-with-defaults, silently: ' + show(cfg.customer) + ' ' + show(w))
+}
+cfg.customer.release_stages[0].label = 'POISON'
+const [cfg2] = load({ docs: { customer: {} } })
+if (cfg2.customer.release_stages[0].label !== 'FUT') fails.push('a mutation of a returned default poisoned the next load')
+// 11 panels (the extension point): a module path is a script-gate-class value — the builder
+//    IMPORTS it — so traversal / leading dash are refused per entry; a module that is not an .mjs file
+//    is KEPT with a warning, because dropping the tab would let the build pass without it (the builder
+//    refuses until the panel is an .mjs module); a missing file is kept and warned (the builder refuses
+//    at build time); a blank label drops the entry
+fs.mkdirSync(path.join(root, 'scripts', 'panels'), { recursive: true })
+fs.writeFileSync(path.join(root, 'scripts', 'panels', 'ok.mjs'), "export const CSS = ''\nexport function render_panel(root) { return '<p>x</p>' }\n", 'utf8')
+;[cfg, w] = load({ docs: { customer: { panels: [
+  { module: 'scripts/panels/ok.mjs', label: '환경 차이' },
+  { module: '../evil.mjs', label: 't' },
+  { module: '-x.mjs', label: 't' },
+  { module: 'scripts/panels/notmjs.txt', label: 't' },
+  { module: 'scripts/panels/missing.mjs', label: 'later' },
+  { module: 'scripts/panels/ok.mjs', label: '' },
+  'str', { module: 'scripts/panels/ok.mjs', label: 'k', z: 1 }] } } })
+c = cfg.customer
+joined = w.join('\n')
+if (!same(c.panels.map(p => p.module), ['scripts/panels/ok.mjs', 'scripts/panels/notmjs.txt', 'scripts/panels/missing.mjs', 'scripts/panels/ok.mjs']) ||
+    c.panels[0].label !== '환경 차이') {
+  fails.push('panels did not keep exactly the safe entries: ' + show(c.panels))
+}
+for (const e of ["panels[1]: module '../evil.mjs' refused", "panels[2]: module '-x.mjs' refused",
+  "panels[3]: module 'scripts/panels/notmjs.txt' is not an .mjs module — the docs build will refuse",
+  "panels[4]: module 'scripts/panels/missing.mjs' does not exist",
+  "panels[5]: needs a non-empty 'label'", 'panels[6]: expected an object',
+  "panels[7]: unknown key 'z' ignored (known: module, label, id, position)"]) {
+  if (!joined.includes(e)) fails.push('missing panels warning: ' + e)
+}
+// a Python panel of an older repo is kept and warned the same way (the docs build then refuses it)
+;[cfg, w] = load({ docs: { customer: { panels: [{ module: 'scripts/panels/old.py', label: 'p' }] } } })
+if (!same(cfg.customer.panels.map(p => p.module), ['scripts/panels/old.py']) ||
+    !w.some(m => m.includes("panels[0]: module 'scripts/panels/old.py' is not an .mjs module"))) {
+  fails.push('a .py panel was not kept with the not-an-.mjs warning: ' + show(cfg.customer.panels) + ' ' + show(w))
+}
+;[cfg, w] = load({ docs: { customer: { panels: 'no' } } })
+if (!same(cfg.customer.panels, []) || !w.some(m => m.includes('panels: expected a list'))) fails.push('a non-list panels value was not defaulted with a warning')
+// 12 ADR 0061 — panel id / position / default_tab / footer_date_label: a declared id is used
+//    verbatim; a refused or duplicate id drops the ENTRY (a published deep link is never silently
+//    renamed); 'docs' is reserved; an absent id derives (label slug, else panel-<n> over the KEPT
+//    entries); a bad position degrades to after-docs; default_tab is validated against the FINAL ids
+;[cfg, w] = load({ docs: { customer: { panels: [
+  { module: 'scripts/panels/ok.mjs', label: '프로세스 맵', id: 'process', position: 'before-docs' },
+  { module: 'scripts/panels/ok.mjs', label: '환경 차이' },
+  { module: 'scripts/panels/ok.mjs', label: 'Env Diff', position: 'sideways' },
+  { module: 'scripts/panels/ok.mjs', label: 'dup', id: 'process' },
+  { module: 'scripts/panels/ok.mjs', label: 'res', id: 'docs' },
+  { module: 'scripts/panels/ok.mjs', label: 'bad', id: 'Top-1' }],
+  default_tab: 'env-diff', footer_date_label: '최종 갱신' } } })
+c = cfg.customer
+if (!same(c.panels.map(p => [p.id, p.position]), [['process', 'before-docs'], ['panel-1', 'after-docs'], ['env-diff', 'after-docs']])) {
+  fails.push('panel ids/positions: ' + show(c.panels))
+}
+if (c.default_tab !== 'env-diff' || c.footer_date_label !== '최종 갱신' || !c.declared.includes('default_tab')) {
+  fails.push('default_tab/footer_date_label not carried: ' + show([c.default_tab, c.footer_date_label]))
+}
+for (const e of ["panels[2]: position 'sideways' is not one of before-docs, after-docs — using 'after-docs'",
+  "panels[3]: id 'process' is already taken — entry ignored",
+  "panels[4]: id 'docs' is reserved for the documents tab — entry ignored",
+  "panels[5]: id 'Top-1' must match ^[a-z][a-z0-9_-]*$ — entry ignored"]) {
+  if (!w.some(m => m.includes(e))) fails.push('missing 0061 warning: ' + e)
+}
+;[cfg, w] = load({ docs: { customer: { panels: [{ module: 'scripts/panels/ok.mjs', label: 'x', id: 'x' }], default_tab: 'nope' } } })
+if (cfg.customer.default_tab !== '' || !w.some(m => m.includes("default_tab: 'nope' is not a tab id (docs, x)"))) {
+  fails.push('an unknown default_tab was not warned + unset: ' + show(w))
+}
+;[cfg, w] = load({ docs: { customer: { panels: [{ module: 'scripts/panels/ok.mjs', label: 'A' }, { module: 'scripts/panels/ok.mjs', label: 'a' }] } } })
+if (!same(cfg.customer.panels.map(p => p.id), ['a', 'panel-1']) || !w.some(m => m.includes("derived id 'a' collides"))) {
+  fails.push('a colliding derived id did not fall back to panel-<n> with a warning: ' + show(cfg.customer.panels) + ' ' + show(w))
+}
+// review 2026-08-27 (high): the fallback must skip an id an EARLIER entry declared — `id: "panel-1"`
+//    followed by a Korean label (empty slug) would otherwise give two tabs one data-top / scope class
+;[cfg, w] = load({ docs: { customer: { panels: [{ module: 'scripts/panels/ok.mjs', label: 'A', id: 'panel-1' }, { module: 'scripts/panels/ok.mjs', label: '데모' }] } } })
+if (!same(cfg.customer.panels.map(p => p.id), ['panel-1', 'panel-2'])) {
+  fails.push('a derived fallback collided with a declared id: ' + show(cfg.customer.panels.map(p => p.id)))
+}
+// review 2026-08-27 (medium): a non-string display value is IGNORED — so it must also leave `declared`,
+//    or the builder reads the untouched "" as an intentional blank instead of filling its default
+;[cfg, w] = load({ docs: { customer: { footer_date_label: 123, title: ['x'] } } })
+c = cfg.customer
+if (c.footer_date_label !== '' || c.declared.includes('footer_date_label') || c.declared.includes('title') ||
+    !w.some(m => m.includes('footer_date_label: must be a string — ignored'))) {
+  fails.push('an ignored non-string display value stayed in declared: ' + show(c.declared) + ' ' + show(w))
+}
+console.log(fails.length ? 'AA-FAIL: ' + fails.join('; ') : 'AA-OK')
 '@
 $aaRoot = Join-Path $fxBase 'customer-decl'
 New-Item -ItemType Directory -Force -Path $aaRoot | Out-Null
-$rAA = (& $py.Source $aaScript $PSScriptRoot $aaRoot 2>&1 | Out-String)
+$rAA = (& $node.Source $aaScript $PSScriptRoot $aaRoot 2>&1 | Out-String)
 $ok = (Assert-True 'AA docs.customer: off/malformed/validated stay distinct, a traversal dir is refused, every degraded value warns' ($rAA -match 'AA-OK') $rAA) -and $ok
 
 # AA2: the CLI path — the refusal reaches the emitter's warning channel, where CI reads it, and
@@ -2097,7 +2119,7 @@ $ok = (Assert-True 'AC7 rules beyond the cap are counted on the line (+1 more ru
 # space-joined argv, so `sh -c` received `-m not db` and pytest read `db` as a path (exit 4) on
 # every run; case A's literal asserted the broken string, locking the defect in. AD1 is the class
 # check that replaces literals: every GATES and RUNNERS entry — and a synthetic hostile argv —
-# round-trips through shlex.split with and without a cwd, and every all-SAFE_TOKEN entry keeps
+# round-trips through a POSIX shlex split with and without a cwd, and every all-SAFE_TOKEN entry keeps
 # its exact bytes (the fix must not re-quote what was already one inert word).
 # The shlex round-trip is compose()'s property, NOT the consumers': the CI extraction (sed) and the
 # pre-commit hook (awk) cut every line at its first `#` — they must, to drop the emitter's
@@ -2107,61 +2129,105 @@ $ok = (Assert-True 'AC7 rules beyond the cap are counted on the line (+1 more ru
 # one of those characters, and AD1 asserts both halves: no GATES/RUNNERS element holds one, and
 # the token gate every repo-supplied value passes (files, cwd, script paths) refuses them
 # (review 2026-09-23, nit).
-$adScript = Join-Path $fxBase 'compose_roundtrip.py'
+$adScript = Join-Path $fxBase 'compose_roundtrip.mjs'
 Set-Content -LiteralPath $adScript -NoNewline -Value @'
-import shlex, sys
-sys.path.insert(0, sys.argv[1])
-import harness_config as hc
-fails = []
-entries = [("GATES." + k, list(g["cmd"])) for k, g in hc.GATES.items()]
-entries += [("RUNNERS." + k, list(r)) for k, r in hc.RUNNERS.items()]
-entries.append(("synthetic", ["tool", "a b", "it's", "x;y", "$HOME", "*", "#c"]))
-for name, argv in entries:
-    for cwd in ("", "api"):
-        s = hc.compose(argv, cwd)
-        want = argv if not cwd else ["cd", cwd, "&&", *argv]
-        try:
-            got = shlex.split(s)
-        except ValueError as e:   # an unquoted `'` — sh would refuse the line outright
-            got = f"<unparseable: {e}>"
-        if got != want:
-            fails.append(f"{name} cwd={cwd!r}: {s!r} splits to {got!r}")
-    if name != "synthetic" and all(hc.token_ok(p) for p in argv) and hc.compose(argv, "") != " ".join(argv):
-        fails.append(f"{name}: an all-safe argv changed bytes: {hc.compose(argv, '')!r}")
-if not any(not all(hc.token_ok(p) for p in g["cmd"]) for g in hc.GATES.values()):
-    fails.append("no GATES entry needs quoting any more — retarget case AD2 at one that does")
-# The consumers' line parse: a comment cut at the first '#' and one command per line.
-LINE_BREAKERS = ("#", "\r", "\n")
-for name, argv in entries:
-    if name == "synthetic":
-        continue
-    bad = [p for p in argv if any(c in p for c in LINE_BREAKERS)]
-    if bad:
-        fails.append(f"{name}: element(s) {bad!r} carry '#'/CR/LF — the CI sed and pre-commit awk "
-                     "comment cut or line split would break the composed command")
-for tok in ("a#b", "#c", "a\nb", "a\rb", "a.py\n"):
-    if hc.token_ok(tok):
-        fails.append(f"token_ok accepts {tok!r} — a repo-supplied value could carry it to a consumer's line parse")
-    if hc.file_arg_ok(tok):
-        fails.append(f"file_arg_ok accepts {tok!r} — a changed file could carry it to a consumer's line parse")
-# ADR 0112: `( ) [ ]` widen the FILE predicate only. token_ok must keep refusing them (cwd, script
-# paths and runner elements are emitted unquoted), and a file argument carrying them round-trips.
-for tok in ("app/(admin)/page.ts", "app/[id]/page.ts", "(g)/[x].py"):
-    if hc.token_ok(tok):
-        fails.append(f"token_ok accepts {tok!r} — the widening leaked into the unquoted positions (ADR 0112)")
-    if not hc.file_arg_ok(tok):
-        fails.append(f"file_arg_ok refuses {tok!r} — the dist #7 route paths are excluded again")
-    s = hc.compose(["npx", "eslint", tok], "web")
-    if shlex.split(s) != ["cd", "web", "&&", "npx", "eslint", tok] or f"'{tok}'" not in s:
-        fails.append(f"a route-path file argument does not round-trip single-quoted: {s!r}")
-for tok in ("a b.ts", "a$b.ts", "s*t.ts", "q?.ts", "{c}.ts", "@modal/p.ts", "+page.ts", "a'b.ts",
-            "../x.ts", "/abs.ts", "a;b.ts", "a|b.ts", "a`b.ts"):
-    if hc.file_arg_ok(tok):
-        fails.append(f"file_arg_ok accepts {tok!r} — outside ADR 0112's ( ) [ ] widening")
-print("AD-OK" if not fails else "AD-FAIL: " + " | ".join(fails))
+import fs from 'node:fs'
+import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { pathToFileURL } from 'node:url'
+const hc = await import(pathToFileURL(path.join(process.argv[2], 'harness_config.mjs')).href)
+const fails = []
+const same = isDeepStrictEqual
+const show = (v) => JSON.stringify(v)
+// POSIX `shlex.split`: whitespace separates, single quotes are literal, double quotes honour a
+// backslash before one of `"\$` and a backtick, a backslash outside quotes escapes the next character.
+// An unclosed quote throws, as `sh` would refuse the line.
+function shlexSplit(text) {
+  const out = []
+  let cur = null
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]
+    if (' \t\r\n'.includes(ch)) {
+      if (cur !== null) { out.push(cur); cur = null }
+      i++
+      continue
+    }
+    if (cur === null) cur = ''
+    if (ch === "'") {
+      const j = text.indexOf("'", i + 1)
+      if (j < 0) throw new Error('No closing quotation')
+      cur += text.slice(i + 1, j)
+      i = j + 1
+    } else if (ch === '"') {
+      i++
+      for (;;) {
+        if (i >= text.length) throw new Error('No closing quotation')
+        if (text[i] === '"') { i++; break }
+        if (text[i] === '\\' && i + 1 < text.length && '"\\$`'.includes(text[i + 1])) { cur += text[i + 1]; i += 2; continue }
+        cur += text[i++]
+      }
+    } else if (ch === '\\') {
+      if (i + 1 >= text.length) throw new Error('No escaped character')
+      cur += text[i + 1]
+      i += 2
+    } else {
+      cur += ch
+      i++
+    }
+  }
+  if (cur !== null) out.push(cur)
+  return out
+}
+const entries = Object.entries(hc.GATES).map(([k, g]) => ['GATES.' + k, [...g.cmd]])
+entries.push(...Object.entries(hc.RUNNERS).map(([k, r]) => ['RUNNERS.' + k, [...r]]))
+entries.push(['synthetic', ['tool', 'a b', "it's", 'x;y', '$HOME', '*', '#c']])
+for (const [name, argv] of entries) {
+  for (const cwd of ['', 'api']) {
+    const text = hc.compose(argv, cwd)
+    const want = cwd ? ['cd', cwd, '&&', ...argv] : argv
+    let got
+    try { got = shlexSplit(text) } catch (e) { got = `<unparseable: ${e.message}>` }   // an unquoted `'` — sh would refuse the line outright
+    if (!same(got, want)) fails.push(`${name} cwd=${show(cwd)}: ${show(text)} splits to ${show(got)}`)
+  }
+  if (name !== 'synthetic' && argv.every(p => hc.token_ok(p)) && hc.compose(argv, '') !== argv.join(' ')) {
+    fails.push(`${name}: an all-safe argv changed bytes: ${show(hc.compose(argv, ''))}`)
+  }
+}
+if (!Object.values(hc.GATES).some(g => !g.cmd.every(p => hc.token_ok(p)))) {
+  fails.push('no GATES entry needs quoting any more — retarget case AD2 at one that does')
+}
+// The consumers' line parse: a comment cut at the first '#' and one command per line.
+const LINE_BREAKERS = ['#', '\r', '\n']
+for (const [name, argv] of entries) {
+  if (name === 'synthetic') continue
+  const bad = argv.filter(p => LINE_BREAKERS.some(c => p.includes(c)))
+  if (bad.length) {
+    fails.push(`${name}: element(s) ${show(bad)} carry '#'/CR/LF — the CI sed and pre-commit awk comment cut or line split would break the composed command`)
+  }
+}
+for (const tok of ['a#b', '#c', 'a\nb', 'a\rb', 'a.py\n']) {
+  if (hc.token_ok(tok)) fails.push(`token_ok accepts ${show(tok)} — a repo-supplied value could carry it to a consumer's line parse`)
+  if (hc.file_arg_ok(tok)) fails.push(`file_arg_ok accepts ${show(tok)} — a changed file could carry it to a consumer's line parse`)
+}
+// ADR 0112: `( ) [ ]` widen the FILE predicate only. token_ok must keep refusing them (cwd, script
+// paths and runner elements are emitted unquoted), and a file argument carrying them round-trips.
+for (const tok of ['app/(admin)/page.ts', 'app/[id]/page.ts', '(g)/[x].py']) {
+  if (hc.token_ok(tok)) fails.push(`token_ok accepts ${show(tok)} — the widening leaked into the unquoted positions (ADR 0112)`)
+  if (!hc.file_arg_ok(tok)) fails.push(`file_arg_ok refuses ${show(tok)} — the dist #7 route paths are excluded again`)
+  const text = hc.compose(['npx', 'eslint', tok], 'web')
+  if (!same(shlexSplit(text), ['cd', 'web', '&&', 'npx', 'eslint', tok]) || !text.includes(`'${tok}'`)) {
+    fails.push(`a route-path file argument does not round-trip single-quoted: ${show(text)}`)
+  }
+}
+for (const tok of ['a b.ts', 'a$b.ts', 's*t.ts', 'q?.ts', '{c}.ts', '@modal/p.ts', '+page.ts', "a'b.ts",
+  '../x.ts', '/abs.ts', 'a;b.ts', 'a|b.ts', 'a`b.ts']) {
+  if (hc.file_arg_ok(tok)) fails.push(`file_arg_ok accepts ${show(tok)} — outside ADR 0112's ( ) [ ] widening`)
+}
+console.log(fails.length ? 'AD-FAIL: ' + fails.join(' | ') : 'AD-OK')
 '@
-$rAD1 = (& $py.Source $adScript $PSScriptRoot 2>&1 | Out-String)
-$ok = (Assert-True 'AD1 every GATES/RUNNERS argv (and a hostile synthetic one) round-trips through shlex.split; safe ones keep their bytes; no composed command can carry a # / CR / LF (closed set + token gate)' ($rAD1 -match 'AD-OK') $rAD1) -and $ok
+$rAD1 = (& $node.Source $adScript $PSScriptRoot 2>&1 | Out-String)
+$ok = (Assert-True 'AD1 every GATES/RUNNERS argv (and a hostile synthetic one) round-trips through a POSIX shlex split; safe ones keep their bytes; no composed command can carry a # / CR / LF (closed set + token gate)' ($rAD1 -match 'AD-OK') $rAD1) -and $ok
 
 # AD2: END TO END through the consumer that actually parses the string — the vendored CI's own
 # `Extract the gate commands` and `Run the emitted gate commands` step scripts, lifted verbatim out
@@ -2223,7 +2289,7 @@ if (-not $bashExe) {
     [IO.File]::WriteAllText((Join-Path $adStub 'uv'), "#!/bin/sh`nprintf 'STUB uv %s ' `"`$(basename `"`$PWD`")`"`nfor a in `"`$@`"; do printf '<%s>' `"`$a`"; done`nprintf '\n'`n")
     # stdout ONLY into gates.txt, as CI's `tee` takes it; CRs dropped — Windows python writes CRLF,
     # the ubuntu runner does not, and the pipeline under test is the ubuntu one.
-    $adOut = (& $py.Source $gates --repo $ad 2>$null | Out-String) -replace "`r", ''
+    $adOut = (& $node.Source $gates --repo $ad 2>$null | Out-String) -replace "`r", ''
     [IO.File]::WriteAllText((Join-Path $adWork 'gates.txt'), $adOut)
     [IO.File]::WriteAllText((Join-Path $adWork 'extract.sh'), $extractSh)
     [IO.File]::WriteAllText((Join-Path $adWork 'run.sh'), $runSh)
@@ -2261,31 +2327,34 @@ bash '$w/run.sh'
 # The groups comment is the only place a member reads which `gates` selectors exist; it had
 # omitted `shellcheck` since issue #57 added it. Set EQUALITY, both directions: a missing selector
 # hides one, a stale one names a gate the reader would see dropped. Same for verify.runner.
-$aeScript = Join-Path $fxBase 'seed_selectors.py'
+$aeScript = Join-Path $fxBase 'seed_selectors.mjs'
 Set-Content -LiteralPath $aeScript -NoNewline -Value @'
-import json, re, sys
-sys.path.insert(0, sys.argv[1])
-import harness_config as hc
-seed = json.load(open(sys.argv[2], encoding="utf-8"))
-fails = []
-for label, text, rx, closed in (
-    ("groups[0]['//']", seed["groups"][0]["//"], r"'gates' are SELECTORS: ([^.]+)\.", hc.GATES),
-    ("verify['//runner']", seed["verify"]["//runner"], r"SELECTOR: ([^.]+)\.", hc.RUNNERS),
-):
-    m = re.search(rx, text)
-    if not m:
-        fails.append(f"{label}: no 'a | b | c.' selector list found")
-        continue
-    listed = {s.strip() for s in m.group(1).split("|")}
-    missing, stale = sorted(set(closed) - listed), sorted(listed - set(closed))
-    if missing:
-        fails.append(f"{label} omits {missing}")
-    if stale:
-        fails.append(f"{label} names {stale}, not in the closed set")
-print("AE-OK" if not fails else "AE-FAIL: " + " | ".join(fails))
+import fs from 'node:fs'
+import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { pathToFileURL } from 'node:url'
+const hc = await import(pathToFileURL(path.join(process.argv[2], 'harness_config.mjs')).href)
+const fails = []
+const same = isDeepStrictEqual
+const show = (v) => JSON.stringify(v)
+const seed = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'))
+for (const [label, text, rx, closed] of [
+  ["groups[0]['//']", seed.groups[0]['//'], /'gates' are SELECTORS: ([^.]+)\./, hc.GATES],
+  ["verify['//runner']", seed.verify['//runner'], /SELECTOR: ([^.]+)\./, hc.RUNNERS],
+]) {
+  const m = rx.exec(text)
+  if (!m) { fails.push(`${label}: no 'a | b | c.' selector list found`); continue }
+  const listed = new Set(m[1].split('|').map(x => x.trim()))
+  const names = new Set(Object.keys(closed))
+  const missing = [...names].filter(x => !listed.has(x)).sort()
+  const stale = [...listed].filter(x => !names.has(x)).sort()
+  if (missing.length) fails.push(`${label} omits ${show(missing)}`)
+  if (stale.length) fails.push(`${label} names ${show(stale)}, not in the closed set`)
+}
+console.log(fails.length ? 'AE-FAIL: ' + fails.join(' | ') : 'AE-OK')
 '@
 $seedCfg = Join-Path $PSScriptRoot '../skills/harness-init/templates/harness.json'
-$rAE = (& $py.Source $aeScript $PSScriptRoot $seedCfg 2>&1 | Out-String)
+$rAE = (& $node.Source $aeScript $PSScriptRoot $seedCfg 2>&1 | Out-String)
 $ok = (Assert-True 'AE the seeded groups comment lists exactly the GATES selectors, verify.runner exactly the RUNNERS' ($rAE -match 'AE-OK') $rAE) -and $ok
 
 # --- AF: find_repo_root stops at the NEAREST repo boundary (ADR 0081 arm, A low) ----------------
@@ -2300,23 +2369,26 @@ foreach ($d in @('outer/.git', 'outer/inner/src', 'outer/sub', 'outer/decl/deep'
 Set-Content -LiteralPath (Join-Path $afRoot 'outer/.harness.json') -Value '{}' -NoNewline
 Set-Content -LiteralPath (Join-Path $afRoot 'outer/inner/.git') -Value 'gitdir: elsewhere' -NoNewline
 Set-Content -LiteralPath (Join-Path $afRoot 'outer/decl/.harness.json') -Value '{}' -NoNewline
-$afScript = Join-Path $fxBase 'find_root.py'
+$afScript = Join-Path $fxBase 'find_root.mjs'
 Set-Content -LiteralPath $afScript -NoNewline -Value @'
-import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-import harness_config as hc
-base = Path(sys.argv[2]).resolve()
-fails = []
-for start, want in (("outer/inner/src", "outer/inner"),   # nested repo: its own .git wins
-                    ("outer/sub", "outer"),               # plain subdir: the outer declaration
-                    ("outer/decl/deep", "outer/decl")):   # a declaration below the git root wins
-    got = hc.find_repo_root(base / start)
-    if got != (base / want).resolve():
-        fails.append(f"{start} -> {got} (want {want})")
-print("AF-OK" if not fails else "AF-FAIL: " + " | ".join(fails))
+import fs from 'node:fs'
+import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { pathToFileURL } from 'node:url'
+const hc = await import(pathToFileURL(path.join(process.argv[2], 'harness_config.mjs')).href)
+const fails = []
+const same = isDeepStrictEqual
+const show = (v) => JSON.stringify(v)
+const base = fs.realpathSync.native(process.argv[3])
+for (const [start, want] of [['outer/inner/src', 'outer/inner'],   // nested repo: its own .git wins
+  ['outer/sub', 'outer'],                                          // plain subdir: the outer declaration
+  ['outer/decl/deep', 'outer/decl']]) {                            // a declaration below the git root wins
+  const got = hc.find_repo_root(path.join(base, start))
+  if (got !== fs.realpathSync.native(path.join(base, want))) fails.push(`${start} -> ${got} (want ${want})`)
+}
+console.log(fails.length ? 'AF-FAIL: ' + fails.join(' | ') : 'AF-OK')
 '@
-$rAF = (& $py.Source $afScript $PSScriptRoot $afRoot 2>&1 | Out-String)
+$rAF = (& $node.Source $afScript $PSScriptRoot $afRoot 2>&1 | Out-String)
 $ok = (Assert-True 'AF find_repo_root: a nested repo keeps its own root; a declaration below the git root still wins' ($rAF -match 'AF-OK') $rAF) -and $ok
 
 # --- AG: the prepared-close snapshot (ADR 0105) — `--tree` names the worktree the gates read ------
@@ -2502,14 +2574,14 @@ bash '$ahW/install.sh'
 }
 
 # --- AN: the Node resolver hands setup-node the repo's own declaration (ADR 0177, dist issue #12) --
-# The step is extracted BY NAME and run under bash, as AH runs its neighbour; a `python` shim first
-# on PATH stands for setup-python's interpreter. Each case anchors one mutation: AN2 a file output
+# The step is extracted BY NAME and run under bash, as AH runs its neighbour; HARNESS_NODE names this
+# machine's node, as the CI's early setup-node step does. Each case anchors one mutation: AN2 a file output
 # with no declaration, AN3/AN5/AN9 a range counted as a choice (ADR 0178), AN4/AN5 a lookup order
 # other than setup-node's, AN6 a disagreement that still
 # picks a file, AN7 a value echoed unsanitized, AN8 a parse failure that stops the step, AN10 an
 # undeclared directory that claims the image Node while another declaration sets up Node. AN0 fails a
 # renamed step, so the cases never run nothing. Asserts match ASCII only, as AH's do.
-if ($bashExe -and $py) {
+if ($bashExe) {
     $anStep = Get-RunBlock $ciLines 'Resolve the Node version the npx gate directories declare'
     $ok = (Assert-True 'AN0 the Node resolver step script is found in the template' ($anStep -and $anStep -match 'GITHUB_OUTPUT' -and $anStep -match 'devEngines') "step=[$anStep]") -and $ok
     # AN11 (owner 2026-10-29): without check-latest, `24` resolves to the image's cached 24.x, which can
@@ -2521,17 +2593,16 @@ if ($bashExe -and $py) {
             ($snBlock -match 'uses: actions/setup-node@' -and $snBlock -match '(?m)^\s+check-latest: true$' -and $snBlock -match '(?m)^\s+package-manager-cache: false$' -and $snBlock -match 'node-version-file: \$\{\{ steps\.node\.outputs\.file \}\}') "block=[$snBlock]") -and $ok
     $anWork = Join-Path $fxBase 'an-work'
     New-Item -ItemType Directory -Force -Path (Join-Path $anWork 'stub') | Out-Null
-    $anPy = [IO.Path]::GetFullPath($py.Source) -replace '\\', '/'
-    [IO.File]::WriteAllText((Join-Path $anWork 'stub/python'), "#!/bin/sh`nexec '$anPy' `"`$@`"`n")
+    $anNode = [IO.Path]::GetFullPath($node.Source) -replace '\\', '/'
     [IO.File]::WriteAllText((Join-Path $anWork 'resolve.sh'), $anStep)
     $anW = [IO.Path]::GetFullPath($anWork) -replace '\\', '/'
     [IO.File]::WriteAllText((Join-Path $anWork 'driver.sh'), (@"
 cd "`$1"
-chmod +x '$anW/stub/python' 2>/dev/null || true
-PATH="`$(cd '$anW/stub' && pwd):/usr/bin:/bin:`$PATH"
-NPX_DIRS="`$2"; GITHUB_OUTPUT="`$1/.gho"; PYTHONIOENCODING=utf-8
+PATH="/usr/bin:/bin:`$PATH"
+HARNESS_NODE='$anNode'
+NPX_DIRS="`$2"; GITHUB_OUTPUT="`$1/.gho"
 : > "`$GITHUB_OUTPUT"
-export PATH NPX_DIRS GITHUB_OUTPUT PYTHONIOENCODING
+export PATH HARNESS_NODE NPX_DIRS GITHUB_OUTPUT
 bash '$anW/resolve.sh'
 "@ -replace "`r", ''))
     function Invoke-AnCase([string]$Name, [hashtable]$Files, [string]$Dirs) {

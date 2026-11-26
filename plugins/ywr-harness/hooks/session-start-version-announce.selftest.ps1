@@ -21,6 +21,7 @@ $ErrorActionPreference = 'Stop'
 
 $hookSrc = Join-Path $PSScriptRoot 'session-start-version-announce.mjs'
 $hookLibSrc = Join-Path $PSScriptRoot 'hook-lib.mjs'
+$gitLibSrc = Join-Path $PSScriptRoot '../scripts/harness_git.mjs'   # hook-lib imports it from <plugin>/scripts
 # The hook is Node (ADR 0116): absent node is a reported skip locally and a FAIL on CI.
 Assert-NodeOrExit 'session-start-version-announce'
 $nodeExe = (Get-Command node).Source
@@ -95,6 +96,8 @@ function New-FixturePlugin([string]$Name, [string]$ManifestJson, [string]$Change
     if ($null -ne $Changelog) { Set-Content -LiteralPath (Join-Path $p 'CHANGELOG.md') -Value $Changelog -Encoding utf8 }
     Copy-Item $hookSrc (Join-Path $p 'hooks/session-start-version-announce.mjs')
     Copy-Item $hookLibSrc (Join-Path $p 'hooks/hook-lib.mjs')
+    New-Item -ItemType Directory -Force -Path (Join-Path $p 'scripts') | Out-Null
+    Copy-Item $gitLibSrc (Join-Path $p 'scripts/harness_git.mjs')
     return (Join-Path $p 'hooks/session-start-version-announce.mjs')
 }
 

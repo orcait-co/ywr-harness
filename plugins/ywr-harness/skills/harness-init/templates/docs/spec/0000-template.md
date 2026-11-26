@@ -12,7 +12,7 @@ title: "<기능/컴포넌트 이름>"
 status: draft              # draft | active | deprecated
 updated: YYYY-MM-DD
 based_on_adr: [ ]          # 이 스펙을 정당화하는 ADR 번호 (예: [1, 2])
-implements_in: [ ]         # 구현 파일 경로 (예: ["docs/build_docs.py"]), 구현 후 채움
+implements_in: [ ]         # 구현 파일 경로 (예: ["docs/build_docs.mjs"]), 구현 후 채움
 tags: [ ]                  # 검색/필터 메타
 ---
 

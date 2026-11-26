@@ -7,7 +7,7 @@ import { test, expect } from 'claude-code/testing'
 
 const ROOT = 'C:/repo'
 const fwd = (p: string) => p.split(String.fromCharCode(92)).join('/')
-const TREE = 'python scripts/harness/harness_gates.py --tree 2>&1 | tail -1'
+const TREE = 'node scripts/harness/harness_gates.mjs --tree 2>&1 | tail -1'
 const TREE_LINE = `tree: ${'a'.repeat(40)} · HEAD ${'b'.repeat(40)}`
 
 test('ADR 0140: no status line in a .harness.json root; results pass through', async ($, on) => {

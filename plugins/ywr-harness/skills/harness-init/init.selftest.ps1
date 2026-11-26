@@ -17,7 +17,8 @@ $fxBase = New-FixtureRoot 'harness-init-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 
 $ok = $true
-$nodeExe = (Get-Command node -CommandType Application).Source
+# -CommandType Application lists every node on PATH (CI has the runner's and setup-node's): take the first.
+$nodeExe = (Get-Command node -CommandType Application | Select-Object -First 1).Source
 # The git worker binary ahead of the cmd\git.exe launcher (lib Use-GitWorkerBinary, ADR 0111): the
 # node children below inherit this PATH, so init.mjs's own git calls take the short path too.
 # Left in place — under `pwsh -File` the process ends with it.
@@ -79,6 +80,17 @@ function ConvertTo-InitArgv([string[]]$Arguments) {
     return $argv
 }
 # `-Script` runs a COPY of init.mjs (cases H, R, X5, T8n, T8o, T8v rewrite the skill dir).
+# A copy of the skill that can run: init.mjs imports ../../scripts/harness_git.mjs, so the copy sits at
+# <fixture>/<name>/skills/harness-init beside <fixture>/<name>/scripts/harness_git.mjs, the plugin's shape.
+function Copy-Skill([string]$Name) {
+    $root = Join-Path $fxBase $Name
+    $dest = Join-Path $root 'skills/harness-init'
+    New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+    Copy-Item -LiteralPath $PSScriptRoot -Destination $dest -Recurse -Force
+    New-Item -ItemType Directory -Force -Path (Join-Path $root 'scripts') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../scripts/harness_git.mjs') -Destination (Join-Path $root 'scripts/harness_git.mjs') -Force
+    return $dest
+}
 function Invoke-Init([string[]]$Arguments, [string]$Script = $init) {
     return Invoke-NodeScript $Script (ConvertTo-InitArgv $Arguments)
 }
@@ -185,14 +197,14 @@ function New-Target([string]$Name) {
 $EXPECT = @(
     'docs/README.md', 'docs/adr/README.md', 'docs/adr/0000-template.md',
     'docs/spec/README.md', 'docs/spec/0000-template.md',
-    'docs/build.mjs', 'docs/build.sh', 'docs/build_docs.py', 'docs/check_docs.py',
+    'docs/build.mjs', 'docs/build.sh', 'docs/build_docs.mjs', 'docs/check_docs.mjs',
     'CLAUDE.md', '.gitattributes', '.harness.json',
     # Root ignore seed (ADR 0053). No REVIEW.md: the starter review canon is a section of the seed CLAUDE.md (ADR 0217).
     '.gitignore',
     'docs/adr/0001-adopt-docs-as-code.md',  # corpus seed — without it the builder has nothing to index
     # Vendored so a consuming repo's CI needs no access to the private canon (ADR 0014).
-    'scripts/harness/harness_config.py', 'scripts/harness/harness_gates.py',
-    'scripts/harness/verify_map.py', '.github/workflows/harness-gates.yml',
+    'scripts/harness/harness_config.mjs', 'scripts/harness/harness_git.mjs', 'scripts/harness/harness_gates.mjs',
+    'scripts/harness/verify_map.mjs', '.github/workflows/harness-gates.yml',
     'scripts/harness/.gitignore',
     # CI PR-base resolver (ADR 0043) — the vendored workflow invokes it via sh.
     'scripts/harness/resolve-base.sh',
@@ -200,9 +212,9 @@ $EXPECT = @(
     # K-O, and the hooks' own behaviour is githooks.selftest.ps1.
     '.githooks/pre-commit', '.githooks/pre-push',
     # Slice retro gate (ADR 0017). post-commit is GUARDED rather than TOOLCHAIN — cases Q1/Q2.
-    'scripts/harness/harness_retro.py', '.githooks/post-commit', '.githooks/slice-retro-ignore',
+    'scripts/harness/harness_retro.mjs', '.githooks/post-commit', '.githooks/slice-retro-ignore',
     # Session-time decision notes (ADR 0172), named from the seeded CLAUDE.md.
-    'scripts/harness/slice_note.py',
+    'scripts/harness/slice_note.mjs',
     # Stage prompts of the /ywr-harness:auto switch, declared by the template (ADR 0180).
     'docs/prompts/review-start.md', 'docs/prompts/ready-report.md'
 )
@@ -239,13 +251,9 @@ $ok = (Assert-True 'A stamp line says claimed built-in, not claim-it-yourself' `
 # The point of the corpus seed: a scaffolded repo must BUILD. Without a record the builder exits 1
 # ("found no .md with frontmatter") and no tooling can query the repo's decisions — the defect the
 # first end-to-end run surfaced, which this case pins.
-$pyAvail = [bool](@('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1)
-if ($pyAvail) {
-    $ok = (Assert-True 'A build produced index.json' (Test-Path -LiteralPath (Join-Path $a 'docs/index.json') -PathType Leaf) "out=$($rA.Out)") -and $ok
-    $ok = (Assert-True 'A build reported, not skipped' ($rA.Out -match 'built: index\.json') $rA.Out) -and $ok
-} else {
-    Write-Host 'SKIP [A build] python absent (reported, not silent) — CI has python' -ForegroundColor Yellow
-}
+# The build runs with the Node that runs init.mjs, so no tool lookup can skip it.
+$ok = (Assert-True 'A build produced index.json' (Test-Path -LiteralPath (Join-Path $a 'docs/index.json') -PathType Leaf) "out=$($rA.Out)") -and $ok
+$ok = (Assert-True 'A build reported, not skipped' ($rA.Out -match 'built: index\.json') $rA.Out) -and $ok
 
 # --- B: re-run is a no-op (idempotence) -------------------------------------------------------
 # The report must say unchanged, not "refreshed": a no-op counted as a refresh hides which files
@@ -256,11 +264,11 @@ $ok = (Assert-True 'B re-run creates nothing' ($rB.Out -match 'created=0') $rB.O
 $ok = (Assert-True 'B re-run refreshes nothing (identical content is not a refresh)' ($rB.Out -match 'refreshed=0') $rB.Out) -and $ok
 
 # --- C: an edited TOOLCHAIN file is reverted --------------------------------------------------
-$builder = Join-Path $a 'docs/build_docs.py'
+$builder = Join-Path $a 'docs/build_docs.mjs'
 Set-Content -LiteralPath $builder -Value '# locally hacked' -NoNewline
 $rC = Invoke-Init @('-Target', $a)
 $builderNow = Get-Content -LiteralPath $builder -Raw
-$builderCanon = Get-Content -LiteralPath (Join-Path $templates 'docs/build_docs.py') -Raw
+$builderCanon = Get-Content -LiteralPath (Join-Path $templates 'docs/build_docs.mjs') -Raw
 $ok = (Assert-True 'C edited toolchain file is refreshed' ($rC.Out -match 'refreshed=1') $rC.Out) -and $ok
 $ok = (Assert-True 'C toolchain content matches canon after refresh' ($builderNow -eq $builderCanon) 'builder still holds local edit') -and $ok
 # C is a same-version re-run, so ADR 0067 makes it save a pre-revert copy in temp — parse the
@@ -312,7 +320,7 @@ $ok = (Assert-True 'D2 the placed .harness.json declares review-start and ready-
 $docsOnly = @($tplDecl.review.docs_only | ForEach-Object { [regex]::new('\A(?:' + $_ + ')') })
 $exempt = { param($p) @($docsOnly | Where-Object { $_.IsMatch($p) }).Count -gt 0 }
 $ok = (Assert-True 'D2 review.docs_only exempts a doc and no prompt file, no placed script' `
-        ((& $exempt 'docs/adr/0002-x.md') -and -not (& $exempt 'docs/prompts/ready-report.md') -and -not (& $exempt 'docs/build_docs.py')) 'docs_only regex moved') -and $ok
+        ((& $exempt 'docs/adr/0002-x.md') -and -not (& $exempt 'docs/prompts/ready-report.md') -and -not (& $exempt 'docs/build_docs.mjs')) 'docs_only regex moved') -and $ok
 
 # --- E: content files are never touched -------------------------------------------------------
 # A repo's accumulated decisions are the one thing a re-runnable scaffold must not endanger.
@@ -345,8 +353,7 @@ $ok = (Assert-True 'G2 file-as-target exits 1' ($rG2.Code -eq 1) "exit=$($rG2.Co
 
 # --- H: a template missing from the plugin fails, and does not half-scaffold silently ----------
 # Runs a COPY of the skill with one template deleted; the real plugin is never modified.
-$brokenSkill = Join-Path $fxBase 'broken-skill'
-Copy-Item -LiteralPath $PSScriptRoot -Destination $brokenSkill -Recurse -Force
+$brokenSkill = Copy-Skill 'broken-skill'
 Remove-Item -LiteralPath (Join-Path $brokenSkill 'templates/docs/build.sh') -Force
 # lib/ is resolved as ../../lib from the skill dir — give the copy that shape
 New-Item -ItemType Directory -Force -Path (Join-Path $fxBase 'lib') | Out-Null
@@ -437,10 +444,11 @@ $ok = (Assert-True 'I6 foreign location reported in the same run' ($rI6.Out -mat
 $ok = (Assert-True 'I6 run exits 0' ($rI6.Code -eq 0) "exit=$($rI6.Code)") -and $ok
 
 # --- J: a hostile console encoding must not break the build ------------------------------------
-# The windows-latest failure this case pins: Python encodes stdout with the console codepage, so a
-# non-UTF-8 codepage makes the builder's OWN output raise UnicodeEncodeError and exit 1 — after
-# index.json has already been written, which is why "index.json exists" alone would still pass.
-# docs/build.mjs sets the pin explicitly, so an inherited cp1252 must be overridden.
+# The windows-latest failure this case pinned: the Python builder encoded stdout with the console codepage,
+# so a non-UTF-8 codepage made its OWN output raise UnicodeEncodeError and exit 1 — after index.json had
+# already been written. The builder is Node now and ignores PYTHONIOENCODING, so the variable set below
+# reaches no subject: the case checks that the build output and index.json arrive intact and no longer
+# proves an encoding defence.
 $j = New-Target 'cp1252'
 $prevIo = $env:PYTHONIOENCODING
 $env:PYTHONIOENCODING = 'cp1252'
@@ -448,12 +456,8 @@ try { $rJ = Invoke-Init @('-Target', $j) }
 finally {
     if ($null -eq $prevIo) { Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue } else { $env:PYTHONIOENCODING = $prevIo }
 }
-if ($pyAvail) {
-    $ok = (Assert-True 'J build survives an inherited cp1252 stdout encoding' ($rJ.Out -match 'built: index\.json') $rJ.Out) -and $ok
-    $ok = (Assert-True 'J index.json exists under cp1252' (Test-Path -LiteralPath (Join-Path $j 'docs/index.json') -PathType Leaf) 'index.json missing') -and $ok
-} else {
-    Write-Host 'SKIP [J encoding] python absent (reported, not silent) — CI has python' -ForegroundColor Yellow
-}
+$ok = (Assert-True 'J build survives an inherited cp1252 stdout encoding' ($rJ.Out -match 'built: index\.json') $rJ.Out) -and $ok
+$ok = (Assert-True 'J index.json exists under cp1252' (Test-Path -LiteralPath (Join-Path $j 'docs/index.json') -PathType Leaf) 'index.json missing') -and $ok
 
 # --- K-O: core.hooksPath wiring (ADR 0015) -----------------------------------------------------
 # This is the ONLY thing init.mjs does that is not a file write, so every branch is enumerated. The
@@ -649,7 +653,7 @@ $afterQ = Get-Content -LiteralPath (Join-Path $q '.githooks/post-commit') -Raw
 $ok = (Assert-True 'Q1 a foreign post-commit survives byte-identical' ($afterQ -eq $mine) 'post-commit was overwritten') -and $ok
 $ok = (Assert-True 'Q1 the refusal is reported' ($rQ.Out -match 'REFUSED') $rQ.Out) -and $ok
 $ok = (Assert-True 'Q1 refused is counted separately' ($rQ.Out -match 'refused=1') $rQ.Out) -and $ok
-$ok = (Assert-True 'Q1 the one-line workaround is printed' ($rQ.Out -match 'harness_retro\.py') $rQ.Out) -and $ok
+$ok = (Assert-True 'Q1 the one-line workaround is printed' ($rQ.Out -match 'harness_retro\.mjs') $rQ.Out) -and $ok
 $ok = (Assert-True 'Q1 run still exits 0' ($rQ.Code -eq 0) "exit=$($rQ.Code)") -and $ok
 
 # Q2: a post-commit carrying the marker is OURS, so it refreshes like any toolchain file.
@@ -669,8 +673,7 @@ $ok = (Assert-True 'Q2 nothing is refused' ($rQ2.Out -match 'refused=0') $rQ2.Ou
 # modifications after every re-run, and a POSIX clone got sh hooks that die with
 # "/bin/sh^M: bad interpreter". Placement owns the line discipline now: LF out, whatever came in.
 # Runs a COPY of the skill with CRLF stamped onto every template; the real plugin is never modified.
-$crlfSkill = Join-Path $fxBase 'crlf-skill'
-Copy-Item -LiteralPath $PSScriptRoot -Destination $crlfSkill -Recurse -Force
+$crlfSkill = Copy-Skill 'crlf-skill'
 $latin1 = [System.Text.Encoding]::Latin1
 foreach ($t in Get-ChildItem -LiteralPath (Join-Path $crlfSkill 'templates') -Recurse -File) {
     $stamped = $latin1.GetString([IO.File]::ReadAllBytes($t.FullName)).Replace("`r`n", "`n").Replace("`n", "`r`n")
@@ -714,7 +717,7 @@ $s = New-Target 'stamp-newer'
 $rS0 = Invoke-Init @('-Target', $s)
 $ok = (Assert-True 'S setup run exits 0' ($rS0.Code -eq 0) "exit=$($rS0.Code)") -and $ok
 # Drift one toolchain file AND raise the stamp: the refusal must leave the drift in place.
-$sBuilder = Join-Path $s 'docs/build_docs.py'
+$sBuilder = Join-Path $s 'docs/build_docs.mjs'
 Set-Content -LiteralPath $sBuilder -Value '# writer A newer copy' -NoNewline
 Set-Content -LiteralPath (Join-Path $s '.harness-version') -Value '99.0.0'
 $rS1 = Invoke-Init @('-Target', $s)
@@ -727,7 +730,7 @@ $ok = (Assert-True 'S1 the stamp itself is untouched by a refusal' (((Get-Conten
 $rS2 = Invoke-Init @('-Target', $s, '-Force')
 $ok = (Assert-True 'S2 -Force proceeds with exit 0' ($rS2.Code -eq 0) "exit=$($rS2.Code) out=$($rS2.Out)") -and $ok
 $ok = (Assert-True 'S2 the forced downgrade is announced' ($rS2.Out -match 'DOWNGRADE FORCED') $rS2.Out) -and $ok
-$ok = (Assert-True 'S2 the toolchain file is placed from canon' ((Get-Content -LiteralPath $sBuilder -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/build_docs.py') -Raw)) 'forced run did not place') -and $ok
+$ok = (Assert-True 'S2 the toolchain file is placed from canon' ((Get-Content -LiteralPath $sBuilder -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/build_docs.mjs') -Raw)) 'forced run did not place') -and $ok
 $ok = (Assert-True 'S2 the stamp is rewritten to this plugin version' (((Get-Content -LiteralPath (Join-Path $s '.harness-version') -Raw).Trim()) -eq $manifestVer) "stamp=$((Get-Content -LiteralPath (Join-Path $s '.harness-version') -Raw).Trim())") -and $ok
 # S3: an unparseable stamp must not strand the repo — proceed (fail-open direction: refusing on
 # garbage could never destroy newer work, but it would dead-end every corrupted stamp forever),
@@ -832,7 +835,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
             ($rUA3.Code -eq 0 -and ([regex]::Matches($rUA3.Out, 'UPSTREAM AHEAD ALLOWED — origin/main has commit')).Count -eq 1 -and $rUA3.Out -match 'proceeding because --allow-upstream-ahead was given \(ywr-harness ADR 0135\)' -and $rUA3.Out -cnotmatch 'REFUSED — origin/main') `
             "exit=$($rUA3.Code) out=$($rUA3.Out)") -and $ok
     $ok = (Assert-True 'UA3 the scaffold was placed and stamped' `
-            ((Test-Path -LiteralPath (Join-Path $uaC '.harness-version') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $uaC 'scripts/harness/harness_gates.py') -PathType Leaf)) $rUA3.Out) -and $ok
+            ((Test-Path -LiteralPath (Join-Path $uaC '.harness-version') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $uaC 'scripts/harness/harness_gates.mjs') -PathType Leaf)) $rUA3.Out) -and $ok
     # UA5-UA7 reuse the stale clone: put it on the pushed tip (the placement UA3 left is untracked noise),
     # then the pusher moves the remote and the clone only fetches. The fixture commits bypass the wired hooks.
     & git -C $uaC config --local --unset core.hooksPath 2>$null | Out-Null
@@ -841,7 +844,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $uaStamp = (Get-Content -LiteralPath (Join-Path $uaB '.harness-version') -Raw).Trim()
     # UA5: an upstream commit that touches ONLY a toolchain file (a hand edit on main, no stamp) is NOT a scaffold
     # run: no refusal, no ALLOWED line. The stamp is the guard's only path.
-    Add-Content -LiteralPath (Join-Path $uaB 'scripts/harness/harness_gates.py') -Value '# upstream hand edit'
+    Add-Content -LiteralPath (Join-Path $uaB 'scripts/harness/harness_gates.mjs') -Value '# upstream hand edit'
     Invoke-UaGit $uaB @('add', '-A')
     Invoke-UaGit $uaB @('commit', '-q', '-m', 'B: hand edit of a toolchain file')
     Invoke-UaGit $uaB @('push', '-q', 'origin', 'main')
@@ -985,12 +988,12 @@ $ok = (Assert-True 'T7 the seed itself is untouched (report only)' `
     ((Get-Content -LiteralPath (Join-Path $t7 '.gitignore') -Raw) -eq $t7gi) 'the probe wrote into .gitignore') -and $ok
 
 # T8: scaffold gate lines (ADR 0129). Arrays are leaves to the key probe, so a docs group that
-# predates ADR 0094 hid the file-scoped check_docs.py line — the one path by which the STE-lite
+# predates ADR 0094 hid the file-scoped check_docs.mjs line — the one path by which the STE-lite
 # gate (ADR 0128) ever sees a staged spec. Coverage is per PATH: the emitter runs the gates of
 # every group whose match claims a path, so the line must sit in a group claiming the path, and
 # the line in some other group is no coverage (owner 2026-10-09: docs-generated alone never sees
 # a spec). The note names the uncovered scaffold paths, the exact line and the template groups.
-$t8Gate = [regex]::Escape(' declares the scaffold gate { "runner": "python", "script": "docs/check_docs.py", "files": true } (template: ')
+$t8Gate = [regex]::Escape(' declares the scaffold gate { "runner": "node", "script": "docs/check_docs.mjs", "files": true } (template: ')
 $t8Corpus = 'docs/adr/README\.md, docs/adr/0000-template\.md, docs/spec/README\.md, docs/spec/0000-template\.md, docs/adr/0001-adopt-docs-as-code\.md'
 $t8All = "no group claiming $t8Corpus, docs/index\.json$t8Gate" + 'docs-corpus, docs-generated\)'
 function New-T8Seed([string]$Name, [scriptblock]$Mutate) {
@@ -1028,7 +1031,7 @@ $ok = (Assert-True 'T8c a renamed group that claims the paths and carries the li
     ($rT8c.Code -eq 0 -and $rT8c.Out -notmatch 'declares the scaffold gate' -and $rT8c.Out -notmatch 'this seed lacks') $rT8c.Out) -and $ok
 # Selectors and paths are exact to the emitter, so a case variant is not the line.
 # The seed also carries T9f: a non-list docs_only (ADR 0191).
-$t8d = New-T8Seed 'seed-gate-case' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates[0].runner = 'Python' } }; $d.review.docs_only = '^docs/' }
+$t8d = New-T8Seed 'seed-gate-case' { param($d) foreach ($g in $d.groups) { if ($g.name -like 'docs-*') { $g.gates[0].runner = 'Node' } }; $d.review.docs_only = '^docs/' }
 $rT8d = Invoke-Init @('-Target', $t8d)
 $ok = (Assert-True 'T8d a case-variant runner does not satisfy the line' ($rT8d.Out -match $t8All) $rT8d.Out) -and $ok
 # Both halves on one line: the key half first, then the gate half (the ADR 0128 consumer shape).
@@ -1067,7 +1070,7 @@ $ok = (Assert-True 'T8k a (?P<name>...) match claims its paths (no false gap)' (
 $t8l = New-T8Seed 'seed-gate-escape' { param($d)
     foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.gates = @() } }
     $d.groups += [pscustomobject]@{ name = 'greedy'; match = '^zz)|(.*'; cwd = ''; strip_prefix = ''
-        gates = @([pscustomobject]@{ runner = 'python'; script = 'docs/check_docs.py'; files = $true }) } }
+        gates = @([pscustomobject]@{ runner = 'node'; script = 'docs/check_docs.mjs'; files = $true }) } }
 $rT8l = Invoke-Init @('-Target', $t8l)
 $ok = (Assert-True 'T8l an unbalanced match claims nothing, so the corpus gap still speaks' `
     ($rT8l.Out -match ("no group claiming $t8Corpus$t8Gate" + 'docs-corpus\)')) $rT8l.Out) -and $ok
@@ -1091,8 +1094,7 @@ $t8mBad = @($rxRefused.groups)
 $ok = (Assert-True 'T8m every template group match compiles in the engine init.mjs uses' ($rxRun.Code -eq 0 -and $t8mBad.Count -eq 0) "refused: $($t8mBad -join ', ') run: $($rxRun.Out)") -and $ok
 # T8n: a template gate on a script the scaffold does not place is the repo's own, never a
 # scaffold gate. Runs a COPY of the skill with that gate added; the real plugin is never modified.
-$ownSkill = Join-Path $fxBase 'own-gate-skill'
-Copy-Item -LiteralPath $PSScriptRoot -Destination $ownSkill -Recurse -Force
+$ownSkill = Copy-Skill 'own-gate-skill'
 $ownDecl = Get-Content -LiteralPath (Join-Path $ownSkill 'templates/harness.json') -Raw | ConvertFrom-Json
 foreach ($g in $ownDecl.groups) { if ($g.name -eq 'docs-corpus') { $g.gates += [pscustomobject]@{ runner = 'python'; script = 'scripts/own_check.py'; files = $true } } }
 # The copy also carries T9k: a template docs_only pattern the regex engine cannot read (ADR 0191).
@@ -1104,8 +1106,7 @@ $ok = (Assert-True 'T8n a template gate on a non-TOOLCHAIN script is never a sca
     ($rT8n.Code -eq 0 -and $rT8n.Out -notmatch 'own_check' -and $rT8n.Out -notmatch 'declares the scaffold gate') "exit=$($rT8n.Code) out=$($rT8n.Out)") -and $ok
 # T8o: an unforeseen throw inside the probe is a reported skip, never a non-zero exit (ADR 0051).
 # Runs a COPY of the skill whose probe throws; the real plugin is never modified.
-$throwSkill = Join-Path $fxBase 'gate-throw-skill'
-Copy-Item -LiteralPath $PSScriptRoot -Destination $throwSkill -Recurse -Force
+$throwSkill = Copy-Skill 'gate-throw-skill'
 $throwInit = Join-Path $throwSkill 'init.mjs'
 $throwSrc = [IO.File]::ReadAllText($throwInit)
 $throwHook = 'function getScaffoldGateNote(template, repo) {'
@@ -1134,7 +1135,7 @@ $ok = (Assert-True 'T8p a real spec outside the gated group is named first, thou
 $t8q = New-T8Seed 'seed-gate-backref' { param($d)
     foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = '^docs/(adr)/.*\.md$' } }
     $d.groups += [pscustomobject]@{ name = 'specs'; match = '^(docs)/spec/(.*\1|README|0000-template)\.md$'; cwd = ''; strip_prefix = ''
-        gates = @([pscustomobject]@{ runner = 'python'; script = 'docs/check_docs.py'; files = $true }) } }
+        gates = @([pscustomobject]@{ runner = 'node'; script = 'docs/check_docs.mjs'; files = $true }) } }
 New-Item -ItemType Directory -Force -Path (Join-Path $t8q 'docs/spec') | Out-Null
 [IO.File]::WriteAllText((Join-Path $t8q 'docs/spec/0002-docs.md'), "# real spec`n")
 $rT8q = Invoke-Init @('-Target', $t8q, '-DryRun')
@@ -1145,7 +1146,7 @@ $ok = (Assert-True 'T8q a backreference keeps its own group numbering (no false 
 $t8r = New-T8Seed 'seed-gate-conditional' { param($d)
     foreach ($g in $d.groups) { if ($g.name -eq 'docs-corpus') { $g.match = '^docs/(adr)/.*\.md$' } }
     $d.groups += [pscustomobject]@{ name = 'specs'; match = '^(docs)?(?(1)/spec/.*\.md|zz)$'; cwd = ''; strip_prefix = ''
-        gates = @([pscustomobject]@{ runner = 'python'; script = 'docs/check_docs.py'; files = $true }) } }
+        gates = @([pscustomobject]@{ runner = 'node'; script = 'docs/check_docs.mjs'; files = $true }) } }
 New-Item -ItemType Directory -Force -Path (Join-Path $t8r 'docs/spec') | Out-Null
 [IO.File]::WriteAllText((Join-Path $t8r 'docs/spec/0002-real.md'), "# real spec`n")
 $rT8r = Invoke-Init @('-Target', $t8r, '-DryRun')
@@ -1182,8 +1183,7 @@ $rT8u = Invoke-Init @('-Target', $t8u, '-DryRun')
 $ok = (Assert-True "T8u a hidden draft$(if ($t8uLinked) { ' and a linked directory are' } else { ' is' }) not listed" ($rT8u.Out -notmatch 'declares the scaffold gate') $rT8u.Out) -and $ok
 # T8v: a listing that throws keeps the sample gaps and says where it stopped (re-review
 # 2026-10-09, low). Runs a COPY of the skill whose listing throws; the real plugin is never modified.
-$listSkill = Join-Path $fxBase 'gate-list-throw-skill'
-Copy-Item -LiteralPath $PSScriptRoot -Destination $listSkill -Recurse -Force
+$listSkill = Copy-Skill 'gate-list-throw-skill'
 $listInit = Join-Path $listSkill 'init.mjs'
 $listSrc = [IO.File]::ReadAllText($listInit)
 $listHook = 'listFiles(full, true)'
@@ -1218,7 +1218,7 @@ $rT9a = Invoke-Init @('-Target', $t9a, '-DryRun')
 $t9aLine = (($rT9a.Out -split "`n") | Where-Object { $_ -match '= \.harness\.json ' }) -join ' '
 $ok = (Assert-True 'T9a the old docs_only value names the count, the first paths and the template value' `
     ($rT9a.Code -eq 0 -and $t9aLine -match ('\(existing seed preserved — review\.docs_only exempts 9 probed path\(s\) the template reviews: ' +
-        'docs/build\.mjs, docs/build\.sh, docs/build_docs\.py, docs/check_docs\.py, CLAUDE\.md, docs/prompts/review-start\.md, \+3 more ' + $t9Tmpl + '\)')) `
+        'docs/build\.mjs, docs/build\.sh, docs/build_docs\.mjs, docs/check_docs\.mjs, CLAUDE\.md, docs/prompts/review-start\.md, \+3 more ' + $t9Tmpl + '\)')) `
     "exit=$($rT9a.Code) line=$t9aLine") -and $ok
 $t9aProbe = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'init.mjs') -Raw
 $ok = (Assert-True 'T9a the probe holds no copy of the template exclusions' ($t9aProbe -notmatch 'CLAUDE\|AGENTS') 'init.mjs names the exclusion regex') -and $ok
@@ -1322,7 +1322,7 @@ if ($IsWindows) {
 # The measured gap in case U's guard: it fires only when $script:isFirstRun — computed ONCE from
 # whether ANY .harness-version stamp exists. A repo already stamped by an EARLIER plugin version
 # (e.g. 0.46.0) is not first-run overall, but for a path this scaffold started shipping LATER
-# (docs/check_docs.py, added in 0.47.0 — ADR 0074) it IS a first appearance: that repo may well
+# (docs/check_docs.mjs, new in 0.85.0 — ADR 0074) it IS a first appearance: that repo may well
 # have independently created its own file at the same plausible name (client-pjems's own
 # scripts/check_docs_drift.py is the real-world example) and nothing here has ever proven the
 # canon's file is what's there. Case U's guard would silently overwrite it and report
@@ -1337,44 +1337,44 @@ $ok = (Assert-True 'AA setup run exits 0' ($rAA0.Code -eq 0) "exit=$($rAA0.Code)
 # the SAME name the canon uses (the collision the guard exists for is same-name, not same-content).
 Set-Content -LiteralPath (Join-Path $aa '.harness-version') -Value '0.46.0' -NoNewline
 $aaForeign = "# my own drift check`n"
-Set-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Value $aaForeign -NoNewline
+Set-Content -LiteralPath (Join-Path $aa 'docs/check_docs.mjs') -Value $aaForeign -NoNewline
 # Perturb an OLD-path toolchain file too (no $INTRODUCED_IN entry): a 0.46.0 stamp is a normal
 # back-version update for this one, so it must still refresh in the SAME run that refuses
-# check_docs.py — proving the guard is scoped per path, not per repo.
-$aaBuilder = Join-Path $aa 'docs/build_docs.py'
+# check_docs.mjs — proving the guard is scoped per path, not per repo.
+$aaBuilder = Join-Path $aa 'docs/build.sh'
 Set-Content -LiteralPath $aaBuilder -Value '# locally hacked, old-path file' -NoNewline
 
 # AA1: re-run without -Force refuses, names both versions, leaves the foreign file untouched, and
 # still refreshes the old-path file in the same run.
 $rAA1 = Invoke-Init @('-Target', $aa)
 $ok = (Assert-True 'AA1 run exits 0' ($rAA1.Code -eq 0) "exit=$($rAA1.Code)") -and $ok
-$ok = (Assert-True 'AA1 REFUSED names the path' ($rAA1.Out -match 'docs/check_docs\.py REFUSED') $rAA1.Out) -and $ok
+$ok = (Assert-True 'AA1 REFUSED names the path' ($rAA1.Out -match 'docs/check_docs\.mjs REFUSED') $rAA1.Out) -and $ok
 # The introducing version is the INTRODUCED_IN entry for the path, read from placement.mjs itself —
 # NOT the manifest version. The first cut asserted `new in $manifestVer`, which was true only while
 # the plugin version still equalled the version that introduced the path; the first bump after
 # 0.47.0 (0.48.0, 2026-09-14) turned AA1 red on a correct refusal. A missing entry fails loudly
 # here rather than letting the assertion pass on an empty pattern.
-$aaIntroducedM = [regex]::Match((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'placement.mjs') -Raw), "\['docs/check_docs\.py',\s*'(\d+\.\d+\.\d+)'\]")
-$ok = (Assert-True 'AA1 placement.mjs carries an INTRODUCED_IN entry for docs/check_docs.py' $aaIntroducedM.Success 'no entry parsed — the guard under test has no version to name') -and $ok
+$aaIntroducedM = [regex]::Match((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'placement.mjs') -Raw), "\['docs/check_docs\.mjs',\s*'(\d+\.\d+\.\d+)'\]")
+$ok = (Assert-True 'AA1 placement.mjs carries an INTRODUCED_IN entry for docs/check_docs.mjs' $aaIntroducedM.Success 'no entry parsed — the guard under test has no version to name') -and $ok
 $aaIntroduced = if ($aaIntroducedM.Success) { $aaIntroducedM.Groups[1].Value } else { 'NO-ENTRY-PARSED' }
 $ok = (Assert-True 'AA1 the introducing version is named' ($rAA1.Out -match "new in $([regex]::Escape($aaIntroduced))") "want 'new in $aaIntroduced' in: $($rAA1.Out)") -and $ok
 $ok = (Assert-True 'AA1 the repo''s stamped version is named' ($rAA1.Out -match 'stamped 0\.46\.0') $rAA1.Out) -and $ok
-$ok = (Assert-True 'AA1 refused is counted (check_docs.py)' ($rAA1.Out -match 'refused=1') $rAA1.Out) -and $ok
+$ok = (Assert-True 'AA1 refused is counted (check_docs.mjs)' ($rAA1.Out -match 'refused=1') $rAA1.Out) -and $ok
 $ok = (Assert-True 'AA1 the foreign bytes are unchanged on disk' `
-    ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Raw) -eq $aaForeign) 'foreign check_docs.py was overwritten') -and $ok
+    ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.mjs') -Raw) -eq $aaForeign) 'foreign check_docs.mjs was overwritten') -and $ok
 $ok = (Assert-True 'AA1 the stamp is untouched (still the pre-refusal value)' `
     (((Get-Content -LiteralPath (Join-Path $aa '.harness-version') -Raw).Trim()) -eq '0.46.0') 'refusal rewrote the stamp') -and $ok
 $ok = (Assert-True 'AA1 an OLD-path file still refreshes in the same run (guard is per-path)' `
-    ((Get-Content -LiteralPath $aaBuilder -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/build_docs.py') -Raw)) 'old-path file did not refresh alongside the refusal') -and $ok
+    ((Get-Content -LiteralPath $aaBuilder -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/build.sh') -Raw)) 'old-path file did not refresh alongside the refusal') -and $ok
 
 # AA2: -Force replaces it, labeled truthfully (never "refreshed"), counted as replaced=1, and the
 # stamp then advances now that nothing stands refused.
 $rAA2 = Invoke-Init @('-Target', $aa, '-Force')
 $ok = (Assert-True 'AA2 -Force replaces, run exits 0' ($rAA2.Code -eq 0) "exit=$($rAA2.Code)") -and $ok
-$ok = (Assert-True 'AA2 the truthful REPLACED label is used' ($rAA2.Out -match 'docs/check_docs\.py \(REPLACED') $rAA2.Out) -and $ok
+$ok = (Assert-True 'AA2 the truthful REPLACED label is used' ($rAA2.Out -match 'docs/check_docs\.mjs \(REPLACED') $rAA2.Out) -and $ok
 $ok = (Assert-True 'AA2 replaced is counted' ($rAA2.Out -match 'replaced=1') $rAA2.Out) -and $ok
 $ok = (Assert-True 'AA2 the canon copy is placed' `
-    ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.py') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/check_docs.py') -Raw)) 'forced run did not place the canon copy') -and $ok
+    ((Get-Content -LiteralPath (Join-Path $aa 'docs/check_docs.mjs') -Raw) -eq (Get-Content -LiteralPath (Join-Path $templates 'docs/check_docs.mjs') -Raw)) 'forced run did not place the canon copy') -and $ok
 $ok = (Assert-True 'AA2 the stamp advances once resolved' `
     (((Get-Content -LiteralPath (Join-Path $aa '.harness-version') -Raw).Trim()) -eq $manifestVer) 'stamp did not advance') -and $ok
 
@@ -1384,10 +1384,10 @@ $ok = (Assert-True 'AA2 the stamp advances once resolved' `
 $aa3 = New-Target 'introduced-later-identical'
 Invoke-Init @('-Target', $aa3) | Out-Null
 Set-Content -LiteralPath (Join-Path $aa3 '.harness-version') -Value '0.46.0' -NoNewline
-Copy-Item -LiteralPath (Join-Path $templates 'docs/check_docs.py') -Destination (Join-Path $aa3 'docs/check_docs.py') -Force
+Copy-Item -LiteralPath (Join-Path $templates 'docs/check_docs.mjs') -Destination (Join-Path $aa3 'docs/check_docs.mjs') -Force
 $rAA3 = Invoke-Init @('-Target', $aa3)
 $ok = (Assert-True 'AA3 identical content is a no-op, not a refusal' `
-    ($rAA3.Code -eq 0 -and $rAA3.Out -notmatch 'docs/check_docs\.py REFUSED' -and $rAA3.Out -match 'refused=0') $rAA3.Out) -and $ok
+    ($rAA3.Code -eq 0 -and $rAA3.Out -notmatch 'docs/check_docs\.mjs REFUSED' -and $rAA3.Out -match 'refused=0') $rAA3.Out) -and $ok
 
 # AA4 (control): a repo already stamped AT the path's introducing version follows TODAY's
 # same-version-drift semantics (ADR 0067) — no "new in" refusal at all, just the existing
@@ -1395,10 +1395,10 @@ $ok = (Assert-True 'AA3 identical content is a no-op, not a refusal' `
 # false when they're equal).
 $aa4 = New-Target 'introduced-later-control'
 Invoke-Init @('-Target', $aa4) | Out-Null
-Set-Content -LiteralPath (Join-Path $aa4 'docs/check_docs.py') -Value '# hand edit at the current version' -NoNewline
+Set-Content -LiteralPath (Join-Path $aa4 'docs/check_docs.mjs') -Value '# hand edit at the current version' -NoNewline
 $rAA4 = Invoke-Init @('-Target', $aa4)
 $ok = (Assert-True 'AA4 no "new in" refusal when already stamped at the introducing version' `
-    ($rAA4.Out -notmatch 'docs/check_docs\.py REFUSED') $rAA4.Out) -and $ok
+    ($rAA4.Out -notmatch 'docs/check_docs\.mjs REFUSED') $rAA4.Out) -and $ok
 $ok = (Assert-True 'AA4 today''s same-version drift semantics still apply (revert + upstream note)' `
     ($rAA4.Out -match 'refreshed=1' -and $rAA4.Out -match 'upstream: SAME-VERSION drift') $rAA4.Out) -and $ok
 if ($rAA4.Out -match 'pre-revert copies: (.+)') {
@@ -1411,16 +1411,16 @@ $aa5 = New-Target 'introduced-later-dryrun'
 Invoke-Init @('-Target', $aa5) | Out-Null
 Set-Content -LiteralPath (Join-Path $aa5 '.harness-version') -Value '0.46.0' -NoNewline
 $aa5Foreign = "# my own drift check (dry run fixture)`n"
-Set-Content -LiteralPath (Join-Path $aa5 'docs/check_docs.py') -Value $aa5Foreign -NoNewline
+Set-Content -LiteralPath (Join-Path $aa5 'docs/check_docs.mjs') -Value $aa5Foreign -NoNewline
 $rAA5 = Invoke-Init @('-Target', $aa5, '-DryRun')
-$ok = (Assert-True 'AA5 dry run reports the would-be refusal' ($rAA5.Out -match 'docs/check_docs\.py REFUSED') $rAA5.Out) -and $ok
+$ok = (Assert-True 'AA5 dry run reports the would-be refusal' ($rAA5.Out -match 'docs/check_docs\.mjs REFUSED') $rAA5.Out) -and $ok
 $ok = (Assert-True 'AA5 dry run writes nothing to the foreign file' `
-    ((Get-Content -LiteralPath (Join-Path $aa5 'docs/check_docs.py') -Raw) -eq $aa5Foreign) 'dry run modified the foreign file') -and $ok
+    ((Get-Content -LiteralPath (Join-Path $aa5 'docs/check_docs.mjs') -Raw) -eq $aa5Foreign) 'dry run modified the foreign file') -and $ok
 $ok = (Assert-True 'AA5 dry run leaves the stamp untouched' `
     (((Get-Content -LiteralPath (Join-Path $aa5 '.harness-version') -Raw).Trim()) -eq '0.46.0') 'dry run rewrote the stamp') -and $ok
 
 # Mutation anchor: removing the $INTRODUCED_IN comparison from Test-PathIntroducedAfterStamp (or
-# hardcoding it to $false) turns AA1 and AA5 red — the refusal never fires, so check_docs.py is
+# hardcoding it to $false) turns AA1 and AA5 red — the refusal never fires, so check_docs.mjs is
 # silently "refreshed" instead of refused. AA3 and AA4 stay green either way: AA3 never reaches the
 # collision check (the identical-content return is earlier in Place()), and AA4's equal-version
 # stamp already fails "introduced -gt stamp" on its own, so it exercises the EXISTING
@@ -1431,8 +1431,6 @@ $ok = (Assert-True 'AA5 dry run leaves the stamp untouched' `
 # 0053), review canon present (ADR 0054), and the growth loop (a new ADR) must stay claimed.
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host 'SKIP [V audit] git absent (reported, not silent) — CI has git' -ForegroundColor Yellow
-} elseif (-not $pyAvail) {
-    Write-Host 'SKIP [V audit] python absent (reported, not silent) — CI has python' -ForegroundColor Yellow
 } else {
     $v = New-GitTarget 'audit-clean'
     Set-Content -LiteralPath (Join-Path $v 'README.md') -Value "# fixture repo`n" -NoNewline
@@ -1450,14 +1448,13 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         (($tracked -contains 'docs/index.json') -and ($tracked -contains 'docs/INDEX.md')) "tracked: $($tracked -join ', ')") -and $ok
     & git -C $v check-ignore -q .claude/telemetry/delegations/slot-00.json 2>$null
     $ok = (Assert-True 'V telemetry ledger path is ignored before it exists (audit M3)' ($LASTEXITCODE -eq 0) 'check-ignore says not ignored') -and $ok
-    $pyCmd = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-    $rV1 = & $pyCmd.Source (Join-Path $v 'scripts/harness/harness_gates.py') --all --repo $v 2>&1 | Out-String
+    $rV1 = & (Get-Command node).Source (Join-Path $v 'scripts/harness/harness_gates.mjs') --all --repo $v 2>&1 | Out-String
     $ok = (Assert-True 'V full-tree audit reports ZERO ungrouped (the #47 red first push)' ($rV1 -notmatch 'ungrouped \(') $rV1) -and $ok
     $ok = (Assert-True 'V review canon is FOUND (the #49 first-close hard stop)' ($rV1 -notmatch 'NOT FOUND') $rV1) -and $ok
     # The growth loop: After-running step 3 writes an ADR — the measured "each decision makes
     # the audit redder" half of #47.
     Set-Content -LiteralPath (Join-Path $v 'docs/adr/0002-first-decision.md') -Value "---`nid: `"0002`"`n---`n# 0002. first`n" -NoNewline
-    $rV2 = & $pyCmd.Source (Join-Path $v 'scripts/harness/harness_gates.py') --all --repo $v 2>&1 | Out-String
+    $rV2 = & (Get-Command node).Source (Join-Path $v 'scripts/harness/harness_gates.mjs') --all --repo $v 2>&1 | Out-String
     $ok = (Assert-True 'V a newly written ADR stays claimed (docs-corpus group)' ($rV2 -notmatch 'ungrouped \(') $rV2) -and $ok
 }
 
@@ -1487,7 +1484,7 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
 # note — with no copies — when the plugin runs from inside the target tree.
 $x = New-Target 'same-version-drift'
 Invoke-Init @('-Target', $x) | Out-Null
-$xEdit = Join-Path $x 'scripts/harness/harness_gates.py'
+$xEdit = Join-Path $x 'scripts/harness/harness_gates.mjs'
 Set-Content -LiteralPath $xEdit -Value '# local patch (issue #55 shape)' -NoNewline
 
 # X1: dry run — block printed, nothing changed, no copies made or named.
@@ -1504,7 +1501,7 @@ $ok = (Assert-True 'X2 real run prints the SAME-VERSION block' ($rX2.Out -match 
 $ok = (Assert-True 'X2 the file is reverted to canon' ((Get-Content -LiteralPath $xEdit -Raw) -notmatch 'local patch') 'local edit survived a real refresh') -and $ok
 $xDir = ''
 if ($rX2.Out -match 'pre-revert copies: (.+)') { $xDir = $Matches[1].Trim() }
-$xBak = if ($xDir) { Join-Path $xDir 'scripts/harness/harness_gates.py' } else { '' }
+$xBak = if ($xDir) { Join-Path $xDir 'scripts/harness/harness_gates.mjs' } else { '' }
 $ok = (Assert-True 'X2 pre-revert copy exists and holds the local content' `
     ([bool]$xBak -and (Test-Path -LiteralPath $xBak -PathType Leaf) -and ((Get-Content -LiteralPath $xBak -Raw) -match 'local patch')) "dir='$xDir' out=$($rX2.Out)") -and $ok
 # The dir name must carry a per-process component after the second-resolution timestamp — two
@@ -1513,10 +1510,11 @@ $ok = (Assert-True 'X2 copies dir name ends in timestamp-pid, never timestamp al
     ($xDir -match '-\d{8}-\d{6}-\d+$') "dir='$xDir'") -and $ok
 if ($xDir -and (Test-Path -LiteralPath $xDir)) { Remove-Item -LiteralPath $xDir -Recurse -Force -ErrorAction SilentlyContinue }
 
-# X3: an OLDER stamp is a normal update — refresh happens, no conflict verdict.
+# X3: an OLDER stamp is a normal update — refresh happens, no conflict verdict. The drifted file is one
+# that no INTRODUCED_IN entry names: a file at a path introduced after the stamp is refused, not refreshed (AA).
 $x3 = New-Target 'cross-version-drift'
 Invoke-Init @('-Target', $x3) | Out-Null
-Set-Content -LiteralPath (Join-Path $x3 'scripts/harness/harness_gates.py') -Value '# local patch' -NoNewline
+Set-Content -LiteralPath (Join-Path $x3 'docs/build.sh') -Value '# local patch' -NoNewline
 Set-Content -LiteralPath (Join-Path $x3 '.harness-version') -Value "0.0.1`n" -NoNewline
 $rX3 = Invoke-Init @('-Target', $x3)
 $ok = (Assert-True 'X3 older-stamp drift refreshes WITHOUT the block' ($rX3.Out -match 'refreshed=1' -and $rX3.Out -notmatch 'SAME-VERSION drift') $rX3.Out) -and $ok
@@ -1532,7 +1530,7 @@ $ok = (Assert-True 'X4 no drift, no upstream line' ($rX4.Out -notmatch 'upstream
 # the backup dir cannot be created. GetTempPath reads TMP/TEMP (Windows) and TMPDIR (POSIX).
 $x6 = New-Target 'copy-fail-drift'
 Invoke-Init @('-Target', $x6) | Out-Null
-Set-Content -LiteralPath (Join-Path $x6 'scripts/harness/harness_gates.py') -Value '# local patch' -NoNewline
+Set-Content -LiteralPath (Join-Path $x6 'scripts/harness/harness_gates.mjs') -Value '# local patch' -NoNewline
 $x6Tmp = New-Target 'copy-fail-tmp'
 Set-Content -LiteralPath (Join-Path $x6Tmp 'ywr-harness-reverted') -Value 'a file where the dir must go' -NoNewline
 $envKeys = @('TMP', 'TEMP', 'TMPDIR')
@@ -1541,11 +1539,11 @@ foreach ($k in $envKeys) { $envSaved[$k] = [Environment]::GetEnvironmentVariable
 try { $rX6 = Invoke-Init @('-Target', $x6) }
 finally { foreach ($k in $envKeys) { [Environment]::SetEnvironmentVariable($k, $envSaved[$k]) } }
 $ok = (Assert-True 'X6 all-failed copies: FAILED line names the file, run exits 0' `
-    ($rX6.Code -eq 0 -and $rX6.Out -match 'pre-revert copy FAILED for: .*harness_gates\.py') "exit=$($rX6.Code) out=$($rX6.Out)") -and $ok
+    ($rX6.Code -eq 0 -and $rX6.Out -match 'pre-revert copy FAILED for: .*harness_gates\.mjs') "exit=$($rX6.Code) out=$($rX6.Out)") -and $ok
 $ok = (Assert-True 'X6 all-failed copies: the "pre-revert copies:" line is NOT printed' `
     ($rX6.Out -notmatch 'pre-revert copies:') $rX6.Out) -and $ok
 $ok = (Assert-True 'X6 the refresh still proceeded (copy failure never blocks the update path)' `
-    ((Get-Content -LiteralPath (Join-Path $x6 'scripts/harness/harness_gates.py') -Raw) -notmatch 'local patch') 'local edit survived') -and $ok
+    ((Get-Content -LiteralPath (Join-Path $x6 'scripts/harness/harness_gates.mjs') -Raw) -notmatch 'local patch') 'local edit survived') -and $ok
 
 # X5: in-tree run (the canon dogfood shape, ADR 0018) — the verdict folds to the visible note:
 # no report prompt, no pre-revert copies. Fixture: this whole skill dir + the plugin manifest
@@ -1554,11 +1552,13 @@ $x5 = New-Target 'dogfood-intree'
 $x5Skill = Join-Path $x5 'plugins/p/skills/harness-init'
 New-Item -ItemType Directory -Force -Path (Split-Path $x5Skill -Parent) | Out-Null
 Copy-Item -LiteralPath $PSScriptRoot -Destination $x5Skill -Recurse -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $x5 'plugins/p/scripts') | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../scripts/harness_git.mjs') -Destination (Join-Path $x5 'plugins/p/scripts/harness_git.mjs') -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $x5 'plugins/p/.claude-plugin') | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../.claude-plugin/plugin.json') -Destination (Join-Path $x5 'plugins/p/.claude-plugin/plugin.json')
 $x5Init = Join-Path $x5Skill 'init.mjs'
 Invoke-Init @('-Target', $x5) -Script $x5Init | Out-Null
-Set-Content -LiteralPath (Join-Path $x5 'scripts/harness/harness_gates.py') -Value '# canon-side propagation edit' -NoNewline
+Set-Content -LiteralPath (Join-Path $x5 'scripts/harness/harness_gates.mjs') -Value '# canon-side propagation edit' -NoNewline
 $rX5 = (Invoke-Init @('-Target', $x5) -Script $x5Init).Out
 # -cnotmatch: the dogfood note itself says "same-version drift" in lowercase, and -notmatch is
 # case-insensitive — the first run of this case failed on exactly that. The second assertion is
@@ -1587,6 +1587,30 @@ foreach ($mode in @(@{ N = 'dry run'; A = @('-Target', $rt, '-DryRun') }, @{ N =
             (((Get-Content -LiteralPath (Join-Path $rt '.harness-version') -Raw).Trim()) -eq $manifestVer -and $rRT.Out -match 'refused=0') "out=$($rRT.Out)") -and $ok
 }
 $ok = (Assert-True 'RT1 a target without the retired file gets no retired line' ($rB.Out -notmatch 'retired:' -and $rtFirst.Out -notmatch 'retired:') "out=$($rB.Out)") -and $ok
+
+# --- RT2: the seven Python files of the Node port are named, never removed (ywr-harness ADR 0223) -----
+# A repo that took the 0.84.0 scaffold holds docs/build_docs.py, docs/check_docs.py and five scripts/harness
+# Python files. The update places the .mjs successors, names each old file once with the same git rm advice,
+# and leaves every old file byte-identical, on a dry run and a real run alike.
+$rt2 = New-Target 'retired-python'
+$rt2First = Invoke-Init @('-Target', $rt2)
+$rt2Names = @('docs/build_docs.py', 'docs/check_docs.py', 'scripts/harness/harness_config.py', 'scripts/harness/harness_gates.py',
+    'scripts/harness/harness_retro.py', 'scripts/harness/verify_map.py', 'scripts/harness/slice_note.py')
+foreach ($n in $rt2Names) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $rt2 $n)) | Out-Null
+    Set-Content -LiteralPath (Join-Path $rt2 $n) -Value "# a file the 0.84.0 scaffold placed`n" -NoNewline
+}
+foreach ($mode in @(@{ N = 'dry run'; A = @('-Target', $rt2, '-DryRun') }, @{ N = 'real run'; A = @('-Target', $rt2) })) {
+    $rRT2 = Invoke-Init $mode.A
+    $rt2Lines = @([regex]::Matches($rRT2.Out, '(?m)^  retired: (\S+) — ywr-harness no longer places this file since 0\.85\.0 \(ywr-harness ADR 0223\); delete it with git rm\r?$') | ForEach-Object { $_.Groups[1].Value })
+    $ok = (Assert-True "RT2 $($mode.N): each of the seven Python files is named once, and nothing else is" `
+            ($rRT2.Code -eq 0 -and (($rt2Lines | Sort-Object) -join ',') -eq (($rt2Names | Sort-Object) -join ',') -and ([regex]::Matches($rRT2.Out, 'retired:')).Count -eq 7) "exit=$($rRT2.Code) out=$($rRT2.Out)") -and $ok
+    $same = $true
+    foreach ($n in $rt2Names) { if ((Get-Content -LiteralPath (Join-Path $rt2 $n) -Raw) -ne "# a file the 0.84.0 scaffold placed`n") { $same = $false } }
+    $ok = (Assert-True "RT2 $($mode.N): every old file is left byte-identical and the Node successors are placed" `
+            ($same -and (Test-Path -LiteralPath (Join-Path $rt2 'scripts/harness/harness_gates.mjs') -PathType Leaf)) "an old file changed, or a successor is missing") -and $ok
+}
+$ok = (Assert-True 'RT2 a target without the old Python files gets no retired line' ($rt2First.Out -notmatch 'retired:') "out=$($rt2First.Out)") -and $ok
 
 # --- P: a non-git target places the hooks and says they will not run ---------------------------
 # The fixture targets in A-J are plain directories, so this is the branch they all exercised

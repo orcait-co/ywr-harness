@@ -12,6 +12,15 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.85.0 — 2026-11-26
+
+- 게이트·문서 스크립트가 모두 Node 22 로 바뀌었습니다(ywr-harness ADR 0220 2단계, ywr-harness ADR 0223). `scripts/harness/` 의 `harness_gates`, `harness_retro`, `verify_map`, `slice_note` 와 `docs/` 의 `build_docs`, `check_docs` 가 `.mjs` 가 됐고, 공용 라이브러리 `harness_config.mjs` 와 git 호출을 맡는 `harness_git.mjs` 가 같이 배치됩니다. 하는 일, 옵션, 출력, 종료 코드는 전과 같습니다. 명령은 `node scripts/harness/slice_note.mjs add …` 처럼 `node` 로 실행합니다. 이제 `python` 은 멤버 머신에서도 repo 의 CI 에서도 하네스에 필요하지 않습니다. 전제 조건 검사와 `/ywr-harness:setup` 은 `node` 22 이상만 확인하고 Python 설치를 권하지 않습니다.
+- `/ywr-harness:harness-init` 을 다시 돌리면 `.mjs` 파일과 새 CI 워크플로(`actions/setup-node` 로 Node 22 를 먼저 깔고 그 `node` 로 하네스 단계를 실행합니다)와 `node` 로 도는 git hook 이 배치됩니다. 예전 `scripts/harness/*.py` 5개와 `docs/build_docs.py`, `docs/check_docs.py` 는 지우지 않고 `retired: <경로> — …` 한 줄씩 알려 줍니다. 아무 일도 하지 않는 파일이니 `git rm` 으로 지우세요.
+- `.harness.json` 에 `{"runner": "python", "script": "docs/check_docs.py"}` 로 선언한 게이트는, `docs/check_docs.mjs` 가 있으면 게이트가 `node docs/check_docs.mjs` 로 번역해 실행하고 경고 한 줄로 알립니다. 선언 파일은 고치지 않으니 `{"runner": "node", "script": "docs/check_docs.mjs"}` 로 직접 바꾸세요. 번역은 이 한 경로만 합니다.
+- `docs.customer.panels` 의 모듈은 `.mjs` 만 받습니다. `render_panel(repoRoot)` 를 내보내고 `CSS`, `UPDATED`, `TAB_CHIPS` 는 선택입니다. `.py` 모듈을 선언하면 문서 빌드가 경고 뒤에 exit 1 로 거절하고 아무 산출물도 쓰지 않습니다. 패널을 쓰는 repo 는 `/ywr-harness:harness-init` 으로 올린 뒤 첫 빌드 전에 패널을 `.mjs` 로 옮겨야 합니다.
+- `.harness.json` 의 정규식은 Node 에서도 Python 처럼 읽습니다. `\w`, `\d`, `\b` 는 한글 같은 유니코드 글자를 포함하고, `.` 은 줄바꿈 하나만 빼며, `$` 는 마지막 줄바꿈 앞에서도 맞습니다. Unicode 모드가 거절하는 패턴은 ASCII 로 읽고 경고 한 줄을 냅니다. `(?P<이름>…)`, 인라인 플래그, `\A`, `\Z` 는 읽지 못하니 경고가 나오면 패턴을 고치세요.
+- 옛 scaffold 가 만든 `docs/prompts/ready-report.md`, `docs/prompts/review-start.md`, `CLAUDE.md` 에는 `python scripts/harness/…py` 명령이 남아 있습니다. 시드라 덮어쓰지 않으니 `node scripts/harness/….mjs` 로 직접 고치세요.
+
 ## v0.84.0 — 2026-11-26
 
 - 멤버가 실행하는 스크립트가 모두 Node 로 바뀌었습니다(ywr-harness ADR 0220 1단계). `/ywr-harness:harness-init` 은 `skills/harness-init/init.mjs`, `/ywr-harness:report-issue` 는 `skills/report-issue/report-issue.mjs`, 상태 줄 설치는 `statusline/install.mjs` 를 `node` 로 실행합니다. 하는 일과 출력, 종료 코드는 전과 같습니다. 옵션 이름은 Node 형식입니다: `--target`, `--dry-run`, `--force`, `--allow-upstream-ahead`, `--description=…`, `--file --body-path=…`, `--claude-dir`. 안내 문구도 같은 이름(`--force` 등)을 씁니다.

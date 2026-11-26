@@ -16,6 +16,6 @@ docs/customer.artifact.html
 # Secrets — commit .env.example only.
 .env
 
-# Python bytecode (the vendored scripts/harness/*.py compile on import).
+# Python bytecode (any Python script a repo still keeps compiles to it on import).
 __pycache__/
 *.pyc

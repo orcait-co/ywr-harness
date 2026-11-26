@@ -20,7 +20,7 @@ Invoke: `/ywr-harness:artifact-publish`. One confirmation before anything leaves
 Run the emitter and read its `artifact:` lines (the vendored copy is the repo's own):
 
 ```
-python scripts/harness/harness_gates.py --all
+node scripts/harness/harness_gates.mjs --all
 ```
 
 - `artifact: ok — … · source <path> committed · check declared …` — a publishable item.

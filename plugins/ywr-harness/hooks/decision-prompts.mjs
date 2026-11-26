@@ -10,7 +10,7 @@
 //   Decision 10). The stage data is the call's args, which hold the review level. The review runs as a
 //   background agent, and its findings reach the session as a later notification. The module adds nothing at
 //   that notification.
-// - `ready-report`: a main-loop shell call whose last step is `harness_gates.py --tree` (`isTreeRun` of
+// - `ready-report`: a main-loop shell call whose last step is `harness_gates.mjs --tree` (`isTreeRun` of
 //   `slice-status.mjs`, which stays unregistered — ywr-harness ADR 0140; this module imports its pure half only).
 //
 // `slice-close` is not a stage: its detector needs `skill.prompt`, and the built-in guard

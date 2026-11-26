@@ -317,7 +317,7 @@ Try-Case 'bare-skill-slash' {
 # would read as "the consumer is behind" instead of "the canon ships two different files".
 Try-Case 'vendored-copy-diverged' {
     param($d)
-    $p = Join-Path $d 'skills/harness-init/templates/scripts/harness/harness_config.py'
+    $p = Join-Path $d 'skills/harness-init/templates/scripts/harness/harness_config.mjs'
     Add-Content -LiteralPath $p -Value "`n# local drift`n"
 }
 
@@ -328,17 +328,17 @@ Try-Case 'vendored-copy-diverged' {
 # exit 1 from any other check would otherwise keep the case green over a reverted compare (review
 # 2026-09-28, both low). The two lines must differ or the swap proves nothing; that throws.
 $dir = Reset-Fixture $pluginFx
-$p = Join-Path $dir 'skills/harness-init/templates/scripts/harness/harness_config.py'
+$p = Join-Path $dir 'skills/harness-init/templates/scripts/harness/harness_config.mjs'
 $b = [IO.File]::ReadAllBytes($p)
 $e0 = [Array]::IndexOf($b, [byte]10)
 $e1 = if ($e0 -ge 0) { [Array]::IndexOf($b, [byte]10, $e0 + 1) } else { -1 }
-if ($e1 -lt 0 -or [Linq.Enumerable]::SequenceEqual([byte[]]$b[0..$e0], [byte[]]$b[($e0 + 1)..$e1])) { throw 'vendored-copy-reordered: harness_config.py has no two distinct leading lines to swap' }
+if ($e1 -lt 0 -or [Linq.Enumerable]::SequenceEqual([byte[]]$b[0..$e0], [byte[]]$b[($e0 + 1)..$e1])) { throw 'vendored-copy-reordered: harness_config.mjs has no two distinct leading lines to swap' }
 $tail = if ($e1 + 1 -lt $b.Length) { $b[($e1 + 1)..($b.Length - 1)] } else { @() }
 [IO.File]::WriteAllBytes($p, [byte[]]($b[($e0 + 1)..$e1] + $b[0..$e0] + $tail))
 $g = Invoke-Gate (Join-Path $dir 'manifest-gate.mjs')
-$caught = ($g.Code -eq 1) -and ($g.Out -match 'vendored copy DIVERGED: harness_config\.py')
-if ($caught) { Write-Host 'PASS [vendored-copy-reordered] gate exited 1 and named harness_config.py DIVERGED' -ForegroundColor Green }
-else { Write-Host "FAIL [vendored-copy-reordered] exit=$($g.Code) aborted=$($g.Aborted) diverged-named=$([bool]($g.Out -match 'vendored copy DIVERGED: harness_config\.py'))" -ForegroundColor Red }
+$caught = ($g.Code -eq 1) -and ($g.Out -match 'vendored copy DIVERGED: harness_config\.mjs')
+if ($caught) { Write-Host 'PASS [vendored-copy-reordered] gate exited 1 and named harness_config.mjs DIVERGED' -ForegroundColor Green }
+else { Write-Host "FAIL [vendored-copy-reordered] exit=$($g.Code) aborted=$($g.Aborted) diverged-named=$([bool]($g.Out -match 'vendored copy DIVERGED: harness_config\.mjs'))" -ForegroundColor Red }
 $results += [pscustomobject]@{ case = 'vendored-copy-reordered'; exit = $(if ($caught) { 1 } else { 0 }) }
 
 # ADR 0182 and ADR 0185 share one fixture and one gate run: the two walks read disjoint trees, so one
@@ -389,7 +389,7 @@ $results += [pscustomobject]@{ case = 'runtime-canon-ref-bare'; exit = $(if ($ca
 
 Try-Case 'vendored-copy-orphaned' {
     param($d)
-    Remove-Item -LiteralPath (Join-Path $d 'scripts/harness_config.py') -Force
+    Remove-Item -LiteralPath (Join-Path $d 'scripts/harness_config.mjs') -Force
 }
 
 Try-Case 'unparseable-manifest' {
@@ -501,10 +501,10 @@ Record 'placement-drifted' ($g.rc -eq 1 -and $g.out -match 'dogfood placement DI
 # A CR-only difference is NOT drift — ADR 0033's fold contract, shared with the scaffold report
 # and the refresh nudge (the seed .gitattributes pins *.ps1 eol=crlf, so raw bytes MUST not decide).
 $r = New-CanonShape 'placement-cr-only'
-$tpl = [IO.File]::ReadAllBytes((Join-Path $r 'plugins/ywr-harness/skills/harness-init/templates/scripts/harness/harness_config.py'))
+$tpl = [IO.File]::ReadAllBytes((Join-Path $r 'plugins/ywr-harness/skills/harness-init/templates/scripts/harness/harness_config.mjs'))
 $crlf = [System.Text.Encoding]::Latin1.GetString($tpl).Replace("`r`n", "`n").Replace("`n", "`r`n")
 New-Item -ItemType Directory -Force -Path (Join-Path $r 'scripts/harness') | Out-Null
-[IO.File]::WriteAllBytes((Join-Path $r 'scripts/harness/harness_config.py'), [System.Text.Encoding]::Latin1.GetBytes($crlf))
+[IO.File]::WriteAllBytes((Join-Path $r 'scripts/harness/harness_config.mjs'), [System.Text.Encoding]::Latin1.GetBytes($crlf))
 $g = Run-GateAt $r
 Record 'placement-cr-only-not-drift' ($g.rc -eq 0 -and $g.out -match 'dogfood placements identical .*1 checked') "exit=$($g.rc) identical-1-checked=$([bool]($g.out -match '1 checked'))"
 
@@ -859,7 +859,10 @@ if (-not $gitHere -or -not $realAdrDir -or -not (Test-Path -LiteralPath $realAdr
     $g = Run-GateAt $r
     Record 'adr-ref-control-resolves' ($g.rc -eq 0 -and $g.out -match 'adr references: [1-9]\d* reference\(s\) in \d+ of \d+ tracked text file\(s\) resolve') "exit=$($g.rc) resolved-line=$([bool]($g.out -match 'adr references: \d+ reference'))"
     # The same control run carries the stack and git-boundary checks over the copied canon tree (ADR 0158).
-    Record 'stack-control-passes' ($g.rc -eq 0 -and $g.out -match 'PASS  zero-install stack: [1-9]\d* python import\(s\) in \d+ file\(s\) and [1-9]\d* js specifier' -and $g.out -match 'PASS  git boundary: [1-9]\d* direct git call\(s\) in listed \.py files, each marked') "exit=$($g.rc)"
+    # The copied tree holds no .py file (the canon's one Python file, the managed-settings builder, sits outside the
+    # plugin), so the stack line reads zero python imports and the git-boundary line zero marked sites; the s1.py and
+    # g1.py fixtures below are the cases that prove each check can fail.
+    Record 'stack-control-passes' ($g.rc -eq 0 -and $g.out -match 'PASS  zero-install stack: \d+ python import\(s\) in \d+ file\(s\) and [1-9]\d* js specifier' -and $g.out -match 'PASS  git boundary: \d+ direct git call\(s\) in listed \.py files, each marked') "exit=$($g.rc)"
 
     $r = New-AdrRefRepo 'adr-ref-unresolved' @{ 'scripts/note.md' = "see ADR $badNum for why`n" }
     $g = Run-GateAt $r

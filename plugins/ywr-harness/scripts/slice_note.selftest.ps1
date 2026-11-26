@@ -11,19 +11,19 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../lib/selftest-lib.ps1')   # assertion core
 
-$note = Join-Path $PSScriptRoot 'slice_note.py'
+$note = Join-Path $PSScriptRoot 'slice_note.mjs'
 $fxBase = New-FixtureRoot 'slice-note-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 
-$py = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+$py = @('node') | ForEach-Object { Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue } | Select-Object -First 1
 if (-not $py) {
-    # Reported skip, never silent: CI has python, so absence THERE would mean the suite stopped running.
+    # Reported skip, never silent: CI has node, so absence THERE would mean the suite stopped running.
     if ($env:CI) {
-        Write-Host 'FAIL — python absent on CI; a missing interpreter is not a pass' -ForegroundColor Red
+        Write-Host 'FAIL — node absent on CI; a missing interpreter is not a pass' -ForegroundColor Red
         Remove-FixtureRoot $fxBase
         exit 1
     }
-    Write-Host 'SKIP [slice_note] python absent (reported, not silent) — CI runs this suite' -ForegroundColor Yellow
+    Write-Host 'SKIP [slice_note] node absent (reported, not silent) — CI runs this suite' -ForegroundColor Yellow
     Remove-FixtureRoot $fxBase
     exit 0
 }

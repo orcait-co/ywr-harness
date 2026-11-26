@@ -88,7 +88,7 @@
 // prints NOTHING. SessionStart cannot block anything; this hook does not try — exit 0 always,
 // fail-open like its siblings. This hook writes nothing, ever.
 //
-// Slice-note rule (ywr-harness ADR 0172 decision 8, option P): when the repo root holds scripts/harness/slice_note.py
+// Slice-note rule (ywr-harness ADR 0172 decision 8, option P): when the repo root holds scripts/harness/slice_note.mjs
 // as a FILE, the hook also states the rule for writing a slice note, as English additionalContext. The hook
 // is matcher-less, so the rule rides every source, a compaction included. It is the one output that is not a
 // drift finding: with NO drift it is the whole output (additionalContext only, no systemMessage), so the
@@ -143,7 +143,7 @@ const git = gitRun
 
 // The slice-note rule (ywr-harness ADR 0172). ASCII only, one paragraph; the vendored path is what a session can name
 // (it cannot expand ${CLAUDE_PLUGIN_ROOT}).
-const SLICE_NOTE_RULE = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `python scripts/harness/slice_note.py add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner\'s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
+const SLICE_NOTE_RULE = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `node scripts/harness/slice_note.mjs add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner\'s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
 
 // The slice rules (ywr-harness ADR 0183): the harness procedure that the CLAUDE.md seed carried until 0.72.0. ASCII
 // only except the title's middle dot. Each rule carries its own copy markers: phrases that only the
@@ -160,12 +160,12 @@ const SLICE_RULES = [
   {
     id: 'once',
     copy: ['review basis:', 'bounded re-review'],
-    text: '- The review runs once per slice. Every finding gets one of three buckets. The severity limits the bucket: an `important`, `pre_existing` or ungraded finding ends fixed or false on reading, only a `nit` whose fix would change a design or a coverage ends valid with no action with an open item, and a fix that rests on an untested host behaviour gets a probe first; when the owner defers that probe, the finding ends valid with no action as an owner decision, with an open item (ywr-harness ADR 0216). A fix closes with re-run gates over its own files, and every fixed finding except a `nit` gets one fix check (ywr-harness ADR 0215). No fix gets a re-review. When a fix needs more review, record an open item: `python scripts/harness/slice_note.py add risk \"open item: review <files and lines> of the <file:line> fix; <why>\"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).',
+    text: '- The review runs once per slice. Every finding gets one of three buckets. The severity limits the bucket: an `important`, `pre_existing` or ungraded finding ends fixed or false on reading, only a `nit` whose fix would change a design or a coverage ends valid with no action with an open item, and a fix that rests on an untested host behaviour gets a probe first; when the owner defers that probe, the finding ends valid with no action as an owner decision, with an open item (ywr-harness ADR 0216). A fix closes with re-run gates over its own files, and every fixed finding except a `nit` gets one fix check (ywr-harness ADR 0215). No fix gets a re-review. When a fix needs more review, record an open item: `node scripts/harness/slice_note.mjs add risk \"open item: review <files and lines> of the <file:line> fix; <why>\"`. A separate rule: a rebase or merge after the review re-arms it only over the overlap: reviewed files that the incoming commits touched, plus each hand-resolved conflict. An empty overlap keeps the review, recorded in the close as `review basis:` (ywr-harness ADR 0028, ywr-harness ADR 0072, ywr-harness ADR 0200).',
   },
   {
     id: 'close',
     copy: ['owner-typed', 'main session calls it'],
-    text: '- The close: `/ywr-harness:slice-close` writes the handoff and the one commit. The person types it, or the main session calls it; a subagent never calls it (ywr-harness ADR 0201). The session prepares the close: it runs every command that `python scripts/harness/harness_gates.py` printed, the review with its fix checks, and verify. It writes no handoff and makes no commit itself. Its ready report ends with the line that `python scripts/harness/harness_gates.py --tree` printed after the final edit. After the report the session asks each open owner question with AskUserQuestion, then calls the skill. The close reuses the report only while it is verbatim in the same session and that line is unchanged; a new session or a compaction summary runs the full close (ywr-harness ADR 0105).',
+    text: '- The close: `/ywr-harness:slice-close` writes the handoff and the one commit. The person types it, or the main session calls it; a subagent never calls it (ywr-harness ADR 0201). The session prepares the close: it runs every command that `node scripts/harness/harness_gates.mjs` printed, the review with its fix checks, and verify. It writes no handoff and makes no commit itself. Its ready report ends with the line that `node scripts/harness/harness_gates.mjs --tree` printed after the final edit. After the report the session asks each open owner question with AskUserQuestion, then calls the skill. The close reuses the report only while it is verbatim in the same session and that line is unchanged; a new session or a compaction summary runs the full close (ywr-harness ADR 0105).',
   },
   {
     id: 'handoff',
@@ -212,6 +212,7 @@ const RETIRED_SEED = [
   { phrase: 'fix_proof.py check', files: [READY], version: '0.82.0', adr: '0215' },
   { phrase: 'one `class:` line per finding', files: ['REVIEW.md'], version: '0.82.0', adr: '0215' },
   { phrase: 'pwsh docs/build.ps1', files: CLAUDE_FILES, version: '0.84.0', adr: '0220' },
+  { phrase: 'python scripts/harness/slice_note.py', files: [READY, 'docs/prompts/review-start.md'], version: '0.85.0', adr: '0223' },
 ]
 
 // Whitespace runs to one space: the form both a phrase and a file text are compared in.
@@ -247,7 +248,7 @@ function retiredText(hits, rootShow, templatesShow) {
 // The review canon import (ywr-harness ADR 0215, ywr-harness ADR 0217). `/code-review` reads CLAUDE.md and never a separate
 // canon file, so a canon outside the memory files reaches the slice review only through an `@<path>` import, and
 // harness-init never adds one to an existing CLAUDE.md.
-// The rule is the emitter's (harness_gates.py canon_importer); keep the two in step. Claude Code reads an import
+// The rule is the emitter's (harness_gates.mjs canon_importer); keep the two in step. Claude Code reads an import
 // anywhere in the text but skips code spans and fenced code blocks, so the check drops both first. A token then
 // counts when it starts a line or follows whitespace. A relative token resolves against the folder of the file that
 // holds it.
@@ -322,7 +323,7 @@ const normTarget = p => (process.platform === 'win32' ? path.resolve(p).toLowerC
 // The first of IMPORT_FILES whose text imports `canon`, or ''. A token counts when it starts a line or follows
 // whitespace, after importText removed the code. A backslash-escaped space belongs to the token. A relative token
 // resolves against the folder of the file that holds it, `~/` against the home folder, and an absolute token stands
-// as written. The rule is the emitter's (harness_gates.py canon_importer); keep the two in step.
+// as written. The rule is the emitter's (harness_gates.mjs canon_importer); keep the two in step.
 function canonImporter(root, texts, canon) {
   const want = normTarget(path.resolve(root, canon))
   for (const rel of IMPORT_FILES) {
@@ -337,7 +338,7 @@ function canonImporter(root, texts, canon) {
 }
 
 // True when `canon` is one of IMPORT_FILES, a memory file the session loads at its start, so it needs no import
-// (ywr-harness ADR 0217). The rule is the emitter's (harness_gates.py memory_canon); keep the two in step.
+// (ywr-harness ADR 0217). The rule is the emitter's (harness_gates.mjs memory_canon); keep the two in step.
 function memoryCanon(root, canon) {
   const want = normTarget(path.resolve(root, canon))
   return IMPORT_FILES.some(rel => normTarget(path.resolve(root, rel)) === want)
@@ -524,14 +525,17 @@ async function main(payload) {
 
   // File-level sentinel: the directory gate above is a plausibility bound; ownership is decided
   // here. A repo with its OWN scripts/harness/ but none of the mapped vendored scripts was not
-  // scaffolded by us — counting everything "missing" there would be a false nudge.
-  const sentinels = toolchain.map(e => e[1]).filter(v => /^scripts\/harness\/.+\.py$/i.test(v))
-  if (!sentinels.length) {
+  // scaffolded by us — counting everything "missing" there would be a false nudge. The Python names that
+  // an older scaffold placed (ywr-harness ADR 0223) count too: a repo that has not taken the Node scripts
+  // yet is the one this nudge exists for.
+  const nodeSentinels = toolchain.map(e => e[1]).filter(v => /^scripts\/harness\/.+\.mjs$/i.test(v))
+  const sentinels = [...nodeSentinels, ...nodeSentinels.map(v => v.replace(/\.mjs$/i, '.py'))]
+  if (!nodeSentinels.length) {
     // The regex above assumes the map's CONTENTS, not just its extractability — if the canon
     // ever moves the vendored scripts, an unchecked empty list would silently disable this hook
     // on every repo forever, which is the anti-vacuity failure mode this hook exists to refuse
     // (review 2026-08-06, medium).
-    return extractionDrift('추출된 배치 맵에 scripts/harness/*.py 대상이 없어, 이 훅이 기준으로 삼는 ownership sentinel이 placement.mjs에서 이동했습니다')
+    return extractionDrift('추출된 배치 맵에 scripts/harness/*.mjs 대상이 없어, 이 훅이 기준으로 삼는 ownership sentinel이 placement.mjs에서 이동했습니다')
   }
   if (!sentinels.some(s => isFile(path.join(root, s)))) return
 
@@ -580,7 +584,7 @@ async function main(payload) {
   // retired-text part and the canon-import part come last (ywr-harness ADR 0207, ywr-harness ADR 0215). '' = no rule text.
   const rule = ruleText({
     harnessJson,
-    sliceNote: isFile(path.join(root, 'scripts/harness/slice_note.py')),
+    sliceNote: isFile(path.join(root, 'scripts/harness/slice_note.mjs')),
     claudeMd: CLAUDE_FILES.map(rel => raw.get(rel)).join('\n'),
     restate,
     retiredCtx: notes.ctx,

@@ -45,6 +45,16 @@ const eq = (name, got, want) => {
   results.push(g === w ? [name, 'OK'] : [name, 'FAIL got ' + g + ' want ' + w])
 }
 const tick = (ms = 15) => new Promise(r => setTimeout(r, ms))
+// The module's list holds node alone (ywr-harness ADR 0223 took python out). Every path that handles
+// more than one tool (order, one install at a time, concurrent probes, the alias retry of a second
+// command) still needs a second entry, so the suite adds a fixture tool shaped like the retired python
+// entry to the module's own list. The list as shipped is asserted first.
+const SHIPPED = [M.TOOLS.map(t => t.name), M.TOOLS.map(t => t.min), M.TOOLS.map(t => t.winget)]
+M.TOOLS.push({
+  name: 'python', argv: ['python', '--version'], min: [3, 9], winget: 'Python.Python.3.13',
+  other: 'macOS: `brew install python` · Linux: the distribution package (the command must be `python`)',
+  uses: 'the fixture tool fails',
+})
 const T = Object.fromEntries(M.TOOLS.map(t => [t.name, t]))
 // Korean text is built from escapes, so this file stays ASCII.
 const K_ESC = 'Esc 를 누르면 설치가 끊길 수 있습니다'   // Esc 를 누르면 설치가 끊길 수 있습니다
@@ -63,9 +73,9 @@ const BAD = new RegExp('[' + ch(0) + '-' + ch(0x1f) + ch(0x7f) + ch(0x85) + ch(0
 // Pure half
 // ---------------------------------------------------------------------------------------------
 
-eq('TOOLS: node, python in that order; min 22.0 / 3.9; the two winget ids',
-  [M.TOOLS.map(t => t.name), M.TOOLS.map(t => t.min), M.TOOLS.map(t => t.winget)],
-  [['node', 'python'], [[22, 0], [3, 9]], ['OpenJS.NodeJS.LTS', 'Python.Python.3.13']])
+eq('TOOLS: node alone as shipped; min 22.0; its winget id (python left the list, ywr-harness ADR 0223)',
+  SHIPPED,
+  [['node'], [[22, 0]], ['OpenJS.NodeJS.LTS']])
 eq('constants: COMMAND, probe timeout, winget up-to-date code 0x8A15002B',
   [M.COMMAND, M.PROBE_TIMEOUT_MS, M.WINGET_UP_TO_DATE], ['ywr-harness:setup', 15000, 2316632107])
 
@@ -173,15 +183,15 @@ eq('V11 verdictOf: a malformed outcome is unknown',
 {
   const ok = M.resultLine(T.node, 0), upd = M.resultLine(T.node, 2316632107), upd2 = M.resultLine(T.node, -1978335189)
   const bad = M.resultLine(T.python, 1603), nul = M.resultLine(T.python, null)
-  // the PATH hint carries the word PATH; the python-only Windows app-execution-alias hint carries python.exe
+  // the PATH hint carries the word PATH; the Windows app-execution-alias hint (python only, retired with it) carried python.exe
   const hint = s => [s.includes('PATH'), s.includes('python.exe')]
   eq('R1 resultLine: 0 is a non-failure line with the PATH hint, and no python alias hint for node',
     [ok.startsWith('- node: '), ok.includes('winget exit'), hint(ok)], [true, false, [true, false]])
   eq('R2 resultLine: 0x8A15002B as unsigned and as signed give the same non-failure line, different from exit 0, PATH hint only',
     [upd === upd2, upd.includes('winget exit'), upd === ok, upd.startsWith('- node: '), hint(upd)], [true, false, false, true, [true, false]])
   const py0 = M.resultLine(T.python, 0), pyUpd = M.resultLine(T.python, 2316632107), pyUpd2 = M.resultLine(T.python, -1978335189)
-  eq('R6 resultLine: the python alias hint shows for python on exit 0 and on up-to-date (both encodings), on top of the PATH hint, and is not a failure',
-    [hint(py0), hint(pyUpd), pyUpd === pyUpd2, py0.startsWith('- python: '), py0.includes('winget exit'), pyUpd.includes('winget exit')], [[true, true], [true, true], true, true, false, false])
+  eq('R6 resultLine: no tool gets the python alias hint any more: the fixture tool on exit 0 and on up-to-date (both encodings) shows the PATH hint only and is not a failure',
+    [hint(py0), hint(pyUpd), pyUpd === pyUpd2, py0.startsWith('- python: '), py0.includes('winget exit'), pyUpd.includes('winget exit')], [[true, false], [true, false], true, true, false, false])
   eq('R7 resultLine: node gets the PATH hint without the python alias hint; failure lines carry neither hint',
     [hint(M.resultLine(T.node, 0)), hint(M.resultLine(T.node, 2316632107)), hint(bad), hint(nul)], [[true, false], [true, false], [false, false], [false, false]])
   eq('R3 resultLine: 1603 is a failure naming the exit and the manual command',
@@ -728,8 +738,8 @@ const child = (pieces, code, { throwFirst = false } = {}) => (arg, done) => {
   eq('O2 resultLine(old): up-to-date (unsigned and signed) names the old version too, differs from exit 0 and from the no-old line',
     [pu === pu2, pu.includes('20.11'), pu.includes('winget exit'), hint(pu), pu === p0, pu === M.resultLine(T.node, UP_U)], [true, true, false, [true, false], false, false])
   const y0 = M.resultLine(T.python, 0, '3.8'), yu = M.resultLine(T.python, UP_S, '3.8')
-  eq('O3 resultLine(old): an old python gets the old-version hint WITHOUT the python alias hint (on 0 and on up-to-date); a missing python still gets it',
-    [y0.includes('3.8'), hint(y0), yu.includes('3.8'), hint(yu), M.resultLine(T.python, 0).includes('python.exe'), y0 === M.resultLine(T.python, 0)], [true, [true, false], true, [true, false], true, false])
+  eq('O3 resultLine(old): an old fixture tool gets the old-version hint WITHOUT the python alias hint (on 0 and on up-to-date); a missing one no longer gets it either (the hint left with python)',
+    [y0.includes('3.8'), hint(y0), yu.includes('3.8'), hint(yu), M.resultLine(T.python, 0).includes('python.exe'), y0 === M.resultLine(T.python, 0)], [true, [true, false], true, [true, false], false, false])
   eq('O4 resultLine(old): a failure line is the same with or without the old version',
     [M.resultLine(T.python, 1603, '3.8') === M.resultLine(T.python, 1603), M.resultLine(T.node, null, '1.0') === M.resultLine(T.node, null)], [true, true])
   const nu = M.resultNote(T.node, UP_U, '20.11'), nu2 = M.resultNote(T.node, UP_S, '20.11'), nn = M.resultNote(T.node, UP_U)

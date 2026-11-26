@@ -133,7 +133,7 @@ function Invoke-Hook([string]$Repo, [string]$Hook, [string]$StdIn, [string]$Path
     $prevPath = $env:PATH
     Push-Location $Repo
     try {
-        # $PathOverride REPLACES the hook's PATH (no git toolchain prepended) — the P5 no-python arm.
+        # $PathOverride REPLACES the hook's PATH (no git toolchain prepended) — the P5 no-node arm.
         if ($PathOverride) { $env:PATH = $PathOverride }
         elseif ($shExtraPath.Count) { $env:PATH = ($shExtraPath -join ';') + ';' + $prevPath }
         if ($null -ne $StdIn) {
@@ -169,8 +169,8 @@ $rB = Invoke-Hook $b $preCommit $null
 $ok = (Assert-True 'B nothing staged exits 0' ($rB.Code -eq 0) "exit=$($rB.Code) out=$($rB.Out)") -and $ok
 
 # --- B2..B6: a committed enabledPlugins is refused (ADR 0022, supersedes 0021) ------------------
-# Deliberately OUTSIDE the $pyAvail block below. The gate protects ADR 0010's non-forcing invariant,
-# so it must fire in a repo with no emitter and no python — these fixtures have neither, which is
+# Deliberately OUTSIDE the stub-emitter block below. The gate protects ADR 0010's non-forcing invariant,
+# so it must fire in a repo with no emitter and no node — these fixtures have neither, which is
 # what proves the check runs ahead of both skip paths.
 $b2 = New-Repo 'pc-enabled-plugins'
 Write-File $b2 '.claude/settings.json' "{`n  `"enabledPlugins`": { `"ywr-harness@ywrlabs`": true }`n}`n"
@@ -232,22 +232,21 @@ $ok = (Assert-True 'B6 the hook does NOT catch an escaped key (known limit, CI d
 # the hook's behaviour and nothing else.
 function New-StubRepo([string]$Name, [string]$GateBlock) {
     $p = New-Repo $Name
+    # The gate blocks below are written as print("...") lines; the stub gives them a Node `print`.
     $stub = @"
-import sys
+const print = (s) => console.log(s)
 print("scope: 1 explicit file(s)")
 print("gates:")
 $GateBlock
 print("review tier: small — stub")
 "@
-    Write-File $p 'scripts/harness/harness_gates.py' $stub
+    Write-File $p 'scripts/harness/harness_gates.mjs' $stub
     Write-File $p 'app.py' "print(1)`n"
     & git -C $p add -A 2>$null
     return $p
 }
-$pyAvail = [bool](@('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1)
-if (-not $pyAvail) {
-    Write-Host 'SKIP [C-G pre-commit] python absent (reported, not silent) — CI has python' -ForegroundColor Yellow
-} else {
+# The emitter and its stub run on the Node that runs this suite, so no tool lookup can skip these cases.
+if ($true) {
     # C: a passing file-scoped gate runs and the commit proceeds
     $c = New-StubRepo 'pc-pass' 'print("  [g] 1 file(s)")
 print("    true")'
@@ -313,7 +312,7 @@ print("    (no gate declared for this group — nothing deterministic runs on it
     # E5: an ungrouped file is REPORTED at commit time (ADR 0062, issue #55). CI fails on the
     # emitter's `ungrouped (` header; the hook does not — the line closes the local/CI asymmetry
     # without changing the advisory exit contract, so the commit still proceeds. The stub prints
-    # the header VERBATIM as harness_gates.py emits it since ADR 0062 (long tail, em dashes) — a
+    # the header VERBATIM as harness_gates.mjs emits it since ADR 0062 (long tail, em dashes) — a
     # fixture with the old short text would keep passing while the real parser drifted (review
     # 2026-08-28, medium); case G below is the end-to-end pairing with the real emitter.
     $e5 = New-StubRepo 'pc-ungrouped' 'print("  [g] 1 file(s)")
@@ -363,7 +362,7 @@ print("    false   # whole-program: gate on slice files or newly introduced only
     # matches files but declares no gates is the deterministic path through the real code.
     $g = New-Repo 'pc-e2e'
     New-Item -ItemType Directory -Force -Path (Join-Path $g 'scripts/harness') | Out-Null
-    foreach ($n in @('harness_config.py', 'harness_gates.py')) {
+    foreach ($n in @('harness_config.mjs', 'harness_git.mjs', 'harness_gates.mjs')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "templates/scripts/harness/$n") -Destination (Join-Path $g "scripts/harness/$n") -Force
     }
     Write-File $g '.harness.json' '{ "groups": [ { "name": "src", "match": "^src/.*\\.py$", "gates": [] } ] }'
@@ -381,7 +380,7 @@ print("    false   # whole-program: gate on slice files or newly introduced only
     # itself must be DEFERRED (whole-program), never run here.
     $g2 = New-Repo 'pc-e2e-art'
     New-Item -ItemType Directory -Force -Path (Join-Path $g2 'scripts/harness'), (Join-Path $g2 'docs') | Out-Null
-    foreach ($n in @('harness_config.py', 'harness_gates.py')) {
+    foreach ($n in @('harness_config.mjs', 'harness_git.mjs', 'harness_gates.mjs')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "templates/scripts/harness/$n") -Destination (Join-Path $g2 "scripts/harness/$n") -Force
     }
     $g2url = 'https://claude.ai/code/artifact/00000000-0000-0000-0000-00000000ab68'
@@ -407,7 +406,7 @@ print("    false   # whole-program: gate on slice files or newly introduced only
     # whose git never quotes would pass this case vacuously.
     $g3 = New-Repo 'pc-e2e-quotepath'
     New-Item -ItemType Directory -Force -Path (Join-Path $g3 'scripts/harness') | Out-Null
-    foreach ($n in @('harness_config.py', 'harness_gates.py')) {
+    foreach ($n in @('harness_config.mjs', 'harness_git.mjs', 'harness_gates.mjs')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "templates/scripts/harness/$n") -Destination (Join-Path $g3 "scripts/harness/$n") -Force
     }
     Write-File $g3 '.harness.json' '{ "groups": [ { "name": "docs", "match": "^docs/", "gates": [] } ] }'
@@ -438,7 +437,7 @@ print("    false   # whole-program: gate on slice files or newly introduced only
     # The decoy `src/app/i/page.sh` is committed, not staged: a glob of `[id]` would hand IT over.
     $g4 = New-Repo 'pc-e2e-routes'
     New-Item -ItemType Directory -Force -Path (Join-Path $g4 'scripts/harness') | Out-Null
-    foreach ($n in @('harness_config.py', 'harness_gates.py')) {
+    foreach ($n in @('harness_config.mjs', 'harness_git.mjs', 'harness_gates.mjs')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "templates/scripts/harness/$n") -Destination (Join-Path $g4 "scripts/harness/$n") -Force
     }
     Write-File $g4 '.harness.json' '{ "groups": [ { "name": "sh", "match": "^src/", "gates": ["shellcheck"] } ] }'
@@ -850,27 +849,27 @@ if ($null -ne $ssBody -and @($ssCtx | Where-Object { -not $ssEnv.ContainsKey($_)
 # retro's `[stub-retro]` line is what separates "ran the retro" from "exited early".
 # Mutation-checked when written (2026-09-27): dropping `|| true` AND the final `exit 0` fails P2
 # (either one alone is covered by the other — the pair is the contract); dropping the SLICE_RETRO
-# line fails P3; dropping the `[ -f "$RETRO" ]` guard fails P4 with or without python (an
+# line fails P3; dropping the `[ -f "$RETRO" ]` guard fails P4 with or without node (an
 # interpreter error on a missing file, or the SKIP line — non-empty either way); dropping the SKIP
 # echo fails P5.
 function New-RetroRepo([string]$Name, [string]$StubBody) {
     $p = New-Repo $Name
-    if ($StubBody) { Write-File $p 'scripts/harness/harness_retro.py' $StubBody }
+    if ($StubBody) { Write-File $p 'scripts/harness/harness_retro.mjs' $StubBody }
     return $p
 }
 $prevRetroVar = $env:SLICE_RETRO
 Remove-Item Env:SLICE_RETRO -ErrorAction SilentlyContinue
 try {
-    # P4: no vendored retro -> a silent exit 0. The guard runs before python is resolved, so this
-    # case needs no python.
+    # P4: no vendored retro -> a silent exit 0. The guard runs before node is resolved, so this
+    # case needs no node.
     $p4 = New-RetroRepo 'pcm-no-retro' ''
     $rP4 = Invoke-Hook $p4 $postCommit $null
-    $ok = (Assert-True 'P4 without scripts/harness/harness_retro.py the hook exits 0 and prints nothing' ($rP4.Code -eq 0 -and $rP4.Out.Trim() -eq '') "exit=$($rP4.Code) out=$($rP4.Out)") -and $ok
+    $ok = (Assert-True 'P4 without scripts/harness/harness_retro.mjs the hook exits 0 and prints nothing' ($rP4.Code -eq 0 -and $rP4.Out.Trim() -eq '') "exit=$($rP4.Code) out=$($rP4.Out)") -and $ok
 
-    # P5: a retro but no python on PATH -> a REPORTED skip, never a silent pass. PATH is replaced by
+    # P5: a retro but no node on PATH -> a REPORTED skip, never a silent pass. PATH is replaced by
     # one directory holding a `git` shim (the hook's first line needs git). Absence is VERIFIED under
-    # that PATH before asserting (fact 42: a narrowed PATH can keep a python neighbour).
-    $p5 = New-RetroRepo 'pcm-no-python' "print('[stub-retro] ran')`n"
+    # that PATH before asserting (fact 42: a narrowed PATH can keep an interpreter neighbour).
+    $p5 = New-RetroRepo 'pcm-no-node' "console.log('[stub-retro] ran')`n"
     $binDir = Join-Path $fxBase 'pcm-bin'
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
     $gitShim = Join-Path $binDir 'git'
@@ -881,30 +880,28 @@ try {
     $prevPath = $env:PATH
     try {
         $env:PATH = $binDir
-        $pyOnNarrow = "$(& $shPath -c 'command -v python; command -v python3; command -v py' 2>&1)".Trim()
+        $pyOnNarrow = "$(& $shPath -c 'command -v node; command -v nodejs' 2>&1)".Trim()
         $gitOnNarrow = "$(& $shPath -c 'command -v git' 2>&1)".Trim()
     } finally { $env:PATH = $prevPath }
     if ($pyOnNarrow -or -not $gitOnNarrow) {
         # Locally a reported SKIP; on CI a FAIL — a probe that keeps failing there would otherwise
         # retire P5's assertion for good behind an all-green run (review 2026-09-27, low).
-        $p5Why = "the narrowed PATH is not python-free with git (python='$pyOnNarrow' git='$gitOnNarrow')"
+        $p5Why = "the narrowed PATH is not node-free with git (node='$pyOnNarrow' git='$gitOnNarrow')"
         if ($env:CI) { $ok = (Assert-True 'P5 the git-shim PATH probe resolves on CI' $false $p5Why) -and $ok }
         else { Write-Host "SKIP [P5 post-commit] $p5Why — reported, not silent; CI fails on it" -ForegroundColor Yellow }
     } else {
         $rP5 = Invoke-Hook $p5 $postCommit $null $binDir
-        $ok = (Assert-True 'P5 no python on PATH is a reported SKIP line, exit 0, and the retro does not run' ($rP5.Code -eq 0 -and $rP5.Out -match '\[slice-retro\] SKIP — no python on PATH' -and $rP5.Out -notmatch '\[stub-retro\]') "exit=$($rP5.Code) out=$($rP5.Out)") -and $ok
+        $ok = (Assert-True 'P5 no node on PATH is a reported SKIP line, exit 0, and the retro does not run' ($rP5.Code -eq 0 -and $rP5.Out -match '\[slice-retro\] SKIP — no node on PATH' -and $rP5.Out -notmatch '\[stub-retro\]') "exit=$($rP5.Code) out=$($rP5.Out)") -and $ok
     }
 
-    if (-not $pyAvail) {
-        Write-Host 'SKIP [P1-P3 post-commit] python absent (reported, not silent) — CI has python' -ForegroundColor Yellow
-    } else {
+    if ($true) {
         # P1: the retro runs with --repo <toplevel> and its output reaches the author verbatim.
-        $p1 = New-RetroRepo 'pcm-runs' "import sys`nprint('[stub-retro] ran ' + ' '.join(sys.argv[1:]))`n"
+        $p1 = New-RetroRepo 'pcm-runs' "console.log('[stub-retro] ran ' + process.argv.slice(2).join(' '))`n"
         $rP1 = Invoke-Hook $p1 $postCommit $null
         $ok = (Assert-True 'P1 the retro runs with --repo <toplevel> and its output passes through, exit 0' ($rP1.Code -eq 0 -and $rP1.Out -match '\[stub-retro\] ran --repo \S') "exit=$($rP1.Code) out=$($rP1.Out)") -and $ok
 
         # P2: a crashing retro never reads as a failed commit — exit 0, and the crash is still shown.
-        $p2 = New-RetroRepo 'pcm-crash' "import sys`nprint('[stub-retro] crashing')`nsys.exit(3)`n"
+        $p2 = New-RetroRepo 'pcm-crash' "console.log('[stub-retro] crashing')`nprocess.exitCode = 3`n"
         $rP2 = Invoke-Hook $p2 $postCommit $null
         $ok = (Assert-True 'P2 a retro exiting 3 leaves the hook at exit 0 with the retro output shown' ($rP2.Code -eq 0 -and $rP2.Out -match '\[stub-retro\] crashing') "exit=$($rP2.Code) out=$($rP2.Out)") -and $ok
 

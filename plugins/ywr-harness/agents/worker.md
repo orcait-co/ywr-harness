@@ -20,7 +20,7 @@ repo does not have, that rule does not apply — do not invent an equivalent.
   let the orchestrator answer.
 - **Deterministic gates before review** (org guide). Run the gates *this repo declares* against
   the files you touched, and name which ones ran. Where the harness is scaffolded,
-  `python scripts/harness/harness_gates.py <files>` prints them; otherwise take them from the
+  `node scripts/harness/harness_gates.mjs <files>` prints them; otherwise take them from the
   project's `CLAUDE.md`. Never guess at a linter the repo has not adopted — a gate that is not
   declared is not a gate, and a tool that is not installed fails loudly rather than passing.
 - **Report honestly.** A skipped check is reported as skipped, never as passed. "Not run" and

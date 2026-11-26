@@ -1,5 +1,5 @@
 # Selftest for the vendored CI's "Fail on a committed enabledPlugins" step (ADR 0022) — the CI half
-# of the gate whose hook half is githooks.selftest.ps1 B2–B6. The step is inline python inside
+# of the gate whose hook half is githooks.selftest.ps1 B2–B6. The step is an inline Node script inside
 # templates/.github/workflows/harness-gates.yml (TOOLCHAIN payload; the placed copy is byte-identical
 # to it, ADR 0014 / manifest-gate). Until this suite its only run was a fixture harness in a session
 # scratchpad (2026-07-27), so the properties ADR 0022 decided — BOTH settings files · the KEY
@@ -26,7 +26,7 @@ $ok = $true
 # tokens: (1) a `${{ }}` expression spliced into `run:` text — the shell-injection surface this
 # file's own rule (values reach a script through `env:` only) exists to close, and which the
 # secret-scan step carried until dist issue #6; (2) a `uses:` that is not a full 40-hex commit SHA
-# with its `# vX.Y.Z` comment (ADR 0087). They need neither git nor python, so they run ahead of
+# with its `# vX.Y.Z` comment (ADR 0087). They need neither git nor node, so they run ahead of
 # the SKIP exits below, and those exits carry their verdict instead of dropping it.
 # Scope: the shipped template, plus the canon's own .github/workflows when this plugin sits in the
 # canon dogfood shape (the manifest gate's test: plugins/ywr-harness under a root holding both
@@ -333,19 +333,19 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     if (-not $ok) { Write-Host 'ci-enabled-plugins selftest: FAILED (static WS cases)' -ForegroundColor Red; exit 1 }
     exit 0
 }
-$py = @('python', 'python3', 'py') | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-if (-not $py) {
+$node = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $node) {
     if ($env:CI) {
-        Write-Host 'FAIL — python absent on CI; a missing interpreter is not a pass' -ForegroundColor Red
+        Write-Host 'FAIL — node absent on CI; a missing interpreter is not a pass' -ForegroundColor Red
         exit 1
     }
-    Write-Host 'SKIP [ci-enabled-plugins] python absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
+    Write-Host 'SKIP [ci-enabled-plugins] node absent (reported, not silent) — CI runs this gate' -ForegroundColor Yellow
     if (-not $ok) { Write-Host 'ci-enabled-plugins selftest: FAILED (static WS cases)' -ForegroundColor Red; exit 1 }
     exit 0
 }
 
-# --- extract the step's python from the template ------------------------------------------------
-# Anchored on the step NAME, then on the heredoc opener inside that step, then on the closing `PY`.
+# --- extract the step's Node script from the template -------------------------------------------
+# Anchored on the step NAME, then on the heredoc opener inside that step, then on the closing `JS`.
 # The heredoc body shares the opener's indent; that indent is stripped so the text runs as a file.
 # Every anchor is asserted: an empty or missing extraction is a FAIL, not a vacuous green.
 $STEP_NAME = 'Fail on a committed enabledPlugins'
@@ -361,33 +361,33 @@ if ($iName -lt 0) {
 $iOpen = -1
 for ($i = $iName + 1; $i -lt $lines.Count; $i++) {
     if ($lines[$i] -match '^\s*-\s+name:') { break }                      # next step — no heredoc in ours
-    if ($lines[$i] -match "^(\s*)python\s+-\s+<<'PY'\s*$") { $iOpen = $i; $indent = $Matches[1].Length; break }
+    if ($lines[$i] -match '^(\s*)"\$HARNESS_NODE"\s+--input-type=module\s+-\s+<<''JS''\s*$') { $iOpen = $i; $indent = $Matches[1].Length; break }
 }
 if ($iOpen -lt 0) {
-    Write-Host "FAIL — no python - <<'PY' heredoc inside step '$STEP_NAME'" -ForegroundColor Red
+    Write-Host "FAIL — no `"`$HARNESS_NODE`" --input-type=module - <<'JS' heredoc inside step '$STEP_NAME'" -ForegroundColor Red
     exit 1
 }
 $body = New-Object System.Collections.Generic.List[string]
 $closed = $false
 for ($i = $iOpen + 1; $i -lt $lines.Count; $i++) {
-    if ($lines[$i].Trim() -eq 'PY') { $closed = $true; break }
+    if ($lines[$i].Trim() -eq 'JS') { $closed = $true; break }
     $l = $lines[$i]
     if ($l.Trim().Length -eq 0) { $body.Add(''); continue }
     if ($l.Length -lt $indent -or $l.Substring(0, $indent).Trim().Length -ne 0) {
         # A non-blank body line indented LESS than the opener is not a heredoc body line YAML would
-        # hand to python as written — the extraction window is corrupt. Named here, not left to
-        # surface as an IndentationError from the child (review 2026-09-07, nit).
+        # hand to node as written — the extraction window is corrupt. Named here, not left to
+        # surface as a SyntaxError from the child (review 2026-09-07, nit).
         Write-Host "FAIL — line $($i + 1) of the heredoc is indented less than its opener; extraction window corrupt: $l" -ForegroundColor Red
         exit 1
     }
     $body.Add($l.Substring($indent))
 }
 if (-not $closed -or $body.Count -eq 0) {
-    Write-Host "FAIL — heredoc in step '$STEP_NAME' has no closing PY or an empty body" -ForegroundColor Red
+    Write-Host "FAIL — heredoc in step '$STEP_NAME' has no closing JS or an empty body" -ForegroundColor Red
     exit 1
 }
 $stepText = ($body -join "`n") + "`n"
-foreach ($must in @('json.loads', 'git', 'ls-files', 'enabledPlugins')) {
+foreach ($must in @('JSON.parse', 'git_paths', 'ls-files', 'enabledPlugins')) {
     if ($stepText -notmatch [regex]::Escape($must)) {
         Write-Host "FAIL — extracted step text lacks '$must'; the extraction window is wrong, not the step" -ForegroundColor Red
         exit 1
@@ -397,7 +397,8 @@ foreach ($must in @('json.loads', 'git', 'ls-files', 'enabledPlugins')) {
 $fxBase = New-FixtureRoot 'ci-enabled-plugins-selftest'
 trap { Remove-FixtureRoot $fxBase; break }
 
-$stepFile = Join-Path $fxBase 'enabled_plugins_step.py'
+$stepFile = Join-Path $fxBase 'enabled_plugins_step.mjs'
+$gitBoundary = Join-Path $PSScriptRoot 'templates/scripts/harness/harness_git.mjs'   # the step imports it from the repo it runs in
 [IO.File]::WriteAllText($stepFile, $stepText, [Text.UTF8Encoding]::new($false))
 
 # --- fixtures ------------------------------------------------------------------------------------
@@ -408,6 +409,9 @@ function New-Repo([string]$Name) {
     & git -C $p config user.email 'selftest@example.invalid' 2>$null
     & git -C $p config user.name 'selftest' 2>$null
     & git -C $p commit -q --allow-empty -m seed 2>$null
+    # The placed scaffold carries the git boundary; the step imports it from the working directory.
+    New-Item -ItemType Directory -Force -Path (Join-Path $p 'scripts/harness') | Out-Null
+    Copy-Item -LiteralPath $gitBoundary -Destination (Join-Path $p 'scripts/harness/harness_git.mjs')
     return $p
 }
 function Write-Tracked([string]$Repo, [string]$Rel, [string]$Body) {
@@ -428,28 +432,22 @@ function Write-Untracked([string]$Repo, [string]$Rel, [string]$Body) {
     [IO.File]::WriteAllText($full, ($Body -replace "`r`n", "`n"), [Text.UTF8Encoding]::new($false))
 }
 function Invoke-Step([string]$Repo) {
-    # The step prints Korean. A Windows console codepage is not UTF-8, and an unpinned python would
-    # die with UnicodeEncodeError — exit 1 for the WRONG reason, which an "exits 1" assertion cannot
-    # tell from the refusal under test — so PYTHONUTF8 is pinned for the child on WINDOWS ONLY and
-    # restored. On POSIX nothing is pinned: the ubuntu script gate then runs the step in the same
-    # environment the vendored workflow gives it, which is the environment this suite is meant to
-    # prove (review 2026-09-07, low — an always-on pin proved the text, never the runner).
-    $prev = $env:PYTHONUTF8
+    # The step prints Korean. Node writes UTF-8 to a pipe whatever the console codepage is, so nothing
+    # is pinned here: the suite runs the step in the environment the vendored workflow gives it.
     Push-Location $Repo
     try {
-        if ($IsWindows) { $env:PYTHONUTF8 = '1' }
-        $out = (& $py.Source $stepFile 2>&1) | Out-String
+        $out = (& $node.Source $stepFile 2>&1) | Out-String
         return @{ Out = $out; Code = $LASTEXITCODE }
     } finally {
         Pop-Location
-        if ($IsWindows) { if ($null -eq $prev) { Remove-Item Env:PYTHONUTF8 -ErrorAction SilentlyContinue } else { $env:PYTHONUTF8 = $prev } }
     }
 }
 
-# --- CX: the shipped text keeps the git boundary encoding-pinned (CLAUDE.md, issue #40) -----------
-# The step's own `git ls-files -z` read parses paths. TARGETS is a closed ASCII set today, so the
-# pin is dormant — this case exists so widening the list can never drop it silently.
-$ok = (Assert-True 'CX the step''s git read is encoding-pinned (utf-8 + backslashreplace)' ($stepText -match '(?s)subprocess\.run\(\s*\["git",\s*"ls-files"[^)]*encoding="utf-8"[^)]*errors="backslashreplace"') 'no encoding pin on the git ls-files read') -and $ok
+# --- CX: the shipped text keeps its git read behind the boundary (CLAUDE.md, issue #40) ---------------
+# The step's `ls-files` read parses paths. TARGETS is a closed ASCII set today, so the encoding pin that
+# harness_git.mjs applies is dormant — this case exists so widening the list can never route the read
+# around the boundary silently.
+$ok = (Assert-True 'CX the step''s git read goes through the harness git boundary (harness_git.mjs owns the pins), never a spawn of its own' ($stepText -match "git_paths\(process\.cwd\(\), \['ls-files'" -and $stepText -match "scripts/harness/harness_git\.mjs" -and $stepText -notmatch 'child_process') 'the git ls-files read does not use git_paths from harness_git.mjs, or the step spawns a process itself') -and $ok
 
 $SETTINGS = '.claude/settings.json'
 $LOCAL = '.claude/settings.local.json'

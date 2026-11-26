@@ -379,15 +379,15 @@ async function main() {
   // The scaffold vendors the harness scripts into a consuming repo so its CI needs no access to this
   // private canon. Two copies of each script exist, which is safe only while this gate proves one
   // is generated from the other: without it, a fix applied to `scripts/` would silently not reach a
-  // scaffolded repo, and the symptom would read as "the consumer is behind". Scoped to `*.py`, and
+  // scaffolded repo, and the symptom would read as "the consumer is behind". Scoped to `*.mjs`, and
   // the scope is DECLARED: the directory also carries pure template payload with no plugin-side
   // origin by design (the first run after adding one failed the unmutated control — it worked).
   const vendorDir = join(root, 'skills/harness-init/templates/scripts/harness')
   if (isDir(vendorDir)) {
     let drift = 0
     const vendorAll = listDir(vendorDir, 'file')
-    const vendorPy = vendorAll.filter(n => upper(ext(n)) === '.PY')
-    const vendorPayload = vendorAll.filter(n => upper(ext(n)) !== '.PY')
+    const vendorPy = vendorAll.filter(n => upper(ext(n)) === '.MJS')
+    const vendorPayload = vendorAll.filter(n => upper(ext(n)) !== '.MJS')
     for (const v of vendorPy) {
       const origin = join(root, `scripts/${v}`)
       if (!isFile(origin)) {
@@ -1046,7 +1046,7 @@ async function main() {
               const prev = i > 0 ? lines[i - 1].replace(/\r$/u, '').trimStart() : ''
               const mark = markRx.exec(ln) || (prev.startsWith('#') ? markRx.exec(prev) : null)
               if (!mark) {
-                bad(`git boundary: ${rel}:${i + 1}${tag} starts git directly — route it through harness_config.git_run()/git_lines() or harness_retro.git(), or mark it '# harness:git-boundary <reason>' (review canon invariant 9, ADR 0158)`)
+                bad(`git boundary: ${rel}:${i + 1}${tag} starts git directly — move the call into Node through harness_git.mjs (ADR 0223), or mark it '# harness:git-boundary <reason>' (review canon invariant 9, ADR 0158)`)
                 gitBad++
               } else if (!/\S/u.test(mark[1])) {
                 bad(`git boundary: ${rel}:${i + 1}${tag} carries harness:git-boundary with no reason — the marker names why this call bypasses the boundary`)

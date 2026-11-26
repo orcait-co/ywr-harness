@@ -25,7 +25,7 @@ before you edit anything, then dispose of its findings under the harness rules.
   gets no leg.
 - No fix gets a re-review in this slice, a patch or a new mechanism (ywr-harness ADR 0200). A rebase re-arm over the
   overlap is no fix re-review. When you judge that a fix needs more review, record this note on one line:
-  `python scripts/harness/slice_note.py add risk "open item: review <files and lines> of the <file:line> fix; <why>"`.
+  `node scripts/harness/slice_note.mjs add risk "open item: review <files and lines> of the <file:line> fix; <why>"`.
   The close puts it in the handoff. This is your decision, not an owner question.
-- Record each disposition with `python scripts/harness/slice_note.py add decision "<file:line> fixed: <how>"`, or with
+- Record each disposition with `node scripts/harness/slice_note.mjs add decision "<file:line> fixed: <how>"`, or with
   `add rejected "<file:line> <disposition>: <reason>"` for a finding that gets no fix.
