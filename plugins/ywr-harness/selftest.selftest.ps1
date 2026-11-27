@@ -14,6 +14,9 @@
 # Section G makes the only real runs — eight (G1, G3, G4, G5, G8, G9, G9b, G10), all of a COPY of the runner in
 # a fixture tree of stub suites (three; G8's own tree has two, G9's, G9b's and G10's one each); G6 is -List again, G7
 # reads this file's own FAIL echo. G10 starts first and is collected after G9.
+# Section I (ADR 0227) covers the Node suites: four -List runs (I1, I1b, I1c, I2, plus I4 on the live listing) and two real
+# runs of a runner copy, I3 and F4 (a Node suite runs, and a missing node fails it). Both real runs start beside G10 and are
+# collected after section H.
 #
 # Usage: pwsh plugins/ywr-harness/selftest.selftest.ps1  (exit 0 = all green). 42–82 s measured
 # 2026-09-23 on a box shared with other agents' runs (section G is about half of it).
@@ -23,10 +26,14 @@ $runner = Join-Path $PSScriptRoot 'selftest.ps1'
 # The runner dot-sources lib/runner-signal.ps1 after its -List exit, so a runner copy that runs suites needs
 # the lib beside it; a -List-only fixture does not. $LibText replaces the lib's text (the G9 mutations).
 $runnerLib = Join-Path $PSScriptRoot 'lib/runner-signal.ps1'
-function Copy-Runner([string]$Dest, [string]$LibText = '') {
+$runnerReporter = Join-Path $PSScriptRoot 'lib/selftest-reporter.mjs'
+# -WithReporter also copies the Node suites' reporter (ADR 0227): a runner copy that runs a `.mjs` suite needs it. Off by
+# default, because a fixture tree whose read-set map lists its files one by one claims no reporter.
+function Copy-Runner([string]$Dest, [string]$LibText = '', [switch]$WithReporter) {
     Copy-Item -LiteralPath $runner -Destination $Dest
     $libDir = Join-Path (Split-Path $Dest -Parent) 'lib'
     New-Item -ItemType Directory -Force $libDir | Out-Null
+    if ($WithReporter) { Copy-Item -LiteralPath $runnerReporter -Destination (Join-Path $libDir 'selftest-reporter.mjs') }
     if ($LibText) { [IO.File]::WriteAllText((Join-Path $libDir 'runner-signal.ps1'), $LibText) }
     else { Copy-Item -LiteralPath $runnerLib -Destination (Join-Path $libDir 'runner-signal.ps1') }
 }
@@ -35,6 +42,7 @@ $fxBase = New-FixtureRoot 'selftest-runner-selftest'
 # which start below; a throw before they exist skips those two steps.
 trap {
     if ($heldRun) { try { $heldRun.P.Kill($true) } catch { } }
+    foreach ($ar in $asyncRuns) { try { $ar.P.Kill($true) } catch { } }
     if (Get-Command Get-HeldGrandchild -ErrorAction SilentlyContinue) { $gc = Get-HeldGrandchild; if ($gc) { Stop-Process -Id $gc.Id -Force -ErrorAction SilentlyContinue } }
     Remove-FixtureRoot $fxBase; break
 }
@@ -166,6 +174,74 @@ function Receive-HeldCase($Run) {
 }
 $heldRun = Start-HeldCase 2
 
+# I3 and F4 — the two real runs of the Node-suite cases (ADR 0227), started HERE and collected after section H, so their
+# seconds overlap the cases between (speed rule). Each is a fresh hidden console like Invoke-RunnerFresh. ChildEnv sets
+# the child's environment only, so F4 narrows PATH for its runner copy and never for this process.
+$asyncRuns = [System.Collections.Generic.List[object]]::new()
+function Start-RunnerAsync([string]$Path, [string[]]$Arguments, [hashtable]$ChildEnv = @{}) {
+    $psi = [Diagnostics.ProcessStartInfo]::new([Environment]::ProcessPath)
+    foreach ($a in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Path) + $Arguments) { $psi.ArgumentList.Add($a) }
+    foreach ($k in $ChildEnv.Keys) { $psi.Environment[$k] = $ChildEnv[$k] }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $psi.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+    $p = [Diagnostics.Process]::Start($psi)
+    $run = @{ P = $p; Out = $p.StandardOutput.ReadToEndAsync(); Err = $p.StandardError.ReadToEndAsync() }
+    $asyncRuns.Add($run)
+    return $run
+}
+function Receive-RunnerAsync($Run) {
+    $exited = $Run.P.WaitForExit(120000)
+    if (-not $exited) { try { $Run.P.Kill($true) } catch { } }
+    $eof = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($Run.Out, $Run.Err), 10000)
+    $pre = @()
+    if (-not $exited) { $pre += 'the runner was still running 120 s after it started' }
+    if (-not $eof) { $pre += 'the runner''s output did not reach end-of-file 10 s after its exit' }
+    return @{ Out = $(if ($eof) { $Run.Out.Result + $Run.Err.Result } else { '' }); Code = $(if ($exited) { $Run.P.ExitCode } else { -2 }); Pre = $pre }
+}
+# I3: a pwsh suite and two Node suites in one tree. m-pass prints a Korean test name, a Korean skip reason and a WARN line,
+# m-fail fails one of its two tests. Each Node stub builds its Hangul from code points, so the file stays ASCII.
+$fxNode = Join-Path $fxBase 'node-run'
+New-Item -ItemType Directory -Force $fxNode | Out-Null
+Copy-Runner (Join-Path $fxNode 'selftest.ps1') -WithReporter
+[IO.File]::WriteAllText((Join-Path $fxNode 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
+[IO.File]::WriteAllText((Join-Path $fxNode 'a-pass.selftest.ps1'), "Write-Host 'PASS [a one]'`nexit 0`n")
+[IO.File]::WriteAllText((Join-Path $fxNode 'm-pass.selftest.mjs'), @'
+import test from 'node:test'
+const ko = String.fromCharCode(0xD55C, 0xAE00)
+test('M1 first', () => {})
+test('M2 body ' + ko, () => {})
+test('M3 skipped', { skip: 'reported ' + ko }, () => {})
+console.log('WARN [m warn] re-review trigger from a Node suite')
+console.log('WARN [m outer] ' + process.env.YWR_SELFTEST_OUTER_JOBS)
+'@)
+[IO.File]::WriteAllText((Join-Path $fxNode 'm-fail.selftest.mjs'), @'
+import test from 'node:test'
+import assert from 'node:assert/strict'
+test('F1 fine', () => {})
+test('F2 broken on purpose', () => { assert.fail('boom-detail') })
+'@)
+# m-empty registers no test: it exits 0 with no line, and the runner must count it FAILED (review F2 of slice 274).
+[IO.File]::WriteAllText((Join-Path $fxNode 'm-empty.selftest.mjs'), "import test from 'node:test'`n// no test registered`n")
+Write-StubMap $fxNode @('a-pass.selftest.ps1', 'm-empty.selftest.mjs', 'm-pass.selftest.mjs', 'm-fail.selftest.mjs')
+$nodeRun = Start-RunnerAsync (Join-Path $fxNode 'selftest.ps1') @('-Jobs', '3')
+# F4: the same runner with PATH narrowed to the runner's own pwsh directory, so no node resolves: the Node suite is FAILED
+# with a printed reason, and the pwsh suite beside it still runs and passes (as in F3).
+$fxNoNodeMjs = Join-Path $fxBase 'no-node-mjs'
+New-Item -ItemType Directory -Force $fxNoNodeMjs | Out-Null
+Copy-Runner (Join-Path $fxNoNodeMjs 'selftest.ps1') -WithReporter
+[IO.File]::WriteAllText((Join-Path $fxNoNodeMjs 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
+[IO.File]::WriteAllText((Join-Path $fxNoNodeMjs 'p-pass.selftest.ps1'), "Write-Host 'PASS [stub]'`nexit 0`n")
+[IO.File]::WriteAllText((Join-Path $fxNoNodeMjs 'n-node.selftest.mjs'), "import test from 'node:test'`ntest('N1 never runs', () => {})`n")
+Write-StubMap $fxNoNodeMjs @('p-pass.selftest.ps1', 'n-node.selftest.mjs')
+$noNodeRun = $null
+if (-not (Get-ChildItem -LiteralPath $PSHOME -Filter 'node*' -File -ErrorAction SilentlyContinue)) {
+    $noNodeRun = Start-RunnerAsync (Join-Path $fxNoNodeMjs 'selftest.ps1') @('-Jobs', '1') @{ PATH = $PSHOME }
+}
+
 $ok = $true
 
 # --- A. unsharded listing: the baseline every partition case compares against ----------------
@@ -173,7 +249,7 @@ $ok = $true
 # production, so one -List case keeps that path; the runspace path is compared against it in A0p.
 $base = Invoke-RunnerChild $runner @('-List')
 $baseList = Get-Listed $base
-$aMust = @('suites: discovered=\d+', '  - selftest\.selftest\.ps1', '  - manifest-gate\.selftest\.ps1', 'LIST ONLY')
+$aMust = @('suites: discovered=\d+', '  - selftest\.selftest\.ps1', '  - manifest-gate\.selftest\.mjs', 'LIST ONLY')
 $aMustNot = @('--- manifest-gate\.mjs', 'all gates green', 'shard=', 'FAIL — read-set map', 'selected=')
 $ok = (Assert-Case 'A -List: discovery listed, nothing ran' $base 0 $aMust $aMustNot) -and $ok
 # A0 — the runspace runs (ADR 0149) rest on three contracts, pinned here by name.
@@ -276,7 +352,7 @@ New-Item -ItemType Directory -Force (Join-Path $fxEmpty 'templates/scripts') | O
 Copy-Item -LiteralPath $runner -Destination (Join-Path $fxEmpty 'selftest.ps1')
 [IO.File]::WriteAllText((Join-Path $fxEmpty 'templates/scripts/payload.selftest.ps1'), "exit 0`n")
 $ok = (Assert-Case 'F zero discovered → exit 1 even under -List; a templates/ suite is excluded, counted, and rescues nothing' (Invoke-Runner (Join-Path $fxEmpty 'selftest.ps1') @('-List')) 1 `
-    @('FAIL — no \*\.selftest\.ps1 discovered', 'empty set is not a pass', 'template payload excluded: 1') @('LIST ONLY', 'manifest-gate\.mjs missing', 'suites: discovered', 'payload\.selftest\.ps1')) -and $ok
+    @('FAIL — no \*\.selftest\.ps1 or \*\.selftest\.mjs discovered', 'empty set is not a pass', 'template payload excluded: 1') @('LIST ONLY', 'manifest-gate\.mjs missing', 'suites: discovered', 'payload\.selftest\.ps1')) -and $ok
 # The live tree's count is 0 and says so — the exclusion is declared on every run, not only when it bites.
 $ok = (Assert-Case 'F2 the live listing declares template-excluded=0' $base 0 @('template-excluded=0\b') @('template-excluded=[1-9]')) -and $ok
 
@@ -302,6 +378,37 @@ else {
         @('FAIL — node not on PATH, so manifest-gate\.mjs cannot run', 'manifest-gate\.mjs \(no node\)', 'passed=1 failed=0') `
         @('PASS  stub manifest gate', 'all gates green', 'SKIP — node not on PATH; workflow corpus')) -and $ok
 }
+
+# --- I. Node suites (ADR 0227): `*.selftest.mjs` is discovered beside `*.selftest.ps1` ---------------------
+# I1 to I2 and I4 are -List runs in a runspace: discovery, order, the shard deal, the read-set map and the template
+# exclusion treat a Node suite like any other suite. I3 and F4 are the real runs, started near the top of this file
+# and collected after section H. The tree has a pwsh suite BETWEEN two Node suites in ordinal order: 'Z' (0x5A) sorts
+# before 'a' (0x61), which a culture sort would not do.
+$fxNodeList = Join-Path $fxBase 'node-list'
+New-Item -ItemType Directory -Force (Join-Path $fxNodeList 'templates/x') | Out-Null
+Copy-Item -LiteralPath $runner -Destination (Join-Path $fxNodeList 'selftest.ps1')
+foreach ($n in 'Z-first.selftest.mjs', 'a-mid.selftest.ps1', 'b-last.selftest.mjs', 'templates/x/payload.selftest.mjs') { [IO.File]::WriteAllText((Join-Path $fxNodeList $n), "exit 0`n") }
+$nodeListSuites = @('Z-first.selftest.mjs', 'a-mid.selftest.ps1', 'b-last.selftest.mjs')
+Write-StubMap $fxNodeList $nodeListSuites
+$nodeListRunner = Join-Path $fxNodeList 'selftest.ps1'
+$iList = Invoke-Runner $nodeListRunner @('-List')
+$ok = (Assert-Case 'I1 -List discovers a Node suite beside the pwsh suites, in ordinal order, and excludes a templates/ payload of that shape' $iList 0 `
+    @('suites: discovered=3 template-excluded=1\b', '  - Z-first\.selftest\.mjs', '  - b-last\.selftest\.mjs', 'LIST ONLY') @('payload\.selftest\.mjs', '(?m)^FAIL', 'selected=') `
+    -PreFail @($(if (((Get-Listed $iList) -join '|') -cne ($nodeListSuites -join '|')) { "listing was '$((Get-Listed $iList) -join '|')'" }))) -and $ok
+$ok = (Assert-Case 'I1b -List -Shard 2/3 deals the middle suite of the mixed list' (Invoke-Runner $nodeListRunner @('-List', '-Shard', '2/3')) 0 `
+    @('shard=2/3 selected=1\b', '(?m)^  - a-mid\.selftest\.ps1') @('Z-first', 'b-last', '(?m)^FAIL')) -and $ok
+# A Node suite needs a read set like any other: the map check names the one that has none.
+Write-StubMap $fxNodeList @('Z-first.selftest.mjs', 'a-mid.selftest.ps1')
+$ok = (Assert-Case 'I1c a Node suite with no read set fails the map check' (Invoke-Runner $nodeListRunner @('-List')) 1 `
+    @('FAIL — read-set map: suite ''b-last\.selftest\.mjs'' has no read set') @('all gates green', 'by read set')) -and $ok
+$fxNodeEmpty = Join-Path $fxBase 'node-empty'
+foreach ($d in 'templates/a', 'templates/b') { New-Item -ItemType Directory -Force (Join-Path $fxNodeEmpty $d) | Out-Null }
+Copy-Item -LiteralPath $runner -Destination (Join-Path $fxNodeEmpty 'selftest.ps1')
+[IO.File]::WriteAllText((Join-Path $fxNodeEmpty 'templates/a/p1.selftest.ps1'), "exit 0`n")
+[IO.File]::WriteAllText((Join-Path $fxNodeEmpty 'templates/b/p2.selftest.mjs'), "process.exit(0)`n")
+$ok = (Assert-Case 'I2 zero discovered names both patterns, counts a templates/ payload of each shape, and rescues nothing' (Invoke-Runner (Join-Path $fxNodeEmpty 'selftest.ps1') @('-List')) 1 `
+    @('FAIL — no \*\.selftest\.ps1 or \*\.selftest\.mjs discovered', 'empty set is not a pass', 'template payload excluded: 2') @('LIST ONLY', 'suites: discovered', 'p[12]\.selftest')) -and $ok
+$ok = (Assert-Case 'I4 the live listing names the Node suite of the Node wrapper' $base 0 @('  - node-selftest\.selftest\.mjs') @('(?m)^FAIL')) -and $ok
 
 # --- G. concurrent run + condensed output (ADR 0088) — a runner copy over three stub suites ----
 # The tree: a stub manifest gate (the runner refuses a tree without one; no workflows/ dir, so the
@@ -834,6 +941,49 @@ $timesWarns = ([regex]::Matches($h21.Out, '(?m)^WARN \[runner\] the suite times 
 $ok = (Assert-Case 'H21 a failed run reaches the times write; a write that fails prints exactly one WARN line and the run goes on to its summary' $h21 1 `
     @('selftests: discovered=1 passed=0 failed=1', 'FAIL — k-fail\.selftest\.ps1') @('all gates green') `
     -PreFail @($(if ($timesWarns -ne 1) { "$timesWarns times WARN line(s), expected exactly 1" }))) -and $ok
+
+# I5 — a tracked file that the change deleted from disk (ADR 0227). Git lists it until the deletion is staged.
+# No suite can read it, so the map check must not ask a glob to claim it. A -List run: no suite starts.
+$fxDel = Join-Path $fxBase 'deleted-tracked'
+New-Item -ItemType Directory -Force $fxDel | Out-Null
+$delRunner = Join-Path $fxDel 'selftest.ps1'
+Copy-Runner $delRunner
+[IO.File]::WriteAllText((Join-Path $fxDel 'manifest-gate.mjs'), "console.log('PASS  stub manifest gate')`n")
+[IO.File]::WriteAllText((Join-Path $fxDel 'q-pass.selftest.ps1'), "Write-Host 'PASS [q-pass]'`nexit 0`n")
+[IO.File]::WriteAllText((Join-Path $fxDel 'gone.txt'), 'claimed by no glob; deleted before the run')
+# Its own map, not Write-StubMap: that map's `none: **` claims every file, so the case could not fail. Every
+# list here is non-empty, because the runner reads an empty glob list as a claim on every file.
+[IO.File]::WriteAllText((Join-Path $fxDel 'selftest-reads.json'), (([ordered]@{
+                full = @('selftest.ps1', 'selftest-reads.json', 'lib/**'); none = @('manifest-gate.mjs')
+                suites = [ordered]@{ 'q-pass.selftest.ps1' = @('manifest-gate.mjs') } }) | ConvertTo-Json -Depth 3))
+$null = & git -C $fxDel init -q --template= 2>&1
+$null = & git -C $fxDel add -A 2>&1
+$null = & git -C $fxDel -c user.name=selftest -c user.email=selftest@example.invalid -c commit.gpgsign=false commit -q -m fixture 2>&1
+if ($LASTEXITCODE -ne 0) { throw 'deleted-tracked fixture: git commit failed' }
+Remove-Item -LiteralPath (Join-Path $fxDel 'gone.txt')
+$i5 = Invoke-Runner $delRunner @('-List')
+$ok = (Assert-Case 'I5 a tracked file deleted from disk needs no claim in the map' $i5 0 `
+    @('(?m)^  - q-pass\.selftest\.ps1', 'LIST ONLY') @('read-set map', 'gone\.txt')) -and $ok
+
+# I3 and F4 collected (ADR 0227). I3: a Node suite runs through the same suite process as a pwsh suite, so it gets a live
+# `done` line, an `ok` line with its PASS-line count and, when it fails, its full output; its SKIP and WARN lines stay
+# under the condensed `ok` line, with the Korean reason intact through the node child. The Node suite gets
+# min(-Jobs, selected suites) as YWR_SELFTEST_OUTER_JOBS (innerJobs of lib/selftest-lib.mjs): 3 here, from -Jobs 3 and 4
+# suites. F4: no node is a FAILED suite with
+# its reason, never a silent skip and never a missing row.
+$i3 = Receive-RunnerAsync $nodeRun
+$ok = (Assert-Case 'I3 a Node suite runs, counts its PASS lines and fails the run in full; one that runs no case fails; its SKIP and WARN lines stay under the condensed line' $i3 1 `
+    @('selftests: discovered=4 passed=2 failed=2', 'FAIL — m-empty\.selftest\.mjs, m-fail\.selftest\.mjs','(?m)^FAIL — this Node suite exited 0 with no PASS or SKIP line, so no case ran', '(?m)^done m-pass\.selftest\.mjs PASS \(', '(?m)^ok   m-pass\.selftest\.mjs \(2 PASS lines, ',
+        '(?m)^ok   a-pass\.selftest\.ps1 \(1 PASS lines, ', '(?m)^--- m-fail\.selftest\.mjs FAIL \(exit 1, 1 PASS lines', '(?m)^PASS \[F1 fine\]',
+        '(?m)^FAIL \[F2 broken on purpose\]: boom-detail', ('(?m)^SKIP \[M3 skipped\]: reported ' + [regex]::Escape($ko)), '(?m)^WARN \[m warn\] re-review trigger from a Node suite', '(?m)^WARN \[m outer\] 3\b') `
+    @('all gates green', '(?m)^PASS \[M1', '(?m)^PASS \[M2', 'node not on PATH, so this Node suite', 'the runner could not run this suite') -PreFail $i3.Pre) -and $ok
+if ($null -eq $noNodeRun) { Write-Host "SKIP [F4 no node, Node suite] node resolves inside `$PSHOME ($PSHOME) — cannot hide it (reported, not silent)" -ForegroundColor Yellow }
+else {
+    $f4 = Receive-RunnerAsync $noNodeRun
+    $ok = (Assert-Case 'F4 node absent: a Node suite is FAILED with the printed reason, the pwsh suite beside it still passes' $f4 1 `
+        @('(?m)^FAIL — node not on PATH, so this Node suite cannot run', '(?m)^done n-node\.selftest\.mjs FAIL \(', '(?m)^--- n-node\.selftest\.mjs FAIL \(exit -1, 0 PASS lines',
+            'selftests: discovered=2 passed=1 failed=1', '(?m)^ok   p-pass\.selftest\.ps1') @('all gates green', '(?m)^ok   n-node') -PreFail $f4.Pre) -and $ok
+}
 
 # Not cased: the runner's could-not-start and no-result branches. Neither is reachable from a
 # fixture without a test hook in the shipped runner — tried 2026-09-23: with PATH pointing at an

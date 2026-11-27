@@ -72,7 +72,7 @@
 // and the edit guard only compares paths while the cached state is off. The cache is refreshed at each stage and each `/ywr-harness:auto`, so a switch
 // turned on from ANOTHER session reaches this session's edit guard only at its next stage.
 //
-// The pure half is exported so `decision-prompts.selftest.ps1` drives it under plain node with a fake
+// The pure half is exported so `decision-prompts.selftest.mjs` drives it under plain node with a fake
 // engine; the engine imports only `register`.
 import { isTreeRun } from './slice-status.mjs'
 
@@ -411,6 +411,7 @@ async function takeBaseline($, st) {
 // the cwd, so a relative answer is joined to the session cwd below.
 async function locate($, st) {
   try {
+    // harness:git-boundary the start goes through the hook host's async process seam so the first main turn never waits; git_result is a synchronous child_process call that would block the hook
     const r = await $.process.run(['git', 'rev-parse', '--show-toplevel', '--git-path', STATE_REL], { timeoutMs: 10000 })
     const lines = String(r.stdout ?? '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)
     if (r.exitCode === 0 && lines.length === 2) {

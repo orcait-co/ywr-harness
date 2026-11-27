@@ -355,9 +355,7 @@ function Assert-NodeOrExit([string]$Suite) {
 # `break` in a trap is what rethrows and stops the script; `continue` would swallow the
 # error and carry on through the remaining cases. try/finally is the textbook shape and was
 # rejected on diff size alone: it would reindent 100-350 line bodies in eight working files,
-# burying the change under transcription risk. .claude/hooks/directory-added-guard.selftest.ps1
-# keeps its own try/finally and per-case GUID dirs — already exception-safe, so converting it
-# would be churn.
+# burying the change under transcription risk.
 
 function Test-FixtureRootPath {
     # $true only for a path strictly INSIDE the system temp root. PURE — no filesystem

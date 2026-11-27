@@ -1,6 +1,6 @@
 // `claude plugin test plugins/ywr-harness` — the engine-side half of the prerequisite check's tests (ADR 0142).
 // A LOCAL habit, never CI: the runner is the claude CLI, which CI does not have. The node suite
-// (prerequisites.selftest.ps1) owns the logic. This file proves what only the engine can: the band's tree
+// (prerequisites.selftest.mjs) owns the logic. This file proves what only the engine can: the band's tree
 // validates on every surface's element table, the model note goes through the engine's own
 // `session.append`, and a machine with every tool draws no band and appends nothing.
 import { test, expect, mock } from 'claude-code/testing'

@@ -402,7 +402,7 @@ commit ships as a new version to every consumer), a hook path that does not reso
 regression from exec form to shell form where a path placeholder is used, and a release-notes
 canon that lies (top `CHANGELOG.md` entry ≠ `plugin.json` version, or the artifact link
 diverging between the CHANGELOG and the announce hook — ADR 0030).
-`manifest-gate.selftest.ps1` proves it can fail — one or more mutations per check class (the
+`manifest-gate.selftest.mjs` proves it can fail — one or more mutations per check class (the
 suite prints the count) plus an unmutated control, because a suite that only ever passes and a
 gate that fails on everything score identically without the control. The control has earned its
 place: it caught a broken identity gate while the negative suite was reporting every mutation
@@ -481,10 +481,10 @@ hermetic (fixture repos, all ten cases deterministic on every platform).
 The count reads `template-payload-excluded=N` separately for files under `templates/` — payload
 this plugin copies rather than runs, which cannot have a selftest here. Three of them are the
 exception: `.githooks/pre-commit` and `.githooks/pre-push` are the only shipped artifacts that
-can block a commit or a push, so `githooks.selftest.ps1` runs them for real, in throwaway git
+can block a commit or a push, so `githooks.selftest.mjs` runs them for real, in throwaway git
 repositories, against real staged changes and real commit ranges; and the vendored workflow's
 `Fail on a committed enabledPlugins` step (ADR 0022's CI half) is extracted from the template by
-`ci-enabled-plugins.selftest.ps1` and run the same way. They stay in the excluded count — it is a
+`ci-enabled-plugins.selftest.mjs` and run the same way. They stay in the excluded count — it is a
 placement-based rule, not a claim that nothing tests them.
 
 ## Installing this alongside an existing harness

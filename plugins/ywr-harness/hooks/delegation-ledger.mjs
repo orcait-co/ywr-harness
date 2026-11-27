@@ -36,7 +36,7 @@
 // session took (its `mtimeMs`/`size` moved since this session's last write) is given up for a new one.
 //
 // The pure half (`createLedger`, `createSessionLog`, `pickSlot`, `stepRow`, `spawnRow`, `fingerprint`)
-// is exported so `delegation-ledger.selftest.ps1` drives it under plain node with a fake engine; the
+// is exported so `delegation-ledger.selftest.mjs` drives it under plain node with a fake engine; the
 // engine imports only `register`.
 
 export const SCHEMA = 2

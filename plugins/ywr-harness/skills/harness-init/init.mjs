@@ -455,6 +455,7 @@ async function main() {
     const args = ['-C', root, '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', 'fetch', '--quiet', '--no-tags', '--no-prune',
       '--no-recurse-submodules', '--multiple', '--', ...remotes]
     let child
+    // harness:git-boundary a detached, timeout-killed fetch with no captured output; git_result runs to completion and offers no handle to kill, so only the PATH lookup comes from harness_git
     const gitExe = which_on_path('git')
     if (!gitExe) return 'could not start git'
     try { child = spawn(gitExe, args, { env, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true, detached: !WIN }) } catch { return 'could not start git' }
@@ -1189,20 +1190,23 @@ async function main() {
     // follow links — so a `.githooks` reached through a junction (or a repo root mounted through
     // one) with core.hooksPath written as the real target would say REFUSED where the emitter says
     // wired.
+    // The native realpath also expands a Windows 8.3 short name (`RUNNER~1`), which git never
+    // reports: a lexical compare of a short-name target with git's top level refused the wiring.
     let full
     try { full = path.resolve(p) } catch { return p }
-    const base = path.parse(full).root
-    const rest = full.slice(base.length).replace(/^[\\/]+|[\\/]+$/g, '')
-    let cur = base
-    if (rest === '') return cur
-    for (const seg of rest.split(/[\\/]+/)) {
-      if (seg === '') continue
-      cur = path.join(cur, seg)
+    let cur = full
+    const tail = []
+    for (;;) {
       try {
-        if (fs.lstatSync(cur).isSymbolicLink()) cur = fs.realpathSync(cur)
-      } catch { /* absent: stay lexical from here */ }
+        const real = fs.realpathSync.native(cur)
+        return tail.length ? path.join(real, ...tail.reverse()) : real
+      } catch {
+        const parent = path.dirname(cur)
+        if (parent === cur) return full
+        tail.push(path.basename(cur))
+        cur = parent
+      }
     }
-    return cur
   }
 
   function testHooksPathNames(cur, rootDir, rel) {
@@ -1239,7 +1243,7 @@ async function main() {
     const top = lines(topR.out).join(' ')
     if (topR.status !== 0 || !top.trim()) {
       wire = 'not a git repository — core.hooksPath NOT set; the hooks are placed but will not run'
-    } else if (!compareRepoPath(root, top.trim())) {
+    } else if (!compareRepoPath(resolveRealPath(root), resolveRealPath(top.trim()))) {
       // Setting hooksPath from a subdirectory would reconfigure the WHOLE repository from a scaffold
       // run that was scoped to one subtree. Refused, and the real root is named so the reader can
       // re-run there if that is what they meant.

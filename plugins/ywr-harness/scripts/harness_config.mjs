@@ -335,7 +335,7 @@ export const RETIRED_SCRIPTS = { 'docs/check_docs.py': 'docs/check_docs.mjs' }
 // SECOND COPY, BY DESIGN: the ywr-harness plugin's `placement.mjs` placement tables are the first. The
 // consuming repo's emitter cannot read the plugin's placement.mjs (no plugin exists in CI —
 // ywr-harness ADR 0014), so the ywr-harness canon's pairing selftest in
-// `harness_gates.selftest.ps1` (case Z) is the drift gate: it imports the placement.mjs tables
+// `harness_gates.selftest.mjs` (case Z) is the drift gate: it imports the placement.mjs tables
 // and fails the canon build when either side changes alone. Edit BOTH together.
 // `scripts/harness/__pycache__/` is deliberately absent: the vendored `.gitignore` owns it, and
 // claiming bytecode would hide a broken ignore (ywr-harness fact 6).
@@ -1965,7 +1965,7 @@ export function print_scope(files, prov) {
  * An element made only of SAFE_TOKEN characters is shell-safe and comes out unquoted, so every
  * other command's bytes are unchanged; the round-trip property (a shell split of
  * `compose(cmd, cwd)` gives back the argv) is pinned over every GATES and RUNNERS entry by the
- * ywr-harness canon's harness_gates.selftest.ps1 (case AD).
+ * ywr-harness canon's harness_gates.selftest.mjs (case AD).
  * @param {string[]} parts @param {string} cwd @param {string[]|{warns: string[]}|null} [warns]
  * @returns {string}
  */

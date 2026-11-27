@@ -12,6 +12,19 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.86.1 — 2026-11-28
+
+- Windows 에서 저장소를 8.3 짧은 이름이 섞인 경로(예: `C:\Users\RUNNER~1\...`)로 지정해 `/ywr-harness:harness-init` 을 실행하면, git 이 알려 주는 긴 경로와 글자가 달라 "저장소 루트가 아님"으로 판단하고 `core.hooksPath` 를 설정하지 않던 문제를 고쳤습니다. 이제 두 경로를 실제 경로로 풀어 비교합니다.
+- 리뷰 canon import 판정(게이트의 `review canon:` 줄과 세션 시작 안내)이 8.3 짧은 이름이나 링크를 거친 절대 경로 `@` import 도 같은 파일로 인정합니다. 전에는 이런 import 를 `NOT IMPORTED` 로 잘못 표시했습니다.
+- 0.86.0 은 태그만 만들어졌고 배포되지 않았습니다(Windows 태그 CI 실패). 0.85.1 에서 바로 올라오면 아래 v0.86.0 항목의 변경도 이 버전에 함께 들어 있습니다. 모두 하네스 개발용 변경이라 멤버의 사용 방법은 같습니다.
+- 하네스 릴리스 스크립트가 skip-ci 마커가 붙은 커밋에는 태그를 붙이지 않습니다. 그런 태그는 태그 CI 를 시작하지 않기 때문입니다 (ywr-harness ADR 0230). 하네스 repo 안에서만 쓰는 스크립트라 멤버 repo 는 달라지지 않습니다.
+
+## v0.86.0 — 2026-11-27
+
+- `manifest-gate.mjs` 가 `.mjs`, `.js`, `.cjs` 파일에서 `harness_git.mjs` 를 거치지 않고 git 을 직접 띄우는 줄도 `FAIL` 로 잡습니다(ywr-harness ADR 0228). `git` 문자열을 첫 항목으로 가진 배열, 프로세스 시작·PATH 조회 함수의 첫 인자 `git`, `git ` 로 시작하는 `exec` 명령이 대상입니다. 호출은 `harness_git.mjs` 로 옮기거나 같은 줄 또는 바로 윗 줄에 `// harness:git-boundary <이유>` 를 적어 예외로 표시합니다. 이유가 비면 `FAIL` 입니다. `harness_git.mjs` 와 `*.selftest.mjs` 는 읽지 않고, 게이트가 매번 읽지 않은 `*.selftest.mjs` 파일 수를 출력합니다. 하네스 repo 안에서만 도는 검사라 멤버 repo 의 게이트 결과는 달라지지 않습니다.
+- 하네스 selftest 를 Node 로 옮길 준비를 했습니다. `plugins/ywr-harness/selftest.ps1` 과 `scripts/canon-selftest.ps1` 이 `*.selftest.ps1` 옆의 `*.selftest.mjs` 도 찾아 `node` 로 실행하고, 두 파일 형식을 같은 규칙으로 셉니다. 새 `plugins/ywr-harness/node-selftest.mjs` 는 manifest gate 를 먼저 돌린 뒤 `*.selftest.mjs` 를 `node --test` 로 실행합니다. 읽기 집합 선택과 suite 시간 제한은 아직 없으며, 마지막 단계까지 pwsh 실행기가 맡습니다. 처음 옮긴 suite 는 `agents`, `hook-lib`, `config-change-audit` 입니다. 멤버의 사용 방법은 달라지지 않습니다 (ywr-harness ADR 0227).
+- 하네스 자체 selftest 를 거의 모두 Node 로 옮겼습니다. 플러그인과 하네스 repo 의 suite 39개가 `*.selftest.mjs` 가 됐고, 각 suite 는 옛 PowerShell suite 와 같은 검사를 하는지 확인한 뒤 옛 파일을 지웠습니다. 남은 PowerShell suite 는 실행기 자신을 검사하는 두 개뿐입니다. 하네스 개발용 변경이라 멤버 repo 의 게이트와 사용 방법은 달라지지 않습니다 (ywr-harness ADR 0229).
+
 ## v0.85.1 — 2026-11-26
 
 - 커밋 뒤 slice retro 가 빨라졌습니다. 문서 여러 개의 frontmatter 를 비교할 때 문서마다 git 을 두 번씩 띄우던 것을 `git cat-file --batch` 한 번으로 묶었고, 같은 커밋이 `docs/index.json` 을 함께 고쳤으면 비교를 건너뜁니다. 이 repo 에서 문서가 많이 바뀐 커밋 하나의 retro 가 약 6.5초(0.84.0)에서 약 0.5초로 줄었습니다. 찾아내는 항목은 전과 같습니다. 다만 `docs/index.json` 을 함께 고친 커밋에서는 frontmatter 를 읽지 않으므로, shallow clone 처럼 이전 문서 내용이 없는 경우에도 더 이상 `FAILED` 로 멈추지 않습니다.

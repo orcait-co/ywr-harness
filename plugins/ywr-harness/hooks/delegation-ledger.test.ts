@@ -1,6 +1,6 @@
 // `claude plugin test plugins/ywr-harness` — the engine-side half of delegation-ledger's tests (ADR 0117).
 // A LOCAL habit, never CI: the runner is the claude CLI, which CI does not have. The node suite
-// (delegation-ledger.selftest.ps1) owns the logic; this file proves the ENGINE runs the module as the
+// (delegation-ledger.selftest.mjs) owns the logic; this file proves the ENGINE runs the module as the
 // node fake assumes: the hooks load, `turn.step`'s generator form passes the stream through, results
 // come back untouched, and the session's slot file (ADR 0118) lands where `$.fs.write` was asked to put it.
 import { test, expect } from 'claude-code/testing'

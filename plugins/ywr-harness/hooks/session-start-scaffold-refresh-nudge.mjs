@@ -317,8 +317,27 @@ function importText(text) {
   return kept.join('\n').split(/\n[ \t]*\n/).map(p => p.replace(SPAN, ' ')).join('\n\n')
 }
 
+// The real path of the longest existing prefix plus the rest as written. It expands an 8.3 short name and a link,
+// so an absolute token spelled through either still names the file that the session loads.
+function realTarget(p) {
+  const full = path.resolve(p)
+  let cur = full
+  const tail = []
+  for (;;) {
+    try {
+      const real = fs.realpathSync.native(cur)
+      return tail.length ? path.join(real, ...tail.reverse()) : real
+    } catch {
+      const parent = path.dirname(cur)
+      if (parent === cur) return full
+      tail.push(path.basename(cur))
+      cur = parent
+    }
+  }
+}
+
 // Windows paths ignore case, and the probe loaded `@C4.MD` for c4.md there.
-const normTarget = p => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p))
+const normTarget = p => (process.platform === 'win32' ? realTarget(p).toLowerCase() : realTarget(p))
 
 // The first of IMPORT_FILES whose text imports `canon`, or ''. A token counts when it starts a line or follows
 // whitespace, after importText removed the code. A backslash-escaped space belongs to the token. A relative token

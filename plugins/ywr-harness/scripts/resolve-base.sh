@@ -15,7 +15,7 @@
 #     advisory: the same bad base degrades with a warning and NEVER exits
 #       non-zero (report-only jobs).
 # Output: base=<sha> appended to $GITHUB_OUTPUT (set by the runner; the
-# selftest provides a temp file). Selftest: resolve-base.selftest.ps1.
+# selftest provides a temp file). Selftest: resolve-base.selftest.mjs.
 set -u
 
 MODE="${MODE:-blocking}"

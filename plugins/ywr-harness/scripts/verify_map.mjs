@@ -39,7 +39,7 @@ import * as hc from './harness_config.mjs'
 // exactly — the file rule (sorted NNNN-*.md, 0000- excluded) and the block rule (`hc.fm_block`, the
 // builder's split_frontmatter: CRLF fold, lead-HTML-comment skip, opening '---' line, closing
 // line strip() == '---'). The two implementations are held together by a pairing selftest
-// (build-docs.selftest.ps1): change one side alone and that suite fails. There is no shared
+// (build-docs.selftest.mjs): change one side alone and that suite fails. There is no shared
 // import because the builder stays a standalone file (ywr-harness spec 0001); the
 // duplication is deliberate and selftest-gated.
 //

@@ -1,7 +1,8 @@
 # The shared code of the two selftest runners: plugins/ywr-harness/selftest.ps1 and the canon's
 # scripts/canon-selftest.ps1 both dot-source this file, so each part has one copy. It holds the
 # signal-line rule (ADR 0162) and the suite process with its bounded waits (ADR 0165, ADR 0166); both
-# had two copies, held in step by hand. Dot-source it from the runner's script scope; do not run it.
+# had two copies, held in step by hand. It also holds the launch line of a Node suite (ADR 0227). Dot-source it
+# from the runner's script scope; do not run it.
 # The $script: variables land in the runner's own script scope. A runner fixture copies this file
 # beside its runner copy.
 #
@@ -78,8 +79,9 @@ function Clear-StdHandleInherit {
 # the verdict) and Seconds.
 # A runner calls it from ForEach-Object -Parallel threads, which do not see the runner's functions:
 # Get-SuiteProcessFn returns this definition as text, and each thread dot-sources it from $using:.
+# $EnvAdd sets variables in the child's environment only; the runner's own environment stays unchanged.
 function Invoke-SuiteProcess {
-    param([string]$Exe, [string[]]$ArgList, [int]$Limit)
+    param([string]$Exe, [string[]]$ArgList, [int]$Limit, [hashtable]$EnvAdd = @{})
     $grace = [Math]::Min($Limit, 30)
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $lines = [Collections.Generic.List[string]]::new()
@@ -87,6 +89,7 @@ function Invoke-SuiteProcess {
     try {
         $psi = [Diagnostics.ProcessStartInfo]::new($Exe)
         foreach ($a in $ArgList) { $psi.ArgumentList.Add($a) }
+        foreach ($k in $EnvAdd.Keys) { $psi.Environment[$k] = [string]$EnvAdd[$k] }
         $psi.UseShellExecute = $false
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
@@ -156,3 +159,33 @@ function Invoke-SuiteProcess {
     return [pscustomobject]@{ Lines = [string[]]$lines; Code = $code; Seconds = $sw.Elapsed.TotalSeconds }
 }
 function Get-SuiteProcessFn { "function Invoke-SuiteProcess {${function:Invoke-SuiteProcess}}" }
+
+# --- Node suites (ADR 0227 decisions 3 and 4) -----------------------------------------------------
+# A suite named `*.selftest.mjs` is a Node suite. Both runners start it through Invoke-SuiteProcess, so it gets
+# the same bounds as a pwsh suite: the timeout, the held-pipe guard and the captured lines. The command line is
+# `node --test-reporter=<file URL of lib/selftest-reporter.mjs> --test-reporter-destination=stdout <suite>`.
+# The reporter must be a file: URL, because node stops at load on an absolute Windows path there. The URL is built
+# byte by byte: each byte outside the unreserved set, `/` and `:` is percent-encoded, so node reads back the same
+# path. [Uri] reads a `%41` in a Windows path as an escape and names another file. Exe is the first node on PATH that is a real program: on Windows a `.exe`, never a `.cmd` or
+# `.bat` shim that would start through cmd.exe and requote the arguments. It is found once per run. A reporter that is missing needs no
+# check of its own: node fails at load and the suite is FAILED with node's own message. Problem is not empty when
+# no node resolves: the runner then counts each Node suite FAILED and prints Problem as its line, so a missing node
+# is never a silent skip and never a missing row. Call this only when a Node suite was discovered.
+function Get-NodeSuiteLaunch([string]$ReporterPath) {
+    $node = Get-Command node -CommandType Application -All -ErrorAction SilentlyContinue |
+        Where-Object { -not $IsWindows -or $_.Source -match '\.exe$' } | Select-Object -First 1
+    $full = [IO.Path]::GetFullPath($ReporterPath).Replace('\', '/')
+    $sb = [Text.StringBuilder]::new()
+    foreach ($b in [Text.Encoding]::UTF8.GetBytes($full)) {
+        $keep = ($b -ge 0x30 -and $b -le 0x39) -or ($b -ge 0x41 -and $b -le 0x5A) -or ($b -ge 0x61 -and $b -le 0x7A) -or '-._~/:'.Contains([char]$b)
+        [void]$sb.Append($(if ($keep) { [char]$b } else { '%{0:X2}' -f $b }))
+    }
+    $p = $sb.ToString()
+    # A drive path gains a third slash, a POSIX path has its own, and a UNC path `//host/share` keeps its host.
+    $url = if ($p.StartsWith('//')) { "file:$p" } elseif ($p.StartsWith('/')) { "file://$p" } else { "file:///$p" }
+    return [pscustomobject]@{
+        Exe = $(if ($node) { $node.Source } else { '' })
+        ArgPrefix = [string[]]@("--test-reporter=$url", '--test-reporter-destination=stdout')
+        Problem = $(if ($node) { '' } else { 'node not on PATH, so this Node suite cannot run' })
+    }
+}

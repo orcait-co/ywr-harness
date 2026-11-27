@@ -807,9 +807,10 @@ export function import_text(text) {
 }
 
 // Windows paths ignore case, and the probe loaded `@C4.MD` for c4.md there; the fold applies on
-// Windows only.
+// Windows only. `_resolve` expands an 8.3 short name and a link, so an absolute token spelled
+// through either still names the file that the session loads.
 function _norm_target(p) {
-  const abs = path.resolve(p)
+  const abs = _resolve(p)
   return process.platform === 'win32' ? abs.replaceAll('/', '\\').toLowerCase() : abs
 }
 

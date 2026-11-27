@@ -27,7 +27,7 @@
 // and §3.8 list every check class.
 //
 // Port contract (ADR 0141 Decision 2): every PASS / FAIL / skip line keeps the pwsh gate's text,
-// because the selftest cases and release.ps1 match that text. The pwsh semantics the cases rest on
+// because the selftest cases and release.mjs match that text. The pwsh semantics the cases rest on
 // are kept on purpose and marked where they are not JavaScript's defaults: `-match`, `-eq`, `-in` and
 // `-contains` compared case-insensitively, `[regex]::Match` case-sensitively; .NET's `\s`, `\d` and
 // `\b` are Unicode classes (the S / NS / D / WB constants below); Get-ChildItem without -Force skips a
@@ -609,6 +609,7 @@ async function main() {
   // aside (ADR 0033's fold). Canon shape only; no tag => unreleased, said so, never silent. A
   // tag-less shallow clone reads the same line, which is why the fetch-depth-0 script gate
   // (harness-gates.yml) is the enforcing CI leg.
+  // harness:git-boundary PATH lookup only: whichOnPath is hook-lib's re-export of harness_git's which_on_path, and every git call of this gate goes through hook-lib's gitRun, which runs git_result
   const gitExe = whichOnPath('git')
   // Both memoized: the lockstep, ADR-reference, stack and git-boundary checks share one probe and one
   // listing (ADR 0158: a new check starts no new process). `-t` tags each path: `?` marks an untracked,
@@ -931,8 +932,20 @@ async function main() {
   // string state; code after a closing triple quote on the same line is not read; a header colon
   // inside brackets or a string, and a one-line `def`/`class` body, hide an import; a `;`, an import
   // or a git argv inside a comment or a string can raise a false FAIL; a triple quote in a comment on
-  // a string's closing line is counted; `cfg["git"]` reads as a git argv. Canon shape only, like the
-  // ADR references; every skip says why.
+  // a string's closing line is counted; `cfg["git"]` reads as a git argv. The same boundary binds a
+  // listed .mjs/.js/.cjs file (ADR 0228; a .ts file is not read for it), by the line: a start is an
+  // array literal whose first item is the string `git` or `git.exe`, a call whose first argument is
+  // that string when the callee's last identifier is a process start (spawn, spawnSync, exec,
+  // execSync, execFile, execFileSync, fork, run, runSync) or a PATH lookup (a name with which,
+  // resolve, lookup, locate, find or tool in it), or an exec/execSync call whose command string
+  // starts with `git `. The marker is `// harness:git-boundary <reason>` on the line or on the comment
+  // line directly above it. A file named harness_git.mjs is the boundary itself and a *.selftest.mjs
+  // file builds fixture repositories; the gate reads neither for this rule, and every run prints the
+  // count it did not read. Known limits, left to the review (ADR 0228): a git argv built in a
+  // variable, a callee under an alias, a start split over two lines, a git name read from the
+  // environment, a start through a helper with another name, and a `git` string as the first argument
+  // of a call that is neither a start nor a lookup. A string literal or a regex that holds such a
+  // start can raise a false FAIL. Canon shape only, like the ADR references; every skip says why.
   // STDLIB: sys.stdlib_module_names of CPython 3.13 without its private names and without tomllib
   // (3.11): the modules that import on every 3.9+ interpreter. 3.12 and 3.13 removed modules, so the
   // newest list is also the safe one.
@@ -966,6 +979,18 @@ async function main() {
   const gitArgvRx = /(?:\[|(?:^\s*|[=,([:]\s*|\b(?:return|yield)\s+)\()\s*[rRbBuU]?(['"])git(?:\.exe)?\1\s*[,\])]/u
   const gitStrRx = /\b(?:subprocess\.\w+|os\.system|os\.popen)\(\s*[rRbBfFuU]?(['"])git\s/u
   const markRx = /#\s*harness:git-boundary\b(.*)$/u
+  // The JavaScript forms (ADR 0228). The array `[` must not index a value, so `cfg['git']` stays out.
+  const jsMarkRx = /\/\/\s*harness:git-boundary\b(.*)$/u
+  const jsGitArgvRx = /(?<![\w$)\]])\[\s*(['"`])git(?:\.exe)?\1\s*[,\]]/u
+  const jsGitCallRx = /([\w$]+)\s*\(\s*(['"`])git(?:\.exe)?\2\s*[,)]/gu
+  const jsGitStartRx = /^(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|fork|run|runSync)$/u
+  const jsGitLookupRx = /which|resolve|lookup|locate|find|tool/iu
+  const jsGitExecRx = /\b(?:exec|execSync)\s*\(\s*(['"`])git\s/u
+  const jsGitStart = (ln) => {
+    if (jsGitArgvRx.test(ln) || jsGitExecRx.test(ln)) return true
+    for (const m of ln.matchAll(jsGitCallRx)) if (jsGitStartRx.test(m[1]) || jsGitLookupRx.test(m[1])) return true
+    return false
+  }
   // Outside a string, the tokens of one line: a whole triple-quoted string, a lone triple quote that
   // opens one (the rest of the line is its text), a one-line string (consumed whole, so a quote inside
   // it does not count), or a comment (ends the line). Inside a string there is no comment and no
@@ -1002,7 +1027,8 @@ async function main() {
       }
       const { builtinModules } = await import('node:module')
       const nodeBuiltins = new Set(builtinModules)
-      let pyImports = 0, pyFiles = 0, jsSpecs = 0, jsFiles = 0, gitSites = 0, stackBad = 0, gitBad = 0
+      let pyImports = 0, pyFiles = 0, jsSpecs = 0, jsFiles = 0, pyGitSites = 0, jsGitSites = 0, stackBad = 0, gitBad = 0
+      let selftestUnread = 0, boundaryUnread = 0
       for (const { rel, tracked } of entries) {
         const tag = tracked ? '' : ' (untracked)'
         if (depManifestRx.test(rel)) {
@@ -1042,7 +1068,7 @@ async function main() {
               }
             }
             if (gitArgvRx.test(ln) || gitStrRx.test(ln)) {
-              gitSites++
+              pyGitSites++
               const prev = i > 0 ? lines[i - 1].replace(/\r$/u, '').trimStart() : ''
               const mark = markRx.exec(ln) || (prev.startsWith('#') ? markRx.exec(prev) : null)
               if (!mark) {
@@ -1062,10 +1088,28 @@ async function main() {
         } else {
           jsFiles++
           const hostOk = /\.test\.ts$/iu.test(rel)
+          // The git boundary reads a .mjs/.js/.cjs file but not the boundary module or a selftest (ADR 0228).
+          const isBoundary = /(^|\/)harness_git\.mjs$/iu.test(rel)
+          const isSelftest = /\.selftest\.mjs$/iu.test(rel)
+          if (isBoundary) boundaryUnread++
+          if (isSelftest) selftestUnread++
+          const gitRead = /\.(mjs|js|cjs)$/iu.test(rel) && !isBoundary && !isSelftest
           for (let i = 0; i < lines.length; i++) {
-            const ln = lines[i]
+            const ln = lines[i].replace(/\r$/u, '')
             const trimmed = ln.trimStart()
             if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue
+            if (gitRead && jsGitStart(ln)) {
+              jsGitSites++
+              const prev = i > 0 ? lines[i - 1].replace(/\r$/u, '').trimStart() : ''
+              const mark = jsMarkRx.exec(ln) || (prev.startsWith('//') ? jsMarkRx.exec(prev) : null)
+              if (!mark) {
+                bad(`git boundary: ${rel}:${i + 1}${tag} starts git directly — move the call into harness_git.mjs (ADR 0223), or mark it '// harness:git-boundary <reason>' (review canon invariant 9, ADR 0228)`)
+                gitBad++
+              } else if (!/\S/u.test(mark[1])) {
+                bad(`git boundary: ${rel}:${i + 1}${tag} carries harness:git-boundary with no reason — the marker names why this call bypasses the boundary`)
+                gitBad++
+              }
+            }
             const specs = []
             for (const rx of jsSpecRxs) { const m = rx.exec(ln); if (m) { specs.push(m[2]); break } }
             for (const m of ln.matchAll(jsCallRx)) specs.push(m[2])
@@ -1085,8 +1129,10 @@ async function main() {
         good(`zero-install stack: ${pyImports} python import(s) in ${pyFiles} file(s) and ${jsSpecs} js specifier(s) in ${jsFiles} file(s) resolve to the stdlib, built-ins or the repo; no dependency manifest listed`)
       }
       if (gitBad === 0) {
-        good(`git boundary: ${gitSites} direct git call(s) in listed .py files, each marked harness:git-boundary with a reason`)
+        good(`git boundary: ${pyGitSites} direct git call(s) in listed .py files, each marked harness:git-boundary with a reason; ${jsGitSites} in listed .mjs/.js/.cjs files, each marked the same way`)
       }
+      // Printed on a pass and on a fail: the JavaScript check reads no selftest and no boundary module.
+      note(`git boundary: ${selftestUnread} *.selftest.mjs file(s) and ${boundaryUnread} harness_git.mjs file(s) not read for the JavaScript check (ADR 0228 decision 5)`)
     }
   }
 
@@ -1120,7 +1166,7 @@ async function main() {
 
 // --- the prompt-audit surface (ADR 0186) ---------------------------------------------------------
 // The files whose change makes the canon release preflight run `/doctor prompt-audit`: the text the
-// 2026-11-01 audit read. This list is the one source; scripts/release.ps1 keeps no copy and asks
+// 2026-11-01 audit read. This list is the one source; scripts/release.mjs keeps no copy and asks
 // `node manifest-gate.mjs --audit-paths` instead. Paths are relative to the plugin root, compared
 // case-insensitively as the gate's other path rules are; a selftest file never counts.
 const AUDIT_SURFACE = [

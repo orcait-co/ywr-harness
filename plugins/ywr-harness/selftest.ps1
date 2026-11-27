@@ -5,9 +5,9 @@
 
 # Plugin selftest runner — the single entry point for everything this plugin can verify about
 # itself: the manifest/wiring gate, the JS-side workflow corpus gate, then every shipped
-# PowerShell selftest. The two gates run first, in that order, with their output streamed; the
+# PowerShell selftest and every shipped Node selftest. The two gates run first, in that order, with their output streamed; the
 # suites then run CONCURRENTLY (ADR 0088, `-Jobs`), each still its own `pwsh -NoProfile -File`
-# child with stdout+stderr captured.
+# child (a `*.selftest.mjs` suite: a node child, ADR 0227) with stdout+stderr captured.
 #
 # Exit contract:
 #   exit 0 = every gate that RAN passed, and at least one selftest was discovered
@@ -122,8 +122,9 @@ if ($Base -and -not $Changed) {
 
 # --- discovery ------------------------------------------------------------------------------
 # Recursive: a selftest sitting anywhere in the plugin is discovered, so adding a directory
-# later cannot silently drop its coverage. `.mjs` selftests are driven by the corpus gate below,
-# not here — pwsh would not run them.
+# later cannot silently drop its coverage. Two suite shapes are discovered (ADR 0227): `*.selftest.ps1`
+# runs as a pwsh child, `*.selftest.mjs` runs as a node child with the shared reporter. A `.mjs` file
+# the corpus gate below runs is discovered here too, so its suite needs a read-set entry like any other.
 # Discovery runs BEFORE the gates so the two loud refusals (empty set, empty slice) and -List
 # cost no gate time; the gates still run before the suites in a real run.
 # ONE declared exclusion, the same one manifest-gate's coverage report makes: files under a
@@ -133,7 +134,8 @@ $templateRx = '[\\/]templates[\\/]'
 # Plugin-relative, `/`-separated — the one spelling of a suite in the listing, the live lines and
 # the results, so a CI log reads the same on Windows and Linux.
 function Get-SuiteRel([IO.FileInfo]$File) { $File.FullName.Substring($PSScriptRoot.Length).TrimStart('\', '/').Replace('\', '/') }
-$found = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -Filter '*.selftest.ps1' -ErrorAction SilentlyContinue)
+# One walk for both shapes: the provider filter takes the shared stem, the name check takes the two extensions.
+$found = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -Filter '*.selftest.*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.selftest\.(ps1|mjs)$' })
 $templateExcluded = @($found | Where-Object { $_.FullName -match $templateRx }).Count
 # Ordinal-keyed on purpose: a plain @{} compares keys case-insensitively and would fold two paths
 # that differ only by case into one entry on a case-sensitive filesystem (review 2026-09-02, medium).
@@ -147,7 +149,7 @@ $rels = [string[]]$byRel.Keys
 $all = @($rels | ForEach-Object { $byRel[$_] })
 
 if ($all.Count -eq 0) {
-    Write-Host "FAIL — no *.selftest.ps1 discovered (empty set is not a pass; template payload excluded: $templateExcluded)" -ForegroundColor Red
+    Write-Host "FAIL — no *.selftest.ps1 or *.selftest.mjs discovered (empty set is not a pass; template payload excluded: $templateExcluded)" -ForegroundColor Red
     exit 1
 }
 
@@ -191,6 +193,9 @@ if ($top) {
     $listed = & git -C $script:gitTop -c core.quotepath=false ls-files -z --cached --others --exclude-standard 2>$null
     if ($LASTEXITCODE -ne 0) { $script:inGit = $false }
     foreach ($p in (Split-Nul $listed)) {
+        # The index still lists a file that the change deleted until it is staged. No suite can read a
+        # missing file, so the map does not need to claim it.
+        if (-not [IO.File]::Exists((Join-Path $script:gitTop $p))) { continue }
         if ($script:gitPrefix -and $p.StartsWith($script:gitPrefix, [StringComparison]::Ordinal)) { $pluginFiles += $p.Substring($script:gitPrefix.Length) }
         elseif ($script:gitPrefix) { $rootFiles += "/$p" }
         else { $pluginFiles += $p }
@@ -441,7 +446,7 @@ foreach ($t in $tests) { Write-Host "  - $(Get-SuiteRel $t)" }
 # the slowest. -Jobs 1 keeps discovery order. The times sit beside the full-run record, in the clone's
 # git dir, and change no verdict.
 $work = @(for ($k = 0; $k -lt $tests.Count; $k++) {
-        [pscustomobject]@{ Index = $k; Rel = (Get-SuiteRel $tests[$k]); Name = $tests[$k].Name; Path = $tests[$k].FullName }
+        [pscustomobject]@{ Index = $k; Rel = (Get-SuiteRel $tests[$k]); Name = $tests[$k].Name; Path = $tests[$k].FullName; Kind = $(if ($tests[$k].Extension -ieq '.mjs') { 'node' } else { 'pwsh' }) }
     })
 # The common dir is read from files, not from `git rev-parse` (~64 ms a process; -List runs this on
 # every call). `.git` is the git dir itself, or a worktree's or submodule's file naming its gitdir, and
@@ -572,8 +577,14 @@ function Get-PassCount([string[]]$Lines) { @($Lines | Where-Object { $_ -match '
 # this point captures both of its streams.
 $noInheritMiss = Clear-StdHandleInherit
 $suiteFn = Get-SuiteProcessFn
+# The node that starts the Node suites, found once and only when one was discovered (ADR 0227). Without a node each
+# Node suite is a FAILED suite with the printed reason, never a silent skip.
+$nodeLaunch = if (@($work | Where-Object { $_.Kind -eq 'node' }).Count) { Get-NodeSuiteLaunch (Join-Path $PSScriptRoot 'lib/selftest-reporter.mjs') } else { $null }
 Write-Host "--- suites: $($work.Count) selected, jobs=$Jobs, start order: $orderNote — one 'done' line per suite as it finishes (completion order)" -ForegroundColor Cyan
 $results = [System.Collections.Generic.List[object]]::new()
+# A Node suite divides the CPUs by the suites that run beside it (innerJobs of lib/selftest-lib.mjs). At most
+# min(-Jobs, selected suites) run at once, so a -Changed run that selects one suite gives it every CPU.
+$outerJobs = [Math]::Min($Jobs, $work.Count)
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $work | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     # No per-thread decoding pin, on purpose: [Console]::OutputEncoding is process-wide, so the pin
@@ -588,7 +599,19 @@ $work | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     # inherit the console code page the pin above set.
     $s = $_
     . ([scriptblock]::Create($using:suiteFn))
-    $r = Invoke-SuiteProcess -Exe ([Environment]::ProcessPath) -ArgList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $s.Path) -Limit $using:SuiteTimeout
+    if ($s.Kind -eq 'node') {
+        # A Node suite starts through the same function with the node of $nodeLaunch (lib/runner-signal.ps1).
+        $nl = $using:nodeLaunch
+        if ($nl.Problem) { $r = [pscustomobject]@{ Lines = [string[]]@("FAIL — $($nl.Problem)"); Code = -1; Seconds = 0.0 } }
+        else { $r = Invoke-SuiteProcess -Exe $nl.Exe -ArgList (@($nl.ArgPrefix) + $s.Path) -Limit $using:SuiteTimeout -EnvAdd @{ YWR_SELFTEST_OUTER_JOBS = $using:outerJobs } }
+        # A Node suite whose tests never registered prints nothing and exits 0. Without a PASS or SKIP line no
+        # case ran, so that exit is no pass (ADR 0227).
+        if ($r.Code -eq 0 -and -not @($r.Lines | Where-Object { $_ -match '^(PASS|SKIP) \[' }).Count) {
+            $r = [pscustomobject]@{ Lines = [string[]](@($r.Lines) + 'FAIL — this Node suite exited 0 with no PASS or SKIP line, so no case ran'); Code = 1; Seconds = $r.Seconds }
+        }
+    } else {
+        $r = Invoke-SuiteProcess -Exe ([Environment]::ProcessPath) -ArgList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $s.Path) -Limit $using:SuiteTimeout
+    }
     [pscustomobject]@{ Index = $s.Index; Code = $r.Code; Seconds = $r.Seconds; Lines = $r.Lines; Rel = $s.Rel }
 } | ForEach-Object {
     $results.Add($_)

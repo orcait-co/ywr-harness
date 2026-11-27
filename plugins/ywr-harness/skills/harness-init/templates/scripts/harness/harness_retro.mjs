@@ -260,7 +260,7 @@ export function name_status_z(raw) {
 // The docs builder's frontmatter list grammar (docs/build_docs.mjs parse_frontmatter,
 // ywr-harness spec 0001 §3), mirrored for the one key this gate reads. A SECOND parser by
 // necessity — the retro runs on the committed sources, not on an index that may not be rebuilt
-// yet — so it is held to the builder by a pairing case (the ywr-harness canon's harness_retro.selftest.ps1 G4) instead of
+// yet — so it is held to the builder by a pairing case (the ywr-harness canon's harness_retro.selftest.mjs G4) instead of
 // by hope: two parsers of one field that disagree (a block list, an item containing ']', a
 // multi-line flow list) give two different ownership maps.
 const FM_KEY_RE = new RegExp('^([A-Za-z0-9_]+)[' + PY_WS + ']*:[' + PY_WS + ']*([^\\n]*)$')

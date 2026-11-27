@@ -32,7 +32,7 @@
 // `no` or `off` (case ignored, trimmed); `powershell.exe` does not exist under `SystemRoot`; the spawn
 // fails. Fail-open: nothing here can block the question (ywr-harness spec 0006 §3.1).
 //
-// The pure half and `run` are exported for `question-notify.selftest.ps1`. The hook runs only when node
+// The pure half and `run` are exported for `question-notify.selftest.mjs`. The hook runs only when node
 // runs this file itself (`isMain`).
 import fs from 'node:fs'
 import path from 'node:path'

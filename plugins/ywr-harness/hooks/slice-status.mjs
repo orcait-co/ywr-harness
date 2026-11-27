@@ -26,7 +26,7 @@
 // and a guide change to the zones changes them in the same slice (ywr-harness ADR 0138 Decision 7).
 //
 // The pure half (`zoneOf`, `isTreeRun`, `normPath`, `underRoot`, `createTracker`, `statusText`) is
-// exported so `slice-status.selftest.ps1` drives it under plain node with a fake engine; the engine
+// exported so `slice-status.selftest.mjs` drives it under plain node with a fake engine; the engine
 // imports only `register`.
 
 export const START_BELOW = 35        // percent: under this, start freely

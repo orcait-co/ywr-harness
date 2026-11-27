@@ -35,7 +35,7 @@
 // class; the module cannot import hook-lib, which needs Node).
 //
 // The pure half (`TOOLS`, `parseVersion`, `verdictOf`, `needsOf`, `bandText`, `noteText`, `manualText`,
-// `lastLine`, `flatten`, `aliasPath`, `wingetArgv`, `resultLine`, `resultNote`, `unknownText`) is exported so `prerequisites.selftest.ps1` drives it
+// `lastLine`, `flatten`, `aliasPath`, `wingetArgv`, `resultLine`, `resultNote`, `unknownText`) is exported so `prerequisites.selftest.mjs` drives it
 // under plain node with a fake engine; the engine imports only `register`.
 
 export const COMMAND = 'ywr-harness:setup'
