@@ -2,8 +2,8 @@
 // Node built-ins only, ESM, no install step: this file is copied into consumer repositories as
 // `scripts/harness/harness_git.mjs`, where no plugin exists, so it imports nothing but `node:` modules.
 //
-// Every git call whose output is parsed goes through `git_run`, `git_lines`, `git_paths`, `git_objects` or
-// `git_result`. The pins, the UTF-8 decode and the NUL framing live here and nowhere else. Why:
+// Every git call whose output is parsed goes through `git_run`, `git_lines`, `git_paths`, `git_objects`,
+// `git_result` or `git_result_async`. The pins, the UTF-8 decode and the NUL framing live here and nowhere else. Why:
 //   - The argv is an array and no shell runs, so a repo-supplied value is never re-split or expanded.
 //   - Both pipes are bytes. A text-mode pipe would translate newlines on Windows and turn a
 //     newline-separated `--stdin` list into `path\r`, which no exact-name ignore rule matches.
@@ -15,7 +15,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 
 /**
  * The options `git_run` puts before every command. The color pins: a user's `color.grep=always`
@@ -238,6 +238,57 @@ export function git_result(root, args, { stdin = null, env = null } = {}) {
     stderr: decode_utf8_backslashreplace(r.stderr),
     cmd: r.cmd,
   }
+}
+
+/**
+ * `git_result` without blocking the event loop, so a slow network command such as `fetch` or
+ * `ls-remote` overlaps other work (ywr-harness ADR 0233). Same pins, same decode, same result
+ * shape. The promise rejects only when git cannot start, with the errors that `git_result` throws.
+ * @param {string} root working directory of the command
+ * @param {string[]} args git arguments, without the pins
+ * @param {{stdin?: string|null, env?: Object<string,string>|null}} [opts]
+ * @returns {Promise<{status: number, stdout: string, stderr: string, cmd: string[]}>}
+ */
+export function git_result_async(root, args, { stdin = null, env = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const exe = _git()
+    if (!exe) { reject(_spawn_error('FileNotFoundError', 'git was not found on PATH', { code: 'ENOENT' })); return }
+    const cmd = ['git', ...GIT_PINS, ...args]
+    const fail = (e) => {
+      let name = e.code === 'ENOENT' ? 'FileNotFoundError' : 'OSError'
+      if (name === 'FileNotFoundError' && process.platform === 'win32' && !_is_dir(root)) name = 'NotADirectoryError'
+      reject(_spawn_error(name, `git could not run: ${e.message}`, { code: e.code }))
+    }
+    let child
+    try {
+      child = spawn(exe, [...GIT_PINS, ...args], {
+        cwd: root,
+        env: env === null || env === undefined ? undefined : { ...process.env, ...env },
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+    } catch (e) { reject(e); return }   // an invalid argument throws as `spawnSync` throws it in `git_result`
+    const out = []
+    const err = []
+    let pending = true
+    child.stdout.on('data', (b) => out.push(b))
+    child.stderr.on('data', (b) => err.push(b))
+    child.on('error', (e) => { if (pending) { pending = false; fail(e) } })
+    // `close` fires after both pipes end, so every byte is read before the decode.
+    child.on('close', (code, signal) => {
+      if (!pending) return
+      pending = false
+      const status = code ?? -(os.constants.signals[signal] ?? 1)
+      resolve({
+        status,
+        stdout: decode_utf8_backslashreplace(Buffer.concat(out)),
+        stderr: decode_utf8_backslashreplace(Buffer.concat(err)),
+        cmd,
+      })
+    })
+    child.stdin.on('error', () => { /* git exited before it read stdin: the exit code is the answer */ })
+    child.stdin.end(stdin === null || stdin === undefined ? undefined : Buffer.from(stdin, 'utf8'))
+  })
 }
 
 /**

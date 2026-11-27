@@ -12,6 +12,11 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.87.1 — 2026-11-28
+
+- `scripts/harness/harness_git.mjs` 에 `git_result_async` 를 추가했습니다. `git_result` 와 같은 결과를 Promise 로 돌려주므로, `git fetch` 처럼 느린 네트워크 git 호출이 실행되는 동안 다른 작업을 함께 진행할 수 있습니다 (ywr-harness ADR 0233). 기존 함수는 그대로라 멤버 repo 의 게이트와 사용 방법은 달라지지 않습니다. 다음 `/ywr-harness:harness-init` 재실행 때 이 파일이 함께 갱신됩니다.
+- 하네스 릴리스 스크립트가 서로 의존하지 않는 느린 단계를 동시에 실행합니다. 네트워크 git 호출과 config dir 별 플러그인 업데이트가 대상입니다. 하네스 repo 안에서만 쓰는 스크립트라 멤버 repo 는 달라지지 않습니다.
+
 ## v0.87.0 — 2026-11-28
 
 - 하네스 자체 selftest 실행기를 Node 로 옮겼습니다. `plugins/ywr-harness/selftest.mjs` 와 `scripts/canon-selftest.mjs` 가 PowerShell 실행기 `selftest.ps1`, `canon-selftest.ps1` 을 대신하며, 하네스 repo 에는 PowerShell 파일이 남지 않습니다 (ywr-harness ADR 0231). 하네스 개발용 변경이라 멤버 repo 의 게이트와 사용 방법은 달라지지 않습니다.

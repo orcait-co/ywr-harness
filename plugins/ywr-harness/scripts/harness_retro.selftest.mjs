@@ -347,13 +347,22 @@ const D8 = lazy('D8', () => {
     const absent = g.git_objects(root, ['HEAD:docs/spec/0001-한글.md'])
     let refused = 'no'
     try { g.git_objects(root, ['HEAD:docs/adr/x.md\r']) } catch (e) { refused = e.name }
-    console.log(JSON.stringify({ fm, absent, refused }))
+    // D9: git_result_async gives the result of git_result, stdin and exit code included, and rejects like it.
+    const pick = (r) => JSON.stringify([r.status, r.stdout, r.stderr !== '', r.cmd])
+    const same = []
+    for (const [args, opts] of [[['cat-file', '--batch-check'], { stdin: 'HEAD:docs/adr/x.md\nHEAD:docs/spec/0001-한글.md\n' }], [['rev-parse', '--verify', '--quiet', 'nope'], {}]]) {
+      same.push(pick(await g.git_result_async(root, args, opts)) === pick(g.git_result(root, args, opts)))
+    }
+    let rejected = 'no'
+    try { await g.git_result_async(path.join(root, 'no-such-dir'), ['status']) } catch (e) { rejected = e.name }
+    console.log(JSON.stringify({ fm, absent, refused, same, rejected }))
   }, [here, d8])
   return { out, builtStatus: built.status }
 })
 t('D8 fixture: the index took the CR-ended path', () => { const { builtStatus } = D8(); ok(builtStatus === 0, `update-index exit ${builtStatus}`) })
-t('D8 a CR-ended path reads its own blob, an absent non-ASCII path is null, and the batch refuses a CR', () => {
-  const want = '{"fm":["id: carriage","id: plain"],"absent":[null],"refused":"ValueError"}'
+t('D8 a CR-ended path reads its own blob, an absent non-ASCII path is null, and the batch refuses a CR; D9 git_result_async matches git_result and rejects a missing root', () => {
+  const rej = process.platform === 'win32' ? 'NotADirectoryError' : 'FileNotFoundError'
+  const want = `{"fm":["id: carriage","id: plain"],"absent":[null],"refused":"ValueError","same":[true,true],"rejected":"${rej}"}`
   const { out } = D8(); ok(out.trim() === want, `want ${want}, got ${out}`)
 })
 
