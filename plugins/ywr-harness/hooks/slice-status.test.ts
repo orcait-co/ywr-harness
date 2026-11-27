@@ -1,8 +1,8 @@
-// `claude plugin test plugins/ywr-harness` — the engine-side half of slice-status's tests (ADR 0138).
-// A LOCAL habit, never CI: the runner is the claude CLI, which CI does not have. The node suite
-// (slice-status.selftest.mjs) owns the logic. Since ADR 0140 the entry does not register the module,
-// so this file proves the ENGINE shows no status line from the plugin: neither a measure, a `--tree`
-// run nor a counted change reaches `ui.status`, and the results pass through.
+// `claude plugin test plugins/ywr-harness`: the engine-side half of slice-status's tests (ADR 0138).
+// Run it locally, never in CI, because the runner is the claude CLI. The node suite
+// (slice-status.selftest.mjs) owns the logic. The plugin entry does not register the module
+// (ADR 0140), so this file proves that the engine shows no status line from the plugin. A measure,
+// a `--tree` run and a counted change never reach `ui.status`, and the results pass through.
 import { test, expect } from 'claude-code/testing'
 
 const ROOT = 'C:/repo'

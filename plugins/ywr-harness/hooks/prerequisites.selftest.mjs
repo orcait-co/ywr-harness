@@ -1,33 +1,32 @@
 // Self-test for prerequisites.mjs, the plugin's prerequisite-check hooks module (Claude Mods; ADR 0142).
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout hooks/prerequisites.selftest.mjs
 //
-// CI has no claude CLI, so the module is driven here under plain node with a FAKE engine: a fake `on`
-// captures the hooks, a fake `$` answers process.run / process.spawn / env.get / session.append /
-// ui.invalidate / ui.resolve / ui.status / clock.after, and each `next` is a stub whose result the hook must hand back
-// untouched. The module draws with a GLOBAL `h` (the engine's JSX factory), so the probe defines one before
-// it imports the module. What this suite proves is the contract the host cannot check for us: the pure half
-// (version parsing, the missing / old / ok / unknown verdict, the Korean band and the English model note,
-// the exact winget argv, the exit-code lines, the inline-class flattening of child output) is right; the
-// hook set is exactly session.start, ui.render on AbovePrompt and command.run on ywr-harness:setup, and no
-// prompt.compose; session.start returns what `next` resolved to BEFORE the probes settle, starts them on a
-// `$.clock.after(0, ...)` timer and runs them directly when that call throws (ADR 0164), and a probe that
-// misses, is old, is unknown, or whose append or invalidate fails never reaches the session; the band and
-// the note speak only for a missing or old tool; `/ywr-harness:setup` installs nothing off Windows, without
-// winget or when no tool can be probed, runs the winget installs one at a time in TOOLS order, streams only
-// a flattened, de-duplicated last line to the status line, and always clears that line; and the entry
-// `mods.mjs` registers these hooks beside the ledger's. What it cannot prove — the engine's own event
-// shapes, that `$.process.spawn` streams the way the fake does, that the band renders, that the host
-// answers a plugin skill command through `command.run` and loads the module at all — is `claude plugin
-// validate`'s and the live `--plugin-dir` run's (spec 0012 §3 Mods row); `claude plugin test` stays a local
-// habit. Nobody has measured a real winget install yet (ADR 0142 follow-ups).
+// CI has no claude CLI, so the module is driven here under plain node with a fake engine: a fake `on`
+// captures the hooks, a fake `$` answers process.run, process.spawn, env.get, session.append, ui.invalidate,
+// ui.resolve, ui.status and clock.after, and each `next` is a stub whose result the hook must hand back
+// untouched. The module draws with a global `h` (the engine's JSX factory), so the probe defines one before
+// it imports the module.
+// This suite proves the contract that the host cannot check for us (ywr-harness spec 0006 §3.6):
+//   - the pure half is right: version parsing, the missing, old, ok and unknown verdict, the Korean band and
+//     the English model note, the exact winget argv, the exit-code lines and the flattening of child output;
+//   - the hook set is exactly session.start, ui.render on AbovePrompt and command.run on ywr-harness:setup;
+//   - session.start returns what `next` resolved to before the probes settle, starts them on a
+//     `$.clock.after(0, ...)` timer and runs them directly when that call throws (ADR 0164);
+//   - a probe that misses, is old, is unknown, or whose append or invalidate fails never reaches the session;
+//   - `/ywr-harness:setup` installs nothing off Windows, without winget or when no tool can be probed, runs
+//     the winget installs one at a time in TOOLS order, streams only a flattened, de-duplicated last line to
+//     the status line, and always clears that line;
+//   - the entry `mods.mjs` registers these hooks beside the ledger's.
+// It cannot prove the engine's own event shapes, that `$.process.spawn` streams the way the fake does, that
+// the band renders, or that the host loads the module and answers a skill command through `command.run`.
+// `claude plugin validate` and the live `--plugin-dir` run cover those (spec 0012 §3 Mods row).
+// No real winget install is measured here (ADR 0142).
 //
-// Port notes (ADR 0227). The pwsh suite wrote the probe into a temp file, ran it in a child `node` and read
-// one `name<TAB>verdict` row per check. This suite runs the same probe body in its own process, before the
-// first test is registered, and registers one test per row, named as the row is named. The probe keeps its
-// own `unhandledRejection` counter (case Z1), so it removes that listener and its crash listener when it
-// ends, and the node:test harness sees neither. A throw inside the probe that no case catches prints the
-// rows gathered so far and a `FAIL [PR0 ...]` line, and exits 1, as the pwsh runner reported a probe exit.
-// The pwsh suite named two rows without an ID. They are `PR1` and `PR2`. The META cases are `PR3` and `PR4`.
+// The probe runs in this process before the first test is registered, and registers one test per row.
+// It keeps its own `unhandledRejection` counter (case Z1), so it removes that listener and its crash
+// listener when it ends, and the node:test harness sees neither. A throw inside the probe that no case
+// catches prints the rows gathered so far and a `FAIL [PR0 ...]` line, and exits 1.
+// The META cases are `PR3` and `PR4`.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
@@ -37,7 +36,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const modPath = path.join(here, 'prerequisites.mjs')
 const entryPath = path.join(here, 'mods.mjs')
 
-// ---- the probe, as the pwsh suite wrote it -------------------------------------------------------------------
+// ---- the probe -----------------------------------------------------------------------------------------------
 globalThis.h = (type, props, ...children) => ({ type, props, children })
 let unhandled = 0
 const onRej = () => { unhandled++ }
@@ -45,7 +44,7 @@ process.on('unhandledRejection', onRej)
 const M = await import(pathToFileURL(modPath).href)
 const ENTRY = await import(pathToFileURL(entryPath).href)
 const results = []
-// a throw inside one case must not hide the cases before it: report them, then the crash as a FAIL line
+// A throw inside one case must not hide the cases before it: report them, then the crash as a FAIL line.
 const onCrash = e => {
   for (const [n, v] of results) console.log(v === 'OK' ? `PASS [${n}]` : `FAIL [${n}]: ${v}`)
   console.log(`FAIL [PR0 probe stopped after ${results.length} cases]: ${String(e && e.stack).replace(/\s+/g, ' ')}`)
@@ -57,10 +56,9 @@ const eq = (name, got, want) => {
   results.push(g === w ? [name, 'OK'] : [name, 'FAIL got ' + g + ' want ' + w])
 }
 const tick = (ms = 15) => new Promise(r => setTimeout(r, ms))
-// The module's list holds node alone (ywr-harness ADR 0223 took python out). Every path that handles
-// more than one tool (order, one install at a time, concurrent probes, the alias retry of a second
-// command) still needs a second entry, so the suite adds a fixture tool shaped like the retired python
-// entry to the module's own list. The list as shipped is asserted first.
+// The module's list holds node alone (ADR 0223). Every path that handles more than one tool (order, one
+// install at a time, concurrent probes, the alias retry of a second command) needs a second entry,
+// so the suite adds a python fixture tool to the module's own list. The list as shipped is asserted first.
 const SHIPPED = [M.TOOLS.map(t => t.name), M.TOOLS.map(t => t.min), M.TOOLS.map(t => t.winget)]
 M.TOOLS.push({
   name: 'python', argv: ['python', '--version'], min: [3, 9], winget: 'Python.Python.3.13',
@@ -195,7 +193,7 @@ eq('V11 verdictOf: a malformed outcome is unknown',
 {
   const ok = M.resultLine(T.node, 0), upd = M.resultLine(T.node, 2316632107), upd2 = M.resultLine(T.node, -1978335189)
   const bad = M.resultLine(T.python, 1603), nul = M.resultLine(T.python, null)
-  // the PATH hint carries the word PATH; the Windows app-execution-alias hint (python only, retired with it) carried python.exe
+  // The PATH hint carries the word PATH. The Windows app-execution-alias hint would carry python.exe, and no line has it.
   const hint = s => [s.includes('PATH'), s.includes('python.exe')]
   eq('R1 resultLine: 0 is a non-failure line with the PATH hint, and no python alias hint for node',
     [ok.startsWith('- node: '), ok.includes('winget exit'), hint(ok)], [true, false, [true, false]])
@@ -881,8 +879,8 @@ for (const [name, verdict] of results) {
   test(name, () => { acceptVerdict(verdict) })
 }
 
-// META — the verdict plumbing is live: a FAIL verdict is refused (a suite that accepted it would pass any
-// mutant), and the probe did not silently drop cases (a truncated probe would still print OK lines).
+// META: the verdict plumbing is live. A FAIL verdict is refused, because a suite that accepted it would pass any
+// mutant. The probe did not silently drop cases, because a truncated probe would still print OK lines.
 test('PR3 META', () => {
   assert.throws(() => acceptVerdict('FAIL got x want y'), 'acceptVerdict accepted a FAIL verdict')
 })

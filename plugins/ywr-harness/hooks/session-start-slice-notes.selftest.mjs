@@ -3,8 +3,8 @@
 //
 // Fixture provenance: the payload is the SessionStart contract of the official hooks reference (cwd +
 // source; `additionalContext` joins the model's context, `systemMessage` is shown to the member; each such
-// string is capped at 10,000 characters) — the same shape session-start-githooks-nudge's suite pins. The
-// hook is registered with the matcher `compact`, so these cases pass `source = compact`.
+// string is capped at 10,000 characters). The hook is registered with the matcher `compact`, so these
+// cases pass `source = compact`.
 //
 // The cases build REAL throwaway repos under the temp root and write notes with the REAL slice_note.mjs:
 // the hook's verdict is read from `git rev-parse` and from `slice_note.mjs show`, and a faked journal would
@@ -17,10 +17,8 @@
 // preload fakes a non-zero exit, a timeout and a spawn error, which no real reader produces on demand.
 // Every match-based case carries MustNotMatch as well as MustMatch (the empty-MustNotMatch class).
 //
-// The pwsh suite named most cases without IDs. Each test here is `SN<n> <the old name>`, so the parity
-// check of ADR 0227 decision 8 matches the names. The old META cases print the names `META`, `META exemption
-// honored` and `META`, so the tests are `SN17 META`, `SN18 META exemption honored` and `SN19 META`. Patterns are pwsh -match sources (case-insensitive; see toRx in
-// lib/selftest-lib.mjs). Git runs through scripts/harness_git.mjs, the one git boundary (spec 0007 §4).
+// Patterns are regex sources matched case-insensitively (see toRx in lib/selftest-lib.mjs). Git runs
+// through scripts/harness_git.mjs, the one git boundary (spec 0007 §4).
 //
 // Special characters in values and patterns are built from code points: the cases use U+2028 and U+FEFF,
 // and escape text for a separator character can materialize as the literal character through an editor.
@@ -83,7 +81,7 @@ cp.spawnSync = function (cmd, args, opts) {
 const spyArgs = ['-r', spy]
 const spyLog = path.join(fx, 'reader-spawns.log')
 
-// stdin as pwsh piped it: the text plus one newline. stdout and stderr together, as `2>&1` read them.
+// stdin is the text plus one newline. The result joins stdout and stderr, like `2>&1`.
 // pathEnv, when given, replaces the PATH of the child only.
 function invokeHook(stdin, { args = [], spyMode = '', pathEnv } = {}) {
   const env = {}
@@ -258,7 +256,7 @@ test('SN8 subdirectory cwd resolves the root and finds the journal', { skip: git
     ['slice notes: 2 at HEAD', 'chose option D'], ['SCHEMA DRIFT', 'FAILED'])
 })
 
-// 9. case-drifted keys and a padded cwd read like the PowerShell original did (ADR 0116)
+// 9. case-drifted keys and a padded cwd still read (ADR 0116)
 test('SN9 case-drifted keys and a padded cwd still read', { skip: gitSkip }, () => {
   assertSpeaks(invokeHook(JSON.stringify({ Hook_Event_Name: 'sessionstart', CWD: `  ${withNotes} \t ` }), { args: spyArgs }), false, true,
     ['slice notes: 2 at HEAD'], ['SCHEMA DRIFT'])
@@ -318,7 +316,6 @@ for (const [id, fault] of [
 
 // 14. node ABSENT from PATH with a journal present -> the notes still come. The hook runs the reader with its own
 //     `process.execPath`, so a PATH that holds git's directory only (git is needed to find the work tree) changes nothing.
-//     Before the port the missing interpreter spoke one Korean systemMessage here.
 test('SN14 node absent from PATH still re-injects the notes (no PATH lookup)', { skip: gitSkip }, () => {
   assertSpeaks(invokeHook(newPayload({ cwd: withNotes }), { pathEnv: path.dirname(gitExe) }), false, true,
     ['slice notes: 2 at HEAD', 'chose option D'], ['\\[hook:slice-notes\\]', 'SCHEMA DRIFT', 'FAILED'])

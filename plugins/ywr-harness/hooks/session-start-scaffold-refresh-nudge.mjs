@@ -1,136 +1,121 @@
-// SessionStart (registered WITHOUT a matcher, deliberately — the drift condition below is the
-// filter, and re-speaking after `compact` re-injects a fact summaries lose) — scaffold-refresh
-// nudge, suggest-only (ywr-harness ADR 0033); also the carrier of the slice rules (ywr-harness ADR 0183) and the slice-note rule
-// (ywr-harness ADR 0172), see below.
+// SessionStart, registered without a matcher: the drift condition is the filter, and a start after
+// `compact` re-injects a fact that summaries lose. Scaffold-refresh nudge, suggest-only
+// (ywr-harness ADR 0033). It also carries the slice rules (ywr-harness ADR 0183) and the slice-note
+// rule (ywr-harness ADR 0172).
 //
-// The gap this closes is ywr-harness ADR 0014's recorded follow-up: toolchain propagation is pull-based (a
-// plugin improvement reaches a scaffolded repo only on the next /ywr-harness:harness-init run),
-// and nothing detected the repo that never re-ran. This hook byte-compares the installed plugin's
-// templates against the repo's placements and says so when a re-run would actually change
-// something — which is the only observable that matters: a version stamp would nag on hook-only
-// releases and stay silent on hand-edits, this fires exactly when the files differ.
+// Toolchain propagation is pull-based (ywr-harness ADR 0014): a plugin improvement reaches a
+// scaffolded repo only on the next /ywr-harness:harness-init run. This hook byte-compares the
+// installed plugin's templates against the repo's placements and speaks when a re-run would change
+// something. A version stamp would nag on hook-only releases and stay silent on hand-edits.
 //
 // The placement map (TOOLCHAIN / GUARDED / GUARD_MARKER) is imported from
-// skills/harness-init/placement.mjs at each firing, NOT duplicated here: the hook, init.mjs and
-// placement.mjs ship in the same plugin at the same version, so the map can never skew, and two copies
-// of one rule is how they end up disagreeing. The module is data with no side effect at import. An
-// import that fails, or a table that is not a non-empty list of [source, destination] string pairs,
-// is a reported EXTRACTION-DRIFT banner, never silence — a guard that cannot report its own drift is
-// indistinguishable from an absent guard — bounded to plausible-scaffold repos (a `scripts/harness/`
-// directory) so a broken plugin does not banner every unrelated session.
+// skills/harness-init/placement.mjs at each firing and never duplicated: the hook, init.mjs and
+// placement.mjs ship in one plugin version, and two copies of a rule drift apart. An import that
+// fails, or a table that is no non-empty list of [source, destination] string pairs, gives an
+// EXTRACTION-DRIFT banner, never silence. The banner is bounded to plausible-scaffold repos (a
+// `scripts/harness/` directory), so a broken plugin does not banner every unrelated session.
 //
 // Comparison contract (ywr-harness ADR 0033):
-//   - TOOLCHAIN placements: EOL-insensitive byte identity (bytes compared after dropping 0x0D).
-//     The seed .gitattributes pins `* eol=lf` and `*.ps1 eol=crlf`, so the SAME file legitimately
-//     differs in raw bytes between the repo checkout and the installed plugin copy; a CR-only
-//     delta is not a toolchain change. Everything else — content, encoding, BOM, letter case —
-//     stays exact. (The pwsh original compared with `-ne`, which ignores letter case and the
-//     culture-ignorable characters U+00AD and NUL; this port compares ordinally, which is what
-//     this contract says.)
-//   - A missing TOOLCHAIN placement counts as drift, named `(missing)`: a file the canon added
-//     after this repo's last scaffold run is exactly the stale state.
-//   - GUARDED (post-commit) is compared only when it carries the marker; a marker-less file is
-//     foreign, init.mjs refuses to touch it, so a re-run would change nothing — silent, the same
-//     shape as the githooks-nudge's foreign-hooksPath silence (ywr-harness ADR 0029).
-//   - SEED files are never compared: their content is the consuming repo's decisions. The one read of a seed
-//     is the retired-text scan below (ywr-harness ADR 0207): a fixed phrase list, never a template comparison.
+//   - TOOLCHAIN placements: byte identity after dropping 0x0D. The seed .gitattributes pins
+//     `* eol=lf` and `*.ps1 eol=crlf`, so one file differs in raw bytes between the repo checkout
+//     and the installed copy. Content, encoding, BOM and letter case stay exact, and the comparison
+//     is ordinal.
+//   - A missing TOOLCHAIN placement is drift, named `(missing)`.
+//   - GUARDED (post-commit) is compared only when it carries the marker. A marker-less file is
+//     foreign, init.mjs refuses to touch it, and a re-run would change nothing, so the hook stays
+//     silent (ywr-harness ADR 0029).
+//   - SEED files are never compared, because their content is the consuming repo's decisions. The
+//     one read of a seed is the retired-text scan below (ywr-harness ADR 0207), a fixed phrase list.
 //
-// Direction-blindness is stated, not hidden: byte difference cannot tell "repo behind plugin"
-// from "repo ahead of the installed plugin" (the canon mid-slice). The systemMessage says
-// *differ*, never *outdated*, and additionalContext warns the model that a re-run would REVERT
-// deliberately newer copies.
+// Byte difference cannot tell "repo behind plugin" from "repo ahead of the installed plugin". The
+// systemMessage says *differ*, never *outdated*, and additionalContext warns the model that a
+// re-run would REVERT deliberately newer copies.
 //
-// Stale-basis probe (ywr-harness ADR 0039): a running session keeps the plugin version it loaded — hooks
-// resolve to the OLD cache directory until /reload-plugins or a restart, and that directory
-// survives ~2 weeks after an update (doc-verified 2026-08-07). In that window this hook's
-// verdict basis is stale and its advice inverts: the repo may match the NEWER registered
-// install, and the harness-init THIS session would run is the old skill (measured live: a
-// v0.23.2 hook told a v0.25.0-refreshed repo to revert). So, only after drift is found, the
-// hook checks whether its own copy is still the registered install — self-located from its own
-// path (<plugins>/cache/<marketplace>/<name>/<version>, registry sibling at
-// <plugins>/installed_plugins.json — an UNDOCUMENTED file, read best-effort like the
-// statusline, ywr-harness ADR 0027). Stale -> same file list, but the advice becomes "reload, re-check,
-// do NOT run harness-init from this session". A registered version EQUAL to the running one
-// falls back to the normal nudge (same release, same templates — nothing to invert; and
-// "runs vX while the install is vX" would contradict itself). Any probe failure -> the normal
-// nudge: the probe can only improve the advice, never silence the hook.
+// Stale-basis probe (ywr-harness ADR 0039): a running session keeps the plugin version it loaded.
+// Its hooks resolve to the OLD cache directory until /reload-plugins or a restart, and that
+// directory outlives an update by about two weeks. In that window the verdict basis is stale and
+// the advice inverts: the repo may match the NEWER registered install, and the harness-init that
+// this session would run is the old skill. So, only after drift is found, the hook checks whether
+// its own copy is still the registered install. It locates itself from its own path
+// (<plugins>/cache/<marketplace>/<name>/<version>) and reads the registry beside it at
+// <plugins>/installed_plugins.json, an undocumented file read best-effort (ywr-harness ADR 0027).
+// Stale gives the same file list with the advice "reload, re-check, do NOT run harness-init from
+// this session". A registered version equal to the running one gives the normal nudge, because the
+// templates are the same. Any probe failure gives the normal nudge: the probe improves the advice
+// and never silences the hook.
 //
-// Direction probe (ywr-harness ADR 0042): after drift, the NORMAL branch reads the repo's `.harness-version`
-// stamp (written by init.mjs on every successful run — generated, never a template, never in the
-// placement map, so it can never itself count as drift). stamp > running -> repo AHEAD: the
-// advice flips to "update the plugin, do NOT init" (multi-writer: another writer refreshed this
-// repo with a newer plugin). stamp < running -> refresh advice with the direction stated as
-// measured. equal -> the drift is a hand-edit or partial placement, named as ywr-harness ADR 0010's intended
-// signal. missing/unparseable -> direction-blind caveat, now on BOTH output surfaces (the old
-// uncaveated "re-run is safe" human banner is retired — the 2026-08-10 audit's asymmetry). The
-// ywr-harness ADR 0039 stale-basis banner takes precedence over all of this; probe failures fall through, never
-// silence.
+// Direction probe (ywr-harness ADR 0042): after drift, the normal branch reads the repo's
+// `.harness-version` stamp. init.mjs writes it on every successful run. It is generated, never a
+// template and never in the placement map, so it never counts as drift itself.
+//   stamp > running       repo AHEAD: "update the plugin, do NOT init"
+//   stamp < running       refresh advice, direction stated
+//   equal                 hand-edit or partial placement, ywr-harness ADR 0010's intended signal
+//   missing or unparsable direction-blind caveat on both output surfaces
+// The stale-basis banner takes precedence over all of this. Probe failures fall through.
 //
-// Upstream-ahead probe (ywr-harness ADR 0135): the direction probe reads THIS checkout's stamp, and after a
-// teammate scaffolded or refreshed the repo and pushed, that stamp is the OLD one — it reads
-// "genuinely behind" and sends the person into a run that collides with the pushed scaffold. So,
-// only after drift is found, after the ywr-harness ADR 0039 branch and after the stamp probe, the hook asks the
-// remote-tracking refs whether they carry a commit this checkout lacks that touches `.harness-version`
-// — the stamp ALONE: init.mjs writes it on every run that changes the version and on a first run, a
-// same-version re-run places byte-identical templates, and a hand edit is not a scaffold run (the
-// ywr-harness ADR 0042 equal-version branch owns hand edits). The walk is patch-equivalence filtered, so a local
-// rebase or amend of a stamp commit is no hit. Candidates in order: the current branch's upstream,
-// then origin/HEAD (init.mjs's offline default-branch signal, ywr-harness ADR 0062). A hit replaces the ywr-harness ADR 0042
-// behind, equal and direction-blind branches: do NOT run harness-init, pull first. The repo-AHEAD
-// branch (stamp newer than the running plugin) keeps precedence and skips the probe: it already
-// forbids init, and the next session start re-checks after the plugin update. NO network — the refs
-// are as of the last fetch, and both messages say so. Any git failure or absence is no hit, never an
-// error line. init.mjs runs the same detection as a refusal (--allow-upstream-ahead).
+// Upstream-ahead probe (ywr-harness ADR 0135): the direction probe reads this checkout's stamp.
+// After a teammate scaffolded or refreshed the repo and pushed, that stamp is the old one and reads
+// "genuinely behind", which sends the person into a run that collides with the pushed scaffold. So,
+// only after drift, after the stale-basis branch and after the stamp probe, the hook asks the
+// remote-tracking refs whether they carry a commit that this checkout lacks and that touches
+// `.harness-version`. The stamp alone counts: init.mjs writes it on every run that changes the
+// version and on a first run, a same-version re-run places byte-identical templates, and a hand
+// edit is no scaffold run. The walk is patch-equivalence filtered, so a local rebase or amend of a
+// stamp commit is no hit. Candidates in order: the current branch's upstream, then origin/HEAD
+// (init.mjs's offline default-branch signal, ywr-harness ADR 0062). A hit replaces the behind,
+// equal and direction-blind branches: do NOT run harness-init, pull first. The repo-AHEAD branch
+// keeps precedence and skips the probe, because it already forbids init. No network: the refs are
+// as of the last fetch, and both messages say so. Any git failure is no hit, never an error line.
+// init.mjs runs the same detection as a refusal (--allow-upstream-ahead).
 //
-// Payload and output contract: same as the sibling nudge (verified against the official hooks
-// reference 2026-08-05) — cwd per firing; systemMessage AND hookSpecificOutput.additionalContext
-// both consumed; plain stdout on exit 0 becomes context, so every path that has nothing to say
-// prints NOTHING. SessionStart cannot block anything; this hook does not try — exit 0 always,
-// fail-open like its siblings. This hook writes nothing, ever.
+// Payload and output contract (hooks reference): cwd per firing. systemMessage and
+// hookSpecificOutput.additionalContext are both consumed. Plain stdout on exit 0 becomes context, so
+// every path with nothing to say prints NOTHING. SessionStart cannot block, so the hook exits 0
+// always and fails open. It writes nothing.
 //
-// Slice-note rule (ywr-harness ADR 0172 decision 8, option P): when the repo root holds scripts/harness/slice_note.mjs
-// as a FILE, the hook also states the rule for writing a slice note, as English additionalContext. The hook
-// is matcher-less, so the rule rides every source, a compaction included. It is the one output that is not a
-// drift finding: with NO drift it is the whole output (additionalContext only, no systemMessage), so the
-// "no drift = silent" steady state holds only for a repo WITHOUT the vendored script. On a drift emit (the
-// stale-basis, upstream-ahead and direction branches) the rule is appended to that ctx after a blank line.
-// The SCHEMA-DRIFT, EXTRACTION-DRIFT and not-scaffolded paths carry no rule: the rule is a fact about a
-// scaffold the hook has verified. The only cost is one isFile — no process, no git call. Size: the host
-// caps each hook string at 10,000 characters (hooks reference); the longest drift ctx is about 1,200
-// characters and the rule about 600, so the sum stays far under it.
+// Slice-note rule (ywr-harness ADR 0172): when the repo root holds scripts/harness/slice_note.mjs
+// as a file, the hook states the rule for writing a slice note, as English additionalContext. The
+// hook has no matcher, so the rule rides every source, a compaction included. It is the one output
+// that is no drift finding. With no drift it is the whole output (additionalContext only), so "no
+// drift = silent" holds only for a repo without the vendored script. On a drift emit the rule is
+// appended to the ctx after a blank line. The SCHEMA-DRIFT, EXTRACTION-DRIFT and not-scaffolded
+// paths carry no rule, because the rule is a fact about a scaffold that the hook has verified. The
+// host caps each hook string at 10,000 characters. The longest drift ctx is about 1,200 characters
+// and the rule about 600.
 //
-// Retired seed text (ywr-harness ADR 0207, narrows ywr-harness ADR 0033 and ywr-harness ADR 0183): after the scaffold gate, the hook reads
-// CLAUDE.md, .claude/CLAUDE.md, REVIEW.md and the docs/prompts/ready-report.md seed, and looks for the phrases of RETIRED_SEED.
-// A hit gives a Korean systemMessage that names each file and phrase, and an English part at the end of the rule
-// text. It rides every source and every branch that carries the rule text, a no-drift start included, until a
-// member edits the file. The cost is up to three more small file reads; no process, no git call.
+// Retired seed text (ywr-harness ADR 0207, narrows ywr-harness ADR 0033 and ywr-harness ADR 0183): after the
+// scaffold gate, the hook reads CLAUDE.md, .claude/CLAUDE.md, REVIEW.md and the
+// docs/prompts/ready-report.md seed, and looks for the phrases of RETIRED_SEED. A hit gives a Korean
+// systemMessage that names each file and phrase, and an English part at the end of the rule text.
+// It rides every source and every branch that carries the rule text, a no-drift start included,
+// until a member edits the file. It costs up to three small file reads and no process.
 //
-// Review canon import (ywr-harness ADR 0215, ywr-harness ADR 0217): where `.harness.json` is a file and the review
-// canon it names exists, the hook checks the canon. A canon in CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md loads at
-// session start and passes. For a canon in any other file, the hook checks that one of those files imports it with
-// an `@<path>` line. A missing import gives a Korean systemMessage line that names the canon and the two remedies,
-// and an English part after the retired-text part. It rides the same sources and branches as the retired-text line,
-// until a member adds the line or moves the canon.
+// Review canon import (ywr-harness ADR 0215, ywr-harness ADR 0217): where `.harness.json` is a file and the
+// review canon it names exists, the hook checks the canon. A canon in CLAUDE.md, .claude/CLAUDE.md
+// or CLAUDE.local.md loads at session start and passes. For a canon in any other file, one of those
+// files must import it with an `@<path>` line. A missing import gives a Korean systemMessage line
+// that names the canon and the two remedies, and an English part after the retired-text part. It
+// rides the same sources and branches as the retired-text line.
 //
-// The two JSON FILES it reads (the plugin manifest, the installed-plugins registry) go through hook-lib's
-// parseJsonLoose — the leniency PowerShell 7's ConvertFrom-Json had (comments, trailing commas, ...);
-// the stdin payload is strict JSON and keeps parseJson.
+// The two JSON files it reads (the plugin manifest, the installed-plugins registry) go through
+// hook-lib's parseJsonLoose, which accepts comments and trailing commas. The stdin payload is
+// strict JSON and keeps parseJson.
 //
-// Port notes (ywr-harness ADR 0116): event-name comparison, key lookup and the [string] cast keep
-// PowerShell's semantics through hook-lib (case-insensitive lookup/compare, psString, .NET Trim).
-// Without git the verdict still runs — detected by hook-lib's gitRun (no git on PATH, or ENOENT), where the original asked
-// `Get-Command git`. The git call follows CLAUDE.md's git subprocess boundary (issue #40):
-// `-c core.quotepath=false`, a BYTES pipe, one explicit UTF-8 decode, no shell. The hook never
-// exits the process: it returns, so stdout drains and the exit code stays 0.
+// Event-name comparison, key lookup and string conversion go through hook-lib with PowerShell
+// semantics (case-insensitive lookup and compare, psString, .NET Trim; ywr-harness ADR 0116). Without
+// git the verdict still runs: hook-lib's gitRun reports no git on PATH or ENOENT, and the verdict
+// uses cwd as the root. The git call follows ywr-harness's git subprocess boundary (ywr-harness ADR 0077):
+// `-c core.quotepath=false`, a bytes pipe, one UTF-8 decode, no shell. The hook never exits the
+// process. It returns, so stdout drains and the exit code stays 0.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys, collator, markerAbove } from './hook-lib.mjs'
 
-// Test-Path -PathType Container / Leaf, promoted so every failure (a root that does not exist on
-// this platform, an illegal path) reads as "not there". Leaf is a regular file: the stamp read below
-// must never open a device or FIFO on the SessionStart hot path.
+// Every failure (a root that does not exist on this platform, an illegal path) reads as "not there".
+// A file is a regular file: the stamp read below must never open a device or FIFO on the
+// SessionStart hot path.
 function isDir(p) {
   try { return fs.statSync(p).isDirectory() } catch { return false }
 }
@@ -141,15 +126,15 @@ function isFile(p) {
 // git calls go through hook-lib's gitRun (PATH-resolved, absolute spawn, bytes decoded once).
 const git = gitRun
 
-// The slice-note rule (ywr-harness ADR 0172). ASCII only, one paragraph; the vendored path is what a session can name
-// (it cannot expand ${CLAUDE_PLUGIN_ROOT}).
+// The slice-note rule (ywr-harness ADR 0172). ASCII only, one paragraph. It names the vendored path,
+// because a session cannot expand ${CLAUDE_PLUGIN_ROOT}.
 const SLICE_NOTE_RULE = 'Slice notes (ywr-harness ADR 0172): record each decision of this slice when you make it, with its reason: `node scripts/harness/slice_note.mjs add <kind> "<what and why>"`. Kinds: decision (an option chosen), rejected (an option dropped), owner (the owner\'s answer), fact (a figure established at cost), risk (a known limit or an unverified point). A compaction re-injects the notes, and /ywr-harness:slice-close reads them into the close as input, never proof.'
 
-// The slice rules (ywr-harness ADR 0183): the harness procedure that the CLAUDE.md seed carried until 0.72.0. ASCII
-// only except the title's middle dot. Each rule carries its own copy markers: phrases that only the
-// pre-0.72.0 seed bullet of that rule held. A repo CLAUDE.md holding any marker of a rule already loads
-// that rule, so the hook leaves out that rule alone. A bare mention of the review workflow, a command or
-// an ADR citation is no marker, because a repo can name those for its own reasons.
+// The slice rules (ywr-harness ADR 0183). ASCII only. Each rule carries its own copy markers:
+// phrases that only an old CLAUDE.md seed bullet of that rule held. A repo CLAUDE.md that holds any
+// marker of a rule already loads that rule, so the hook leaves out that rule alone. A mention of the
+// review workflow, a command or an ADR citation is no marker, because a repo can name those for its
+// own reasons.
 const SLICE_RULES_HEAD = 'ywr-harness slice rules for this repo (ywr-harness ADR 0183). The org guide states the general rules; this repo\'s CLAUDE.md states its own facts.'
 const SLICE_RULES = [
   {
@@ -179,26 +164,27 @@ const SLICE_RULES = [
   },
 ]
 
-// The slice-note rule's copy marker: the kinds list of the pre-0.72.0 seed bullet.
+// The slice-note rule's copy marker: the kinds list of the old CLAUDE.md seed bullet.
 const SLICE_NOTE_COPY = ['decision|rejected|owner|fact|risk']
 const COPY_NOTE = 'This repo\'s CLAUDE.md or .claude/CLAUDE.md holds its own copy of part of the ywr-harness slice rules, so the plugin does not repeat that part here. After that copy is deleted, the plugin states the current rules at each session start (ywr-harness ADR 0183).'
 
-// Retired seed text (ywr-harness ADR 0207). harness-init never overwrites a seed file, so a scaffolded repo keeps a
-// rule that a later release changed until a member edits the file. Each row names one phrase that only an old
-// seed held, the repo files whose seed held it, the release whose seed dropped it and the ADR that changed the
-// rule. A phrase never appears in the current seed or in the slice rules above, so a member's copy of the current
-// rule never matches. The selftest pins both, and where the release tags are present it pins the version: the seed
-// of that release lacks the phrase and the seed of the release before it holds it. `rule` names the slice rule
-// that the phrase belongs to: a CLAUDE.md copy that holds the phrase is no copy of the current rule, so the hook
-// states that rule (narrows ywr-harness ADR 0183 decision 9). Matching is case-sensitive on text whose whitespace
-// runs are collapsed to one space, so a wrapped line still matches. A new retirement adds rows here.
+// Retired seed text (ywr-harness ADR 0207). harness-init never overwrites a seed file, so a
+// scaffolded repo keeps a rule that a later release changed until a member edits the file. Each row
+// names one phrase that only an old seed held, the repo files whose seed held it, the release whose
+// seed dropped it and the ADR that changed the rule. A phrase never appears in the current seed or
+// in the slice rules above, so a member's copy of the current rule never matches. The selftest pins
+// both, and where the release tags are present it pins the version: the seed of that release lacks
+// the phrase and the seed of the release before it holds it. `rule` names the slice rule that the
+// phrase belongs to: a CLAUDE.md copy that holds the phrase is no copy of the current rule, so the
+// hook states that rule (ywr-harness ADR 0183 decision 9). Matching is case-sensitive on text whose
+// whitespace runs are collapsed to one space, so a wrapped line still matches. A new retirement adds
+// rows here.
 const CLAUDE_FILES = ['CLAUDE.md', '.claude/CLAUDE.md']
 const READY = 'docs/prompts/ready-report.md'
-// The CLAUDE.md seed dropped its slice-rule bullets in 0.72.0 (ywr-harness ADR 0183), before the rule itself changed, so
-// its rows carry 0.72.0 and the ADR that later changed the rule.
-// The seed docs/prompts/review-digest.md left the scaffold in ywr-harness ADR 0215, so its three rows left this table:
-// a row names a file that the real init.mjs places. REVIEW.md is the one exception: the scaffold no longer places it
-// (ywr-harness ADR 0217), but a repo whose review.canon names it still loads it into every review through an import,
+// The CLAUDE.md seed dropped its slice-rule bullets in 0.72.0 (ywr-harness ADR 0183), before the
+// rule itself changed, so its rows carry 0.72.0 and the ADR that later changed the rule.
+// A row names a file that the real init.mjs places. The scaffold places no REVIEW.md
+// (ywr-harness ADR 0217), but a repo whose review.canon names it still imports it into every review,
 // so its rows stay. Its current text is the `## Review canon` section of the CLAUDE.md seed.
 const RETIRED_SEED = [
   { phrase: 'bounded re-review', files: CLAUDE_FILES, rule: 'once', version: '0.72.0', adr: '0200' },
@@ -398,14 +384,14 @@ function firstLine(text) {
   return netTrim(i < 0 ? text : text.slice(0, i))
 }
 
-// A file as UTF-8 text without a leading BOM (Get-Content -Raw's behavior for the files read below).
+// A file as UTF-8 text without a leading BOM.
 function readText(p) {
   let s = fs.readFileSync(p, 'utf8')
   while (s.startsWith(String.fromCharCode(0xfeff))) s = s.slice(1)
   return s
 }
 
-// PowerShell truthiness of a parsed JSON value (`if ($mf.version)`).
+// PowerShell truthiness of a parsed JSON value (ywr-harness ADR 0116).
 function psTruthy(v) {
   if (v === null || v === undefined) return false
   if (typeof v === 'string') return v.length > 0
@@ -415,12 +401,12 @@ function psTruthy(v) {
   return true
 }
 
-// `$e.name` on a registry entry: undefined for anything that is not a JSON object.
+// A property of a registry entry: undefined for anything that is not a JSON object.
 function prop(e, name) {
   return isObject(e) ? getProp(e, name) : undefined
 }
 
-// .NET [version] needs every component to fit Int32; the plugin's versions are far below that.
+// A version has at most four components, and each must fit Int32.
 function toVersion(parts) {
   if (parts.length > 4) return null
   const p = parts.map(Number)
@@ -432,15 +418,14 @@ function cmpVersion(a, b) {
   return 0
 }
 
-// Upstream-ahead detection (ywr-harness ADR 0135) — the same definition as init.mjs's guard, NO network. Candidate
-// refs in order, deduped: the current branch's upstream (accepted only on exit 0 with a refs/ name),
-// then the remote default branch (origin/HEAD, init.mjs's offline default-branch signal, ywr-harness ADR 0062).
-// Hit = `git --literal-pathspecs log -1 --cherry-pick --right-only HEAD...<ref> -- .harness-version`
-// exits 0 with a non-empty line; the first hit wins. The stamp is the ONLY path (init.mjs writes it on
-// every version-changing or first run; a hand edit is not a scaffold run), and --cherry-pick drops a
-// commit whose patch HEAD already carries (a local rebase or amend not yet force-pushed). Any git
-// failure or absence is no hit. Returns { ref, sha, date } or null; `ref` is the short name
-// (refs/remotes/ stripped) and is repo-authored text — the caller echoes it through inline().
+// Upstream-ahead detection (ywr-harness ADR 0135), the same definition as init.mjs's guard, no
+// network. Candidate refs in order, deduped: the current branch's upstream (accepted only on exit 0
+// with a refs/ name), then the remote default branch (origin/HEAD, ywr-harness ADR 0062).
+// A hit is `git --literal-pathspecs log -1 --cherry-pick --right-only HEAD...<ref> -- .harness-version`
+// with exit 0 and a non-empty line. The first hit wins. The stamp is the only path, and
+// --cherry-pick drops a commit whose patch HEAD already carries (a local rebase or amend not yet
+// force-pushed). Any git failure is no hit. Returns { ref, sha, date } or null. `ref` is the short
+// name (refs/remotes/ stripped) and repo-authored text, so the caller echoes it through inline().
 function findUpstreamScaffoldAhead(root) {
   const refs = []
   const up = git(['-C', root, 'rev-parse', '--symbolic-full-name', '@{upstream}'])
@@ -470,8 +455,8 @@ function drift(payload) {
 
 // A placement table the hook can compare by: a non-empty list of [source, destination] pairs of
 // non-empty strings, no source repeated (compared case-insensitively, as a case-insensitive file
-// system reads two spellings of one file). Anything else fails extraction whole — a fragment in the
-// map is a wrong path compared quietly.
+// system reads two spellings of one file). Anything else fails extraction whole, because a fragment
+// in the map is a wrong path compared quietly.
 function validMap(m) {
   if (!Array.isArray(m) || m.length === 0) return false
   const seen = new Set()
@@ -487,14 +472,13 @@ function validMap(m) {
 async function main(payload) {
   const cwd = netTrim(psString(getProp(payload, 'cwd')))
   if (!cwd) return drift(payload)
-  // No `scripts/harness/` from cwd upward: neither the work tree root nor cwd can pass the
-  // plausible-scaffold gate below, so the hook has nothing to say and starts no git.
+  // No `scripts/harness/` from cwd upward: the plausible-scaffold gate below cannot pass, so the hook
+  // starts no git.
   if (!markerAbove(cwd, 'scripts/harness')) return
 
-  // Resolve the work tree root from cwd so a subdirectory session still finds the repo. Without
-  // git the verdict still runs — unlike the sibling, whose verdict IS git state, this verdict is
-  // filesystem-only — using cwd as the root candidate; a subdirectory session simply stays silent
-  // in that degraded case.
+  // Resolve the work tree root from cwd so a subdirectory session still finds the repo. Without git
+  // the verdict still runs, because it reads the filesystem only. It uses cwd as the root, so a
+  // subdirectory session stays silent in that case.
   let root
   const top = git(['-C', cwd, 'rev-parse', '--show-toplevel'])
   if (top.absent) root = cwd
@@ -503,19 +487,17 @@ async function main(payload) {
     if (top.status !== 0 || !root) return
   }
 
-  // Everything the banners echo of the path goes through inline(): a directory name is attacker-authorable text
-  // (a cloned repo's), and a model reads this output.
+  // Every path echoed into a banner goes through inline(): a directory name of a cloned repo is
+  // attacker-authored text, and a model reads this output.
   const rootShow = inline(root, 300)
 
-  // Plausible-scaffold gate: init.mjs places scripts/harness/ unconditionally, so a repo without
-  // that directory was never scaffolded and there is nothing to verify. This is also the noise
-  // bound for the extraction banner below — a broken plugin banners only where a scaffold
-  // plausibly exists, not in every session on the machine.
+  // Plausible-scaffold gate: init.mjs places scripts/harness/ unconditionally, so a repo without it
+  // was never scaffolded. It also bounds the extraction banner below to repos where a scaffold
+  // plausibly exists.
   if (!isDir(path.join(root, 'scripts/harness'))) return
 
-  // --- placement map, imported from placement.mjs (zero second copy — ywr-harness ADR 0033) ----------
-  // process.argv[1] keeps the path as launched (the original used $PSScriptRoot, which does not
-  // resolve symlinks); import.meta.url is realpath'd.
+  // --- placement map, imported from placement.mjs, never copied (ywr-harness ADR 0033) ----------
+  // process.argv[1] keeps the path as launched, while import.meta.url is realpath'd.
   const here = path.dirname(process.argv[1] ? path.resolve(process.argv[1]) : fileURLToPath(import.meta.url))
   const pluginRoot = path.resolve(here, '..')
   const placementPath = path.join(pluginRoot, 'skills/harness-init/placement.mjs')
@@ -542,18 +524,16 @@ async function main(payload) {
     return extractionDrift('설치된 플러그인의 skills/harness-init/placement.mjs에서 배치 맵을 읽을 수 없습니다 (TOOLCHAIN/GUARDED/GUARD_MARKER export)')
   }
 
-  // File-level sentinel: the directory gate above is a plausibility bound; ownership is decided
-  // here. A repo with its OWN scripts/harness/ but none of the mapped vendored scripts was not
-  // scaffolded by us — counting everything "missing" there would be a false nudge. The Python names that
-  // an older scaffold placed (ywr-harness ADR 0223) count too: a repo that has not taken the Node scripts
-  // yet is the one this nudge exists for.
+  // File-level sentinel: the directory gate above is a plausibility bound, and ownership is decided
+  // here. A repo with its own scripts/harness/ but none of the mapped vendored scripts was not
+  // scaffolded by us, and counting everything "missing" there would be a false nudge. The `.py`
+  // names that an older scaffold placed count too (ywr-harness ADR 0223), because a repo that has
+  // not taken the Node scripts yet is the one this nudge exists for.
   const nodeSentinels = toolchain.map(e => e[1]).filter(v => /^scripts\/harness\/.+\.mjs$/i.test(v))
   const sentinels = [...nodeSentinels, ...nodeSentinels.map(v => v.replace(/\.mjs$/i, '.py'))]
   if (!nodeSentinels.length) {
-    // The regex above assumes the map's CONTENTS, not just its extractability — if the canon
-    // ever moves the vendored scripts, an unchecked empty list would silently disable this hook
-    // on every repo forever, which is the anti-vacuity failure mode this hook exists to refuse
-    // (review 2026-08-06, medium).
+    // The regex above assumes the map's contents, not only that it extracts. If the vendored
+    // scripts ever move, an empty list would silently disable this hook on every repo.
     return extractionDrift('추출된 배치 맵에 scripts/harness/*.mjs 대상이 없어, 이 훅이 기준으로 삼는 ownership sentinel이 placement.mjs에서 이동했습니다')
   }
   if (!sentinels.some(s => isFile(path.join(root, s)))) return
@@ -613,9 +593,8 @@ async function main(payload) {
   // A drift banner plus the seed-finding lines, a newline between (ywr-harness ADR 0207, ywr-harness ADR 0215).
   const withRetired = sys => (notes.sys ? sys + '\n' + notes.sys : sys)
 
-  // EOL-insensitive comparable text: Latin1 maps bytes 1:1 to chars (byte-faithful both ways), so
-  // this is a byte comparison modulo 0x0D, not a decode — a real encoding or BOM change still
-  // differs.
+  // EOL-insensitive comparable text. Latin1 maps bytes 1:1 to chars, so this is a byte comparison
+  // modulo 0x0D, not a decode, and a real encoding or BOM change still differs.
   const comparable = p => fs.readFileSync(p).toString('latin1').replace(/\r/g, '')
 
   const drifted = []
@@ -633,15 +612,15 @@ async function main(payload) {
     if (!isFile(dst)) { drifted.push(`${rel} (missing)`); continue }
     try {
       const body = comparable(dst)
-      // Marker-less = foreign = init.mjs refuses it = a re-run changes nothing: silent.
+      // A marker-less file is foreign, init.mjs refuses it, and a re-run changes nothing: silent.
       if (body.includes(marker) && body !== comparable(src)) drifted.push(rel)
     } catch { drifted.push(`${rel} (unreadable)`) }
   }
 
   if (!drifted.length) {
-    // No drift: the rule is the whole output, no systemMessage (a person has nothing to act on) — unless a seed
-    // file holds retired text or CLAUDE.md lacks the canon import, which the person must edit (ywr-harness ADR 0207,
-    // ywr-harness ADR 0215).
+    // No drift: the rule is the whole output, with no systemMessage, because a person has nothing to
+    // act on. A seed file with retired text or a missing canon import is the exception, because the
+    // person must edit it (ywr-harness ADR 0207, ywr-harness ADR 0215).
     if (notes.sys) emit({ systemMessage: notes.sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rule } })
     else if (rule) emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rule } })
     return
@@ -656,15 +635,14 @@ async function main(payload) {
     }
   } catch { /* keep 'version unknown' */ }
 
-  // Capped list, cap stated — a silent truncation reads as full coverage.
+  // The list is capped at five and the cap is stated, because a silent truncation reads as full coverage.
   const shown = drifted.slice(0, 5)
   let fileList = shown.join(', ')
   if (drifted.length > shown.length) fileList += `, +${drifted.length - shown.length} more`
 
-  // --- stale-basis probe (ywr-harness ADR 0039) — see the header block --------------------------------------
-  // Path equality is case-insensitive: paths here are Windows-first, and on Linux a false
-  // case-insensitive MATCH merely degrades to the normal nudge (the pre-0039 behavior), which is the
-  // safe direction. Any failure is caught and yields null.
+  // --- stale-basis probe (ywr-harness ADR 0039), see the header ----------------------------------
+  // Path equality is case-insensitive. On Linux a false match only degrades to the normal nudge,
+  // which is the safe direction. Any failure is caught and yields null.
   const fullPath = p => {
     if (typeof p !== 'string' || !p.trim() || p.includes('\0')) return ''
     return path.resolve(p).replace(/[\\/]+$/, '')
@@ -675,18 +653,18 @@ async function main(payload) {
     const nameDir = parent(rr)                     // <plugins>/cache/<marketplace>/<name>
     const mktDir = nameDir && parent(nameDir)      // <plugins>/cache/<marketplace>
     const cacheDir = mktDir && parent(mktDir)      // <plugins>/cache
-    // Only a versioned cache copy can be stale-by-supersession. A --plugin-dir or repo-source
-    // copy has no `cache` great-grandparent and stays on the ywr-harness ADR 0033 contract (direction-blind
-    // caveat), which is the correct reading for a deliberately loaded local copy.
+    // Only a versioned cache copy can be superseded. A --plugin-dir or repo-source copy has no
+    // `cache` great-grandparent and stays on the ywr-harness ADR 0033 contract (direction-blind
+    // caveat), the right reading for a deliberately loaded local copy.
     if (cacheDir && ieq(path.basename(cacheDir), 'cache')) {
       const pluginsDir = parent(cacheDir)
       const regPath = pluginsDir ? path.join(pluginsDir, 'installed_plugins.json') : ''
       if (regPath && isFile(regPath)) {
         const pluginName = path.basename(nameDir)
         const reg = parseJsonLoose(readText(regPath))
-        // Name from the path, not plugin.json: the path IS what the registry keys index, and it
-        // survives an unreadable manifest. The `@<marketplace>` half is not pinned (a consuming
-        // org may register the marketplace under another name — ywr-harness ADR 0027).
+        // The name comes from the path, not plugin.json: the registry keys index by path, and the path
+        // survives an unreadable manifest. The `@<marketplace>` half is not pinned, because an org may
+        // register the marketplace under another name (ywr-harness ADR 0027).
         const plugins = isObject(reg) ? getProp(reg, 'plugins') : undefined
         const entries = []
         if (isObject(plugins)) {
@@ -695,7 +673,7 @@ async function main(payload) {
             if (!name.toUpperCase().startsWith(prefix)) continue
             const v = plugins[name]
             if (Array.isArray(v)) entries.push(...v)
-            else entries.push(v)                   // @($x) is one element — a null value is a null entry
+            else entries.push(v)                   // a null value is a null entry
           }
         }
         if (entries.length) {
@@ -704,13 +682,11 @@ async function main(payload) {
             return ip && ieq(ip, rr)
           })
           if (!current) {
-            // >=1 entry, none of them this copy: the session outlived an update (or a scope
-            // re-install). Registered version for the message, the statusline's pick order as
-            // ywr-harness spec 0010 records it: user scope wins, then lastUpdated recency — never registry
-            // order. A usable version is a SCALAR STRING carrying a digit: an array would
-            // space-join under [string] into a digit-bearing "1.0.0 2.0.0" that renders malformed
-            // (review 2026-08-07, low); the registry's "unknown" sentinel fails the digit test.
-            // Unmeasured is not a value.
+            // At least one entry and none is this copy: the session outlived an update or a scope
+            // re-install. The registered version for the message follows the statusline's pick order
+            // (ywr-harness spec 0010): user scope wins, then lastUpdated recency, never registry order.
+            // A usable version is a scalar string with a digit. An array would space-join into a
+            // malformed "1.0.0 2.0.0", and the registry's "unknown" sentinel fails the digit test.
             let best = null
             for (const e of entries) {
               const ev = prop(e, 'version')
@@ -720,12 +696,11 @@ async function main(payload) {
               if (best === null || (eu && !bu) || (eu === bu && collator.compare(psString(prop(e, 'lastUpdated')), psString(prop(best, 'lastUpdated'))) > 0)) best = e
             }
             staleActive = best ? 'v' + psString(prop(best, 'version')).replace(/^v/i, '') : 'version unknown'
-            // Same version string as the running copy -> NOT stale-for-advice: a same-version
-            // re-registration (cross-marketplace key, cache re-seed) ships the same templates, so
-            // the refresh advice is not inverted — and "still runs $ver while the install is
-            // $ver" contradicts itself (review 2026-08-07, medium). Fall back to the normal
-            // nudge; the comparison is case-insensitive, and the both-'version unknown' corner
-            // falls back too, which is the honest reading (nothing provable to say).
+            // The same version string as the running copy is not stale for advice: a same-version
+            // re-registration (cross-marketplace key, cache re-seed) ships the same templates, so the
+            // advice is not inverted, and "still runs $ver while the install is $ver" would
+            // contradict itself. The comparison is case-insensitive. Two 'version unknown' values
+            // fall back to the normal nudge too, because nothing is provable.
             if (ieq(staleActive, ver)) staleActive = null
           }
         }
@@ -742,41 +717,37 @@ async function main(payload) {
 
   const fileClause = `${drifted.length}개의 벤더링된 툴체인 파일이 설치된 ywr-harness (${ver}) 템플릿과 다릅니다 — ${fileList}`
 
-  // --- direction probe (ywr-harness ADR 0042) — normal branch only -----------------------------------------
-  // The stale-basis banner above already forbids init and takes precedence. Here, drift is real and
-  // the session is current on this machine; what byte comparison cannot say is WHICH SIDE is newer
-  // — and under multi-writer "another writer refreshed this repo with a newer plugin" is the
-  // everyday state, not the canon-mid-slice edge ywr-harness ADR 0033 accepted. `.harness-version` (written by
-  // init.mjs on every successful run) orients the advice: repo-ahead flips it to "update the
-  // plugin, do NOT init"; repo-behind states the direction as measured; same-version names a
-  // hand-edit; unreadable/missing falls back to direction-blind — with the caveat now on the HUMAN
-  // surface too, not only in additionalContext (the 2026-08-10 audit's asymmetry). Every probe
-  // failure is caught: stderr must stay clean.
+  // --- direction probe (ywr-harness ADR 0042), normal branch only --------------------------------
+  // The stale-basis banner above already forbids init and takes precedence. Here drift is real and
+  // the session is current, but byte comparison cannot say which side is newer. Another writer that
+  // refreshed this repo with a newer plugin is an ordinary state, not the edge that
+  // ywr-harness ADR 0033 accepted. `.harness-version` orients the advice: repo-ahead says "update the plugin,
+  // do NOT init", repo-behind states the direction, same-version names a hand-edit, and
+  // unreadable or missing falls back to direction-blind with the caveat on both surfaces. Every
+  // probe failure is caught, so stderr stays clean.
   let stampVer = null
   let stampDisp = ''
   try {
     const sp = path.join(root, '.harness-version')
     if (isFile(sp)) {
-      // BOUNDED read — a stamp with no newline before EOF would be read WHOLE as "line 1" by a
-      // whole-file read, on the hot path of every SessionStart (review 2026-08-10, medium). 64
-      // bytes is generous for a version token; anything longer becomes a clean parse failure. BOM
-      // skipped; the first line is cut by hand.
+      // A bounded read: a whole-file read would take a stamp with no newline as one line, on the hot
+      // path of every SessionStart. 64 bytes is generous for a version token, and anything longer is
+      // a clean parse failure. The BOM is skipped and the first line is cut by hand.
       const buf = Buffer.alloc(64)
       const fd = fs.openSync(sp, 'r')
       let n
       try { n = fs.readSync(fd, buf, 0, 64, 0) } finally { fs.closeSync(fd) }
       const off = n >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf ? 3 : 0
-      // ASCII decode as .NET does it: a byte above 0x7F becomes '?'
+      // ASCII decode: a byte above 0x7F becomes '?'
       let t = ''
       for (let i = off; i < n; i++) t += buf[i] > 0x7f ? '?' : String.fromCharCode(buf[i])
       const cut = t.search(/[\r\n]/)
       if (cut >= 0) t = t.slice(0, cut)
       t = netTrim(t).replace(/^v/i, '')
       if (/^\d+(\.\d+)+$/.test(t)) {
-        // [version] pads unspecified components with -1, so '0.28' would compare BELOW '0.28.0'
-        // and flip the direction verdict (review 2026-08-10, low). Normalize to four components
-        // before comparing — the same rule as init.mjs's toVersionOrNull, cross-referenced
-        // there; more than four stays invalid. Display keeps the raw token.
+        // Normalize to four components before comparing, so '0.28' equals '0.28.0' and the direction
+        // verdict holds. init.mjs's toVersionOrNull follows the same rule. More than four components
+        // stay invalid. The display keeps the raw token.
         const sv = toVersion(t.split('.'))
         if (sv) { stampVer = sv; stampDisp = `v${t}` }
       }
@@ -789,13 +760,13 @@ async function main(payload) {
   const both = stampVer && runVer
   const cmp = both ? cmpVersion(stampVer, runVer) : 0
 
-  // --- upstream-ahead probe (ywr-harness ADR 0135) — after the stale-basis branch and the stamp probe ---------
-  // Drift is real and the session is current; the remedy may still be a PULL, not a re-run. A hit
-  // replaces the ywr-harness ADR 0042 behind, equal and direction-blind branches (the local stamp is the OLD one in
-  // this state, so "genuinely behind" would send the person into a run that collides with the pushed
-  // scaffold). Repo-AHEAD (stamp newer than the running plugin) keeps precedence and skips the probe:
-  // its advice already forbids init and the next session start re-checks after the plugin update.
-  // Reached only after drift, so the no-drift hot path costs zero git calls. Any git failure is no hit.
+  // --- upstream-ahead probe (ywr-harness ADR 0135), after the stale-basis branch and the stamp probe
+  // Drift is real and the session is current, but the remedy may be a pull, not a re-run. A hit
+  // replaces the behind, equal and direction-blind branches (ywr-harness ADR 0042): the local stamp
+  // is the old one, and "genuinely behind" would send the person into a run that collides with the
+  // pushed scaffold. Repo-AHEAD keeps precedence and skips the probe, because its advice already
+  // forbids init. The probe runs only after drift, so the no-drift hot path starts no git. Any git
+  // failure is no hit.
   const hit = both && cmp > 0 ? null : findUpstreamScaffoldAhead(root)
   if (hit) {
     const refShow = inline(hit.ref, 200)

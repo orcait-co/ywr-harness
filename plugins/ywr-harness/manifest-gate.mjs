@@ -1,41 +1,10 @@
 #!/usr/bin/env node
-// Manifest + wiring gate. Deterministic, no Claude CLI dependency, Node built-ins only (ADR 0141:
-// the pwsh gate this replaces paid ~2.1 s of pwsh start and work per run; a Node prototype of its
-// costly sections ran 8.7x faster). Runs identically on Windows and Linux.
-//
-// `claude plugin validate --strict` is the richer check but needs the CLI installed and is a
-// LOCAL pre-commit habit, not a CI step: installing Claude Code on a runner to read one JSON
-// file is a dependency this gate does not need. What CI must catch is the class that actually
-// breaks a shipped plugin, and all of it is deterministic:
-//
-//   1. `version` missing — omitted `version` makes Claude Code fall back to the git commit SHA,
-//      so EVERY commit becomes a new version and propagates to every consumer. This is the one
-//      manifest defect with org-wide blast radius, so it is a hard failure here.
-//   2. A hook path that does not resolve — the regression a file move or rename produces. The
-//      plugin loads, the hook silently never runs (green selftests over a payload field name
-//      nothing carries — the failure this whole gate exists to catch).
-//   3. Shell form where a path placeholder is used — exec form (`args` present) is the shipped
-//      decision because a marketplace install path contains a version string. A regression to
-//      shell form reintroduces the quoting surface without any visible symptom.
-//   4. A release-notes canon that lies (ADR 0030) — the top CHANGELOG entry disagreeing with
-//      plugin.json, or the artifact link diverging between the CHANGELOG and the announce hook.
-//      The hook degrades gracefully on member machines, so only this gate makes the defect loud.
-//
-// Those four are the manifest core, not the whole gate. It also checks namespacing, vendored and
-// dogfood identity, hook banner interpolation, release lockstep, the eval suite structure, canon
-// references, the canon stack and the git boundary, and it reports coverage. Spec 0008 §3.2, §3.5
-// and §3.8 list every check class.
-//
-// Port contract (ADR 0141 Decision 2): every PASS / FAIL / skip line keeps the pwsh gate's text,
-// because the selftest cases and release.mjs match that text. The pwsh semantics the cases rest on
-// are kept on purpose and marked where they are not JavaScript's defaults: `-match`, `-eq`, `-in` and
-// `-contains` compared case-insensitively, `[regex]::Match` case-sensitively; .NET's `\s`, `\d` and
-// `\b` are Unicode classes (the S / NS / D / WB constants below); Get-ChildItem without -Force skips a
-// dot-name off Windows. Spec 0008 §3.2 lists the intended differences.
-//
-// Exit 0 = all checks passed. Exit 1 = at least one failed. Exit 2 = the gate itself threw: never the
-// 1 a caught mutation gives (ADR 0141 Decision 3). The exit code is set, never forced with
-// process.exit, so stdout drains first.
+// Manifest and wiring gate: deterministic, no Claude CLI, Node built-ins only (ADR 0141). Spec 0008
+// §3.2, §3.5, §3.8 and §3.11 list every check class.
+// The PASS, FAIL and skip texts are a contract: the selftest cases and release.mjs match them (ADR 0141
+// decision 2). Case-insensitive compares and the Unicode classes S, NS, D and WB below are that contract.
+// Exit 0 = all checks passed, 1 = a check failed, 2 = the gate itself threw (ADR 0141 decision 3). The
+// exit code is set, never forced with process.exit, so stdout drains first.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -61,12 +30,12 @@ const D = '\\p{Nd}'                                      // .NET \d
 const WB = `[\\p{L}\\p{Mn}\\p{Nd}\\p{Pc}${String.fromCharCode(0x200c, 0x200d)}]`   // a .NET \b word character
 const rxEscape = (s) => s.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
 
-// --- file-system helpers in the pwsh cmdlets' shapes ---------------------------------------------
+// --- file-system helpers -------------------------------------------------------------------------
 function stat(p) { try { return fs.statSync(p) } catch { return null } }
-const exists = (p) => stat(p) !== null                    // Test-Path
-const isFile = (p) => Boolean(stat(p)?.isFile())          // Test-Path -PathType Leaf
-const isDir = (p) => Boolean(stat(p)?.isDirectory())      // Test-Path -PathType Container
-// Get-Content's decode: a UTF-8 or UTF-16 byte-order mark picks the encoding and is dropped, else UTF-8.
+const exists = (p) => stat(p) !== null
+const isFile = (p) => Boolean(stat(p)?.isFile())
+const isDir = (p) => Boolean(stat(p)?.isDirectory())
+// A UTF-8 or UTF-16 byte-order mark picks the encoding and is dropped, else UTF-8.
 function decode(b) {
   if (b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) return b.subarray(3).toString('utf8')
   if (b.length >= 2 && b[0] === 0xff && b[1] === 0xfe) return b.subarray(2).toString('utf16le')
@@ -82,21 +51,21 @@ function readBytes(p) {
   if (b === undefined) { b = fs.readFileSync(p); byteCache.set(k, b) }
   return b
 }
-function readText(p) {                                    // Get-Content -Raw / ReadAllText
+function readText(p) {
   const k = path.resolve(p)
   let t = textCache.get(k)
   if (t === undefined) { t = decode(readBytes(p)); textCache.set(k, t) }
   return t
 }
-// Get-Content's lines: CRLF, CR and LF all break, and a final line break opens no extra line.
+// CRLF, CR and LF all break a line, and a final line break opens no extra line.
 function readLines(p) {
   const t = readText(p)
   const l = t.split(/\r\n|\r|\n/)
   if (l.length && l[l.length - 1] === '') l.pop()
   return l
 }
-// Hidden entries: .NET marks a dot-name Hidden off Windows, and Get-ChildItem / EnumerateFiles skip
-// Hidden without -Force. On Windows Hidden is a file attribute Node cannot read; no shipped file sets it.
+// Off Windows a dot-name is hidden and skipped (ADR 0141 decision 2). On Windows Hidden is a file
+// attribute that Node cannot read, and no shipped file sets it.
 const hidden = (name) => !WIN && name.startsWith('.')
 function entryKind(dir, e) {
   if (e.isFile()) return 'file'
@@ -109,7 +78,7 @@ function entryKind(dir, e) {
   return ''
 }
 let compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
-// Get-ChildItem -File / -Directory on one directory: names, hidden ones skipped, sorted.
+// The file or directory names of one directory, hidden ones skipped, sorted.
 function listDir(dir, kind) {
   let ents
   try { ents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return [] }
@@ -168,8 +137,7 @@ async function main() {
   const items = (v) => (Array.isArray(v) ? v : [v]).filter(truthy)
   const join = (a, b) => psJoin(a, b)
 
-  // ONE recursive listing serves both tree scans below (namespacing, coverage), sorted so every
-  // platform lists the same way; the selftest runs this gate ~80 times (handoff O31).
+  // One recursive listing serves both tree scans below, sorted so every platform lists the same way.
   const treeFiles = walkFiles(root).sort(compare)
 
   // --- plugin.json ---------------------------------------------------------------------------
@@ -205,8 +173,7 @@ async function main() {
     let hk = null
     try { hk = parseJsonLoose(readText(hkPath)) } catch (e) { hk = null; bad(`hooks.json does not parse: ${e.message}`) }
     if (truthy(hk)) {
-      // An empty event map is not a pass: the pwsh gate's `@($null).Count is 1` defect made this check
-      // unable to fire until manifest-gate.selftest's `no-events` case caught it.
+      // An empty event map is not a pass.
       const hooksMap = prop(hk, 'hooks')
       const events = isObject(hooksMap) ? Object.keys(hooksMap).filter(Boolean) : []
       if (events.length === 0) bad('hooks.json: no events registered (an empty hook set is not a pass)')
@@ -280,17 +247,15 @@ async function main() {
       const m = topRx.exec(ln)
       if (m) { clTopVer = m[1]; break }
     }
-    // A plugin.json that does not read gets its own branch BEFORE the comparison: a skipped
-    // comparison must say NOT CHECKED, never "(matches plugin.json)" (review 2026-08-05, medium —
-    // the selftest pins the message, not the exit code).
+    // An unreadable plugin.json gets its own branch before the comparison: a skipped comparison says
+    // NOT CHECKED, never "(matches plugin.json)". The selftest pins the message, not the exit code.
     const mfVerText = psString(prop(mf, 'version'))
     if (!clTopVer) bad('CHANGELOG.md has no "## vX.Y.Z" entry — nothing for the announce hook to render')
     else if (!mfOk) bad(`CHANGELOG top entry = v${clTopVer}, but plugin.json is unreadable (see the manifest failure above) — version agreement NOT CHECKED, not passed`)
     else if (upper(clTopVer) !== upper(mfVerText)) bad(`CHANGELOG top entry is v${clTopVer} but plugin.json says ${mfVerText} — a release cannot ship without its notes (ADR 0030)`)
     else good(`CHANGELOG top entry = v${clTopVer} (matches plugin.json)`)
 
-    // Case-insensitive hex on purpose: an uppercase artifact id would otherwise make BOTH sides
-    // read empty and fail as "link missing" even when byte-identical (review 2026-08-05, low).
+    // Case-insensitive hex: an uppercase artifact id would otherwise read empty on both sides.
     const urlRx = /https:\/\/claude\.ai\/code\/artifact\/[0-9A-Fa-f-]+#rn/
     const clUrl = urlRx.exec(clText)?.[0] ?? ''
     const hkUrl = exists(vaPath) ? (urlRx.exec(readText(vaPath))?.[0] ?? '') : ''
@@ -300,13 +265,10 @@ async function main() {
   }
 
   // --- hook banner interpolation (ADR 0045) ------------------------------------------------------
-  // Korean letters are LEGAL in a PowerShell variable name, so a particle glued to a variable inside
-  // a double-quoted banner silently interpolates an UNDEFINED variable as EMPTY (measured live
-  // 2026-08-11: both versions dropped from the banner, the suite green). Refused at build time as a
-  // CLASS; comment lines are skipped (they legitimately QUOTE the trap); a hit inside a single-quoted
-  // string is still refused — bracing is correct in both contexts. Scope is `hooks/*.ps1` ONLY (ADR
-  // 0116): a JS template literal interpolates only through a braced `${...}`, so the trap does not
-  // exist in `.mjs`. No pwsh hook ships since ADR 0142; the scan stays for the next one.
+  // Korean letters are legal in a PowerShell variable name, so "$var한글" in a banner interpolates an
+  // undefined variable as empty. Comment lines are skipped because they quote the trap. Scope is
+  // `hooks/*.ps1` only (ADR 0116): a JS template literal interpolates only a braced `${...}`. No pwsh
+  // hook ships (ADR 0142); the scan guards the next one.
   let hookGlued = 0
   const commentRx = new RegExp(`^${S}*#`, 'u')
   const gluedRx = /\$[A-Za-z_][A-Za-z0-9_]*[가-힣]/iu
@@ -326,8 +288,7 @@ async function main() {
 
   // --- component namespacing ------------------------------------------------------------------
   // Plugin components are addressed as `<plugin>:<name>`, so an instruction that names one bare
-  // fails at the point of use (measured 2026-07-26 in a live sideloaded session: the workflow loaded,
-  // the shipped instruction naming it bare did not resolve). Every selftest calls the scripts
+  // fails at the point of use: a bare name does not resolve in a live session. Every selftest calls the scripts
   // directly and never goes through the host's component registry; this gate is that missing check.
   // Two forms are refused: a Workflow call whose `name:` is a shipped workflow bare (runtime-fatal)
   // and a backticked slash invocation of a shipped skill bare (the reader types a dead command).
@@ -395,8 +356,7 @@ async function main() {
         drift++
         continue
       }
-      // An ORDERED byte compare: the first cut's set compare read two swapped lines as identical
-      // (measured 2026-09-28).
+      // An ordered byte compare: a set compare reads two swapped lines as identical.
       if (!readBytes(origin).equals(readBytes(path.join(vendorDir, v)))) {
         bad(`vendored copy DIVERGED: ${v} — re-copy scripts/${v} into skills/harness-init/templates/scripts/harness/`)
         drift++
@@ -531,8 +491,7 @@ async function main() {
   const placementPath = join(root, 'skills/harness-init/placement.mjs')
   const repoRoot = parentOf(parentOf(root))
   // BOTH root markers: a consuming repo that vendors this plugin tree by hand has a declaration but
-  // is NOT the canon (its sweep would fail on version skew, not drift — review 2026-08-07, low); the
-  // dist copy carries the marketplace manifest but no declaration.
+  // is not the canon, and the dist copy carries the marketplace manifest but no declaration.
   const inTree = upper(leafOf(root)) === 'YWR-HARNESS' &&
     upper(leafOf(parentOf(root))) === 'PLUGINS' &&
     Boolean(repoRoot) && isFile(join(repoRoot, '.harness.json')) &&
@@ -629,7 +588,7 @@ async function main() {
     if (!mfVer) {
       bad('release lockstep: plugin.json version unreadable (see the manifest failure above) — NOT CHECKED, not passed')
     } else if (!new RegExp(`^${D}+\\.${D}+\\.${D}+\\n?$`, 'u').test(mfVer)) {
-      // The manifest check accepts a suffix; a ref name cannot (review 2026-09-03, low).
+      // The manifest check accepts a suffix; a tag name cannot carry one.
       bad(`release lockstep: plugin.json version '${mfVer}' is not a plain major.minor.patch, so the release tag name cannot be derived — NOT CHECKED, not passed`)
     } else if (!gitExe) {
       note('release lockstep: skipped — git not on PATH (reported, not silent)')
@@ -673,7 +632,7 @@ async function main() {
   // know: every case pins `model:` to a bare worker ALIAS (opus, sonnet or haiku; ADR 0103, ADR 0107),
   // case-sensitive and anchored — an unpinned case runs on the operator's session default, a Fable
   // pin draws the separate weekly cap, and a full id freezes the suite on one release. The key and
-  // type sets are the documented ones (plugin-evals reference, read 2026-09-14): a documented key
+  // type sets are the documented ones of the plugin-evals reference: a documented key
   // this list lacks fails loudly and is added in the same reviewed commit. A case.yaml-only case is
   // accepted as-is; `results/` is the runner's output tree, never a case.
   let evalDirName = 'evals'
@@ -691,8 +650,8 @@ async function main() {
     const startsNonSpace = new RegExp(`^${NS}`, 'u')
     // Top-level keys only: nested YAML lines are indented and stay out of the key set. Every OTHER
     // column-0 line inside the block comes back UNPARSED and is refused by the caller: a key the
-    // regex cannot read is exactly a key the unknown-key loop would never see (review 2026-09-14,
-    // high). Keys compare case-insensitively ([ordered]@{}), the first spelling kept.
+    // regex cannot read is exactly a key the unknown-key loop would never see. Keys compare
+    // case-insensitively, the first spelling kept.
     const frontmatter = (p) => {
       const lines = readLines(p)
       const map = new Map()
@@ -771,8 +730,8 @@ async function main() {
     // fall out of the guard with every run still green. Checked by MATCHING: each disabled skill's call
     // input, bare and `<plugin name>:`-namespaced, must match, and each model-invocable skill's must
     // not. The input is shaped as the runner JSON-encodes it. This gate matches with JavaScript, as the
-    // runner does; the constructs .NET and JavaScript read differently stay refused (ADR 0141 Decision
-    // 2 keeps the pwsh gate's behavior). A flag value other than true/false is refused rather than read
+    // runner does; the constructs .NET and JavaScript read differently stay refused (ADR 0141 decision
+    // 2). A flag value other than true/false is refused rather than read
     // as "not disabled" (a validator that only sees what it parsed).
     const guardName = 'disabled-skills-stay-user-invoked/graders/no-skill-invoked.md'
     const guardPath = join(evalDir, guardName)
@@ -833,7 +792,7 @@ async function main() {
       note(`eval suite: ${guardName} absent — the disabled-skills guard's scope is not checked (reported, not failed)`)
     }
     // One suite, one model: a partial FAMILY change must fail rather than grade two families under
-    // one ledger (review 2026-09-14, medium). A release WITHIN the family moves every case at once
+    // one ledger. A release within the family moves every case at once
     // with no commit; the resolved ids each ledger row records catch that series break (spec 0014 §7).
     const distinctModels = [...new Set(models)].sort(compare)
     if (distinctModels.length > 1) {
@@ -1136,6 +1095,58 @@ async function main() {
     }
   }
 
+  // --- code comments tell no history (review canon invariant 12, ADR 0234) --------------------------
+  // The lexer reads comment text only, so a fixture string never fails. Spec 0008 §3.11 lists the limits.
+  if (!inTree) {
+    note('code comments: skipped — not the canon dogfood shape (the rule binds the canon tree)')
+  } else if (!gitExe) {
+    note('code comments: skipped — git not on PATH (reported, not silent)')
+  } else if (!insideWorkTree()) {
+    note('code comments: skipped — the canon shape is not inside a git work tree, so there is no tracked-file list (reported, not silent)')
+  } else {
+    const ls = repoLs()
+    let lexer = null
+    try { lexer = await import('./lib/code-comments.mjs') } catch (e) { bad(`code comments: lib/code-comments.mjs does not load — NOT CHECKED, not passed: ${e.message}`) }
+    if (ls.status !== 0) {
+      bad(`code comments: git ls-files exited ${ls.status ?? -1} — NOT CHECKED, not passed`)
+    } else if (lexer) {
+      const sliceRx = /\bslices?\s+#?\d+/giu
+      // Two digits at least: selftest case families use O1 to O9 as case IDs.
+      const itemRx = /\bO\d{2,4}\b/gu
+      const seen = new Set()
+      let files = 0, commentCount = 0, histBad = 0
+      for (const { rel, tracked } of ls.entries) {
+        if (seen.has(rel)) continue
+        seen.add(rel)
+        const full = join(repoRoot, rel)
+        let kind = /\.(mjs|js|cjs|ts)$/iu.test(rel) ? 'js' : /\.sh$/iu.test(rel) ? 'sh' : null
+        if (!kind && !/\.[^/]*$/u.test(rel) && /(^|\/)\.?githooks\/[^/]+$/u.test(rel)) kind = 'sh-hook'
+        if (!kind || !isFile(full)) continue
+        const text = readBytes(full).toString('utf8')
+        if (kind === 'sh-hook') {
+          if (!/^#!.*\b(?:ba|da|k|z)?sh\b/u.test(text.split('\n')[0])) continue
+          kind = 'sh'
+        }
+        files++
+        const tag = tracked ? '' : ' (untracked)'
+        const { lines, error } = lexer.commentLines(text, kind)
+        commentCount += lines.length
+        for (const { line, text: t } of lines) {
+          for (const m of [...t.matchAll(sliceRx), ...t.matchAll(itemRx)]) {
+            bad(`code comment: ${rel}:${line}${tag} names '${m[0]}' — a comment tells no history; state the constraint and point to its ADR or spec section (review canon invariant 12, ADR 0234)`)
+            histBad++
+          }
+        }
+        if (error) {
+          bad(`code comments: ${rel}:${error.line}${tag} opens a ${error.what} that never closes — the lines after it are NOT CHECKED, not passed`)
+          histBad++
+        }
+      }
+      if (histBad === 0) good(`code comments: ${commentCount} comment line(s) in ${files} code file(s) name no slice number and no open-item ID`)
+      note('code comments: an ID from O1 to O9 is not read, and history in prose is left to the review (ADR 0234)')
+    }
+  }
+
   // --- coverage report (visible every run, never a silent cap) --------------------------------
   // Nothing is excluded but the selftests themselves and ONE declared exclusion, skill template
   // payload (files under a `templates/` directory are content this plugin COPIES into a consuming
@@ -1165,8 +1176,8 @@ async function main() {
 }
 
 // --- the prompt-audit surface (ADR 0186) ---------------------------------------------------------
-// The files whose change makes the canon release preflight run `/doctor prompt-audit`: the text the
-// 2026-11-01 audit read. This list is the one source; scripts/release.mjs keeps no copy and asks
+// The files whose change makes the canon release preflight run `/doctor prompt-audit`. This list is
+// the one source; scripts/release.mjs keeps no copy and asks
 // `node manifest-gate.mjs --audit-paths` instead. Paths are relative to the plugin root, compared
 // case-insensitively as the gate's other path rules are; a selftest file never counts.
 const AUDIT_SURFACE = [

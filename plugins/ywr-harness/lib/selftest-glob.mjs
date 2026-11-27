@@ -1,6 +1,6 @@
 // The glob matcher of the read-set map (ywr-harness spec 0008 §3.4), shared by selftest.mjs and scripts/readset-audit.mjs.
 
-// The .NET Regex.Escape set: the star chain below needs the stars escaped first.
+// Stars are escaped here, so the star chain below matches the escaped form `\*`.
 const ESCAPES = { '\t': '\\t', '\n': '\\n', '\r': '\\r', '\f': '\\f', '\v': '\\v' }
 const escapeRegex = (s) => s.replace(/[\\*+?|{[()^$#. \t\n\r\f\v]/g, (c) => ESCAPES[c] ?? `\\${c}`)
 

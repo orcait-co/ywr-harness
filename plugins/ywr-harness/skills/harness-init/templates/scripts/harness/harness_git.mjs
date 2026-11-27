@@ -29,9 +29,9 @@ export const GIT_PINS = Object.freeze(['-c', 'core.quotepath=false', '-c', 'colo
   '-c', 'color.branch=false', '-c', 'color.showBranch=false'])
 
 // ---------------------------------------------------------------------------------------------
-// Python-compatible string helpers. They live in this file because `norm` runs at the boundary
-// and harness_config.mjs re-exports them. A JavaScript `trim()` differs from Python's `strip()`:
-// Python counts U+001C-U+001F, U+0085 and the Unicode spaces, and JavaScript counts U+FEFF.
+// Python-compatible string helpers. `norm` runs at the boundary and harness_config.mjs re-exports
+// them. JavaScript `trim()` differs from Python's `strip()`: Python counts U+001C-U+001F, U+0085
+// and the Unicode spaces, and JavaScript counts U+FEFF.
 // ---------------------------------------------------------------------------------------------
 function _isspace(c) {
   return (c >= 9 && c <= 13) || (c >= 0x1c && c <= 0x20) || c === 0x85 || c === 0xa0 ||
@@ -54,9 +54,8 @@ export function norm(p) {
   return py_strip(String(p).replaceAll('\\', '/'))
 }
 
-// Python's `repr` of a string keeps a printable character as it is and escapes the rest. It lives
-// here because the failure message of `git_run` is Python's `str(CalledProcessError)`, which prints
-// the argv as a list of reprs, and harness_config.mjs re-exports it.
+// Python's `repr` of a string keeps a printable character and escapes the rest. The failure message
+// of `git_run` prints the argv as a list of reprs, and harness_config.mjs re-exports `_repr_str`.
 const _NONPRINT = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u
 const _BS = String.fromCharCode(92)
 
@@ -85,8 +84,8 @@ export function _repr_str(s) {
 // on Unix an unset PATH falls back to a default one. The absolute path closes both.
 // ---------------------------------------------------------------------------------------------
 /**
- * The first launchable `name` on PATH, as an absolute path, or '' (the lookup PowerShell's
- * `Get-Command` made, which never looked outside PATH). Windows: `<name>.exe` or `<name>.com` only,
+ * The first launchable `name` on PATH, as an absolute path, or ''. It never looks outside PATH.
+ * Windows: `<name>.exe` or `<name>.com` only,
  * because a `.cmd` or `.bat` shim needs a shell. Elsewhere: an executable regular file, symlinks
  * followed. A relative PATH entry is skipped.
  * @param {string} name
@@ -121,10 +120,9 @@ function _git() {
 /**
  * Git for Windows puts a launcher, `<install>\cmd\git.exe`, on PATH. The launcher starts the real
  * `git.exe` from the install's MinGW tree. Every start is hidden (`windowsHide`), because a hook or
- * a background command can run without a console, and then each git would flash a window. Through
- * the launcher, a hidden start cost about 26 ms more per call, a quarter of a git-heavy run. So the
- * real binary is started directly when it sits where the installer puts it. Any other layout keeps
- * the PATH entry.
+ * a background command can run without a console, and each git would flash a window. A hidden
+ * start through the launcher costs about 26 ms more per call. So the real binary starts directly
+ * when it sits where the installer puts it. Any other layout keeps the PATH entry.
  * @param {string} exe the git that PATH resolved
  * @returns {string}
  */
@@ -309,7 +307,7 @@ function _spawn(root, args, input, env) {
     maxBuffer: _MAX_BUFFER,
   })
   if (r.error) {
-    // A `root` that is not a directory fails the spawn with ENOENT. Python names that failure
+    // A `root` that is no directory fails the spawn with ENOENT. The error name is
     // NotADirectoryError on Windows and FileNotFoundError elsewhere.
     let name = r.error.code === 'ENOENT' ? 'FileNotFoundError' : 'OSError'
     if (name === 'FileNotFoundError' && process.platform === 'win32' && !_is_dir(root)) name = 'NotADirectoryError'

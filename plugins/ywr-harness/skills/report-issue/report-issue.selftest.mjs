@@ -1,30 +1,29 @@
 // Self-test for report-issue.mjs (ADR 0064, spec 0013).
 // Usage: node --test-reporter=<file URL of ../../lib/selftest-reporter.mjs> --test-reporter-destination=stdout skills/report-issue/report-issue.selftest.mjs
 //
-// The network boundary is `gh`, and every case that would cross it runs against a FAKE gh: a copy of the
-// node binary named `gh` (`gh.exe` on Windows) in a fixture directory, put FIRST on a PATH that holds only
-// that directory, git's and node's (node runs the refresh-nudge hook report-issue.mjs quotes, ADR 0116; the
-// real gh, python and claude are unreachable for the child — the "claude: not on PATH" line is deterministic
-// here, unless node's directory also holds claude). report-issue.mjs starts gh by absolute path without a
-// shell, so the fake must be a real executable: a `.ps1` or `.cmd` fake cannot start that way. The copy
-// runs the preload `fake-gh.cjs` (through NODE_OPTIONS, set by invokeFeedback), which answers as gh when
-// the running binary is the copy and does nothing in any other node process. Where gh shares a directory
-// with git or node (GitHub's ubuntu runner: /usr/bin), the gh-absent PATH is a private directory of links to
-// just those two — see the noGhOk block. The fake logs every argv it receives (one line per call, fields
-// joined by U+001F) so the assertions read what gh WAS ASKED, not what a mock returned.
+// The network boundary is `gh`, and every case that would cross it runs against a fake gh: a copy of
+// the node binary named `gh` (`gh.exe` on Windows) in a fixture directory. That directory comes first on
+// a PATH that holds only it, git's and node's. Node runs the refresh-nudge hook that report-issue.mjs
+// quotes (ywr-harness ADR 0116). The real gh, python and claude are unreachable for the child, so the
+// "claude: not on PATH" line is deterministic unless node's directory also holds claude.
+// report-issue.mjs starts gh by absolute path without a shell, so the fake must be a real executable. A
+// `.ps1` or `.cmd` fake cannot start that way. The copy runs the preload `fake-gh.cjs` through
+// NODE_OPTIONS, set by invokeFeedback. The preload answers as gh when the running binary is the copy
+// and does nothing in any other node process. Where gh shares a directory with git or node, as on
+// GitHub's ubuntu runner (/usr/bin), the gh-absent PATH is a private directory of links to just those
+// two (see the noGhOk block). The fake logs every argv it receives, one line per call with fields joined
+// by U+001F, so the assertions read what gh was asked and not what a mock returned.
 //
-// The scaffolded fixture is built by the REAL init.mjs (spec 0009) and then hand-patched, because
-// the script's drift section is the refresh nudge's and the dry run's own output — asserting
-// against a faked drift would test the fake. Content-leak assertions use a marker string planted
-// in the patch: it must be in the repo and NEVER in the body.
+// The scaffolded fixture is built by the real init.mjs (ywr-harness spec 0009) and then hand-patched,
+// because the drift section of the script is the output of the refresh nudge and the dry run, and a
+// faked drift would test the fake. Content-leak assertions use a marker string planted in the patch,
+// which must be in the repo and never in the body.
 //
-// This file ports report-issue.selftest.ps1 (ADR 0227). Each test name is the old case name, whose first
-// token is the case ID. Patterns are pwsh -match sources (case-insensitive; see toRx in
-// lib/selftest-lib.mjs). This suite adds one case: P1 reports the gh-absent premise, which the pwsh
-// suite printed as a SKIP line only. The pwsh suite set its fixture environment on
-// the process (`GIT_ALLOW_PROTOCOL`, the git identity, the fake-gh mode and log). This suite passes the same
-// variables to each child instead, so no case changes the environment of a later one. A Node suite starts
-// git through scripts/harness_git.mjs (the one git boundary of the canon, spec 0007 §4).
+// Each test name starts with its case ID. Patterns are case-insensitive (see toRx in
+// lib/selftest-lib.mjs). P1 reports the gh-absent premise. Each child gets the fixture environment
+// (`GIT_ALLOW_PROTOCOL`, the git identity, the fake-gh mode and log) as its own variables, so no case
+// changes the environment of a later one. The suite starts git through scripts/harness_git.mjs, the
+// one git boundary of the canon (spec 0007 §4).
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -46,7 +45,7 @@ const sep = path.delimiter
 const US = String.fromCharCode(0x1f)
 const T = '`'
 const ch = (...c) => String.fromCharCode(...c)
-const escapeRx = (s) => String(s).replace(/[\\*+?|{[()^$.#]/gu, '\\$&')   // [regex]::Escape of .NET
+const escapeRx = (s) => String(s).replace(/[\\*+?|{[()^$.#]/gu, '\\$&')   // escapes the characters that a pattern reads as syntax
 
 const gitSrc = which_on_path('git')
 const gitOk = Boolean(gitSrc)
@@ -70,8 +69,8 @@ function envWith(over) {
   return Object.assign(e, over)
 }
 
-// What Get-Command resolved: the first launchable `name` on a PATH value, or ''. Windows: a PATHEXT entry or
-// .ps1. Elsewhere: an executable regular file. A relative entry is skipped.
+// The first launchable `name` on a PATH value, or ''. On Windows that is a PATHEXT entry or .ps1.
+// Elsewhere it is an executable regular file. A relative entry is skipped.
 function resolveUnder(pathVar, name) {
   const exts = WIN ? [...String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.trim()).filter(Boolean), '.ps1'] : ['']
   for (let dir of String(pathVar ?? '').split(sep)) {
@@ -89,12 +88,11 @@ function resolveUnder(pathVar, name) {
   return ''
 }
 
-// ADR 0149 §2 (L2): on Windows the PATH `git` is the cmd\git.exe LAUNCHER (one extra process per git call);
-// the narrowed PATHs below carry the worker's directory (mingw64\bin) in its place — but ONLY when that
-// directory holds no gh, claude, python (python3 and py too: kept in the guard's list) or node under any
-// extension PowerShell would resolve: those names
-// are the "unreachable" premise of every narrowed-PATH case here. A directory that shadows one keeps the
-// launcher directory and says so with a visible WARN line (never silent). Non-Windows: unchanged.
+// L2 (ywr-harness ADR 0149 §2): on Windows the PATH `git` is the cmd\git.exe launcher, which costs one
+// extra process per git call. The narrowed PATHs below carry the worker's directory (mingw64\bin) in its
+// place, but only when that directory holds no gh, claude, python, python3, py or node under any extension
+// PowerShell resolves, because those names are unreachable by premise in every narrowed-PATH case. A
+// directory that shadows one keeps the launcher directory and prints a WARN line. Elsewhere nothing changes.
 function getShadowingCommand(dir) {
   const exts = [...new Set(['', ...(WIN ? String(process.env.PATHEXT ?? '').split(';').filter(Boolean) : []), '.ps1'])]
   const hits = []
@@ -119,14 +117,14 @@ if (gitOk && WIN) {
 // --- fixture state ---------------------------------------------------------------------------------
 const fx = fixtureRoot('feedback-selftest')
 after(() => removeFixtureRoot(fx))
-// L4 (ADR 0149): the fixture commits take their identity from the environment of each git call — the four
-// per-fixture `git config user.*` spawns are gone. Nothing in report-issue.mjs or init.mjs reads user.name/email.
-// git is the other network boundary: init.mjs fetches the origin before its upstream-ahead check, under
-// --dry-run too (ADR 0137), and the scaffolded fixture's origin is a github.com ssh URL. Unblocked, each of
-// the 12 init runs below made a real ssh attempt that failed in ~2 s, so ~24 s of this suite was network
-// (fact 131). `file` refuses ssh and https before any transport starts. init.mjs's own fetch code
-// still runs as written, and the FETCH FAILED line it prints is the same. N1 proves the refusal holds:
-// without it, the suite stays green and goes back to the network.
+// L4 (ywr-harness ADR 0149): the fixture commits take their identity from the environment of each git
+// call, not from `git config user.*`. Nothing in report-issue.mjs or init.mjs reads user.name or email.
+// git is the other network boundary. init.mjs fetches the origin before its upstream-ahead check, under
+// --dry-run too (ywr-harness ADR 0137), and the scaffolded fixture's origin is a github.com ssh URL.
+// Unblocked, each init run below makes a real ssh attempt that fails after about 2 s (ywr-harness
+// fact 131). `file` refuses ssh and https before any transport starts, and init.mjs still runs its own
+// fetch code and prints the same FETCH FAILED line. N1 proves the refusal holds. Without it the suite
+// stays green and goes back to the network.
 const gitEnv = {
   GIT_ALLOW_PROTOCOL: 'file',
   GIT_AUTHOR_NAME: 'selftest', GIT_COMMITTER_NAME: 'selftest',
@@ -162,13 +160,13 @@ function fakeGhPreload() {
     const sub = `${rest[0]} ${rest[1]}`
     let code = 0
     if (sub === 'auth status') { if (mode === 'unauth') { err('You are not logged into any GitHub hosts. To log in, run: gh auth login'); code = 1 } else out('github.com: Logged in') }
-    // Kept although report-issue.mjs no longer lists labels (ADR 0085): a regression that re-adds the
-    // preflight is then LOGGED (F2b reads the log) instead of dying on the unexpected-subcommand arm.
+    // report-issue.mjs lists no labels (ywr-harness ADR 0085). This arm stays so a regression that adds
+    // the preflight is logged, and F2b reads the log, instead of dying on the unexpected-subcommand arm.
     else if (sub === 'label list') out('[{"name":"bug"},{"name":"upstream-report"}]')
     else if (sub === 'issue list') {
       if (mode === 'similar') out('[{"number":12,"title":"[upstream-report] acme/widget: same drift"}]')
-      // GitHub's server-side shape (ADR 0085): the earlier report was filed by a read-role member,
-      // so its label was dropped — a `-l upstream-report` search cannot see it, an unfiltered one can.
+      // GitHub's server-side shape (ywr-harness ADR 0085): a read-role member filed the earlier report, so
+      // its label was dropped. A `-l upstream-report` search cannot see it, and an unfiltered one can.
       else if (mode === 'unlabelled') out(rest.some(x => x === '-l' || x.startsWith('--label')) ? '[]' : '[{"number":6,"title":"[upstream-report] acme/scaffolded: earlier read-role report","author":{"login":"member-a"}}]')
       // A stranger's issue carrying a published fingerprint, with a hostile title: ESC, NEL, U+2028, CR/LF (JSON escapes).
       else if (mode === 'hostile') out('[{"number":7,"title":"fake' + BS + 'u001b[2Jreport' + BS + 'u0085line' + BS + 'u2028two' + BS + 'r' + BS + 'nthree","author":{"login":"stranger"}}]')
@@ -186,12 +184,11 @@ before(() => {
   fs.mkdirSync(fakeDir, { recursive: true })
   fs.copyFileSync(nodeExe, path.join(fakeDir, WIN ? 'gh.exe' : 'gh'))
   fs.writeFileSync(fakeGhJs, `(${fakeGhPreload.toString()})()\n`, 'utf8')
-  // "gh absent" must be TRUE, not assumed: on GitHub's ubuntu runner node, git AND gh can all live in
-  // /usr/bin, so a PATH of "git dir + node dir" still resolves the real (unauthenticated) gh — the
-  // first CI run of this suite failed F1 on exactly that ("not authenticated" where "not on PATH" was
-  // asserted; the pwsh docker image passed only because it has no gh at all). When gh still resolves
-  // on the narrowed PATH, a private bin directory holding links to ONLY git and node becomes the
-  // gh-absent PATH; if even that leaves gh resolvable, the gh-absent cases are a reported SKIP.
+  // "gh absent" must be true, not assumed. On GitHub's ubuntu runner, node, git and gh can all live in
+  // /usr/bin, so a PATH of the git directory plus the node directory still resolves the real
+  // unauthenticated gh. When gh resolves on the narrowed PATH, a private bin directory that holds links
+  // to only git and node becomes the gh-absent PATH. If gh still resolves, the gh-absent cases are a
+  // reported SKIP.
   let ghLeak = resolveUnder(pathNoGh, 'gh')
   if (ghLeak) {
     const binNoGh = path.join(fx, 'bin-nogh')
@@ -220,10 +217,10 @@ before(() => {
 function gitq(repo, args) { git_result(repo, args, { env: gitEnv }) }
 
 // --- run-ahead ---------------------------------------------------------------------------------------
-// Each child run below is independent of the others: it reads a repository of its own (a copy of the
-// fixture, made at the state the case expects), writes its drafts to a folder of its own and logs gh calls to
-// a file of its own. So every run starts ahead of its test, on a small pool, and the test awaits the result
-// and makes the same assertions as before. A copied `.git` folder is a real repository.
+// Each child run below is independent of the others. It reads a repository of its own, a copy of the
+// fixture at the state the case expects, writes its drafts to a folder of its own and logs gh calls to a
+// file of its own. So every run starts ahead of its test, on a small pool, and the test awaits the
+// result. A copied `.git` folder is a real repository.
 const POOL = innerJobs(8, 2)
 let activeRuns = 0
 const waitingRuns = []
@@ -269,10 +266,10 @@ function runNode(args, env) {
   })
 }
 
-// report-issue.mjs runs as a node child (ADR 0220), the shape members run. The child's stdout and stderr are
-// both captured, as `2>&1` captured them, and the text is decoded as UTF-8. The call sites pass the Node
-// flags in the `--name=value` form, so a '-Word' description stays a value (A4). The fake gh mode and log
-// travel in the child's environment, so no case changes the environment of another.
+// report-issue.mjs runs as a node child (ywr-harness ADR 0220), the shape members run. The child's stdout
+// and stderr are both captured and decoded as UTF-8. The call sites pass the Node flags in the
+// `--name=value` form, so a '-Word' description stays a value (A4). The fake gh mode and log travel in
+// the child's environment, so no case changes the environment of another.
 function invokeFeedback(argv, pathVar, { mode = 'ok', log, extraNodeOptions = '' } = {}) {
   const env = envWith({
     ...gitEnv, PATH: pathVar, NODE_OPTIONS: `${fakeGhOption} ${extraNodeOptions}`.trim(),
@@ -294,8 +291,9 @@ function assertText(text, mustMatch, mustNotMatch, preFail = []) {
 const assertTrue = (cond, detail = '') => { if (!cond) assert.fail(detail || 'condition was false') }
 const exitIs = (r, want) => (r.exit !== want ? `exit ${r.exit} (want ${want})` : '')
 function getGhCalls(ghLog) { return fs.existsSync(ghLog) ? fs.readFileSync(ghLog, 'utf8').split(/\r\n|\r|\n/u).filter(Boolean) : [] }
-// ADR 0085: no label in ANY spelling — the short `-l`, the long `--label` / `--label=<x>`, or a bare
-// `upstream-report` argv element (the title value after `-t` may CONTAIN the prefix; it is never the whole element).
+// ywr-harness ADR 0085: no label in any spelling: the short `-l`, the long `--label` or `--label=<x>`, or a
+// bare `upstream-report` argv element. The title value after `-t` may contain the prefix but is never the
+// whole element.
 function testLabelArg(call) { return call.split(US).some((x) => x.toLowerCase() === '-l' || x.toLowerCase().startsWith('--label') || x.toLowerCase() === 'upstream-report') }
 const issueList = (log) => getGhCalls(log).filter((c) => new RegExp(`^issue${US}list`, 'iu').test(c))
 const createCalls = (log) => getGhCalls(log).filter((c) => new RegExp(`^issue${US}create`, 'iu').test(c))
@@ -313,9 +311,8 @@ const stamp = (d) => {
   return `${p(d.getFullYear(), 4)}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
 }
 
-// The B group's fixture mutations. The pwsh suite applied them one after the other to ONE repository, so a
-// later case saw the earlier cases' changes; each case now starts from its own copy and replays exactly the
-// changes that earlier cases had made: B4 (the post-commit), B6 (the hostile branch and commit), B7 (the stamp).
+// The B group's fixture mutations. Each case starts from its own copy and replays the changes of the
+// earlier cases: B4 (the post-commit), B6 (the hostile branch and commit) and B7 (the stamp).
 const marker = 'LOCAL-PATCH-MARKER-7f3e9a'
 const tick3 = T.repeat(3)
 const fenceLine = T.repeat(4)
@@ -341,9 +338,9 @@ function startRuns() {
     const r = await invokeFeedback([`--description=${descA}`, `--target=${repo}`, `--out-dir=${w.out}`], pathWithGh, { log: w.log })
     const bodyA = getBodyPath(r.out)
     const a = { out: r.out, exit: r.exit, bodyA, textA: readBody(bodyA), outDir: w.out }
-    // A1c: its own OutDir, seeded with an empty draft for every second from 1 s before to 300 s after (a loaded
-    // runner delays the run's clock read; 302 empty files cost nothing): the run must take the
-    // `-2` name beside its second's seed and leave the seed empty (O93 — before it, a same-second run overwrote it).
+    // A1c: its own OutDir, seeded with an empty draft for every second from 1 s before to 300 s after,
+    // because a loaded runner delays the clock read of the run. The run must take the `-2` name beside
+    // its second's seed and leave the seed empty, so a same-second run never overwrites a draft.
     const outDirRs = path.join(w.dir, 'out-a1c')
     fs.mkdirSync(outDirRs, { recursive: true })
     const seedFrom = new Date()
@@ -377,9 +374,9 @@ function startRuns() {
     const initExit = ri.exit
     const ready = initExit === 0 && fs.existsSync(gatesPy) && fs.existsSync(path.join(scaff, '.harness-version'))
     if (ready) {
-      // --no-verify on the fixture's commits: init.mjs wires core.hooksPath, and since ADR 0094 the
-      // seeded docs groups run check_docs.mjs at pre-commit, and a hook that refuses the commit would leave the
-      // history block empty (B1/B6 red). This suite tests the feedback draft, not the hooks.
+      // --no-verify on the fixture's commits. init.mjs wires core.hooksPath, and the seeded docs groups
+      // run check_docs.mjs at pre-commit (ywr-harness ADR 0094). A hook that refused the commit would
+      // leave the history block empty. This suite tests the feedback draft, not the hooks.
       gitq(scaff, ['add', '-A']); gitq(scaff, ['commit', '-q', '--no-verify', '-m', 'scaffold via harness-init'])
       fs.appendFileSync(gatesPy, `// REPO-LOCAL: ${marker} — report upstream${os.EOL}`, 'utf8')
       gitq(scaff, ['add', '-A']); gitq(scaff, ['commit', '-q', '--no-verify', '-m', 'local patch: fix gate emitter (REPO-LOCAL, report upstream)'])
@@ -451,12 +448,12 @@ tc('P1 gh-absent premise', (t) => {
   assertTrue(!resolveUnder(pathNoGh, 'gh'), `gh resolves on the gh-absent PATH: ${resolveUnder(pathNoGh, 'gh')}`)
 })
 
-// --- Z0: the contracts the child-process runner rests on (Node counterparts of the old runspace pins) -----
-// The verdict is the child's exit code, and the captured text is all it wrote. report-issue.mjs reports through
-// one writer (stdout); a stray console.error/warn would reach the captured text by a second path. It never
-// calls process.exit: that can end the process before a piped stdout is flushed, and a truncated report
-// could still match a loose assertion. Its last statement sets process.exitCode from main(), so the exit
-// code is always its own verdict.
+// --- Z0: the contracts the child-process runner rests on -----------------------------------------
+// The verdict is the child's exit code, and the captured text is all it wrote. report-issue.mjs reports
+// through one writer, stdout, because a stray console.error or console.warn would reach the captured
+// text by a second path. It never calls process.exit, which can end the process before a piped stdout is
+// flushed, and a truncated report could still match a loose assertion. Its last statement sets
+// process.exitCode from main(), so the exit code is always its own verdict.
 const zSrc = fs.readFileSync(script, 'utf8').split(/\r\n|\r|\n/u).filter((l) => l.trim() && !/^\/\//u.test(l.trim()))
 test('Z0 report-issue.mjs reports through one writer, stdout (no console.*, no process.stderr)', () => {
   const zWide = zSrc.filter((l) => /\bconsole\.|process\.stderr/iu.test(l))
@@ -471,9 +468,9 @@ test('Z0 report-issue.mjs ends by setting process.exitCode from main() (Code is 
   assertTrue(/^\s*process\.exitCode\s*=\s*main\(\)\s*$/iu.test(zLast), `last statement: ${zLast}`)
 })
 
-// L2 guard self-check (ADR 0149 §2): a worker directory holding gh / claude / python / node under ANY
-// resolvable spelling is seen by getShadowingCommand, and an empty one is clean — so the guard cannot go
-// blind and let the narrowed PATH reach a real gh.
+// L2 guard self-check (ywr-harness ADR 0149 §2): getShadowingCommand sees a worker directory that holds
+// gh, claude, python or node under any resolvable spelling, and an empty one is clean. The guard cannot
+// go blind and let the narrowed PATH reach a real gh.
 tc('L2 the worker-dir guard sees a shadowing gh/claude/python/python3/py/node in every spelling and passes a clean directory', () => {
   const zClean = path.join(fx, 'l2-clean'); const zDirty = path.join(fx, 'l2-dirty')
   fs.mkdirSync(zClean, { recursive: true }); fs.mkdirSync(zDirty, { recursive: true })
@@ -494,15 +491,15 @@ tc('A1 draft on a plain repo: exit 0, body written, sections present, no scaffol
   const { a } = await got(R.a1)
   assertText(`${a.out}\n=====\n${a.textA}`, a1Must, a1Not, [exitIs(a, 0), !a.bodyA ? 'no body: line' : ''])
 })
-// A1b (ADR 0152): the draft file name is the renamed contract — <OutDir>/ywr-harness-report-issue-<yyyyMMdd-HHmmss>.md.
+// A1b (ywr-harness ADR 0152): the draft file name is <OutDir>/ywr-harness-report-issue-<yyyyMMdd-HHmmss>.md.
 tc('A1b draft file is <OutDir>/ywr-harness-report-issue-<yyyyMMdd-HHmmss>.md', async () => {
   const { a } = await got(R.a1)
   const { bodyA } = a
   assertTrue(Boolean(bodyA) && /^ywr-harness-report-issue-\d{8}-\d{6}\.md$/u.test(path.basename(bodyA)) &&
     path.resolve(path.dirname(bodyA)).toLowerCase() === path.resolve(a.outDir).toLowerCase(), `body: ${bodyA}`)
 })
-// A1c: the SAME case run again must agree with A1 on the exit code, on every A1 assertion, and on the output
-// and body text themselves once the per-run body file name is masked — a run-to-run divergence goes red here.
+// A1c: the same case run again must agree with A1 on the exit code, on every A1 assertion, and on the
+// output and body text once the per-run body file name is masked. A run-to-run divergence goes red here.
 tc('A1c the canary case run again matches the first child run: same exit code, same A1 assertions, same output and body', async () => {
   const { a, rs } = await got(R.a1)
   const { r, bodyRs, textRs } = rs
@@ -577,8 +574,8 @@ tb('B1 scaffolded + patched: nudge verdict quoted, dry run names both files, his
     ['LOCAL-PATCH-MARKER', '@@', String.raw`\+\+\+ `, 'Traceback', 'uncommitted local tweak', 'not a scaffolded repo'],
     [exitIs(r, 0), !getBodyPath(r.out) ? 'no body: line' : ''])
 })
-// ADR 0085: the search covers EVERY open dist issue — no `-l` in the argv, the quoted fingerprint
-// is the discriminator (a read-role member's earlier report carries no label).
+// ywr-harness ADR 0085: the search covers every open dist issue. The argv has no `-l`, and the quoted
+// fingerprint is the discriminator, because the earlier report of a read-role member carries no label.
 tb('B1b the fingerprint search asked gh for ALL open dist issues matching the quoted fingerprint — no -l label filter', async () => {
   const { log } = await got(R.b1)
   const calls = getGhCalls(log)
@@ -586,10 +583,10 @@ tb('B1b the fingerprint search asked gh for ALL open dist issues matching the qu
   assertTrue(listCall.length === 1 && /orcait-co\/ywr-harness/iu.test(listCall[0]) && new RegExp(`-S${US}"fb[0-9a-f]{10}"`, 'iu').test(listCall[0]) &&
     new RegExp(`--state${US}open`, 'iu').test(listCall[0]) && !testLabelArg(listCall[0]) && !/upstream-report/iu.test(listCall[0]), `calls: ${calls.join(' | ')}`)
 })
-// B1c (ADR 0116): the refresh nudge is a Node hook that the host starts as an exec-form `node` from PATH, and
-// report-issue.mjs looks for that `node` on PATH the same way. With node absent the report
-// must SAY the verdict could not be read — never a silent pass, never a fabricated "no drift" line —
-// while the dry run, which needs no node, still runs and still names the drifted files.
+// B1c (ywr-harness ADR 0116): the refresh nudge is a Node hook that the host starts as an exec-form `node`
+// from PATH, and report-issue.mjs looks for that `node` on PATH the same way. With node absent the report
+// must say the verdict could not be read, with no silent pass and no fabricated "no drift" line. The dry
+// run needs no node, so it still runs and still names the drifted files.
 tb('B1c no node on PATH: the nudge section says the hook could not run; the dry run still names both files', async (t) => {
   const nodeLeak = resolveUnder(pathNoNode, 'node')
   if (nodeLeak) { t.skip(`B1c node-absent premise: node still resolves on a PATH of the fake-gh + git directories (${nodeLeak}) — B1c is NOT run (reported, not silent)`); return }
@@ -601,10 +598,11 @@ tb('B1c no node on PATH: the nudge section says the hook could not run; the dry 
     [String.raw`\[hook:scaffold-refresh-nudge\]`, 'silent — the refresh nudge reported no toolchain drift', 'hook invocation failed', 'hook output was not JSON', 'Traceback'],
     [exitIs(r, 0), !textB1c ? 'no body written' : ''])
 })
-// B1d/B1e (N4): node's stderr is not part of the verdict. A NODE_OPTIONS preload that writes to stderr on every
-// run of the HOOK must not turn the hook's JSON into "not JSON" (the verdict is still the hook's systemMessage, and the noise
-// stays out of the report); a run that FAILS (the preload throws -> exit 1, no stdout) says so and quotes stderr.
-// report-issue.mjs is a node process too, so each preload acts only in the hook process, by its script name.
+// B1d/B1e (N4): node's stderr is not part of the verdict. A NODE_OPTIONS preload that writes to stderr on
+// every run of the hook must not turn the hook's JSON into "not JSON". The verdict is still the hook's
+// systemMessage, and the noise stays out of the report. A run that fails, where the preload throws and
+// the hook exits 1 with no stdout, says so and quotes stderr. report-issue.mjs is a node process too, so
+// each preload acts only in the hook process, by its script name.
 tb('B1d node stderr noise does not break the verdict: the nudge is still parsed and quoted, the noise is not in the report', async () => {
   const { r, text: textB1d } = await got(R.b1d)
   assertText(`${r.out}\n=====\n${textB1d}`,
@@ -626,16 +624,16 @@ tb('B2 a matching open report is named, drafting still succeeds', async () => {
   assertText(r.out, [String.raw`similar open reports: #12 \[upstream-report\] acme/widget: same drift`, String.raw`(?m)^\s*body:`], ['NOT CHECKED'], [exitIs(r, 0)])
 })
 
-// B2b (ADR 0085): the earlier report was filed by a READ-ROLE member, so GitHub dropped its label;
-// the fake answers a label-filtered search with [] and an unfiltered one with the hit — the dedupe
-// must still find it (the dist #6 shape: fingerprint in the body, labels=[]).
+// B2b (ywr-harness ADR 0085): a read-role member filed the earlier report, so GitHub dropped its label.
+// The fake answers a label-filtered search with [] and an unfiltered one with the hit, and the dedupe
+// must still find it. The shape is a fingerprint in the body and labels=[].
 tb('B2b an unlabelled earlier report (read-role filer) is still found by the fingerprint search', async () => {
   const { r } = await got(R.b2b)
   assertText(r.out, [String.raw`similar open reports: #6 \[upstream-report\] acme/scaffolded: earlier read-role report \(by member-a\)`], ['similar open reports: none', 'NOT CHECKED'], [exitIs(r, 0)])
 })
 
-// B2c: without the label ANY account's issue can carry a published fingerprint — its title renders on
-// ONE line with no terminal escape (ESC, NEL, U+2028, CR/LF all become spaces) and names its author.
+// B2c: without the label, any account's issue can carry a published fingerprint. Its title renders on
+// one line with no terminal escape, because ESC, NEL, U+2028 and CR/LF all become spaces, and it names its author.
 tb('B2c a hostile stranger title renders on one line, control-free, with its author', async () => {
   const { r } = await got(R.b2c)
   const simLine = r.out.split(/\r?\n/u).filter((l) => /similar open reports:/iu.test(l))
@@ -661,16 +659,16 @@ tb('B4 a marker-less post-commit is listed as foreign, not counted as a file a r
     ['3 toolchain file'])
 })
 
-// B5: a full search page -> the search cap is STATED (review 2026-08-28, low)
+// B5: a full search page -> the search cap is stated
 tb('B5 a full page of similar reports states the search cap', async () => {
   const { r } = await got(R.b5)
   assertText(r.out, [String.raw`similar open reports: #1 dup 1 · .*#20 dup 20 \(search capped at 20 — more may exist\)`], ['NOT CHECKED'], [exitIs(r, 0)])
 })
 
-// B6: markdown-hostile repo text never becomes live markdown (review 2026-08-28, medium x2) — a commit
-// subject carrying a triple-backtick run and an image link, a branch name carrying a backtick: the
-// history block's fence grows to 4 backticks, the subject is quoted verbatim INSIDE it, the branch
-// loses its backtick inside the inline code span.
+// B6: markdown-hostile repo text never becomes live markdown. A commit subject carries a triple-backtick
+// run and an image link, and a branch name carries a backtick. The history block's fence grows to 4
+// backticks, the subject is quoted verbatim inside it, and the branch loses its backtick inside the
+// inline code span.
 let textB6 = ''
 tb('B6 hostile commit subject and branch: 4-backtick fence, subject verbatim inside it, branch backtick neutralised', async () => {
   const { r, text } = await got(R.b6)
@@ -679,16 +677,16 @@ tb('B6 hostile commit subject and branch: 4-backtick fence, subject verbatim ins
     ['(?m)^' + escapeRx(fenceLine) + '$', 'close ' + escapeRx(tick3) + String.raw` early !\[x\]\(http://evil\.invalid/track\) ## forged heading`, `branch ${T}fix/a b${T}`],
     [`branch ${T}fix/a${T}b${T}`, '(?m)^## forged heading'], [exitIs(r, 0)])
 })
-// the 4-backtick fence must OPEN and CLOSE around the history (two lines), so the subject's own
-// triple-backtick run cannot terminate the block early
+// The 4-backtick fence must open and close around the history, two lines, so the subject's own
+// triple-backtick run cannot end the block early.
 tb('B6b exactly two 4-backtick fence lines (open + close) around the history block', async () => {
   textB6 = (await got(R.b6)).text
   const fenceCount = (textB6.match(new RegExp(`^${escapeRx(fenceLine)}$`, 'gm')) ?? []).length
   assertTrue(fenceCount === 2, `count=${fenceCount}`)
 })
 
-// B7: init.mjs refuses a DOWNGRADE (stamp newer than this copy, ADR 0042) -> the dry run exits 1
-// before comparing -> drift is UNKNOWN, never "none" (review 2026-08-28, high)
+// B7: init.mjs refuses a downgrade, a stamp newer than this copy (ywr-harness ADR 0042). The dry run
+// exits 1 before comparing, so drift is UNKNOWN and never "none".
 tb('B7 downgrade-refused dry run -> drift UNKNOWN, search not run, REFUSED text quoted', async () => {
   const { r, text: textB7 } = await got(R.b7)
   assertText(`${r.out}\n=====\n${textB7}`,
@@ -714,7 +712,7 @@ tc('F1 gh absent -> exit 2, NOT FILED, by-hand URL, body kept', async (t) => {
     [exitIs(r, 2), !fs.existsSync(bodyPath) ? 'body file was removed' : ''])
 })
 
-// F2: gh ok -> filed; the create call carries repo, title and body file — and NO label (ADR 0085)
+// F2: gh ok -> filed; the create call carries repo, title and body file and no label (ywr-harness ADR 0085)
 const f2Of = async () => {
   const { r, w, bodyPath } = await got(R.f2)
   const filedCopy = `${bodyPath}.filed.md`
@@ -724,8 +722,8 @@ tc('F2 gh ok -> filed: URL, exit 0, no label line', async () => {
   const { r } = await f2Of()
   assertText(r.out, [String.raw`filed: https://github\.com/orcait-co/ywr-harness/issues/999`], ['NOT FILED', String.raw`(?m)^\s*label:`], [exitIs(r, 0)])
 })
-// ADR 0085: GitHub silently drops a label set by a filer without push access, so the member side
-// neither preflights one (`gh label list`) nor passes `-l`; the canon inbox lists every open issue.
+// ywr-harness ADR 0085: GitHub silently drops a label set by a filer without push access, so the member
+// side neither preflights one (`gh label list`) nor passes `-l`, and the canon inbox lists every open issue.
 tc('F2b the create call: -R orcait-co/ywr-harness, -t <title>, -F <reviewed>.filed.md, NO -l; auth ran first; no label list call', async () => {
   const { calls, create } = await f2Of()
   assertTrue(create.length === 1 && new RegExp(`-R${US}orcait-co/ywr-harness`, 'iu').test(create[0]) &&
@@ -782,8 +780,8 @@ tc('F8 no title anywhere -> exit 1', async () => {
 // =================================================================================================
 test('S1 SKILL.md: user-invoked only, namespaced references, both script modes named, the never-list, the no-label inbox claim', () => {
   const skill = fs.readFileSync(skillMd, 'utf8')
-  // The label clauses (ADR 0085): the member is no longer told the report carries `upstream-report` —
-  // for a read-role filer GitHub drops it — and IS told the canon inbox lists every open dist issue.
+  // The label clauses (ywr-harness ADR 0085): the member is not told the report carries `upstream-report`,
+  // because GitHub drops it for a read-role filer, and is told the canon inbox lists every open dist issue.
   assertText(skill,
     ['(?m)^disable-model-invocation: true', '/ywr-harness:report-issue', String.raw`report-issue\.mjs" --description=`, String.raw`report-issue\.mjs" --file --body-path=`,
       'Never files without step 3', 'Never includes file contents or diffs', `Never runs ${T}/ywr-harness:harness-init${T}`,
@@ -794,12 +792,9 @@ test('S1 SKILL.md: user-invoked only, namespaced references, both script modes n
 // =================================================================================================
 // I. One flattening rule: report-issue.mjs imports hook-lib's inline() and holds no copy of the class
 // =================================================================================================
-// The pwsh original carried its own copy of the one-line rule, and I1 pinned that copy over every UTF-16
-// code unit. The Node port imports hook-lib.mjs's inline(), whose class hook-lib.selftest pins the same way,
-// so I1 now pins the import and the absence of a second copy: no other character class over the flattened
-// set (U+2028, U+2029, U+0085) in the script. B2c still drives the rule end to end through a hostile title.
-// (Cases G1-G3 pinned pwsh's module auto-loading switch around the git/gh/claude lookups; Node has no such
-// switch, so they left with report-issue.ps1.)
+// report-issue.mjs imports inline() from hook-lib.mjs, and hook-lib.selftest pins its character class.
+// I1 pins the import and the absence of a second copy: no other character class over the flattened set
+// (U+2028, U+2029, U+0085) in the script. B2c drives the rule end to end through a hostile title.
 test('I1 report-issue.mjs flattens through hook-lib inline() (imported, no second copy of the class)', () => {
   const iSrc = fs.readFileSync(script, 'utf8')
   const iFail = []

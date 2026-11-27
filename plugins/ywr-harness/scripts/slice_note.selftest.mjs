@@ -10,9 +10,9 @@
 // escape text in this file.
 //
 // The cases share that repo and depend on the order, so each test does its own setup in its body. The
-// node:test runner runs the tests of one file in the order they are registered. Patterns are pwsh -match
-// sources (case-insensitive; see toRx in lib/selftest-lib.mjs). Git runs through harness_git.mjs, the one git
-// subprocess boundary, which starts the real git binary by its absolute path.
+// node:test runner runs the tests of one file in registration order. Patterns are case-insensitive
+// (see toRx in lib/selftest-lib.mjs). Git runs through harness_git.mjs, the one git subprocess
+// boundary, which starts the real git binary by its absolute path.
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -40,7 +40,7 @@ git(repo, ['init', '-q'])
 git(repo, ['config', 'user.email', 'selftest@example.invalid'])
 git(repo, ['config', 'user.name', 'selftest'])
 
-// The script's stdout and stderr together, as the pwsh suite read them with `2>&1`, and its exit code.
+// The script's stdout and stderr together, and its exit code.
 function invokeNote(dir, args, env = baseEnv) {
   const r = runNode([noteScript, '--repo', dir, ...args], { env })
   return { out: r.stdout + r.stderr, code: r.status }

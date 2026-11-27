@@ -1,47 +1,40 @@
 #!/usr/bin/env node
-// docs-as-code drift check (ywr-harness ADR 0074), STE-lite gate (ywr-harness ADR 0128) and skeleton
-// placeholder check (ywr-harness ADR 0208).
+// Docs drift check (ywr-harness ADR 0074), STE-lite gate (ywr-harness ADR 0128) and skeleton placeholder
+// check (ywr-harness ADR 0208).
 //
-// The ready-made Artifact `check` (ywr-harness ADR 0068) for this repo's generated docs surfaces
-// (index.json, INDEX.md, docs.html, docs.artifact.html, and the customer surfaces
-// (ywr-harness ADR 0060) when declared). Declare it as
-// `check: {runner: node, script: docs/check_docs.mjs}` with no consumer-side mirror of the builder.
-// Default mode IS the drift check: exit 0 on a match, exit 1 on drift, writes nothing. A flag (any
-// argument that starts with `-`) is misuse and exits 2. There is deliberately no `--write` here;
-// regeneration is `node docs/build.mjs` (or `bash docs/build.sh`).
+// It is the ready-made Artifact `check` (ywr-harness ADR 0068) for the generated docs surfaces of this repo.
+// Declare it as `check: {runner: node, script: docs/check_docs.mjs}`.
+// The default mode is the drift check: exit 0 on a match, exit 1 on drift, and it writes nothing.
+// A flag (an argument that starts with `-`) is misuse and exits 2. Regeneration is `node docs/build.mjs`.
 //
-// Path arguments are TRIGGERS, not a scope (ywr-harness ADR 0094): a `.harness.json` group may declare
-// this script with `files: true`, so the pre-commit hook runs it on a staged ADR or spec instead of
-// deferring it to CI. The drift check is corpus-wide either way, because the index is assembled from
-// every source, so the paths never narrow what runs.
+// Path arguments are triggers, never a scope (ywr-harness ADR 0094). A `.harness.json` group may declare this
+// script with `files: true`, so the pre-commit hook runs it on a staged ADR or spec. The drift check is
+// corpus-wide, because the index is assembled from every source.
 //
-// With path arguments the STE-lite gate runs too (ywr-harness ADR 0128, docs/README.md §Writing style).
-// It reads each passed spec and NEW ADR against HEAD (`git diff HEAD`, the working tree the pre-commit
-// hook gates) and checks R5 (sentence length), R3 (no claim in parentheses) and R8 (no em dash, joining
-// semicolon, "(s)" or "and/or") over every changed spec section, whole, plus R7 for the words that
-// `.harness.json` `docs.ste_words` maps to a replacement (ywr-harness ADR 0170). A new ADR must also
-// record at least two options in its options section. These checks (R8, R7 and the option count) block
-// only under their own key, `docs.ste_marks: true`. A records section, a heading that names change notes
-// or a ledger or one that carries `<!-- ste-lite: records -->`, is not checked: nobody rewrites a ledger
-// row. `<!-- ste-lite: verbatim -->` on its own line exempts the next block (a paragraph, a list or a
-// table): text a script reads stays byte-identical. Findings fail the run only when `.harness.json`
-// declares `docs.ste_lite: true`; otherwise they print as advice and the exit code is the drift check's.
-// A clean tree (CI) has no change against HEAD, so the gate finds nothing there. With no arguments the
-// run is the drift check alone, which is what the Artifact `check` contract (ywr-harness ADR 0068)
-// requires.
+// With path arguments the STE-lite gate runs too (ywr-harness ADR 0128, ywr-harness ADR 0170, docs/README.md
+// §Writing style). It reads each passed spec and new ADR against HEAD (`git diff HEAD`, the working tree that
+// the pre-commit hook gates). R5, R3 and R8 check every changed spec section whole, and R7 checks the words
+// that `.harness.json` `docs.ste_words` maps to a replacement. A new ADR must record at least two options.
+// R8, R7 and the option count block only under `docs.ste_marks: true`. Findings fail the run only under
+// `docs.ste_lite: true`, and otherwise print as advice.
+// A records section is not checked, because nobody rewrites a ledger row. A heading that names change notes
+// or a ledger, or one with `<!-- ste-lite: records -->`, is a records section.
+// `<!-- ste-lite: verbatim -->` on its own line exempts the next block, so text that a script reads stays
+// byte-identical.
+// A clean tree (CI) has no change against HEAD, so the gate finds nothing there. With no arguments the run
+// is the drift check alone, as the Artifact `check` contract requires.
 //
-// With path arguments a placeholder check runs over the same files and changed lines (ywr-harness ADR
-// 0208). It reads records sections too, because a skeleton lands in a ledger note, and it reads text
-// outside code spans and fenced blocks only. A placeholder is an angle-bracket span on one line that holds
-// the character U+2026 or starts with `judge:` or `NO KEY SET`. A finding fails the run under no key.
-// `<!-- ste-lite: verbatim -->` exempts the next block, as for STE-lite.
+// With path arguments a placeholder check runs over the same files and changed lines (ywr-harness ADR 0208).
+// It reads records sections too, because a skeleton lands in a ledger note, and it skips code spans and
+// fenced blocks. A placeholder is an angle-bracket span on one line that holds U+2026 or starts with `judge:`
+// or `NO KEY SET`. A finding fails the run under no key. `<!-- ste-lite: verbatim -->` exempts the next block.
 //
 // TOOLCHAIN placement (ywr-harness ADR 0010): scaffold-owned, re-placed verbatim by
 // `/ywr-harness:harness-init` on every run. Edit the template upstream, never this copy.
 //
-// Runtime: Node 22 or later, built-in modules only. The file stays standalone. Its only sibling import is
-// the declared reader `scripts/harness/harness_config.mjs`, loaded with a dynamic import() in the entry
-// path, so a repo without that reader still gets the drift check and a named NOT CHECKED line.
+// Node 22 or later, built-in modules only. The only sibling import is the declared reader
+// `scripts/harness/harness_config.mjs`, loaded with a dynamic import() in the entry path. A repo without
+// that reader still gets the drift check and a named NOT CHECKED line.
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -139,8 +132,8 @@ const REF_WORDS = new Set(['adr', 'adrs', 'spec', 'specs', 'fact', 'facts', 'iss
   'final', 'commit', 'tag', 'eval', 'ledger', 'and', 'or', 'also', 'in'])
 
 // ------------------------------------------------------------------------------------------------
-// Python semantics: the files are read the way Python read them, so one tree gives one set of findings
-// in either runtime.
+// Python string semantics: these helpers read files as Python's str and pathlib do, so one tree gives one
+// set of findings.
 // ------------------------------------------------------------------------------------------------
 function _isspace(c) {
   return (c >= 9 && c <= 13) || (c >= 0x1c && c <= 0x20) || c === 0x85 || c === 0xa0 ||
@@ -695,7 +688,7 @@ const error_name = (e) => (e && e.code === 'ERR_MODULE_NOT_FOUND' ? 'ModuleNotFo
 /**
  * Run the placeholder check (ywr-harness ADR 0208) over the passed paths. Returns 1 when a finding fails
  * the run. No key gates it. A file whose changed lines cannot be read is read whole: the check never
- * passes a file unread (the owner's answer of 2026-11-16, ywr-harness ADR 0208).
+ * passes a file unread (ywr-harness ADR 0208).
  */
 async function placeholders(here, paths) {
   here = resolve_path(here)
@@ -835,7 +828,7 @@ async function ste_lite(here, paths) {
   return fails ? 1 : 0
 }
 
-// `cfg.get("ste_words") or {}`: the declared R7 words as a word-to-replacement object.
+// The declared R7 words as a word-to-replacement object, empty when none are declared.
 const hc_words = (cfg) => (cfg.ste_words && typeof cfg.ste_words === 'object' ? cfg.ste_words : {})
 
 async function main() {

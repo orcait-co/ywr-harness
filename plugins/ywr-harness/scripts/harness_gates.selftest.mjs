@@ -7,54 +7,46 @@
 // wasted full review or — worse — a weaker review exactly where the diff is dangerous. So each tier
 // branch is exercised, including the one that must WIN over size (critical surface).
 //
-// Port notes (ADR 0227). The pwsh suite named most cases with no case ID (`A exits 0 (advisory)`, `B rejects ...`).
-// Each such case is `GT<n> <the old name>` here, numbered in file order, so the parity check of ADR 0227
-// decision 8 matches the names. A case with an ID keeps it. The old suite asserted with Assert-True, one PASS
-// line each; `check()` below does the same, one test for each assertion. The fixture work of `body()` is cut into
-// sections in the order of the old script (lever 8 below), because later cases read a repository that an earlier case
-// changed (the review canon of case I, the hooks config of case K): a section that does so waits for that one. The checks that the old suite ran in a
-// child node process (V, AA, AD1, AE, AF and the placement read of Z4) import harness_config.mjs in this
-// process; T6c and T6d stay a child process, because they replace stdout and a module table.
+// A test name starts with its case ID. Most cases have none, so each is `GT<n> <its name>`, numbered in file
+// order. `check()` below makes one test for each assertion. The fixture work of `body()` is cut into sections
+// (lever 8 below), because later cases read a repository that an earlier case changed (the review canon of case
+// I, the hooks config of case K): a section that does so waits for that one. The checks V, AA, AD1, AE, AF and
+// the placement read of Z4 import harness_config.mjs in this process. T6c and T6d stay a child process,
+// because they replace stdout and a module table.
 //
 // Fixture and subject git: no case starts git by a bare name. Fixture git goes through `git_run` and
 // `git_result` of harness_git.mjs, which start the real git.exe beside the Git for Windows launcher.
 //
-// --- spawn budget (ADR 0071 option E, third suite — 2026-09-02) ---------------------------------
-// This suite is spawn-bound like init's and manifest-gate's, but the spawn is GIT, not python:
-// measured per case on the owner's box, python cold start + stdlib imports is ~80 ms while each git
-// call is ~60 ms — and a case pays 6 git calls inside the emitter (`diff --name-only HEAD`,
-// `ls-files --others`, `diff --numstat`, and since ADR 0077 the trailer's `ls-files --ignored`,
-// `ls-files -- .gitignore`, `check-ignore --stdin`) plus what its fixture build pays here. So the runspace
-// runner the other two suites adopted does not apply (nothing here is a .ps1 under test), and a
-// persistent interpreter would recover ~18% (~8 s of 45) at the cost of a request/response driver
-// that could not carry the per-run environment cases J (PYTHONIOENCODING) and K (HOME) need. Two
-// levers instead — THIS header is the single owner of the measurements (spec 0008 §6 points here):
+// --- spawn budget (ADR 0071 option E, ADR 0111, ADR 0160) ----------------------------------------
+// This suite is spawn-bound like init's and manifest-gate's, and the spawn is git: each git call costs
+// ~60 ms, and a case pays 6 git calls inside the emitter (`diff --name-only HEAD`, `ls-files --others`,
+// `diff --numstat`, and the trailer's `ls-files --ignored`, `ls-files -- .gitignore` and
+// `check-ignore --stdin`, ADR 0077) plus what its fixture build pays here. Eight levers cut the
+// spawns. This header holds their figures; facts 130, 132 and 163 hold the measurements.
 //
 // (1) A git-built fixture spawns 3 git processes, not 5 — identity rides on the commit as `-c`, never written
 //     into the fixture (two `git config` calls per fixture) and never set in this process's
 //     environment. Every later fixture commit goes through fixtureCommit for the same
 //     reason: it must work where NO global identity exists — CI runners — so no site may rely on a
-//     repo-local identity newRepo used to leave behind.
+//     repo-local identity.
 // (2) On Windows the `git` on PATH is Git for Windows' cmd\git.exe, a LAUNCHER that spawns
-//     mingw64\bin\git.exe and waits — two processes per call. Measured 2026-09-02 (`status` x10):
-//     68 ms via the launcher, 49 ms direct. The pwsh suite prepended the real binary's directory to
-//     PATH (`Use-GitWorkerBinary`, ADR 0111) so that every call this process and its children made
-//     reached it — ~500 calls a run. harness_git.mjs now starts that real binary itself (ADR 0223), so
+//     mingw64\bin\git.exe and waits — two processes per call. A `status` x10 costs
+//     68 ms via the launcher and 49 ms direct. harness_git.mjs starts the real binary itself (ADR 0223), so
 //     every fixture call here and every call of the emitter takes the direct route and this suite
-//     touches no PATH. It is the worker binary the launcher would have spawned, and it resolves the same
-//     way: checked 2026-09-02, both entry points print the same `--exec-path` and the same `--system`
+//     touches no PATH. It is the worker binary the launcher would spawn, and it resolves the same
+//     way: both entry points print the same `--exec-path` and the same `--system`
 //     gitconfig origin (`git config --system --show-origin --list`) — only the hop is gone.
 // (3) A fixture commit passes `-c maintenance.auto=false -c gc.auto=0`. On git 2.53 every commit
 //     starts a detached `git maintenance run --auto` (fact 130): 111 of a run's 1,150 git processes
 //     (GIT_TRACE2), each one free to write under a fixture's .git while the suite moves on or removes
-//     the root. Measured 2026-10-12, ABBA x4 on a loaded box: the pinned run was faster in every
+//     the root. ABBA x4 on a loaded box: the pinned run was faster in every
 //     pair, median −12 s of ~170 s (~7%). The pins ride on the command line, not in
 //     GIT_CONFIG_COUNT, so the emitter's own git calls run with the environment a member's run has.
 //     Case FX proves the switch-off (fact 132).
 //
 // --- the in-process runner (ADR 0160) ------------------------------------------------------------
-// (4) A child emitter run cost 334 ms, a `main()` call in a warm interpreter 222 ms (2026-10-18, this
-//     box, 20 runs each): ~125 runs, ~14 s. So one node process imports harness_gates once and runs
+// (4) A child emitter run costs 334 ms, a `main()` call in a warm interpreter 222 ms (20 runs each):
+//     ~125 runs, ~14 s. So one node process imports harness_gates once and runs
 //     each request through `main()`: argv, the caller's whole environment and cwd at call time, stdout and
 //     stderr captured, and the exit code `main()` returns. Each request is one ASCII JSON line on
 //     stdin and one on stdout. A child's output puts stderr first, because the child line-buffers its stderr
@@ -63,7 +55,7 @@
 //     cases at the end, which run their repos both ways and compare. HARNESS_GATES_SELFTEST_RUNNER
 //     = 'child' forces every run into a child (ADR 0111 §3 fallback), and 'both' runs every call both
 //     ways and fails on any difference.
-//     Fail closed (review 2026-10-18): a driver that gives no reply in 120 s, ends, or breaks the
+//     Fail closed: a driver that gives no reply in 120 s, ends, or breaks the
 //     protocol is a FAIL, and the later calls run as children so the other cases still report. The
 //     protocol keeps its own copy of fd 1; the emitter's fd 1 and 2 writes through fs.writeSync are
 //     diverted to a stray buffer, so a write that bypasses process.stdout/process.stderr is a FAIL, not a
@@ -72,7 +64,7 @@
 //     whose stream order a child could print differently (stdout flushed, or past 4 KiB, under the
 //     8 KiB pipe buffer) is run again as a child, counted in the closing note.
 // (5) newRepo copies one `.git` that `git init --template=<empty dir>` made, in place of a `git init`
-//     per fixture: 76 ms a spawn against 18 ms a copy (2026-10-18, this box), 101 fixtures. The copy
+//     per fixture: 76 ms a spawn against 18 ms a copy, 101 fixtures. The copy
 //     carries no sample hooks, no `info/exclude` and no `description`; no git command the emitter runs
 //     reads them, and AC5 creates `info/exclude` itself. The template is made on the fixture root's
 //     own volume, so `core.ignorecase`, `core.symlinks` and `core.filemode` are probed where they apply.
@@ -83,7 +75,7 @@
 // (7) The driver of lever 4 is a pool of up to four. A section takes an idle driver for one request and gives it
 //     back, so the runs of sections that go beside each other do not queue behind one process. A request carries
 //     its own argv, environment and cwd, so no driver depends on what another one did.
-// (8) `body()` is a list of sections, each the code of one case group of the old script, started in source order,
+// (8) `body()` is a list of sections, each the code of one case group, started in source order,
 //     at most POOL + 2 at a time. Most of the 101 fixtures belong to one group and read nothing of another, so the
 //     emitter runs of the groups overlap. The tests register in source order after the last section ends (`reg`,
 //     `runSections`), so the output and the `GT<n>` numbers are those of a serial run.
@@ -109,7 +101,7 @@ const fx = fixtureRoot('harness-gates-selftest')
 const hc = await import(pathToFileURL(path.join(here, 'harness_config.mjs')).href)
 
 // --- assertions ----------------------------------------------------------------------------------------
-// m / nm are the pwsh -match / -notmatch of one string (toRx: the -match rules), anyLine the -match of an array.
+// m / nm are the .NET -match / -notmatch of one string (toRx: the -match rules), anyLine the -match of an array.
 const m = (text, pat) => toRx(pat).test(String(text ?? ''))
 const nm = (text, pat) => !m(text, pat)
 const anyLine = (ls, pat) => ls.some((l) => toRx(pat).test(l))
@@ -122,11 +114,11 @@ const CMD = P`^\s{4}[^ (]`
 const WARN = P`^\s*warn:`
 const cmdLines = (out, skipWarn = true) => lines(out).filter((l) => (!skipWarn || nm(l, WARN)) && m(l, CMD))
 
-// One Assert-True of the old suite: one test, one name, the verdict taken now. `detail` is what the failure prints.
+// One assertion: one test, one name, the verdict taken now. `detail` is what the failure prints.
 // A section of body() runs beside the others (see runSections), so it must not register a test straight away: the
 // order of the output and the GT numbers would then follow the clock. Inside a section every test goes into that
 // section's list (AsyncLocalStorage carries the list through the awaits), and runSections registers the lists in
-// source order after the last section ends. `gt` marks a case the pwsh suite named with no ID: `GT<n> <old name>`,
+// source order after the last section ends. `gt` marks a case with no ID: `GT<n> <name>`,
 // numbered when it registers.
 const sink = new AsyncLocalStorage()
 let gtN = 0
@@ -164,7 +156,7 @@ const L = (...ls) => ls.join('\n')
 let traceEnv = null
 const genv = (extra) => (traceEnv || extra ? { ...traceEnv, ...extra } : null)
 const gitRun = (root, args, env) => git_run(root, args, { env: genv(env) })
-const gitq = (root, args, env) => git_result(root, args, { env: genv(env) })   // the exit status is ignored, as `2>$null` did
+const gitq = (root, args, env) => git_result(root, args, { env: genv(env) })   // the exit status is ignored
 const gitLines = (root, args) => gitRun(root, args).split('\n').filter((l) => l.trim() !== '')
 // A fixture commit that FAILS is not a fixture: every current site's next assertion would go red
 // (the file it added stays untracked and changes the diff), but the helper does not lean on that —
@@ -190,9 +182,9 @@ function getRepoTemplate() {
 function newRepoGit(name, config, files = []) {
   const p = path.join(fx, name)
   fs.mkdirSync(p, { recursive: true })
-  // .harness.json goes in BEFORE the seed commit. Writing it afterwards left it untracked, so it
-  // counted as a changed file and every file-count and tier assertion was off by one — the config
-  // file silently joining the diff it configures.
+  // .harness.json goes in BEFORE the seed commit. Written afterwards, it stays untracked, counts as a
+  // changed file and puts every file-count and tier assertion off by one: the config file would silently
+  // join the diff it configures.
   if (config) fs.writeFileSync(path.join(p, '.harness.json'), config)
   fs.cpSync(getRepoTemplate(), path.join(p, '.git'), { recursive: true, force: true })
   fs.writeFileSync(path.join(p, 'seed.txt'), 'seed')
@@ -461,7 +453,7 @@ const CFG = P`{
 }`
 
 // --- the sections (lever 8) ----------------------------------------------------------------------------------
-// body() is a list of sections, one for each case group of the old script, in its order. A section names the sections
+// body() is a list of sections, one for each case group, in source order. A section names the sections
 // that it must wait for (`after`): the one that sets a variable it reads, and every earlier one that touches the same
 // fixture repository. The rest run beside each other, SECTIONS at a time, while each takes a driver of the pool for
 // one request. A section that reads a variable another section sets, or changes a repository another section reads,
@@ -539,8 +531,8 @@ async function body() {
   rA = await gates(repoA)
   g('A exits 0 (advisory)', rA.Code === 0, `exit=${rA.Code}`)
   g('A file-scoped gate gets the file list, prefix stripped', m(rA.Out, P`cd api && uv run ruff check app\.py`), rA.Out)
-  // `'not db'` is ONE argv element and must reach `sh -c` quoted (dist issue #6: the space-joined
-  // `-m not db` made pytest read `db` as a path and exit 4). Case AD proves it through sh.
+  // `'not db'` is ONE argv element and must reach `sh -c` quoted: a space-joined `-m not db`
+  // makes pytest read `db` as a path and exit 4. Case AD proves it through sh.
   g('A whole-program gate gets NO file list', m(rA.Out, P`cd api && uv run pytest -m 'not db' -q`), rA.Out)
   g('A whole-program gate is labelled as such', m(rA.Out, 'whole-program: gate on slice files'), rA.Out)
   g('A second group composes independently', m(rA.Out, P`cd web && npx eslint main\.ts`), rA.Out)
@@ -633,7 +625,7 @@ async function body() {
   rCi = await gates(repoCi)
   check('I2 code spans, a span over two lines, a ~~~ line in a backtick fence and an indented block import nothing', m(rCi.Out, NOT_IMPORTED), rCi.Out)
   // A fenced block ends the paragraph before it, so an indented line right after the closing fence is code with no
-  // blank line between (dist #18). Mutation anchor: a closing fence that leaves the blank state alone keeps the line.
+  // blank line between. Mutation anchor: a closing fence that leaves the blank state alone keeps the line.
   put(repoCi, 'CLAUDE.md', L('para text', FENCE, 'code', FENCE, '    @REVIEW.md', ''))
   rCi = await gates(repoCi)
   check('I2 an indented line right after a closing fence imports nothing', m(rCi.Out, NOT_IMPORTED), rCi.Out)
@@ -682,7 +674,7 @@ async function body() {
   rCs = await gates(repoCs)
   check('I2 an absolute token stands as written: imported', m(rCs.Out, P`review canon: docs/my canon\.md\s+\(imported by CLAUDE\.md\)`), rCs.Out)
   // The same token through the repo's 8.3 short alias, where the volume has one: git reports the long root, and a
-  // lexical compare read the short spelling as another file (the GitHub Windows runner's TEMP is a short name).
+  // lexical compare would read the short spelling as another file (the GitHub Windows runner's TEMP is a short name).
   const csShort = shortAlias(repoCs)
   if (csShort) {
     put(repoCs, 'CLAUDE.md', `@${rep(csShort, BS, '/')}/docs/my${BS} canon.md\n`)
@@ -738,8 +730,8 @@ async function body() {
   })
   section('J', ['A', 'I'], async () => {
   // --- J: non-ASCII output survives a hostile console codepage ------------------------------------
-  // Node writes UTF-8 to a pipe whatever PYTHONIOENCODING says, so the variable set below no longer reaches a
-  // subject: the case checks that non-ASCII output arrives intact and no longer proves a codepage defence.
+  // Node writes UTF-8 to a pipe whatever PYTHONIOENCODING says, so the variable set below does not reach a
+  // subject: the case checks that non-ASCII output arrives intact, not a codepage defence.
   const rJ = await gates(repoA, [], { child: true, env: { PYTHONIOENCODING: 'cp1252' } })
   g('J separator survives an inherited cp1252 encoding', m(rJ.Out, '·'), rJ.Out)
   g('J tier reason em dash survives', m(rJ.Out, P`review tier: \w+ — `), rJ.Out)
@@ -770,8 +762,8 @@ async function body() {
   })
   section('K6', ['K'], async () => {
   // K6: the SAME directory in any other spelling is wired, not foreign. A literal compare against
-  // '.githooks' reported an absolute value (the canon's own clone, 2026-09-02), a './' prefix, and the
-  // Git-Bash-on-Windows MSYS form as "the harness hooks do not run in this clone" while they ran.
+  // '.githooks' would report an absolute value, a './' prefix and the Git-Bash-on-Windows MSYS form as
+  // "the harness hooks do not run in this clone" while they run.
   const absHooks = path.join(repoK, '.githooks')
   gitq(repoK, ['config', '--local', 'core.hooksPath', absHooks])
   const rK6 = await gates(repoK)
@@ -790,7 +782,7 @@ async function body() {
   section('K6e', ['K', 'K6'], async () => {
   // K6e: git expands `~/` in a pathname variable when it RUNS hooks, but `git config --get` returns the
   // raw text — the emitter must read the value the way git applies it (`--path`), or a tilde-wired
-  // clone stays foreign (review 2026-09-02, medium). HOME is pinned to the fixture itself so `~/.githooks`
+  // clone stays foreign. HOME is pinned to the fixture itself so `~/.githooks`
   // resolves there on every platform (git prefers HOME over USERPROFILE on Windows too). The value is
   // written through an argv array, so no shell expands the tilde before git sees it.
   gitq(repoK, ['config', '--local', 'core.hooksPath', '~/.githooks'], { HOME: repoK })
@@ -803,9 +795,9 @@ async function body() {
   section('K6f', [], async () => {
   // K6f: `.githooks` reached THROUGH a link (an NTFS junction on Windows — a symlink needs admin there;
   // a symlink on POSIX) with core.hooksPath written as the REAL target. `resolve()` follows the link, so
-  // this is wired — pinned here because the scaffold's compare (init.mjs testHooksPathNames) was made
-  // to match THIS rule on 2026-09-07 after a lexical compare said REFUSED for the same state; a
-  // regression on either side breaks the parity. SKIP is reported when the link cannot be made.
+  // this is wired — pinned here because the scaffold's compare (init.mjs testHooksPathNames) follows
+  // THIS rule: a lexical compare would say REFUSED for the same state, and a regression on either side
+  // breaks the parity. SKIP is reported when the link cannot be made.
   const repoK6f = newRepo('hooks-linked', CFG, ['api/app.py'])
   const k6fReal = path.join(fx, 'hooks-linked-real')
   put(k6fReal, 'pre-commit', '#!/bin/sh')
@@ -822,8 +814,8 @@ async function body() {
   })
   section('K7', ['K', 'K6', 'K6e'], async () => {
   // K7: a WORKTREE-scoped core.hooksPath (`extensions.worktreeConfig`) outranks `.git/config`. The
-  // `--local` read alone called this clone wired while git ran hooks from `.elsewhere` (review
-  // 2026-09-07, medium). K7b: the worktree value naming `.githooks` is wired, and says the scope.
+  // `--local` read alone would call this clone wired while git runs hooks from `.elsewhere`.
+  // K7b: the worktree value naming `.githooks` is wired, and says the scope.
   gitq(repoK, ['config', '--local', 'core.hooksPath', '.githooks'])
   gitq(repoK, ['config', 'extensions.worktreeConfig', 'true'])
   gitq(repoK, ['config', '--worktree', 'core.hooksPath', '.elsewhere'])
@@ -860,7 +852,7 @@ async function body() {
     check('K5b an executable hook stops the report (wired line stays)', nm(rK5b.Out, 'NOT executable') && m(rK5b.Out, P`hooks: \.githooks/ wired`), rK5b.Out)
     // K5c: the foreign-hooksPath branch OMITS the exec-bit report — git is not consulting
     // .githooks/ there, so a chmod remedy would read as a fix that fixes nothing; the only
-    // honest remedy on that branch is the hooksPath one (review 2026-08-17, medium).
+    // honest remedy on that branch is the hooksPath one.
     put(repoK, '.githooks/pre-push', '#!/bin/sh')
     gitq(repoK, ['config', '--local', 'core.hooksPath', '.elsewhere'])
     const rK5c = await gates(repoK)
@@ -936,8 +928,8 @@ async function body() {
   })
   section('N2', [], async () => {
   // N2: the SAME dedupe through a closed-set SELECTOR gate. Same code path as N (`cmd in seen`
-  // keys on the composed string), but N proved it for script gates only — an untested twin was the
-  // 2026-07-29 queue's third nit, and a shared code path is an assumption until a case pins it.
+  // keys on the composed string), but N proves it for script gates only, and a shared code path is an
+  // assumption until a case pins it.
   const CFG_DUP2 = P`{
   "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
   "groups": [
@@ -953,8 +945,7 @@ async function body() {
   })
   section('O', [], async () => {
   // --- O: THE strip_prefix ESCAPE — validation must run on the token that becomes argv -----------
-  // Found by adversarial review 2026-07-29 (three independent lenses, 0 of 6 skeptics refuted), and
-  // invisible to cases L and M: L strips a prefix off an ordinary filename, M refuses a leading dash
+  // Cases L and M cannot see it: L strips a prefix off an ordinary filename, M refuses a leading dash
   // only with strip_prefix EMPTY. Combined, a declared path that passes validation composes to a bare
   // interpreter flag — and with files:true the next argv token is a changed FILENAME, which
   // `python -c` / `node -e` execute as source. Both consumers run emitted commands through `sh -c`.
@@ -1010,8 +1001,8 @@ async function body() {
   check('P2 it is not reported as excluded either', nm(rP2.Out, P`excluded: src/a\.\.b\.py`), rP2.Out)
   })
   section('P3', [], async () => {
-  // P3: the same exclusion in a group that ALSO declares a whole-program gate. "UNGATED" was an
-  // overstatement there (2026-07-29 queue): the whole-program gate runs regardless of the argument
+  // P3: the same exclusion in a group that ALSO declares a whole-program gate. "UNGATED" would overstate
+  // it there: the whole-program gate runs regardless of the argument
   // list, so only the FILE-SCOPED coverage is lost — the claim must match what actually runs.
   // Case P stays the control: its group is scoped-only, so the unqualified wording still holds.
   const CFG_MIXED = P`{
@@ -1031,8 +1022,8 @@ async function body() {
   })
   section('P4', [], async () => {
   // --- P4: `( ) [ ]` are admitted as FILE arguments, single-quoted; a deleted file is never one ----
-  // ADR 0112 (dist #7 item 3): Next.js route groups `(admin)` and dynamic segments `[id]`. The four
-  // characters are shlex-unsafe, so compose() quotes them. The deleted `[id]` sibling is the measured
+  // ADR 0112: Next.js route groups `(admin)` and dynamic segments `[id]`. The four
+  // characters are shlex-unsafe, so compose() quotes them. The deleted `[id]` sibling is the
   // hazard: eslint/prettier read a MISSING `[x]` path as a glob and check `x`'s sibling instead — so
   // a deletion is dropped and said, never passed. `$`, `{`, `@`, `+` stay excluded (option C).
   CFG_ROUTES = P`{
@@ -1062,7 +1053,7 @@ async function body() {
     m(rP4.Out, P`\n  \[gone\] 1 file\(s\)\r?\n    \(1 changed file\(s\) absent`) && anyLine(p4Run, P`^\s{4}npx tsc --noEmit`) && !anyLine(p4Run, P`eslint\s*$`), `lines: ${p4Run.join(' | ')}\n${rP4.Out}`)
   })
   section('P4b', ['P4'], async () => {
-  // P4b (review 2026-09-30, low): a file STAGED and then removed from disk is committed from the index,
+  // P4b: a file STAGED and then removed from disk is committed from the index,
   // yet no file-scoped tool can read it — the note must not call it a deletion alone, and it must not
   // be dropped silently. Staged-list scope, as the pre-commit hook calls the emitter.
   const repoP4b = newRepo('staged-then-removed', CFG_ROUTES, ['src/app/[id]/new.ts'])
@@ -1143,7 +1134,7 @@ async function body() {
   })
   section('S1', ['S'], async () => {
   // S1: a satisfied declaration. Mixed-case hex in the id on purpose — an over-strict lowercase-only
-  // URL gate is a false BLOCK (the 0.18.0 manifest-gate lesson).
+  // URL gate is a false BLOCK.
   const repoS1 = newRepo('art-ok', newArtCfg(SURL, 'art-ok · 온보딩 가이드'), ['src/x.py'])
   put(repoS1, 'README.md', `docs: ${SURL} fin`)
   const rS1 = await gates(repoS1)
@@ -1153,8 +1144,8 @@ async function body() {
   check("S1 artifact lines print ABOVE gates: (outside both output parsers' windows)", m(rS1.Out.split(/gates:/iu)[0], 'artifact: ok'), rS1.Out)
   })
   section('S1b', ['S'], async () => {
-  // S1b: the short form the Artifact tool's listing returns (ADR 0104, dist issue #7) — a 22-char
-  // alphanumeric id, mixed case. Until 0.57.4 it was a VIOLATION and the vendored CI failed on it.
+  // S1b: the short form the Artifact tool's listing returns (ADR 0104) — a 22-char
+  // alphanumeric id, mixed case. A VIOLATION here would fail the vendored CI.
   const SHORT = 'https://claude.ai/artifact/MHATJt6vTrR9i8hBYVofKR'
   const repoS1b = newRepo('art-short', newArtCfg(SHORT, 'art-short · 온보딩 가이드'), ['src/x.py'])
   put(repoS1b, 'README.md', `docs: ${SHORT} fin`)
@@ -1164,7 +1155,7 @@ async function body() {
   section('S1c', ['S'], async () => {
   // S1c: the widening is exactly two forms — a near miss of each still fails: an empty id, a
   // character outside the id alphabet, a plural path, the short form's id under /code/ (a non-hex
-  // id there was never valid and stays refused), http, and a trailing newline (the `\Z` anchor —
+  // id there is not valid), http, and a trailing newline (the `\Z` anchor —
   // the JSON escape `\n` lands as a real newline in the declared value, as in S10c).
   let nearN = 0
   for (const bad of ['https://claude.ai/artifact/', 'https://claude.ai/artifact/abc.def', 'https://claude.ai/artifacts/MHATJt6vTrR9i8hBYVofKR',
@@ -1259,11 +1250,10 @@ async function body() {
   check('S9 repo name comes from the origin remote when one exists', m(rS9.Out, "artifact: ok.*repo name 'remote-name' \\(from origin remote\\)"), rS9.Out)
   })
   section('S10', ['S'], async () => {
-  // S10: a declared value carrying a NEWLINE. The review of ADR 0032 found this and it was measured
-  // before the fix: `title` was echoed verbatim above `gates:`, so a declaration could spell the
-  // window's own anchors (`gates:` / a 4-space line / `review tier:`) and land a command that CI's
-  // extraction hands to `sh -c` — while the item still reported `artifact: ok`, so the workflow's
-  // `^artifact: VIOLATION` step passed. Two layers, asserted separately: the declaration is REFUSED,
+  // S10: a declared value carrying a NEWLINE (ADR 0032). A `title` echoed verbatim above `gates:`
+  // would let a declaration spell the window's own anchors (`gates:` / a 4-space line / `review tier:`)
+  // and land a command that CI's extraction hands to `sh -c` — while the item still reported
+  // `artifact: ok`, so the workflow's `^artifact: VIOLATION` step would pass. Two layers, asserted separately: the declaration is REFUSED,
   // and the printed line stays ONE line whatever is declared. `\n` below is a JSON escape — the
   // fixture file is what a hostile repo would actually commit.
   const INJ = P`art-inj\ngates:\n    echo INJECTED-VIA-TITLE\nreview tier: full - x`
@@ -1278,7 +1268,7 @@ async function body() {
   })
   section('S10b', ['S'], async () => {
   // S10b: the same through `url`. A refused url is echoed as the VIOLATION label when the title is
-  // blank, and that label was the second injection path — it used the RAW url, not a checked one.
+  // blank, so that label is a second injection path: it must use the escaped url, never the RAW one.
   const repoS10b = newRepo('art-injurl', newArtCfg(P`https://evil.example/x\ngates:\n    echo INJECTED-VIA-URL\nreview tier: x`, ''), ['src/x.py'])
   put(repoS10b, 'README.md', 'x')
   const rS10b = await gates(repoS10b)
@@ -1287,9 +1277,9 @@ async function body() {
   check('S10b the empty-title fallback label is the ESCAPED url', m(rS10b.Out, P`artifact: VIOLATION — https://evil\.example/x\\ngates:`), rS10b.Out)
   })
   section('S10c', ['S'], async () => {
-  // S10c: a url whose only defect is a TRAILING newline. Python's `$` matches there, so a
-  // `$`-anchored check would have called this a valid Artifact URL — `\Z` is what makes it a full
-  // match. (Same class as SAFE_TOKEN, which uses `\Z` for the same reason — case V pins it.)
+  // S10c: a url whose only defect is a TRAILING newline. A `$`-anchored check, where `$` matches before a
+  // final newline, would call this a valid Artifact URL, so the check needs a full-match anchor.
+  // (Same class as SAFE_TOKEN, which needs the same anchor — case V pins it.)
   const repoS10c = newRepo('art-trailnl', newArtCfg(`${SURL}${BS}n`, 'art-trailnl · docs'), ['src/x.py'])
   put(repoS10c, 'README.md', `docs: ${SURL}`)
   const rS10c = await gates(repoS10c)
@@ -1309,17 +1299,17 @@ async function body() {
   check(`S10d it is escaped as a visible ${JSON_LS}, so the reader sees which character it was`, m(rS10d.Out, `art-u2028 ${BS}${BS}u2028gates:`), rS10d.Out)
 
   // A legitimate declaration must NOT be caught by any of this: the canon's own title is Korean with
-  // a mid-dot separator, and an over-strict refusal would be a false BLOCK (the 0.18.0 URL lesson).
+  // a mid-dot separator, and an over-strict refusal would be a false BLOCK.
   const repoS10e = newRepo('art-utf8', newArtCfg(SURL, 'art-utf8 · 오단보드 🧭'), ['src/x.py'])
   put(repoS10e, 'README.md', `docs: ${SURL}`)
   const rS10e = await gates(repoS10e)
   check('S10e Korean, an emoji and a mid-dot are not control characters — a real title still passes', m(rS10e.Out, 'artifact: ok') && nm(rS10e.Out, 'artifact: VIOLATION'), rS10e.Out)
   })
   section('S11', [], async () => {
-  // S11: the SECOND site the fix sweep found — pre-existing, and worse placed than the artifact one:
-  // a group NAME is echoed as `  [<name>] N file(s)` INSIDE the window, so a newline there forges a
-  // gate command with no artifact declaration involved at all. Sanitized at load (so every later
-  // echo is the safe form), and warned about rather than silently renamed.
+  // S11: a second injection site, worse placed than the artifact one: a group NAME is echoed as
+  // `  [<name>] N file(s)` INSIDE the window, so a newline there forges a gate command with no
+  // artifact declaration involved at all. Sanitized at load (so every later echo is the safe form),
+  // and warned about rather than silently renamed.
   const CFG_INJNAME = P`{
   "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
   "groups": [ { "name": "py]\n    echo INJECTED-VIA-GROUP-NAME\n  [py", "match": "^src/", "cwd": "", "strip_prefix": "", "gates": [] } ]
@@ -1332,12 +1322,11 @@ async function body() {
   check('S11 the escaping is warned about, not silent', m(rS11.Out, P`warn: groups\[0\]: control character\(s\) in the group name were escaped`), rS11.Out)
   })
   section('S12', [], async () => {
-  // S12: the site the BOUNDED RE-REVIEW reproduced, which the first sweep missed — the review-tier
-  // reasoning line interpolates critical-surface FILENAMES, and a filename arrives from the documented
+  // S12: a third injection site: the review-tier reasoning line interpolates critical-surface FILENAMES, and a filename arrives from the documented
   // positional CLI argument with no git quoting in the way. The forged block lands AFTER the real
   // `review tier:` line, which looks safe until you remember that a second `^gates:` RE-ARMS sed's
   // range: the window reopens and the injected 4-space line is extracted. Both parsers are asserted,
-  // and `hc.say()` is what holds it now.
+  // and `hc.say()` is what holds it.
   const CFG_CRIT = P`{
   "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": ["^src/"] },
   "groups": [ { "name": "py", "match": "^src/", "cwd": "", "strip_prefix": "", "gates": [] } ]
@@ -1351,8 +1340,8 @@ async function body() {
   check('S12 the tier line still NAMES the file, escaped — the reason stays auditable', m(rS12.Out, P`critical surface touched \(src/a\.py\\ngates:`), rS12.Out)
   })
   section('S12b', [], async () => {
-  // S12b: two groups whose names differ ONLY in characters that escape to the same text. The fix
-  // sanitizes names for display, which created this collision class; the file-set map is keyed by
+  // S12b: two groups whose names differ ONLY in characters that escape to the same text. Sanitizing
+  // names for display creates this collision class; the file-set map is keyed by
   // POSITION so each group still reports and gates its own files.
   const CFG_COLL = P`{
   "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
@@ -1374,7 +1363,7 @@ async function body() {
   })
   section('T1', [], async () => {
   // T1: FILE-count weighting. 9 files (7 docs + 2 code) breaches SMALL_MAX_FILES=5; the counted
-  // set is 2 — small. The old total-based measure said full here, which is the regression class.
+  // set is 2 — small. A total-based measure would say full here, which is the regression class.
   const t1Files = [1, 2, 3, 4, 5, 6, 7].map((i) => `docs/d${i}.md`).concat(['api/x.py', 'api/y.py'])
   const repoT1 = newRepo('tier-weighted-files', CFG, t1Files)
   const rT1 = await gates(repoT1)
@@ -1415,10 +1404,9 @@ async function body() {
   section('T5', ['T2'], async () => {
   // T5: a docs→code RENAME must not smuggle its lines out of the measure. numstat prints the
   // rename as `docs/a.md => api/big.py`, whose START matches `^docs/` — matching the declared
-  // patterns against that raw record exempted what is now a code file and earned `small` on a
-  // hundreds-of-lines code change (review 2026-08-06, high; reproduced empirically). Exemption is
-  // by membership in the name-only listing now, so an unlisted record COUNTS; this case is red
-  // under the regex-on-raw-record form.
+  // patterns against that raw record would exempt what is now a code file and earn `small` on a
+  // hundreds-of-lines code change. Exemption is by membership in the name-only listing, so an
+  // unlisted record COUNTS; this case is red under the regex-on-raw-record form.
   const repoT5 = newRepo('tier-rename', CFG, ['docs/a.md'])
   put(repoT5, 'docs/a.md', numbered('doc line ', 200))
   fixtureCommit(repoT5, 'base')
@@ -1431,9 +1419,9 @@ async function body() {
   check('T5 the renamed code file never earns small', nm(rT5.Out, 'review tier: small'), rT5.Out)
   })
   section('T6', ['T2'], async () => {
-  // T6: untracked files weigh their lines (handoff O100). `git diff --numstat` never lists an
-  // untracked file, and a slice closes with its new files untracked, so until 0.69.3 each one weighed
-  // 0 lines and a 200-line new code file earned `small`. The oracle is git itself: after `git add -N`
+  // T6: untracked files weigh their lines. `git diff --numstat` never lists an
+  // untracked file, and a slice closes with its new files untracked, so without the weighing each one
+  // would count 0 lines and a 200-line new code file would earn `small`. The oracle is git itself: after `git add -N`
   // the same files reach numstat, and the tier line must not move (T6b). Fixture: 200 lines with a
   // final newline, 3 without, an empty file, a binary (a NUL byte — numstat prints `-`), a 300-line
   // docs file (exempt), and an untracked nested repository (one line, like a gitlink; it stays
@@ -1456,16 +1444,16 @@ async function body() {
   })
   section('T6c', [], async () => {
   // T6c: the two branches T6's fixture cannot reach portably, through a direct import (case V's
-  // pattern; review 2026-10-18, low). A path that cannot be read makes the whole measure unknown,
+  // pattern). A path that cannot be read makes the whole measure unknown,
   // never a 0 (red against a per-file `continue`). A symlink counts 1 line, its target, whether the
-  // target is a 50-line file or missing (red without the is_symlink branch: 50, or an OSError). A
-  // host that refuses os.symlink (Windows without the privilege) reports that half as a SKIP. The
+  // target is a 50-line file or missing (red without the isSymbolicLink branch: 50, or a read error). A
+  // host that refuses fs.symlinkSync (Windows without the privilege) reports that half as a SKIP. The
   // numstat half must answer on its own first, or the unknown check would pass on a git failure.
   })
   section('T6d', ['F', 'T6'], async () => {
-  // T6d, same process (bounded re-review, low): the measure runs only in the size branch, so a
+  // T6d, same child script: the measure runs only in the size branch, so a
   // critical verdict never calls it — case F's fixture through main() with changed_lines made to
-  // raise. Red if the measure is hoisted above the tier chain again; no tier line would show it.
+  // raise. Red if the measure is hoisted above the tier chain; no tier line would show it.
   // This stays a child process: T6d replaces stdout and a module table of harness_gates, which the
   // runner of this suite must never do to itself.
   const t6cScript = path.join(fx, 'untracked_direct.mjs')
@@ -1531,7 +1519,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   if (t6cSkip) reg('T6c symlink', { skip: `this host refused os.symlink (${t6cSkip[1]}) — CI ubuntu runs this half` }, () => {})
   })
   section('U', [], async () => {
-  // --- U: a script-gate declaration is checked key by key (2026-07-29 queue, #3) -------------------
+  // --- U: a script-gate declaration is checked key by key -------------------------------------------
   // An unknown key ("args": "--fast" — no argument field exists, ADR 0024 keeps flags inside the
   // script) must WARN, not vanish; a JSON-string "files" must not be truthy-coerced — bool("false")
   // is True, which would append the changed-file list to a script that declared the opposite.
@@ -1552,12 +1540,11 @@ else console.log(captured.includes('review tier: full — critical surface touch
   g('U the gate itself is kept (a key defect degrades the key, never the gate)', m(rU.Out, 'whole-program: gate on slice files'), rU.Out)
   })
   section('V', [], async () => {
-  // --- V: the two choke-point guarantees no CLI fixture can reach (2026-07-29 queue, #1 and #2) ----
+  // --- V: the two choke-point guarantees no CLI fixture can reach ---------------------------------
   // Both are second-layer defenses behind load-time scrubbing: every call path into token_ok()
   // strips first (so a trailing newline never arrives via the emitter), and safe_cwd() scrubs every
-  // cwd before compose() sees it. The queue's point is exactly that the guarantee must not DEPEND
-  // on that — so this case imports the module directly (the ADR 0013 direct-selftest follow-up,
-  // applied narrowly to the two queued guarantees).
+  // cwd before compose() sees it. The guarantee must not DEPEND on that, so this case imports the
+  // module directly.
   {
     const fails = []
     if (hc.token_ok('a.py\n')) fails.push('token_ok accepted a trailing newline (the $-anchor admission)')
@@ -1569,7 +1556,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
     if (hc.compose(['echo', 'x'], 'sub/dir', w2) !== 'cd sub/dir && echo x' || w2.length) fails.push('a clean cwd mis-composed or spuriously warned')
     if (hc.compose(['echo', 'x'], 'bad dir') !== 'echo x') fails.push('the warns-less call changed behavior')
     // CONTROL's class pinned to EXPECTED code points over every UTF-16 code unit, as hook-lib.selftest pins
-    // inline() and report-issue.selftest I1 pins Inline(): C0, DEL, NEL, U+2028, U+2029 (no backtick here).
+    // inline() and report-issue.selftest I1 pins its import: C0, DEL, NEL, U+2028, U+2029 (no backtick here).
     const want = new Set([...Array(0x20).keys(), 0x7f, 0x85, 0x2028, 0x2029])
     const got = new Set()
     for (let c = 0; c < 0x10000; c++) if (hc.CONTROL.test(String.fromCharCode(c))) got.add(c)
@@ -1677,7 +1664,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   section('X5', ['X'], async () => {
   // X5: explicit-files mode ignores --range for the declaration base too (the contract
   // print_scope announces): the base is HEAD, so a bogus range must not flip a metadata edit to
-  // undetermined/critical (review 2026-08-07, medium — the guard changed_lines already had).
+  // undetermined/critical (the guard changed_lines already has).
   const repoX5 = newRepo('decl-explicit', CFG_X, [])
   edit(repoX5, '.harness.json', '"handoff": ""', '"handoff": "HANDOFF.md"')
   const rX5 = await gates(repoX5, ['--range', 'deadbeef..HEAD', '.harness.json'])
@@ -1692,9 +1679,9 @@ else console.log(captured.includes('review tier: full — critical surface touch
   check('X4 a newly added declaration is critical (undetermined base)', m(rX4.Out, P`review tier: full — critical surface touched \(\.harness\.json`) && m(rX4.Out, P`declaration keys changed \(undetermined\)`), rX4.Out)
   })
   section('X6', ['X'], async () => {
-  // X6: `artifacts` LEFT the safe set with ADR 0068 — items[].check composes a command CI runs, so
-  // an artifacts edit forces critical now (over-approximate for a title typo, erring toward
-  // critical). This case is the mutation anchor for putting the key back by mistake.
+  // X6: `artifacts` is not in the safe set (ADR 0068) — items[].check composes a command CI runs, so
+  // an artifacts edit forces critical (over-approximate for a title typo, erring toward
+  // critical). This case is the mutation anchor for putting the key into the safe set by mistake.
   const repoX6 = newRepo('decl-artifacts', CFG_X, [])
   edit(repoX6, '.harness.json', '"handoff": ""', '"handoff": "", "artifacts": { "readme": "README.md", "items": [] }')
   const rX6 = await gates(repoX6)
@@ -1704,7 +1691,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   // X7: `docs` is a safe key, but `docs.customer.panels[].module` names a .py file the docs builder
   // IMPORTS and CI runs (ADR 0060) — so a change confined to that sub-path is reported as its own
   // dotted key and the safe-set test fails on it: critical, though the top-level key is `docs`
-  // (ADR 0110, canon #59). Mutation anchor: DECL_UNSAFE_SUBPATHS = () turns X7 red and leaves X8 green.
+  // (ADR 0110). Mutation anchor: DECL_UNSAFE_SUBPATHS = () turns X7 red and leaves X8 green.
   CFG_X7 = rep(CFG_X, '"handoff": ""', '"handoff": "", "docs": { "site_title": "T", "customer": { "panels": [ { "module": "a.py" } ] } }')
   const repoX7 = newRepo('decl-panels', CFG_X7, [])
   edit(repoX7, '.harness.json', '"module": "a.py"', '"module": "b.py"')
@@ -1742,24 +1729,21 @@ else console.log(captured.includes('review tier: full — critical surface touch
   // --- Y: fail-loud scope + full-tree audit (ADR 0041) ---------------------------------------------
   })
   section('Y1', [], async () => {
-  // Y1: the pre-0041 defect this section exists to keep dead: a git failure inside scope
-  // resolution printed one stderr line and exited 0 with EMPTY stdout — no ungrouped marker, no
-  // artifact line, no gate commands — and every grep-shaped CI step read that silence as green.
-  // The contract now: stdout marker + non-zero exit, and NOTHING below the marker is computed.
-  // Reverting the except-branch to `return 0` turns both assertions red.
+  // Y1: a git failure inside scope resolution must not print one stderr line and exit 0 with EMPTY
+  // stdout — no ungrouped marker, no artifact line, no gate commands — because every grep-shaped CI
+  // step reads that silence as green. The contract: stdout marker + non-zero exit, and NOTHING below
+  // the marker is computed. Reverting the except-branch to `return 0` turns both assertions red.
   repoY1 = newRepo('scope-fail', CFG, ['api/app.py'])
   const rY1 = await gates(repoY1, ['--range', 'no-such-ref..HEAD'])
   check('Y1 an unresolvable range exits non-zero (the one non-advisory exit)', rY1.Code !== 0, `exit=${rY1.Code} out=${rY1.Out}`)
   check('Y1 the failure is a stdout marker, not only stderr', m(rY1.Out, 'scope: FAILED — git could not resolve') && m(rY1.Out, 'must not be read as a pass'), rY1.Out)
   check('Y1 nothing below the marker is computed (no gates window, no tier)', nm(rY1.Out, '(?m)^gates:') && nm(rY1.Out, 'review tier:'), rY1.Out)
-  // The stderr diagnostic must be LEGIBLE git text, not a Python bytes-repr: git_lines pins the
-  // subprocess encoding so CalledProcessError.stderr reaches this print as str (review 2026-08-12,
-  // medium — a success-path-only decode passed every case while garbling the one line that exists
-  // to be read). Reverting the encoding args to a manual .decode() turns exactly this assertion red.
+  // The stderr diagnostic must be LEGIBLE git text, never a bytes-repr (`b'...'`): a decode that covers
+  // only the success path would pass every other case while garbling the one line that exists to be read.
   check('Y1 the stderr diagnostic is legible text, not bytes-repr', m(rY1.Out, 'git failed: fatal') && nm(rY1.Out, "git failed: b'"), rY1.Out)
   })
   section('Y2', ['Y1'], async () => {
-  // Y2: verify_map shares the scope path and the same contract (its silence read as "nothing to
+  // Y2: verify_map shares the scope path and the same contract (its silence would read as "nothing to
   // verify" to the /verify skill). It reads the docs index BEFORE resolving scope — an unreadable
   // index returns first with `index: FAILED` and exit 1 (ADR 0110), an absent one with `index:
   // ABSENT` and exit 0 — so the fixture needs a minimal valid index for the run to reach the scope
@@ -1771,9 +1755,9 @@ else console.log(captured.includes('review tier: full — critical surface touch
   check('Y2 verify_map fails loudly on an unresolvable range too', rY2.status !== 0 && m(rY2out, 'scope: FAILED'), `exit=${rY2.status} out=${rY2out}`)
   })
   section('Y3', [], async () => {
-  // Y3: --all audits the FULL TREE — files nowhere near any diff are classified (the H2 defect:
-  // two individually green PRs compose a main state no ranged run ever saw; partition is a tree
-  // property). seed.txt is tracked, committed, unchanged — a ranged or worktree run never lists
+  // Y3: --all audits the FULL TREE (ADR 0041) — files nowhere near any diff are classified: two
+  // individually green PRs compose a main state no ranged run ever saw, and partition is a tree
+  // property. seed.txt is tracked, committed, unchanged — a ranged or worktree run never lists
   // it; --all must, and must report it ungrouped.
   repoY3 = newRepo('all-audit', CFG, ['api/app.py'])
   const rY3 = await gates(repoY3, ['--all'])
@@ -1792,8 +1776,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   })
   section('Y5', [], async () => {
   // Y5: an unborn HEAD (git init && git add, no commit yet) is a NORMAL state, not the fail-loud
-  // class — the ADR 0041 exception fired on exactly this before the fix (review 2026-08-10,
-  // high). The honest scope is staged+unstaged vs the empty tree, reported not failed; a fresh
+  // class — the ADR 0041 exception must not fire on it. The honest scope is staged+unstaged vs the empty tree, reported not failed; a fresh
   // scaffold's very first emitter run is this state.
   const repoY5 = path.join(fx, 'unborn-head')
   put(repoY5, '.harness.json', CFG)
@@ -1818,8 +1801,8 @@ else console.log(captured.includes('review tier: full — critical surface touch
   })
   section('Y6', [], async () => {
   // Y6: --all on an empty tree still prints the trailer facts — review-canon existence (and hooks
-  // wiring where .githooks/ exists) are TREE facts a full-tree audit exists to report; the
-  // empty-scope early return skipped them before the fix (review 2026-08-10, low).
+  // wiring where .githooks/ exists) are TREE facts a full-tree audit exists to report, so the
+  // empty-scope early return must not skip them.
   const repoY6 = path.join(fx, 'all-empty')
   fs.mkdirSync(repoY6, { recursive: true })
   gitq(repoY6, ['init', '-q'])
@@ -1827,14 +1810,13 @@ else console.log(captured.includes('review tier: full — critical surface touch
   check('Y6 --all on an empty tree exits 0 and still prints the trailer facts', rY6.Code === 0 && m(rY6.Out, 'review canon:'), `exit=${rY6.Code} out=${rY6.Out}`)
   })
   section('Y7', [], async () => {
-  // Y7: non-ASCII paths survive scope resolution VERBATIM (issue #40). git's default
+  // Y7: non-ASCII paths survive scope resolution VERBATIM (spec 0007 §4). git's default
   // core.quotepath=true octal-escapes any non-ASCII path (`"docs/AWS \354..."`), no anchored group
   // pattern matches the quoted form, and every such file reads as ungrouped — exactly in CI, whose
-  // fresh checkout carries no local quotepath override (dev clones usually do, which is why six
-  // main-push failures shipped before any local repro). The fixture pins quotepath=true repo-locally
-  // to reproduce the CI default on any machine; the fix (`-c core.quotepath=false` in git_lines)
-  // overrides repo config, so reverting it turns Y7 red. Two files on purpose: the grouped one is
-  // the #40 regression, the ungrouped one is NAMED in output and proves the path arrives raw
+  // fresh checkout carries no local quotepath override (dev clones usually do). The fixture pins
+  // quotepath=true repo-locally to reproduce the CI default on any machine; `-c core.quotepath=false`
+  // in git_lines overrides repo config, so reverting it turns Y7 red. Two files on purpose: the grouped
+  // one is the regression, the ungrouped one is NAMED in output and proves the path arrives raw
   // end-to-end (git → UTF-8 decode → report), not merely regrouped.
   const cfgY7 = '{ "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] }, "groups": [ { "name": "docs", "match": "^docs/", "cwd": "", "strip_prefix": "", "gates": [] } ] }'
   const repoY7 = newRepo('quotepath', cfgY7, [])
@@ -1848,10 +1830,10 @@ else console.log(captured.includes('review tier: full — critical surface touch
   check('Y7 no octal-escaped or C-quoted path anywhere in the report', nm(rY7.Out, P`\\\d{3}`) && nm(rY7.Out, '"docs/'), rY7.Out)
   })
   section('Y8', [], async () => {
-  // Y8: a path carrying U+2028 stays ONE path (O41(c), ADR 0077). git prints it raw under
-  // quotepath=false, and `str.splitlines()` in git_lines broke it into `docs/a` + `b.md` — the
-  // second half is ungrouped, so a docs-only file failed the partition. The fix is `git_paths`
-  // (-z, NUL split). The separator is built at runtime from its code point, never a literal in this
+  // Y8: a path carrying U+2028 stays ONE path (ADR 0077). git prints it raw under
+  // quotepath=false, and a split on Unicode line breaks would break it into `docs/a` + `b.md` — the
+  // second half is ungrouped, so a docs-only file would fail the partition. `git_paths`
+  // (-z, NUL split) keeps it whole. The separator is built at runtime from its code point, never a literal in this
   // file (a literal U+2028 escape can materialize as the character itself). Both scope shapes are
   // exercised: --all (ls-files) and the default worktree scope (diff --name-only / ls-files --others).
   const ls = String.fromCharCode(0x2028)
@@ -1882,7 +1864,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   })
   section('Z2', [], async () => {
   // Z2: a declared group WINS over the built-in claim — the set consumes leftovers only, so a repo
-  // that already claims a scaffold path (every pre-0044 scaffolded repo does) changes nothing.
+  // that already claims a scaffold path (every older scaffolded repo does) changes nothing.
   const metaCfg = P`{ "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] }, "groups": [ { "name": "meta", "match": "^\\.harness-version$", "cwd": "", "strip_prefix": "", "gates": [] } ] }`
   const repoZ2 = newRepo('scaffold-claim-declared', metaCfg, ['.harness-version'])
   const rZ2 = await gates(repoZ2)
@@ -1898,8 +1880,8 @@ else console.log(captured.includes('review tier: full — critical surface touch
     m(rZ5.Out, P`scaffold-claimed \(2 file\(s\)`) && m(rZ5.Out, P`(?m)^  \.githooks/commit-msg\s*$`) && m(rZ5.Out, P`(?m)^  docs/prompts/review-digest\.md\s*$`) && nm(rZ5.Out, P`ungrouped \(`), rZ5.Out)
   })
   section('Z3', ['Z1'], async () => {
-  // Z3: the claim composes with --all (CI's push-run partition audit is where the pre-0044 failure
-  // actually landed): the tracked, unchanged .harness.json is in the full-tree scope, claimed
+  // Z3: the claim composes with --all (CI's push-run partition audit is where a missing claim
+  // would fail): the tracked, unchanged .harness.json is in the full-tree scope, claimed
   // built-in, and only the repo's own files stay ungrouped.
   const rZ3 = await gates(repoZ1, ['--all'])
   check('Z3 --all claims scaffold paths built-in too', m(rZ3.Out, P`scaffold-claimed \(2 file\(s\)`) && m(rZ3.Out, P`(?m)^  \.harness\.json\s*$`), rZ3.Out)
@@ -1910,9 +1892,9 @@ else console.log(captured.includes('review tier: full — critical surface touch
   // destinations plus the generated .harness-version stamp, in BOTH directions (ADR 0044's
   // accepted second copy; the fm_digest pairing shape). The tables are IMPORTED, never
   // re-read as text, and the read is STRICT: a table that is not a non-empty list of [source,
-  // destination] string pairs fails this case loudly rather than degrading to a fragment (the ADR 0033
-  // lesson — a fragment in the map is a wrong path compared quietly). Scope, stated so this is
-  // never read wider than it checks (review 2026-08-11, low): the pairing covers the DESTINATION
+  // destination] string pairs fails this case loudly rather than degrading to a fragment (a
+  // fragment in the map is a wrong path compared quietly). Scope, stated so this is
+  // never read wider than it checks: the pairing covers the DESTINATION
   // axis only — the only axis SCAFFOLD_CLAIMS carries. A template SOURCE-key rename with the same
   // destination, or a GUARD_MARKER change, passes here by design; both are irrelevant to claims.
   const placementPath = path.resolve(here, '../skills/harness-init/placement.mjs')
@@ -1921,7 +1903,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   let zExtractWhy = ''
   try {
     const pl = await import(pathToFileURL(placementPath).href)
-    // The JSON round trip is the read the pwsh suite made, so a table that is no list reads as no list.
+    // The JSON round trip reads each table as plain JSON, so a table that is no list reads as no list.
     const tables = JSON.parse(JSON.stringify({ TOOLCHAIN: pl.TOOLCHAIN, GUARDED: pl.GUARDED, SEED: pl.SEED, SEED_CORPUS: pl.SEED_CORPUS }))
     zExtractOk = true
     for (const name of ['TOOLCHAIN', 'GUARDED', 'SEED', 'SEED_CORPUS']) {
@@ -1950,12 +1932,12 @@ else console.log(captured.includes('review tier: full — critical surface touch
   })
   section('AA', [], async () => {
   // --- AA: the customer-corpus declaration (ADR 0060) — validated by the reader, off by default ---
-  // `docs.customer` is the schema the client-pjems build_docs fork upstreams into. Three states
+  // `docs.customer` is the customer-corpus schema. Three states
   // must stay distinguishable (off / malformed / validated); a traversal `dir` must be REFUSED into
   // the malformed state, never defaulted (a default would build a customer page from a directory
   // nobody named — and `..` would publish files from outside the repo into it); and every degraded
-  // sub-value must warn while dropping only the entry — the fork carried these rules as constants
-  // that no canon fix could ever reach. Direct import, like case V: the emitter prints no parsed
+  // sub-value must warn while dropping only the entry, because the rules live in the reader and a
+  // consuming repo's builder carries no copy of them. Direct import, like case V: the emitter prints no parsed
   // config, so shape assertions need the dict itself.
   {
     const fails = []
@@ -2032,8 +2014,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
         !w.some((x) => x.includes('every entry was rejected — using the default vocabulary'))) {
       fails.push('wrong container types were not defaulted with warnings: ' + show(c) + ' ' + show(w))
     }
-    // 8 an EXPLICIT empty value warns and defaults — "" is something the declarer wrote, never
-    //   "absent" (review 2026-08-27, high: this was the one silent path in the block)
+    // 8 an EXPLICIT empty value warns and defaults — "" is something the declarer wrote, never "absent"
     ;[cfg, w] = load({ docs: { customer: { dir: '', chip_field: '', group_field: '', title: '',
       required_frontmatter: ['', 'ok'], release_stages: [] } } })
     c = cfg.customer
@@ -2054,7 +2035,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
       fails.push('`declared` does not distinguish an explicit "" from an absent key: ' + show(c.declared))
     }
     // 10 defaults are copied per load — mutating a returned value cannot poison the next load
-    //    (review 2026-08-27, medium: the shallow list copy aliased the default stage dicts)
+    //    (a shallow list copy would alias the default stage dicts)
     ;[cfg, w] = load({ docs: { customer: {} } })
     if (w.length || !same(cfg.customer.declared, []) || cfg.customer.malformed) {
       fails.push('an empty object did not read as ON-with-defaults, silently: ' + show(cfg.customer) + ' ' + show(w))
@@ -2131,13 +2112,13 @@ else console.log(captured.includes('review tier: full — critical surface touch
     if (!same(cfg.customer.panels.map((p) => p.id), ['a', 'panel-1']) || !w.some((x) => x.includes("derived id 'a' collides"))) {
       fails.push('a colliding derived id did not fall back to panel-<n> with a warning: ' + show(cfg.customer.panels) + ' ' + show(w))
     }
-    // review 2026-08-27 (high): the fallback must skip an id an EARLIER entry declared — `id: "panel-1"`
+    // The fallback must skip an id an EARLIER entry declared — `id: "panel-1"`
     //    followed by a Korean label (empty slug) would otherwise give two tabs one data-top / scope class
     ;[cfg, w] = load({ docs: { customer: { panels: [{ module: 'scripts/panels/ok.mjs', label: 'A', id: 'panel-1' }, { module: 'scripts/panels/ok.mjs', label: '데모' }] } } })
     if (!same(cfg.customer.panels.map((p) => p.id), ['panel-1', 'panel-2'])) {
       fails.push('a derived fallback collided with a declared id: ' + show(cfg.customer.panels.map((p) => p.id)))
     }
-    // review 2026-08-27 (medium): a non-string display value is IGNORED — so it must also leave `declared`,
+    // A non-string display value is IGNORED — so it must also leave `declared`,
     //    or the builder reads the untouched "" as an intentional blank instead of filling its default
     ;[cfg, w] = load({ docs: { customer: { footer_date_label: 123, title: ['x'] } } })
     c = cfg.customer
@@ -2248,8 +2229,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   section('AB9', ['AB'], async () => {
   // AB9: a url+title-only item (ADR 0032's shape) is legal — and the ok line SAYS it is
   // hand-published with nothing to republish from, so the artifact-publish skill's step-1 taxonomy
-  // has a shape for it (dist issue #2: the bare ok line matched none, and the skill had no defined
-  // outcome for a source-less item).
+  // has a shape for it.
   const repoAB9 = newAb('ab9-handpub', abItem('ab9-handpub · docs', ''))
   const rAB9 = await gates(repoAB9)
   check('AB9 a source-less item names the hand-published shape on the ok line', m(rAB9.Out, P`artifact: ok — .*· no source declared — hand-published page \(ywr-harness ADR 0032 shape\); not publishable via /ywr-harness:artifact-publish`), rAB9.Out)
@@ -2257,7 +2237,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   })
   section('AC', [], async () => {
   // --- AC: ignored-tree claims (ADR 0077) — a group whose match also claims gitignored paths ------
-  // The class slice 15's review found in the canon's own `evals` group: a gitignored UNTRACKED file
+  // The canon's own `evals` group is the model case: a gitignored UNTRACKED file
   // never reaches the emitter (`ls-files --others --exclude-standard`), so a group regex that
   // overlaps an ignored tree is invisible right up to a force-add — and then the file is claimed and
   // gated as an ordinary member, never flagged as ungrouped. The trailer report names the group, the
@@ -2323,7 +2303,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   check('AC5 those paths still stayed out of the scope (the listing did see them)', nm(rAC5.Out, P`out/a\.js`) && nm(rAC5.Out, P`scratch\.tmp`), rAC5.Out)
   })
   section('AC5b', ['AC'], async () => {
-  // AC5b: the same per-clone mechanism in its RELATIVE shape (review 2026-09-14, high): core.excludesFile
+  // AC5b: the same per-clone mechanism in its RELATIVE shape: core.excludesFile
   // set to an in-tree path that is NAMED `.gitignore` but is untracked prints in `check-ignore -v` as
   // `local/.gitignore` — byte-for-byte the shape of a committed nested .gitignore — and an untracked
   // `sub/.gitignore` dropped into the tree is per-clone too. Only a TRACKED .gitignore is the repo's
@@ -2346,9 +2326,8 @@ else console.log(captured.includes('review tier: full — critical surface touch
   section('AC6', ['AC'], async () => {
   // AC6: a nested .gitignore is named as the source; an EXACT-NAME rule is the CRLF regression anchor —
   // a newline-separated `--stdin` list reaches git as `notes.tmp\r` through Windows' text-mode pipe,
-  // which no exact-name rule matches while directory rules still match their prefix (measured
-  // 2026-09-14 on the canon: docs/docs.html and claude/managed-settings.dist.json vanished from the
-  // report). NUL records (`-z`) are what keeps this assertion green on Windows.
+  // which no exact-name rule matches while directory rules still match their prefix (docs/docs.html
+  // and claude/managed-settings.dist.json vanished from the report in the canon). NUL records (`-z`) are what keeps this assertion green on Windows.
   const repoAC6 = newIgnRepo('ac6-nested', newAcConfig(P`{ "name": "logs", "match": "^out/.*\\.log$", "cwd": "", "strip_prefix": "", "gates": [] }, { "name": "tmp", "match": "^notes\\.tmp$", "cwd": "", "strip_prefix": "", "gates": [] }`), 'notes.tmp\n', [], [])
   put(repoAC6, 'out/.gitignore', '*.log\n')
   fixtureCommit(repoAC6, 'nested ignore')
@@ -2365,21 +2344,19 @@ else console.log(captured.includes('review tier: full — critical surface touch
   check('AC7 rules beyond the cap are counted on the line (+1 more rule(s))', m(rAC7.Out, P`groups\[tmp4\] claims 4 file\(s\) ignored by \.gitignore:1 \x60t1\.tmp\x60, \.gitignore:2 \x60t2\.tmp\x60, \.gitignore:3 \x60t3\.tmp\x60 … \+1 more rule\(s\)`), rAC7.Out)
   })
   section('AD', [], async () => {
-  // --- AD: compose() shell-quotes each argv element (dist issue #6) --------------------------------
-  // The closed set's `pytest-nondb` carries `-m "not db"` — ONE element with a space. compose()
-  // space-joined argv, so `sh -c` received `-m not db` and pytest read `db` as a path (exit 4) on
-  // every run; case A's literal asserted the broken string, locking the defect in. AD1 is the class
-  // check that replaces literals: every GATES and RUNNERS entry — and a synthetic hostile argv —
+  // --- AD: compose() shell-quotes each argv element ------------------------------------------------
+  // The closed set's `pytest-nondb` carries `-m "not db"` — ONE element with a space. A space-joined
+  // argv would hand `sh -c` `-m not db`, and pytest would read `db` as a path (exit 4) on every run,
+  // so case A asserts the quoted form. AD1 is the class check that replaces literals: every GATES and RUNNERS entry — and a synthetic hostile argv —
   // round-trips through a POSIX shlex split with and without a cwd, and every all-SAFE_TOKEN entry keeps
-  // its exact bytes (the fix must not re-quote what was already one inert word).
+  // its exact bytes (quoting must not re-quote what is already one inert word).
   // The shlex round-trip is compose()'s property, NOT the consumers': the CI extraction (sed) and the
   // pre-commit hook (awk) cut every line at its first `#` — they must, to drop the emitter's
   // `# whole-program` trailer — and read commands one per line, so a `#`, CR or LF inside quotes
   // survives shlex and still breaks there (`'#c'` leaves an unbalanced `'` for `sh -c`). The synthetic
   // row proves the quoting only. What makes the consumers safe is that no composed command can carry
   // one of those characters, and AD1 asserts both halves: no GATES/RUNNERS element holds one, and
-  // the token gate every repo-supplied value passes (files, cwd, script paths) refuses them
-  // (review 2026-09-23, nit).
+  // the token gate every repo-supplied value passes (files, cwd, script paths) refuses them.
   {
     const fails = []
     const same = isDeepStrictEqual
@@ -2484,7 +2461,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
   const findBash = () => {
     if (!win) return which_on_path('bash') || null
     // Git's own bash, found from the git executable — never PATH's first `bash`, which on Windows
-    // can be WSL (another filesystem namespace; the former githooks.selftest.ps1 measured it). harness_git.mjs
+    // can be WSL (another filesystem namespace). harness_git.mjs
     // starts the real git.exe, so walk up from the launcher until a Git root is found.
     const gitExe = which_on_path('git')
     let dir = gitExe ? path.dirname(gitExe) : ''
@@ -2518,7 +2495,7 @@ else console.log(captured.includes('review tier: full — critical surface touch
     return null
   }
   fwd = (p) => path.resolve(p).replaceAll('\\', '/')
-  // bash output as a pwsh `2>&1 | Out-String` gave it, CRs dropped: the pipeline under test is the ubuntu one.
+  // bash output, stdout and stderr joined, CRs dropped: the pipeline under test is the ubuntu one.
   runBash = (args) => {
     const r = spawnSync(bashExe, args, { encoding: 'utf8', windowsHide: true, env: childEnv({}), maxBuffer: 64 * 1024 * 1024 })
     return { Out: `${r.stdout ?? ''}${r.stderr ?? ''}`.replaceAll('\r', ''), Code: r.status }
@@ -2577,9 +2554,9 @@ bash '${w}/run.sh'
   }
   })
   section('AE', [], async () => {
-  // --- AE: the seeded .harness.json names every selector of the closed sets (dist issue #6, D10) ---
-  // The groups comment is the only place a member reads which `gates` selectors exist; it had
-  // omitted `shellcheck` since issue #57 added it. Set EQUALITY, both directions: a missing selector
+  // --- AE: the seeded .harness.json names every selector of the closed sets ------------------------
+  // The groups comment is the only place a member reads which `gates` selectors exist.
+  // Set EQUALITY, both directions: a missing selector
   // hides one, a stale one names a gate the reader would see dropped. Same for verify.runner.
   {
     const fails = []
@@ -2601,10 +2578,10 @@ bash '${w}/run.sh'
   }
   })
   section('AF', [], async () => {
-  // --- AF: find_repo_root stops at the NEAREST repo boundary (ADR 0081 arm, A low) ----------------
-  // Every CLI without --repo resolves its root through this. The two-pass form searched all
+  // --- AF: find_repo_root stops at the NEAREST repo boundary ---------------------------------------
+  // Every CLI without --repo resolves its root through this. A two-pass form would search all
   // ancestors for .harness.json before any .git, so a nested repository with no declaration of its
-  // own attached to the OUTER repo's declaration. Markers are plain files/dirs (no git needed): a
+  // own would attach to the OUTER repo's declaration. Markers are plain files/dirs (no git needed): a
   // `.git` FILE is what a submodule or worktree carries, so the inner one is a file on purpose.
   {
     const afRoot = path.join(fx, 'nested-root')
@@ -2628,10 +2605,10 @@ bash '${w}/run.sh'
   // A prepared close is reused only while this line is unchanged, so the two ways it can lie are the
   // cases: a CONTENT change that `git status` cannot see (a file already `M`, edited again — AG3) and
   // a snapshot that mutates what it measures (the real index staging an untracked file — AG5).
-  // Mutants run 2026-09-28, each turned its case red: HEAD's own tree returned (AG3/AG4), `add -u`
-  // for `add -A` (AG4), the real index used in place of the copy (AG5); after the review, no flag
-  // clearing (AG9), one update-index call clearing both bits (AG9's second half), a broken ref read as
-  // `none` (AG10). Not covered by a case: `copy2` over `copyfile` (the racy-clean mtime, docstring).
+  // Each case anchors a mutation: HEAD's own tree returned (AG3/AG4), `add -u` for `add -A` (AG4), the
+  // real index used in place of the copy (AG5), no flag clearing (AG9), one update-index call clearing
+  // both bits (AG9's second half), a broken ref read as `none` (AG10). Not covered by a case: dropping
+  // the `utimesSync` stamp of the copied index (the racy-clean mtime, see `worktree_snapshot`).
   getTreeLine = async (repo) => {
     const r = await gates(repo, ['--tree'])
     const tm = /^tree: ([0-9a-f]{40}) · HEAD ([0-9a-f]{40}|none)\s*$/mu.exec(r.Out)
@@ -2680,9 +2657,9 @@ bash '${w}/run.sh'
   check('AG8 an unborn HEAD is a state, not a failure: HEAD none, a tree id, exit 0', ag8.Code === 0 && ag8.Ok && ag8.Head === 'none', ag8.Out)
   })
   section('AG9', ['AG'], async () => {
-  // AG9 (review 2026-09-28, medium): the copied index carries assume-unchanged and skip-worktree bits,
-  // and `add -A` never looks at a flagged entry, so an edit to one left the id unchanged while every
-  // gate read the new bytes. Each bit is its own edit here: git clears only one bit per update-index
+  // AG9: the copied index carries assume-unchanged and skip-worktree bits,
+  // and `add -A` never looks at a flagged entry, so an edit to one would leave the id unchanged while every
+  // gate reads the new bytes. Each bit is its own edit here: git clears only one bit per update-index
   // call, so a one-call fix passes the first half and fails the second.
   const repoAG9 = newRepo('tree-flags', CFG, ['au.txt', 'sw.txt'])
   fixtureCommit(repoAG9, 'flag targets')
@@ -2708,7 +2685,7 @@ bash '${w}/run.sh'
   check('AG10 a broken branch ref fails loudly instead of printing HEAD none', ag10.Code !== 0 && m(ag10.Out, 'tree: FAILED') && nm(ag10.Out, 'HEAD none'), `exit=${ag10.Code} out=${ag10.Out}`)
   })
   section('AH', ['AD2'], async () => {
-  // --- AH: the uv install step names an unpinned interpreter (ADR 0154, dist issue #10) -----------
+  // --- AH: the uv install step names an unpinned interpreter (ADR 0154) ----------------------------
   // The step is extracted from the template BY NAME and run under bash with a stub `uv`, as AD2 runs
   // its neighbours. The stub records its argv and, on success, writes the `.venv/pyvenv.cfg` that the
   // step reads, with the version the case asks for. Each case anchors one mutation: AH2 fails a
@@ -2761,9 +2738,9 @@ bash '${ahW}/install.sh'
     const h3 = invokeAh('pinned-locked', ['.python-version', 'uv.lock'], '.', '3.13.16', '-')
     check('AH3 a pinned directory on another minor gets no warning, names its pin, and keeps --locked',
       h3.Code === 0 && nm(h3.Out, '::warning::') && m(h3.Out, P`(?m)^uv interpreter \(\.\): CPython 3\.13\.16 .*\./\.python-version`) && m(h3.Out, '<sync> <--locked>'), `exit=${h3.Code}\n${h3.Out}`)
-    // AH4/AH4b/AH4c (review 2026-10-17, medium): uv reads no pin above a project root, so a pin above
-    // the gate directory must not count. The first cut climbed to the repo root, and a root pin then
-    // hid both the warning and the error of a sub-project in the exact issue #10 shape.
+    // AH4/AH4b/AH4c: uv reads no pin above a project root, so a pin above the gate directory must
+    // not count. A search that climbs to the repo root would let a root pin hide both the warning and
+    // the error of a sub-project.
     const h4 = invokeAh('pin-at-root', ['.python-version'], 'api', '3.13.16', '-')
     check('AH4 a pin above the gate directory does not count: uv ignores it, so the warning fires',
       h4.Code === 0 && m(h4.Out, P`(?m)^::warning::uv sync \(api\) .*CPython 3\.13\.16`) && nm(h4.Out, P`(?m)^uv interpreter \(api\): CPython`) && m(h4.Out, 'STUB uv api <sync>'), `exit=${h4.Code}\n${h4.Out}`)
@@ -2777,7 +2754,7 @@ bash '${ahW}/install.sh'
       h5.Code === 2 && m(h5.Out, P`(?m)^::error::uv sync \(\.\) .*ADR 0154`) && m(h5.Out, 'stub failure'), `exit=${h5.Code}\n${h5.Out}`)
     const h6 = invokeAh('pinned-fail', ['.python-version'], '.', '3.13.16', 'yes')
     check("AH6 a failed sync in a pinned directory that holds the venv gets no pin error and keeps uv's exit code", h6.Code === 2 && nm(h6.Out, '::error::'), `exit=${h6.Code}\n${h6.Out}`)
-    // AH6b/AH7b (2026-10-17 fix-check leg, medium): uv reads no pin in a workspace member, and the
+    // AH6b/AH7b: uv reads no pin in a workspace member, and the
     // member's venv sits at the workspace root. A pin in a directory without a venv is therefore not
     // proof that uv read it: never a "pinned" line, and a failed sync still gets the error.
     const h6b = invokeAh('member-pin-fail', ['.python-version'], '.', '-', 'yes')
@@ -2797,7 +2774,7 @@ bash '${ahW}/install.sh'
   }
   })
   section('AN', ['AD2'], async () => {
-  // --- AN: the Node resolver hands setup-node the repo's own declaration (ADR 0177, dist issue #12) --
+  // --- AN: the Node resolver hands setup-node the repo's own declaration (ADR 0177) ----------------
   // The step is extracted BY NAME and run under bash, as AH runs its neighbour; HARNESS_NODE names this
   // machine's node, as the CI's early setup-node step does. Each case anchors one mutation: AN2 a file output
   // with no declaration, AN3/AN5/AN9 a range counted as a choice (ADR 0178), AN4/AN5 a lookup order
@@ -2808,9 +2785,9 @@ bash '${ahW}/install.sh'
   if (bashExe) {
     const anStep = getRunBlock(ciLines, 'Resolve the Node version the npx gate directories declare')
     check('AN0 the Node resolver step script is found in the template', anStep && m(anStep, 'GITHUB_OUTPUT') && m(anStep, 'devEngines'), `step=[${anStep}]`)
-    // AN11 (owner 2026-10-29): without check-latest, `24` resolves to the image's cached 24.x, which can
-    // fail an engines floor such as >=24.22.0 — the issue #12 failure again. Read from the setup-node
-    // step's own `with:` block, so the key elsewhere in the file does not count.
+    // AN11: without check-latest, `24` resolves to the image's cached 24.x, which can fail an engines
+    // floor such as >=24.22.0. Read from the setup-node step's own `with:` block, so the key elsewhere
+    // in the file does not count.
     const snAt = ciLines.findIndex((l) => /^\s*- name: Setup Node \(/iu.test(l))
     const snBlock = snAt >= 0 ? ciLines.slice(snAt + 1, Math.min(snAt + 8, ciLines.length - 1) + 1).filter((l) => nm(l, P`^\s*#`)).join('\n') : ''
     check('AN11 the Setup Node step passes node-version-file from the resolver, check-latest: true and package-manager-cache: false',
@@ -2850,7 +2827,7 @@ bash '${anW}/resolve.sh'
     check('AN3 package.json engines.node alone chooses no Node: no file, a line naming the range and .nvmrc',
       n3.Code === 0 && n3.File === '' && m(n3.Out, P`(?m)^node version \(\.\): .*engines\.node >=24\.22\.0 <25 .*\.nvmrc`) && nm(n3.Out, '::warning::') &&
       n3b.Code === 0 && n3b.File === '' && m(n3b.Out, P`(?m)^node version \(\.\): .*engines\.node >=18 .*\.nvmrc`) && nm(n3b.Out, '::warning::'), `strict:\n${n3.Out}\nloose:\n${n3b.Out}`)
-    // AN3b (review 2026-10-29, low): a blank volta.node chooses nothing, so the range behind it is named;
+    // AN3b: a blank volta.node chooses nothing, so the range behind it is named;
     // blank range values name nothing.
     const n3c = invokeAn('volta-blank', { 'package.json': '{"volta":{"node":"  "},"engines":{"node":">=18"}}' }, '.')
     const n3d = invokeAn('range-blank', { 'package.json': '{"devEngines":{"runtime":{"name":"node","version":" "}},"engines":{"node":""}}' }, '.')
@@ -2874,12 +2851,12 @@ bash '${anW}/resolve.sh'
     const n7 = invokeAn('forge', { 'api/.nvmrc': '24::error::forged\n', 'web/.nvmrc': '22\n' }, 'api web')
     check('AN7 a declared value reaches the log with version characters only',
       n7.Code === 0 && nm(n7.Out, '(?m)^::error::') && nm(n7.Out, '::error') && m(n7.Out, '24errorforged') && count(n7.Out, /^::/gmu) === 1, `exit=${n7.Code}\n${n7.Out}`)
-    // AN10 (review 2026-10-29, low): one job holds one Node, so a directory that declares nothing runs
+    // AN10: one job holds one Node, so a directory that declares nothing runs
     // on another directory's declaration — its line must say so, never "the runner image's Node".
     const n10 = invokeAn('undeclared-inherits', { 'api/.nvmrc': '24\n', 'legacy/package.json': '{"name":"legacy"}' }, 'api legacy')
     const n10b = invokeAn('undeclared-image', { 'api/.nvmrc': '22\n', 'web/.nvmrc': '24\n', 'legacy/package.json': '{"name":"legacy"}' }, 'api legacy web')
-    // The undeclared directory FIRST (re-review 2026-10-29, low): a label taken from the declarations
-    // seen so far passes the 'api legacy' order and fails this one.
+    // The undeclared directory FIRST: a label taken from the declarations seen so far passes the
+    // 'api legacy' order and fails this one.
     const n10c = invokeAn('undeclared-first', { 'api/.nvmrc': '24\n', 'legacy/package.json': '{"name":"legacy"}' }, 'legacy api')
     const nodeLines = (o, d) => count(o, new RegExp(`^node version \\(${d}\\): `, 'gmu'))
     check('AN10 an undeclared directory names the declared file it inherits in either order, or the image Node when nothing is set up; one line per directory',
@@ -2893,7 +2870,7 @@ bash '${anW}/resolve.sh'
     check('AN8 an unparseable package.json is a named warning, never a crash or a file', n8.Code === 0 && n8.File === '' && m(n8.Out, P`(?m)^::warning::package\.json .*JSONDecodeError`), `exit=${n8.Code} file=[${n8.File}]\n${n8.Out}`)
     // AN9: a sub-directory that chooses nothing falls back to the root version file, never to the root
     // package.json. Its own engines range chooses nothing either (ADR 0178), so the root file still
-    // wins over it, and its one line still names that range (review 2026-10-29, low); its own
+    // wins over it, and its one line still names that range; its own
     // volta.node is a choice and wins over the root file.
     const n9 = invokeAn('root-fallback', { '.nvmrc': '24\n', 'package.json': '{"engines":{"node":"20"}}', 'web/package.json': '{"name":"web"}' }, 'web')
     const n9b = invokeAn('own-range-root-file', { '.nvmrc': '24\n', 'web/package.json': '{"engines":{"node":"22"}}' }, 'web')
@@ -2930,8 +2907,8 @@ bash '${anW}/resolve.sh'
   })
   section('AP', [], async () => {
   // --- AP: a mistyped declaration warns once, and names what is wrong ------------------------------
-  // `gates` as a string used to warn once per character. A bad review regex used to warn once per changed
-  // file, because every file compiled every pattern again.
+  // `gates` as a string must warn once, not once per character. A bad review regex must warn once, not
+  // once per changed file.
   const cfgAP = rep(rep(rep(CFG, '"gates": ["ruff", "pytest-nondb"]', '"gates": "ruff"'), P`"harness_layer": ["^\\.harnessdir/"]`, '"harness_layer": ["["]'), '"critical": ["^migrations/"]', '"critical": ["("]')
   const repoAP = newRepo('declaration-types', cfgAP, ['api/a.py', 'api/b.py', 'api/c.py'])
   const rAP = await gates(repoAP)
@@ -2950,7 +2927,7 @@ bash '${anW}/resolve.sh'
   // The four shapes are a clean run, a stderr warn beside stdout, the one non-zero scope exit, and an
   // argument-parser refusal, which leaves through process exit 2.
   // RUN0 holds the child runner to a fixed input: the child runner reads each pipe on its own, so each
-  // stream keeps its order and no line crosses over. (The pwsh suite held its own stream splitter to this.)
+  // stream keeps its order and no line crosses over.
   const run0Script = put(fx, 'run0_streams.mjs', "process.stdout.write('out one\\n')\nprocess.stderr.write('err one\\n')\nprocess.stdout.write('out two\\n')\n")
   const run0 = runNode([run0Script])
   check('RUN0 the child runner keeps each stream in order and moves no line across',
@@ -2978,8 +2955,8 @@ bash '${anW}/resolve.sh'
   console.log(`note [harness_gates] runner at the end: ${runnerMode} · ${childRerun} driver repl(ies) re-run as a child for stream order (ADR 0160)`)
 }
 
-// The pwsh suite ended the driver and removed the fixture root in a trap. Every test reads a value that body()
-// already took, so both go as soon as body() ends, whether it ended or aborted. An `after` hook would run
+// Every test reads a value that body() already took, so the driver ends and the fixture root goes as soon as
+// body() ends, whether it ended or aborted. An `after` hook would run
 // too early: the test runner closes its root when the queue of registered tests is empty, and body()
 // registers tests while it still awaits the driver.
 try {

@@ -1,71 +1,58 @@
-// SessionStart (registered WITHOUT a matcher — the state file is the filter: re-fires on
-// resume/clear/compact/fork at the same version are byte-silent) — version-change announcement,
-// announce-once-per-version (ywr-harness ADR 0030).
+// SessionStart version-change announcement, once per version (ywr-harness ADR 0030). It registers
+// WITHOUT a matcher: the state file is the filter, so re-fires on resume, clear, compact and fork
+// at the same version are byte-silent.
 //
-// ywr-harness ADR 0026 made updates land silently; ywr-harness ADR 0027's statusline segment shows THAT the version
-// moved but not WHAT changed. This hook completes the pair: at the first session that actually
-// RUNS a new version, it says so once — old → new, up to three bullets from the member
-// release-notes canon (../CHANGELOG.md), and the onboarding artifact's release-notes tab — then
-// records the version in a one-line user-scope state file and never speaks again for it.
+// At the first session that RUNS a new version it speaks once: old -> new, up to three bullets from
+// the member release notes (../CHANGELOG.md), and the release-notes tab link. Then it records the
+// version in a one-line user-scope state file. The compared version is the LOADED one (this
+// script's own ../.claude-plugin/plugin.json), never a possibly-ahead on-disk install, because
+// announcing notes for code that is not running yet would be false (ywr-harness ADR 0027).
 //
-// The version compared is the LOADED one (this script's own ../.claude-plugin/plugin.json), not
-// the possibly-ahead on-disk install — disk-ahead-of-session is ywr-harness ADR 0027's statusline story, and
-// announcing notes for code that is not running yet would be false.
+// State: <config dir>/ywr-harness/announced-version, per Claude Code config dir (ywr-harness ADR 0136).
+// The config dir is CLAUDE_CONFIG_DIR when set, non-empty after trim and ABSOLUTE, else <home>/.claude
+// (ywr-harness ADR 0046). On win32 "absolute" needs a drive or UNC prefix, so a drive-less root like
+// \cfg counts as relative. A set-but-relative value is unmeasured: the hook is byte-silent and writes
+// nothing. A relative path would follow the spawn cwd, and a fall-back to ~/.claude would read the
+// OTHER account's state. Two config dirs on different plugin versions must not share one state file,
+// or each re-announces the other's version.
+// <home> is USERPROFILE then HOME, env-derived on purpose so a child process with a redirected home
+// is a hermetic selftest fixture. The hook writes only this one file in user scope, and the selftest
+// asserts the confinement. A stateless per-session notice is the nag class that ywr-harness ADR 0029 rejects.
 //
-// State: <config dir>/ywr-harness/announced-version, per Claude Code config dir (ywr-harness ADR 0136). The
-// config dir is CLAUDE_CONFIG_DIR when set non-empty (trimmed) and ABSOLUTE, else <home>/.claude
-// (ywr-harness ADR 0046's rule, as harness-statusline.js claudeDir(); on win32 "absolute" needs a drive or UNC
-// prefix, so a drive-less root like \cfg is relative here). A set-but-relative value is unmeasured:
-// the hook is byte-silent and writes nothing — a relative path would follow the spawn cwd, and a
-// fall-back to ~/.claude would read the OTHER account's state. One state file shared by two config
-// dirs on different plugin versions ping-ponged: the older dir re-seeded its own older version
-// (the downgrade row), and the newer dir re-announced it. <home> is USERPROFILE then HOME — the
-// os.homedir() semantics the statusline script uses, and env-derived deliberately so a child
-// process with a redirected home is a hermetic selftest fixture (the statusline suite documents
-// the same reason). This is the plugin's FIRST user-scope write; it is bounded to this one file
-// and the selftest asserts the confinement. Announce-once is impossible without state, and a
-// stateless per-session notice is the nag class ywr-harness ADR 0029 already rejected.
+// Legacy adoption (ywr-harness ADR 0136), once per config dir and read-only on the old file: an older
+// version wrote <home>/.claude/ywr-harness/announced-version. Adoption needs CLAUDE_CONFIG_DIR in
+// effect, an ABSENT config-dir state, and a legacy file at a DIFFERENT path (compared resolved,
+// case-insensitive on win32) holding a parseable version. That version is then the stored value for
+// the rows below, and the config-dir file ends up holding the current version. The legacy file is
+// never written or deleted. With no legacy value, the ordinary first-run row applies.
 //
-// Legacy adoption (ywr-harness ADR 0136, one time per config dir, read-only on the old file): states written
-// before this change sit at <home>/.claude/ywr-harness/announced-version. With CLAUDE_CONFIG_DIR in
-// effect, an ABSENT config-dir state, and a legacy file at a DIFFERENT path (compared resolved, case-
-// insensitive on win32) holding a parseable version, that version is the stored value for the rows
-// below, and the config-dir file ends up holding the current version on every one of them. The
-// legacy file is never written or deleted. No legacy value -> the ordinary first-run row.
+// systemMessage is Korean (the member reader) and additionalContext is English (the model reader),
+// the plugin-wide split (ywr-harness ADR 0045).
 //
-// systemMessage is KOREAN — since ywr-harness ADR 0045 this is the plugin-wide rule, not a per-hook
-// divergence: every hook's systemMessage is Korean (the member reader), every additionalContext
-// stays English (the model reader). This hook was simply first (ywr-harness ADR 0030); the sibling hooks now
-// carry the same split.
+// Decision table (ywr-harness ADR 0030, absent-state row amended by ywr-harness ADR 0031):
+// - Own manifest unreadable: reported, never silent. A plugin that cannot read its own manifest is broken.
+// - No resolvable config dir (a relative CLAUDE_CONFIG_DIR, or unset with no resolvable home): silent.
+//   Announce-once needs state, and a per-session fallback is the rejected nag.
+// - State path ABSENT: first run. Seed, and when the seed recorded, send a LINK-ONLY welcome with no
+//   bullets, no version arrow and never "업데이트됨", so it is true for a fresh install and for the
+//   mechanism's first arrival (ywr-harness ADR 0031). A failed seed stays byte-silent, because a welcome that
+//   cannot be recorded would repeat every session (ywr-harness ADR 0029).
+// - State exists but is unreadable, or is newer than current: (re)seed silently. "First run" would be
+//   a guess, and a downgrade is the member's own act.
+// - State == current: silent.
+// - State < current: announce, then write. A failed write announces anyway with a visible may-repeat note.
+// An adopted legacy value takes the same rows: equal or newer writes the config-dir file silently,
+// older announces "vLEGACY -> vCURRENT". Non-speaking paths are BYTE-silent, because plain stdout on
+// exit 0 becomes session context. The hook exits 0 always, and it never exits the process: it
+// returns, so stdout drains.
 //
-// Decision table (ywr-harness ADR 0030, absent-state row amended by ywr-harness ADR 0031): own manifest unreadable ->
-// reported (a plugin that cannot read its own manifest is broken — visible, never silent). No
-// resolvable config dir (a relative CLAUDE_CONFIG_DIR, ywr-harness ADR 0136; or CLAUDE_CONFIG_DIR unset and no
-// resolvable home) -> silent (announce-once needs state; a per-session fallback is the rejected
-// nag; the statusline still shows the version). State path truly ABSENT -> first run: seed, and
-// when the seed actually recorded, a LINK-ONLY welcome (no bullets, no version arrow, never
-// "업데이트됨" — the message must be true for a fresh install AND the mechanism's first arrival,
-// which is the whole ywr-harness ADR 0031 point); a failed seed stays byte-silent — a welcome that cannot be
-// recorded would repeat every session (the ywr-harness ADR 0029 nag class) while carrying no news the dist
-// README lacks. State exists-but-unreadable / newer-than-current -> (re)seed silently ("first
-// run" would be a guess; a downgrade is the member's own act). State == current -> silent.
-// State < current -> announce, then write; a failed write announces anyway with a visible
-// may-repeat note. An adopted legacy value (ywr-harness ADR 0136) takes the same rows: == current and newer-than-
-// current write the config-dir file silently, older announces "vLEGACY -> vCURRENT". Non-speaking
-// paths are BYTE-silent because plain stdout on exit 0 becomes session context. Exit 0 always — SessionStart cannot block anything and this hook does not try.
-//
-// Node port (ywr-harness ADR 0116) of the pwsh original; the shared helpers are hook-lib.mjs's. The hook never
-// exits the process: it returns, so stdout drains and the exit code stays 0.
-// Deliberate differences from the pwsh original (ywr-harness spec 0006 §3.1): the manifest and the payload must
-// be JSON OBJECTS (the original also read a one-element array by member enumeration; the manifest
-// parses as leniently as ConvertFrom-Json did, via hook-lib's parseJsonLoose); a version
-// component over Int32 is an unparseable version, as the original's failed [version] cast was (which
-// also wrote an error record to stderr there); the shown state path joins with hook-lib's psJoin(),
-// which keeps Join-Path's string shape (`..` segments stay as typed) rather than path.join's.
+// The manifest and the payload must be JSON OBJECTS. The manifest parses leniently through hook-lib's
+// parseJsonLoose. A version component over Int32 is an unparseable version. The shown state path
+// joins with hook-lib's psJoin(), which keeps `..` segments as typed (ywr-harness spec 0006 §3.1).
 //
 // The module is importable: with a `?lib` query on its URL (the selftest's seed-exclusivity case) it
 // defines its functions and runs nothing. A production load never carries a query, so a misfire
-// cannot silence the hook — the gate fails toward running it.
+// cannot silence the hook: the gate fails toward running it.
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -77,12 +64,12 @@ import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq,
 const rnUrl = 'https://claude.ai/code/artifact/a4387fdf-63d1-4a3d-9c8e-c362c9215a54#rn'
 
 const hooksDir = path.dirname(fileURLToPath(import.meta.url))
-const INT_MAX = 2147483647   // .NET [version] components are Int32; a larger one fails the cast
+const INT_MAX = 2147483647   // a version component over Int32 is unparseable
 
-/** A .NET space (Char.IsWhiteSpace) — the class of regex `\s`/`\S` in the pwsh original. */
+/** A .NET space (Char.IsWhiteSpace), the class that `\s` names in this file's line patterns. */
 function isWs(ch) { return netTrim(ch) === '' }
 
-/** `[version]` of a x.y.z triple as [major, minor, build], or null when the cast would fail (a component over Int32). */
+/** An x.y.z triple as [major, minor, build], or null when a component is over Int32. */
 function toVersion(a, b, c) {
   const v = [a, b, c].map(s => (s.length > 10 ? Infinity : Number(s)))
   return v.some(n => n > INT_MAX) ? null : v
@@ -92,7 +79,7 @@ function cmpVersion(x, y) {
   return 0
 }
 
-/** Get-Content -Raw / -Encoding utf8: the text, one leading BOM consumed; null when unreadable. */
+/** The file's text with one leading BOM consumed; null when unreadable. */
 function readText(file) {
   try {
     const s = fs.readFileSync(file, 'utf8')
@@ -105,18 +92,17 @@ function isDir(p) {
 }
 
 /**
- * The first-run seed is an EXCLUSIVE create (flag `wx`), not writeState's overwrite: two sessions
- * starting together both see the path absent, and with a check-then-write each would seed and each
- * would welcome (ywr-harness ADR 0081 measurement arm, B low). `wx` lets exactly one win; the loser gets EEXIST,
- * returns false and stays byte-silent — the existing "a failed seed is silent" row, so no new
- * behavior is needed for it. UTF-8 without BOM.
+ * The first-run seed is an EXCLUSIVE create (flag `wx`), not writeState's overwrite. Two sessions
+ * starting together both see the path absent, and a check-then-write would seed and welcome twice.
+ * `wx` lets exactly one win. The loser gets EEXIST, returns false and stays byte-silent, which is
+ * the "a failed seed is silent" row. UTF-8 without BOM.
  */
 export function newStateExclusive(stateDir, stateFile, value) {
   try {
     if (!isDir(stateDir)) fs.mkdirSync(stateDir, { recursive: true })
     const fd = fs.openSync(stateFile, 'wx')
-    // Closed in a guarded finally: a close that threw after a completed write would otherwise report
-    // a recorded seed as failed and silence the one welcome this machine gets (review 2026-09-26, low).
+    // Closed in a guarded finally: a close that threw after a completed write would report a
+    // recorded seed as failed and silence the one welcome this machine gets.
     try { fs.writeSync(fd, Buffer.from(value, 'utf8')) } finally { try { fs.closeSync(fd) } catch { /* the bytes landed */ } }
     return true
   } catch { return false }
@@ -146,11 +132,11 @@ export function landState(tmp, stateFile, value) {
 }
 
 /**
- * Write-then-rename, never an in-place overwrite: concurrent session starts (O49, 2026-09-29)
- * left `0.59.00.59.0` from two in-place writers, and a reader could also catch the file between
- * truncate and write. Each writer fills its own temp file and the rename swaps it in, so a reader
- * sees the old value or a whole new one. A losing rename (the target held open, read-only, or a
- * directory) is a failed write — the existing may-repeat row — and its temp file is removed.
+ * Write-then-rename, never an in-place overwrite: two session starts can write at once, and
+ * in-place writers interleave their bytes (`0.59.00.59.0`). A reader could also catch the file
+ * between truncate and write. Each writer fills its own temp file and the rename swaps it in, so a
+ * reader sees the old value or a whole new one. A losing rename (the target held open, read-only, or
+ * a directory) is a failed write, the may-repeat row, and its temp file is removed.
  */
 function writeState(stateDir, stateFile, value) {
   let tmp = null
@@ -181,16 +167,15 @@ function writeState(stateDir, stateFile, value) {
   }
 }
 
-/** Test-Path semantics for the state path: absent only on ENOENT/ENOTDIR; any other probe error counts as "exists" (when in doubt, do not welcome). */
+/** The state path is absent only on ENOENT/ENOTDIR. Any other probe error counts as "exists", because when in doubt the hook does not welcome. */
 function stateExistsAt(file) {
   try { fs.statSync(file); return true } catch (e) { return !(e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) }
 }
 
 /**
- * The triple of a stored version string, or null. It must END at a non-digit, non-dot boundary:
- * `0.59.00.59.0` (O49's interleaved write) parsed as 0.59.0 before, so a corrupt value could
- * re-announce or suppress a version. It now reads as exists-but-unreadable and is re-seeded
- * silently; a suffix (`0.18.0rc1`) still parses.
+ * The triple of a stored version string, or null. It must END at a non-digit, non-dot boundary.
+ * An interleaved write such as `0.59.00.59.0` reads as exists-but-unreadable and is re-seeded
+ * silently, so a corrupt value cannot re-announce or suppress a version. A suffix (`0.18.0rc1`) still parses.
  */
 function parseStored(raw) {
   const sm = /^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?![0-9.])/i.exec(raw)
@@ -199,8 +184,8 @@ function parseStored(raw) {
 
 /**
  * ABSOLUTE for CLAUDE_CONFIG_DIR (ywr-harness ADR 0136). On win32 `path.isAbsolute` also accepts a drive-less root
- * (`\cfg`, `/cfg`), which follows the drive of the spawn cwd — the per-cwd split the decision rules out —
- * so there only a drive prefix (`C:\` or `C:/`) or a UNC prefix (two leading separators) counts.
+ * (`\cfg`, `/cfg`), which follows the drive of the spawn cwd, a per-cwd split that ywr-harness ADR 0136 rules out.
+ * So there only a drive prefix (`C:\` or `C:/`) or a UNC prefix (two leading separators) counts.
  * Anything else is treated like a relative value: byte-silent. Elsewhere `path.isAbsolute` is exact.
  */
 function isAbsoluteConfigDir(p) {
@@ -217,7 +202,7 @@ function samePath(a, b) {
 /**
  * The CHANGELOG bullets of the entry whose heading names the loaded version. Continuation lines are
  * joined so a wrapped bullet reads whole. Line classes are .NET's (`\s` = Char.IsWhiteSpace) and `.`
- * is "anything but LF", as in the original's regexes.
+ * is "anything but LF".
  */
 function changelogBullets(currentRaw, currentStr) {
   const bullets = []
@@ -227,11 +212,9 @@ function changelogBullets(currentRaw, currentStr) {
   for (const line of text.split(/\r\n|\n|\r/)) {
     if (line.startsWith('##') && line.length > 2 && isWs(line[2])) {   // ^##\s
       if (inSection) break
-      // Token EQUALITY against the raw manifest version first — the same comparison the
-      // gate enforces — with the numeric triple as fallback. The first draft matched
-      // '^## v<triple>\b', and \b needs a word/non-word transition: a non-hyphenated
-      // suffix ('0.18.0rc1') passed the gate yet failed the lookup, degrading the
-      // announcement to bullet-less for an entry that exists (review 2026-08-05, low).
+      // Token EQUALITY against the raw manifest version first, the comparison the gate enforces,
+      // with the numeric triple as fallback. A `\b` match on the triple would miss a non-hyphenated
+      // suffix ('0.18.0rc1') that the gate accepts, and the announcement would lose its bullets.
       let i = 2
       while (i < line.length && isWs(line[i])) i++
       if (i < line.length && (line[i] === 'v' || line[i] === 'V')) {   // ^##\s+v(\S+)
@@ -277,8 +260,8 @@ function main(payload) {
   // --- state ------------------------------------------------------------------------------------
   let homeDir = process.env.USERPROFILE || ''
   if (!homeDir) homeDir = process.env.HOME || ''
-  // The config dir (ywr-harness ADR 0136, ywr-harness ADR 0046's rule): CLAUDE_CONFIG_DIR only when ABSOLUTE; set-but-relative
-  // is unmeasured — silent, never a fall-back to <home>/.claude (that is the other account's state).
+  // The config dir (ywr-harness ADR 0136, ywr-harness ADR 0046): CLAUDE_CONFIG_DIR only when ABSOLUTE. Set-but-relative
+  // is unmeasured and silent, never a fall-back to <home>/.claude (the other account's state).
   const cfgRaw = netTrim(process.env.CLAUDE_CONFIG_DIR || '')
   let configDir
   if (cfgRaw) {
@@ -291,17 +274,17 @@ function main(payload) {
   const stateDir = psJoin(configDir, 'ywr-harness')
   const stateFile = psJoin(stateDir, 'announced-version')
 
-  // ABSENT is a first run; anything else keeps its ywr-harness ADR 0030 behavior (ywr-harness ADR 0031 amends only that row).
-  // A DIRECTORY squatting on the path counts as "exists" — welcoming a squatted path would guess
+  // ABSENT is a first run (ywr-harness ADR 0031). Anything else keeps the ywr-harness ADR 0030 behavior.
+  // A DIRECTORY squatting on the path counts as "exists", because welcoming it would guess
   // "first run" about a machine that already ran. A probe error also counts as "exists".
   const stateExists = stateExistsAt(stateFile)
   let storedRaw = netTrim(readText(stateFile) ?? '')
   let stored = parseStored(storedRaw)
 
-  // Legacy adoption (ywr-harness ADR 0136): a config-dir state that is ABSENT, under an explicit CLAUDE_CONFIG_DIR,
-  // takes its stored value from the pre-0136 shared file when that sits at a different path and holds a
-  // parseable version. Read-only on the legacy file. The shared file is the pre-change record of what
-  // this machine last announced, so adopting it keeps the first post-change session from re-welcoming.
+  // Legacy adoption (ywr-harness ADR 0136): an ABSENT config-dir state under an explicit CLAUDE_CONFIG_DIR
+  // takes its stored value from the shared legacy file when that sits at a different path and holds a
+  // parseable version. The legacy file is read-only. It records what this machine last announced, so
+  // adopting it keeps the first session after the change from re-welcoming.
   let adopted = false
   if (cfgRaw && !stored && !stateExists && homeDir) {
     const legacyFile = psJoin(psJoin(psJoin(homeDir, '.claude'), 'ywr-harness'), 'announced-version')
@@ -313,11 +296,11 @@ function main(payload) {
   }
 
   if (!stored && !stateExists) {
-    // First run on this machine — fresh install, or the first version carrying this mechanism;
-    // indistinguishable, and the message below is TRUE in both states (ywr-harness ADR 0031). Write-then-
-    // speak, inverted from the update path on purpose: the update announcement protects news,
-    // this protects nothing the dist README does not already carry, so a failed seed is silent
-    // — and a seed lost to a concurrent first run is a failed seed (newStateExclusive).
+    // First run on this machine: a fresh install, or the first version carrying this mechanism. The
+    // two are indistinguishable, and the message below is TRUE in both (ywr-harness ADR 0031). It writes
+    // first and then speaks, the reverse of the update path on purpose. The update announcement
+    // protects news, but this one protects nothing the dist README does not carry, so a failed seed
+    // is silent. A seed lost to a concurrent first run is a failed seed (newStateExclusive).
     if (newStateExclusive(stateDir, stateFile, currentRaw)) {
       const sys = `[hook:version-announce] ywr-harness v${curShown} 적용 중 — 이 머신의 첫 버전 안내입니다(설치 직후이거나, 안내 기능이 이번 버전에서 처음 도착했습니다). 변경 이력: 플러그인의 CHANGELOG.md · 릴리스 노트 탭(하네스 관리자가 재발행할 때만 갱신) ${rnUrl} (claude.ai Team 좌석 로그인 필요)`
       const ctx = `The ywr-harness plugin v${curShown} is active, and this is its first recorded run on this machine — fresh install, or the first version carrying the announce mechanism (ywr-harness ADR 0031). Release notes: the plugin's CHANGELOG.md (Korean, newest-first — every entry lands here first) and the artifact release-notes tab at ${rnUrl} (refreshed only when the harness owner republishes it, so it may lag CHANGELOG.md — ywr-harness ADR 0224). This welcome appears once per machine; do not repeat it unprompted.`
@@ -326,27 +309,26 @@ function main(payload) {
     return
   }
   if (!stored || cmpVersion(stored, current) > 0) {
-    // Exists-but-unreadable state, or a downgrade: (re)seed and say nothing (ywr-harness ADR 0030 rows,
-    // unchanged) — the next session simply retries.
+    // Exists-but-unreadable state, or a downgrade: (re)seed and say nothing (ywr-harness ADR 0030).
+    // The next session retries.
     writeState(stateDir, stateFile, currentRaw)
     return
   }
   if (cmpVersion(stored, current) === 0) {
     // An adopted legacy value equal to current: the config-dir file is still absent, so record it
-    // silently — without it every later session would re-adopt the legacy value (ywr-harness ADR 0136).
+    // silently. Otherwise every later session would re-adopt the legacy value (ywr-harness ADR 0136).
     if (adopted) writeState(stateDir, stateFile, currentRaw)
     return
   }
 
   // --- stored < current: the announcement -------------------------------------------------------
-  // Bullets for the CURRENT version from the member canon. The cap is VISIBLE (외 N건) — a silent
-  // truncation would read as "that was everything" (the no-silent-caps house rule).
+  // Bullets for the CURRENT version from the member release notes. The cap is VISIBLE (외 N건),
+  // because a silent truncation would read as "that was everything".
   const bullets = changelogBullets(currentRaw, currentStr)
 
-  // systemMessage is a plain-text surface, not a Markdown renderer: the two inline forms the
-  // canon actually uses — `code` and **bold** — are stripped for display, or the member reads
-  // literal backticks and asterisks (review 2026-08-05, medium). The CHANGELOG itself stays
-  // Markdown; only this rendering flattens it.
+  // systemMessage is a plain-text surface, not a Markdown renderer. The two inline forms the
+  // CHANGELOG uses, `code` and **bold**, are stripped for display, or the member reads literal
+  // backticks and asterisks. The CHANGELOG itself stays Markdown.
   const shown = bullets.slice(0, 3).map(b => inline(b.replace(/\*\*([^\n]+?)\*\*/g, '$1').replace(/`([^`]*)`/g, '$1'), Infinity))
   const more = bullets.length - shown.length
   let body = `[hook:version-announce] ywr-harness v${inline(storedRaw)} → v${curShown} 업데이트됨 (자동 업데이트).`

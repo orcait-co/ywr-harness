@@ -5,8 +5,8 @@
 // its branches exits 0, so only running it shows which branch a repo actually gets.
 //
 // The hooks are RUN, in real throwaway git repositories, against real staged changes and real
-// commit ranges. Three findings in this line of work came from running the thing instead of
-// asserting on its placement, and a hook is exactly the artifact whose placement tells you least.
+// commit ranges. A placement assertion is not a run (fact 6), and a hook is exactly the artifact
+// whose placement tells you least.
 //
 // Two arms for pre-commit, deliberately:
 //   * a STUB emitter, so the hook's parsing and execution contract is deterministic and does not
@@ -15,12 +15,9 @@
 //
 // Usage: node --test-reporter=<file URL of ../../lib/selftest-reporter.mjs> --test-reporter-destination=stdout skills/harness-init/githooks.selftest.mjs
 //
-// Port notes. The pwsh suite named fourteen cases with one letter and no number (A to N). Each is
-// `GH<n> <the old name>` here (A is GH1, B is GH2, and so on to N as GH14), so the parity check of ADR 0227
-// decision 8 matches the names. The pwsh suite fed every hook its stdin through a file, because a pipe from
-// PowerShell wrote CRLF. A Node pipe writes the bytes it is given, so the stdin goes through a pipe, which is
-// also what git does. Each case reads the same fixtures, runs the same hook and keeps the same patterns, which
-// toRx compiles with the pwsh -match rules. A fixture that several cases read is built once, as a scenario that starts when the file loads and runs beside the others.
+// Every hook gets its stdin through a pipe, which is also what git does. A Node pipe writes the bytes it
+// is given, so no CRLF reaches the hook. toRx compiles the patterns case-insensitively. A fixture that
+// several cases read is built once, as a scenario that starts when the file loads and runs beside the others.
 import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -52,19 +49,19 @@ function toShPath(p) {
   return '/' + full[0].toLowerCase() + full.slice(2).replaceAll('\\', '/')
 }
 
-// --- preflight: what the pwsh suite settled with exit 1 or exit 0 before its first case -------------------------
+// --- preflight: settled before the first case -------------------------------------------------------------
 // A missing template is a FAIL, a missing git or POSIX sh is a reported SKIP, and on CI a missing sh is a FAIL.
-const gitLauncher = which_on_path('git')   // kept for P5's git shim: that case's PATH is narrowed to one dir and must keep resolving the same git it always did
+const gitLauncher = which_on_path('git')   // kept for P5's git shim: that case's PATH is narrowed to one dir and must still resolve the same git
 let shPath = ''
 let shExtraPath = []
 let skipAll = false
 let preFail = null
 function findPosixShell() {
   if (!win) return which_on_path('sh') || which_on_path('bash')
-  // GIT'S OWN sh, resolved from the git executable — not whatever `sh`/`bash` PATH happens to
-  // offer. On the owner's box the first `bash` on PATH is C:\Windows\System32\bash.exe, which is WSL: a
-  // different filesystem namespace (/mnt/c, not /c), so every case failed with "No such file or
-  // directory" on a path that existed. It is also simply the wrong interpreter to measure with —
+  // GIT'S OWN sh, resolved from the git executable, not whatever `sh`/`bash` PATH happens to
+  // offer. The first `bash` on PATH can be C:\Windows\System32\bash.exe, which is WSL: a
+  // different filesystem namespace (/mnt/c, not /c), so every case would fail with "No such file or
+  // directory" on a path that exists. It is also the wrong interpreter to measure with:
   // git runs a hook through its own bundled sh, so that is what this suite must run.
   if (gitLauncher) {
     const gitRoot = path.dirname(path.dirname(gitLauncher))
@@ -91,9 +88,9 @@ if (!preFail) {
 }
 if (!preFail && !skipAll) {
   // When git runs a hook it puts its own POSIX toolchain on PATH. Invoking sh.exe straight from
-  // the suite does not, so `awk`, `sed` and `grep` were missing and `sort` resolved to Windows'
-  // sort.exe — which made the hooks look broken and, worse, made four cases pass VACUOUSLY (the hook
-  // bailed early and exited 0, which several assertions read as success). Reproducing git's PATH is
+  // the suite does not, so `awk`, `sed` and `grep` are missing and `sort` resolves to Windows'
+  // sort.exe. That makes the hooks look broken and makes cases pass VACUOUSLY (the hook
+  // bails early and exits 0, which several assertions read as success). Reproducing git's PATH is
   // what makes this suite measure the hook instead of the launcher.
   if (win) {
     const gitRoot = path.dirname(path.dirname(gitLauncher))
@@ -109,14 +106,15 @@ if (!preFail && !skipAll) {
   if (probe !== 'OK') preFail = `FAIL — ${shPath} cannot resolve ${toShPath(prePush)} (probe returned '${probe}')`
 }
 if (!preFail && !skipAll && win) {
-  // ~370 git calls (fixture builds plus the hooks' own): the worker binary, not the cmd\git.exe launcher
-  // (ADR 0111). After the resolutions above, which read git's root from the launcher's path and need the
-  // launcher's layout. Every PATH this suite builds starts from the then-current PATH, so the
-  // worker dir rides along; P5 REPLACES the PATH outright, so it never sees it.
+  // The suite makes hundreds of git calls (fixture builds plus the hooks' own), so they use the worker
+  // binary, not the cmd\git.exe launcher (ADR 0111). This runs after the resolutions above, which read
+  // git's root from the launcher's path and need the launcher's layout. Every PATH this suite builds
+  // starts from the then-current PATH, so the worker dir rides along; P5 REPLACES the PATH outright,
+  // so it never sees it.
   const real = _real_git(gitLauncher)
   if (real && real !== gitLauncher) process.env.PATH = path.dirname(real) + path.delimiter + process.env.PATH
 }
-// Fixture identity through the environment, once: a per-repo `git config user.*` was two spawns per
+// Fixture identity through the environment, once: a per-repo `git config user.*` costs two spawns per
 // fixture repo. No hook under test and no case reads a repo-local user.* value.
 Object.assign(process.env, {
   GIT_AUTHOR_NAME: 'selftest', GIT_COMMITTER_NAME: 'selftest',
@@ -228,7 +226,7 @@ function runSh(args, repo, input, env) {
 function hookArgs(hook, stdin, { pathOverride = '', pathPrefix = '', noFinalNewline = false, env = {} } = {}) {
   const sh = toShPath(hook)
   const pathValue = pathOverride || (pathPrefix ? pathPrefix + path.delimiter : '') + defaultPath()
-  // git feeds a hook LF-terminated lines; a null stdin is an empty line, as the pwsh suite wrote it.
+  // git feeds a hook LF-terminated lines; a null stdin is an empty line.
   const input = (stdin ?? '').replace(/\r\n/g, '\n') + (noFinalNewline ? '' : '\n')
   return { args: ['-c', `'${sh}'`], input, env: childEnv(env, pathValue) }
 }
@@ -292,16 +290,15 @@ const rB3 = scn(async () => {
 T('B3 the same file WITHOUT the key is not blocked', async () => { const x = (await rB3()); assert.ok(x.code === 0, ec(x)) })
 T('B3 and it is not reported as refused', async () => { const x = (await rB3()); assert.ok(!M(x.out, 'REFUSED'), x.out) })
 
-// B4: the file ADR 0021 missed. `--scope local` writes the SAME key into settings.local.json, in
-// the tree — measured, and 0021's own refusal message recommended that scope as the fix. A gate
-// that names one filename and recommends the other is worse than no gate.
+// B4: `--scope local` writes the SAME key into settings.local.json, in the tree, and a refusal
+// message may recommend that scope as the fix (ADR 0022). A gate that names one filename and
+// recommends the other is worse than no gate.
 const rB4 = scn(async () => {
   const b4 = newRepo('pc-enabled-plugins-local')
   writeFile(b4, '.claude/settings.local.json', '{\n  "enabledPlugins": { "ywr-harness@ywrlabs": true }\n}\n')
-  // `add -f`, and the reason IS the defect: the owner's machine carries a GLOBAL gitignore entry for
-  // .claude/settings.local.json, so `add -A` silently stages nothing here and the case would pass
-  // vacuously. No teammate inherits that global file — on their machine the path is perfectly
-  // trackable, which is exactly how ADR 0021 came to believe the file "is ignored by convention".
+  // `add -f`: a machine can carry a GLOBAL gitignore entry for .claude/settings.local.json, so
+  // `add -A` silently stages nothing here and the case would pass vacuously. A teammate's machine
+  // has no such entry, and there the path is trackable.
   await git(b4, ['add', '-f', '.claude/settings.local.json'])
   return await invokeHook(b4, preCommit)
 })
@@ -370,10 +367,10 @@ T('GH4 D a failing gate BLOCKS the commit', async () => { const x = (await rD())
 T('GH4 D the failing command is named', async () => { const x = (await rD()); assert.ok(M(x.out, r`FAIL \(\d+\): false`), x.out) })
 T('GH4 D the escape hatch is stated', async () => { const x = (await rD()); assert.ok(M(x.out, '--no-verify'), x.out) })
 
-// D2: a gate whose RUNNER is not on PATH is a counted, reported SKIP — never FAILED (ADR 0015:
-// "a missing interpreter is a reported skip"; dist issue #6: a member without uv was blocked on
-// every commit and --no-verify, which also skips the enabledPlugins refusal, was the only way
-// out). The `true` after it proves the loop continues past the skip; D above is the control that
+// D2: a gate whose RUNNER is not on PATH is a counted, reported SKIP, never FAILED (ADR 0015:
+// "a missing interpreter is a reported skip"). Otherwise a member without uv is blocked on
+// every commit, and --no-verify, which also skips the enabledPlugins refusal, is the only way
+// out. The `true` after it proves the loop continues past the skip; D above is the control that
 // a runner which exists and fails still blocks.
 const rD2 = stubRun('pc-missing-runner', 'print("  [g] 1 file(s)")\nprint("    ywr-no-such-runner check app.py")\nprint("    true")')
 T('D2 a missing runner does not block the commit', async () => { const x = (await rD2()); assert.ok(x.code === 0, ec(x)) })
@@ -407,20 +404,18 @@ T('D2c a cwd-composed gate whose runner exists and fails still BLOCKS', async ()
 })
 
 // E: the "(no gate declared)" parenthetical must NOT be executed.
-// This is a real defect the shipped CI carried: the note is indented the same four spaces as a
-// command, so a naive parser hands `(no gate declared ...)` to sh, which opens a subshell and
-// dies with "no: command not found". The default .harness.json ships a group of exactly that
-// shape, so every scaffolded repo would have hit it.
+// The note is indented the same four spaces as a command, so a naive parser hands
+// `(no gate declared ...)` to sh, which opens a subshell and dies with "no: command not found".
+// The default .harness.json ships a group of exactly that shape, so every scaffolded repo meets it.
 const rE = stubRun('pc-parenthetical', 'print("  [g] 1 file(s)")\nprint("    (no gate declared for this group — nothing deterministic runs on it)")')
 T('GH5 E a parenthetical note is not executed', async () => { const x = (await rE()); assert.ok(x.code === 0, ec(x)) })
 T('GH5 E and it is not mistaken for a command', async () => { const x = (await rE()); assert.ok(!M(x.out, 'command not found'), x.out) })
 
-// E5: an ungrouped file is REPORTED at commit time (ADR 0062, issue #55). CI fails on the
-// emitter's `ungrouped (` header; the hook does not — the line closes the local/CI asymmetry
-// without changing the advisory exit contract, so the commit still proceeds. The stub prints
-// the header VERBATIM as harness_gates.mjs emits it since ADR 0062 (long tail, em dashes) — a
-// fixture with the old short text would keep passing while the real parser drifted (review
-// 2026-08-28, medium); case G below is the end-to-end pairing with the real emitter.
+// E5: an ungrouped file is REPORTED at commit time (ADR 0062). CI fails on the emitter's
+// `ungrouped (` header; the hook does not. The line closes the local/CI asymmetry without changing
+// the advisory exit contract, so the commit still proceeds. The stub prints the header VERBATIM as
+// harness_gates.mjs emits it (long tail, em dashes): a fixture with a short text would keep passing
+// while the real parser drifted. Case G below is the end-to-end pairing with the real emitter.
 const rE5 = stubRun('pc-ungrouped', [
   'print("  [g] 1 file(s)")',
   'print("    true")',
@@ -431,8 +426,8 @@ T('E5 an ungrouped file is named as a CI failure at commit time', async () => { 
 T('E5 but it does not block the commit', async () => { const x = (await rE5()); assert.ok(x.code === 0, ec(x)) })
 T('E5 the gate before the header still ran', async () => { const x = (await rE5()); assert.ok(M(x.out, r`\$ true`), x.out) })
 
-// E2/E3: the no-commands report distinguishes DECLARED coverage from a coverage HOLE
-// (issue #45). One message conflated them: files matching groups that declare `gates: []`
+// E2/E3: the no-commands report distinguishes DECLARED coverage from a coverage HOLE.
+// One message would conflate them: files matching groups that declare `gates: []`
 // read identically to files no group claims, and only the second is a warning.
 // E2 — no group header in the window at all: the coverage-hole wording stays.
 const rE2 = stubRun('pc-unmatched', 'print("  (none — no declared group matched, matched groups declare no gates, or every declared gate was refused or skipped)")')
@@ -451,7 +446,7 @@ T('E3 matched-but-gateless names the groups', async () => { const x = (await rE3
 T('E3 and does not claim nothing matched', async () => { const x = (await rE3()); assert.ok(!M(x.out, 'no file-scoped gate matched'), x.out) })
 
 // E4: a group name carrying ']' survives the extraction whole — cutting at the FIRST ']'
-// misnamed the group in the report (review 2026-08-12, nit; names reach an echo only).
+// would misname the group in the report. Names reach an echo only.
 const rE4 = stubRun('pc-bracket-name', 'print("  [we]ird] 2 file(s)")\nprint("    (no gate declared for this group — nothing deterministic runs on it)")')
 T('E4 a bracketed group name is reported whole', async () => { const x = (await rE4()); assert.ok(x.code === 0 && M(x.out, r`matched group\(s\) \[we\]ird\],`), ec(x)) })
 
@@ -479,10 +474,9 @@ T('GH7 G end-to-end with the real emitter exits 0', async () => { const x = (awa
 T('GH7 G the real parenthetical is not executed either', async () => { const x = (await rG()); assert.ok(!M(x.out, 'command not found'), x.out) })
 T('GH7 G the real emitter output yields the matched-group wording (issue #45)', async () => { const x = (await rG()); assert.ok(M(x.out, r`matched group\(s\) \[src\]`), x.out) })
 
-// G2: END-TO-END with a declared artifact check (ADR 0068) — the coverage gap that let the
-// first cut ship: the emitter's `  [artifacts]` header shares the group-header shape, and
-// the MATCHED_GROUPS awk spliced its unstripped tail into the report (review 2026-08-31,
-// high — 'matched group(s) [src, artifacts] 1 declared drift check(s) …]'). The check line
+// G2: END-TO-END with a declared artifact check (ADR 0068). The emitter's `  [artifacts]` header
+// shares the group-header shape, so the MATCHED_GROUPS awk must not splice its unstripped tail into
+// the report ('matched group(s) [src, artifacts] 1 declared drift check(s) …]'). The check line
 // itself must be DEFERRED (whole-program), never run here.
 const rG2 = scn(async () => {
   const g2 = newRepo('pc-e2e-art')
@@ -507,14 +501,14 @@ T('G2 the check is deferred to CI, not run by the hook', async () => {
   assert.ok(!M(x.out, 'CHECK-RAN') && M(x.out, r`whole-program gate\(s\) deferred to CI`), x.out)
 })
 
-// G3: END-TO-END, a non-ASCII staged path under core.quotepath=true (Git for Windows' default;
-// dist issue #6). Unpinned, the hook's STAGED list carried `"docs/\355\225\234...md"` — quoted,
-// octal-escaped — the real emitter reported it ungrouped, and the hook printed a FALSE
+// G3: END-TO-END, a non-ASCII staged path under core.quotepath=true (Git for Windows' default).
+// Unpinned, the hook's STAGED list carries `"docs/\355\225\234...md"`, quoted and octal-escaped.
+// The real emitter then reports it ungrouped, and the hook prints a FALSE
 // "matched NO declared group — CI's harness-gates run FAILS" line for a file CI groups
 // correctly (loud, not silent). The pin fixes group matching only; G3b pins what it does not
 // change. The emitter and declaration are COMMITTED first so the Korean file is the
 // only staged path; the name is built from code points (U+D55C U+AE00) so no editor or codepage
-// can rewrite the fixture. The unpinned read is asserted quoted first — without that, a machine
+// can rewrite the fixture. The unpinned read is asserted quoted first: without that, a machine
 // whose git never quotes would pass this case vacuously.
 const g3state = scn(async () => {
   const g3 = newRepo('pc-e2e-quotepath')
@@ -531,8 +525,8 @@ const g3state = scn(async () => {
   // git's own unpinned default under the repo's quotepath=true.
   const raw = (await gitResultA(g3, ['-c', 'core.quotepath=true', 'diff', '--cached', '--name-only'])).stdout.trim()
   const rG3 = await invokeHook(g3, preCommit)
-  // G3b: what the pin does NOT change, pinned so the hook's comment cannot overclaim again
-  // (review 2026-09-23, nit). A non-ASCII name fails the emitter's SAFE_TOKEN gate, so even
+  // G3b: what the pin does NOT change, pinned so the hook's comment cannot overclaim.
+  // A non-ASCII name fails the emitter's SAFE_TOKEN gate, so even
   // matched it never becomes a file-scoped gate argument — here exactly as in CI. The group gains
   // a file-scoped gate (working tree only; the staged list is still the one Korean file): the
   // exclusion is REPORTED and no gate command is composed or run for it.
@@ -618,11 +612,10 @@ T('GH9 I the pattern that matched is labelled', async () => { const x = (await i
 T('GH9 I rotation is stated, not just rewriting', async () => { const x = (await iState()).r; assert.ok(M(x.out, 'rotate'), x.out) })
 
 // --- I2: a pattern whose regex STARTS WITH A DASH still runs ------------------------------------
-// Regression. `private-key-block` is `-----BEGIN [A-Z ]*PRIVATE KEY-----`, and the scan passed it
-// to grep positionally — so grep read it as an option bundle, printed "unknown option", matched
-// nothing, and the hook still reported a clean scan. Every other pattern starts with a letter, so
-// the whole suite was green while one pattern was dead. Caught on a real push, not by this suite;
-// `grep -e` is the fix. Assert the BLOCK, not the absence of the error text: a scanner that
+// `private-key-block` is `-----BEGIN [A-Z ]*PRIVATE KEY-----`. Passed to grep positionally, grep
+// reads it as an option bundle, prints "unknown option", matches nothing, and the hook still
+// reports a clean scan. Every other pattern starts with a letter, so only this case shows a dead
+// pattern. `grep -e` is the fix. Assert the BLOCK, not the absence of the error text: a scanner that
 // silently skips a pattern is indistinguishable from a clean scan unless you make it fire.
 const rI2 = scn(async () => {
   const i2 = newPushRepo('pp-dash-pattern')
@@ -670,7 +663,7 @@ T('GH12 L a branch deletion is not scanned', async () => {
 // --- M: the hook does not flag ITS OWN SOURCE --------------------------------------------------
 // The pre-push script is a file full of secret regexes. If any of them matches the pattern list
 // itself, then committing the hook — which is exactly what /harness-init makes a repo do — blocks
-// the next push, and the harness becomes unshippable. Measured rather than reasoned about.
+// the next push, and the harness becomes unshippable.
 const rM = scn(async () => {
   const m = newPushRepo('pp-self')
   const base = await head(m)
@@ -696,10 +689,10 @@ const rN = scn(async () => {
 T('GH14 N a generic assigned secret is caught', async () => { const x = (await rN()); assert.ok(x.code === 1, ec(x)) })
 T('GH14 N labelled as the generic pattern', async () => { const x = (await rN()); assert.ok(M(x.out, 'generic-assigned-secret'), x.out) })
 
-// --- I3/I4: added lines that are not valid text are still scanned (dist issue #9) ----------------
-// Regression. Under a UTF-8 locale — every Linux CI runner — GNU grep dropped each added line that
-// was not valid UTF-8 (a CP949 fixture), printed "binary file matches" on stderr, and the hook still
-// reported the commit scanned and clean. The hook now scans in the C locale with `grep -a`. The
+// --- I3/I4: added lines that are not valid text are still scanned ----------------
+// Under a UTF-8 locale, as on every Linux CI runner, GNU grep drops each added line that is not
+// valid UTF-8 (a CP949 fixture), prints "binary file matches" on stderr, and the hook would still
+// report the commit scanned and clean. The hook scans in the C locale with `grep -a`. The
 // suite FORCES a UTF-8 locale for these runs, so the case reproduces on Windows' Git sh as well as
 // on Linux, and proves the hook overrides the caller's locale. I3's generic secret has the CP949
 // bytes INSIDE its quoted value: `grep -a` alone would still miss it under UTF-8 (an invalid byte
@@ -743,9 +736,9 @@ T('I3 the block message names the rebase route for a non-tip commit', async () =
 
 // --- I5: a commit list git FAILED to produce is never an empty list ----------------------------------
 // A force-push over commits that exist only on the remote hands the hook a remote oid that is no local
-// object, so `git rev-list <remote>..<local>` fails. That was read as "nothing to scan" and the push
-// passed the secret scan unread. The hook now scans every commit not on a remote instead, and blocks
-// loudly when even that list cannot be made. An EMPTY list with exit 0 stays a quiet pass (I5e).
+// object, so `git rev-list <remote>..<local>` fails. The hook must not read that as "nothing to
+// scan". It scans every commit not on a remote instead, and blocks loudly when even that list
+// cannot be made. An EMPTY list with exit 0 stays a quiet pass (I5e).
 // A loop run costs about 1.5 s per commit on Windows, so the fixtures here are as small as the claim
 // allows, and I6c reuses the secret repo.
 const i5Gone = 'ab'.repeat(20)      // a well-formed oid that no object database holds
@@ -788,10 +781,10 @@ T('I5e an EMPTY list with exit 0 is still a quiet pass, on an existing branch an
   assert.ok(re1.code === 0 && re1.out.trim() === '' && re2.code === 0 && re2.out.trim() === '', `existing: exit=${re1.code} out=${re1.out} new: exit=${re2.code} out=${re2.out}`)
 })
 
-// --- I7: three more ways a push used to pass with nothing read, or to read as scanned when it was not ---
-// I7a: `git rev-parse --show-toplevel` fails in a bare repository, and a guard on it ended the hook in
+// --- I7: three ways a push could pass with nothing read, or read as scanned when it was not ---
+// I7a: `git rev-parse --show-toplevel` fails in a bare repository, and a guard on it would end the hook in
 // a silent exit 0, although commit lists and diffs read fine there. I7b: a last stdin line with no
-// newline was dropped by `read`, so its ref went unread. I7c: after the wider scan is announced, an
+// newline is dropped by a bare `read`, so its ref would go unread. I7c: after the wider scan is announced, an
 // empty list (every commit already on a remote, as $i5 is since the update-ref above) must say that
 // 0 commits were scanned instead of ending silently. All three are clean pushes: no loop run.
 const rI7a = scn(async () => {
@@ -931,9 +924,9 @@ T('I6b hits on a side commit and on a merge are each labelled with their own com
     `exit=${x.code} hits=${hits.join('|')} want=${want.join('|')} out=${x.out}`)
 })
 
-// --- I8: a commit whose diff git cannot print blocks the push (ADR 0213, owner 2026-11-24) --------
-// A deleted loose blob makes `git show` print nothing and exit 128. Before ADR 0213 the loop read the
-// empty output as "no added line" and reported the commit as scanned. The removal is forced, because git
+// --- I8: a commit whose diff git cannot print blocks the push (ADR 0213) --------
+// A deleted loose blob makes `git show` print nothing and exit 128. The loop must not read the
+// empty output as "no added line" and report the commit as scanned. The removal is forced, because git
 // writes loose objects read-only on Windows, and it is asserted, because a silenced failure would pass
 // I8a unread.
 async function removeBlob(repo, spec) {
@@ -943,7 +936,7 @@ async function removeBlob(repo, spec) {
   return !fs.existsSync(f)
 }
 // Every commit is made before the blob goes: a commit made after it either writes the blob again or,
-// when git finds the index entry stat-clean, fails with "invalid object" (seen 1 run in 8 on Windows).
+// when git finds the index entry stat-clean, fails with "invalid object" on Windows.
 const i8state = scn(async () => {
   const i8 = newPushRepo('pp-unread')
   const base = await addCommit(i8, 'base.txt', 'base\n', 'base')
@@ -960,10 +953,10 @@ T('I8a a commit whose git show fails BLOCKS the push and is named, never counted
   const { tip, gone, ra } = (await i8state())
   assert.ok(gone && ra.code === 1 && M(ra.out, 'could not print the diff') && M(ra.out, `  ${tip}`) && !M(ra.out, r`commit\(s\) scanned`), `gone=${gone} exit=${ra.code} out=${ra.out}`)
 })
-// I9 reads the same run (review of 2026-11-24, medium). An added line whose text starts with `++`
-// prints as `+++`, the start of a diff file header. A filter on `^+++` alone dropped that line from
-// the prefilter and from the loop, and the push passed with the secret. The run shares the I8 repo to
-// save one per-commit loop, about 1.5 s on Windows.
+// I9 reads the same run. An added line whose text starts with `++` prints as `+++`, the start of a
+// diff file header. A filter on `^+++` alone would drop that line from the prefilter and from the
+// loop, and the push would pass with the secret. The run shares the I8 repo to save one per-commit
+// loop, about 1.5 s on Windows.
 T('I9 an added line that starts with ++ reaches the patterns and BLOCKS', async () => {
   const { rb } = (await i8state())
   assert.ok(rb.code === 1 && M(rb.out, r`\[aws-access-key-id\] in `) && M(rb.out, `      \\+\\+\\+aws_key = ${fakeKey}`), ec(rb))
@@ -974,8 +967,8 @@ T('I8b a hit in a readable commit is reported beside the unread commit, and the 
 })
 
 // --- SS: the vendored CI's secret-scan step drives THIS pre-push over the run's range ------------
-// Dist issue #6 moved the step's three workflow values out of its run: text into env: (the file's
-// own env-only rule). ci-enabled-plugins WS1 proves no `${{` is left in run: text; this proves the
+// The step's three workflow values live in env:, never in run: text (the file's own env-only
+// rule). ci-enabled-plugins WS1 proves no `${{` is left in run: text; this proves the
 // values still ARRIVE — a static check passes a step whose env: name and run: name disagree, and
 // then a push range silently degrades to the ZERO fallback. The step body AND its env: mapping are
 // EXTRACTED from the template by step name (what runs is what ships), and the fixture supplies
@@ -1025,7 +1018,7 @@ T('SS0 the secret-scan step and its env: mapping are extracted from the template
 async function invokeSecretScanStep(repo, ctx) {
   // `sh -e <file>`, the way the runner runs a run: block (`bash -e {0}`: the path as an
   // ARGUMENT, errexit on). Not through invokeHook: that always executes its target directly, and this
-  // scratch file has no exec bit — the Linux parity run failed 126 on exactly that.
+  // scratch file has no exec bit, so a direct execute fails 126 on Linux.
   const { env } = ssExtract()
   const ssFile = path.join(fxBase, 'secret-scan-step.sh')
   fs.writeFileSync(ssFile, ssExtract().body, 'utf8')
@@ -1055,9 +1048,9 @@ const ssState = scn(async () => {
   // (refs/remotes/pull/<n>/merge, HEAD here). The head ref is what makes EVENT_NAME observable:
   // with it, the push/ZERO fallback — where a lost EVENT_NAME lands, since `$EVENT_NAME` is then
   // not `pull_request` — finds 0 commits not on a remote, while the PR path scans
-  // origin/<base>..HEAD = 1. Without it both printed `(1 commit(s) scanned)`, so an env: name that
-  // disagreed with `$EVENT_NAME` passed SS2 — the mutant that kills the backstop on every real PR,
-  // whose head is always a remote ref (review 2026-09-23, medium).
+  // origin/<base>..HEAD = 1. Without it both print `(1 commit(s) scanned)`, so an env: name that
+  // disagrees with `$EVENT_NAME` would pass SS2. That mutant kills the backstop on every real PR,
+  // whose head is always a remote ref.
   await git(ss, ['update-ref', 'refs/remotes/origin/main', ssOld])
   await git(ss, ['update-ref', 'refs/remotes/pull/1/merge', 'HEAD'])
   const pRS2 = invokeSecretScanStep(ss, { 'github.event_name': 'pull_request', 'github.base_ref': 'main', 'github.event.before': '' })
@@ -1086,17 +1079,17 @@ T("SS2c control: with EVENT_NAME lost, the same PR refs take the ZERO fallback a
 // Placement (GUARDED) is init Q's and manifest-gate's; these cases RUN the body. Every branch exits
 // 0, so an exit code alone proves nothing: each case asserts what the hook printed, and the stub
 // retro's `[stub-retro]` line is what separates "ran the retro" from "exited early".
-// Mutation-checked when written (2026-09-27): dropping `|| true` AND the final `exit 0` fails P2
-// (either one alone is covered by the other — the pair is the contract); dropping the SLICE_RETRO
+// Each guard has a case that fails without it: dropping `|| true` AND the final `exit 0` fails P2
+// (either one alone is covered by the other, so the pair is the contract); dropping the SLICE_RETRO
 // line fails P3; dropping the `[ -f "$RETRO" ]` guard fails P4 with or without node (an
-// interpreter error on a missing file, or the SKIP line — non-empty either way); dropping the SKIP
+// interpreter error on a missing file, or the SKIP line, non-empty either way); dropping the SKIP
 // echo fails P5.
 function newRetroRepo(name, stubBody) {
   const p = newRepo(name)
   if (stubBody) writeFile(p, 'scripts/harness/harness_retro.mjs', stubBody)
   return p
 }
-// Every post-commit case runs with SLICE_RETRO unset, the way the pwsh suite removed it.
+// Every post-commit case runs with SLICE_RETRO unset.
 const retroOff = { SLICE_RETRO: undefined }
 
 // P4: no vendored retro -> a silent exit 0. The guard runs before node is resolved, so this
@@ -1127,7 +1120,7 @@ if (!SKIP) {
 }
 if (p5 && (p5.nodeOnNarrow || !p5.gitOnNarrow)) {
   // Locally a reported SKIP; on CI a FAIL — a probe that keeps failing there would otherwise
-  // retire P5's assertion for good behind an all-green run (review 2026-09-27, low).
+  // retire P5's assertion for good behind an all-green run.
   const why = `the narrowed PATH is not node-free with git (node='${p5.nodeOnNarrow}' git='${p5.gitOnNarrow}')`
   if (process.env.CI) T('P5 the git-shim PATH probe resolves on CI', () => { assert.fail(why) })
   else test('P5 post-commit', { skip: `${why} — reported, not silent; CI fails on it` }, () => {})

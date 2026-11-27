@@ -12,6 +12,12 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.87.2 — 2026-11-28
+
+- 하네스 코드의 주석을 정리했습니다. 주석에는 코드만으로 알 수 없는 제약을 짧게 적고, 이유는 해당 ADR·spec 번호로 가리킵니다. slice 번호·open item 번호 같은 작업 경위와 코드를 되풀이한 설명은 지웠습니다 (ywr-harness ADR 0234). 주석만 바뀌었고 동작은 같습니다.
+- `scripts/harness/` 의 vendored 스크립트와 git hook·docs 템플릿도 주석만 바뀌었습니다. 그래서 업데이트 뒤 세션 시작 때 scaffold 갱신 안내가 뜹니다. 다음 `/ywr-harness:harness-init` 재실행 때 함께 갱신되면 사라지며, 멤버 repo 의 게이트와 사용 방법은 달라지지 않습니다.
+- 하네스 자체 게이트가 코드 주석에 slice 번호나 open item 번호가 들어오면 실패합니다. 하네스 repo 안에서만 도는 검사라 멤버 repo 에는 적용되지 않습니다.
+
 ## v0.87.1 — 2026-11-28
 
 - `scripts/harness/harness_git.mjs` 에 `git_result_async` 를 추가했습니다. `git_result` 와 같은 결과를 Promise 로 돌려주므로, `git fetch` 처럼 느린 네트워크 git 호출이 실행되는 동안 다른 작업을 함께 진행할 수 있습니다 (ywr-harness ADR 0233). 기존 함수는 그대로라 멤버 repo 의 게이트와 사용 방법은 달라지지 않습니다. 다음 `/ywr-harness:harness-init` 재실행 때 이 파일이 함께 갱신됩니다.

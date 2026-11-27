@@ -1,6 +1,4 @@
-// Self-test for workflow-gates.mjs — the file the plugin's selftest runner discovers, which is
-// how the JS-side gates reach CI at all: the runner discovers a suite by its name and needs zero ci.yml
-// wiring, and .claude/workflows/ now routes to the scripts group that owns it.
+// Self-test for workflow-gates.mjs. The plugin's selftest runner discovers it by name, so it needs no ci.yml wiring.
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout scripts/workflow-gates.selftest.mjs  (exit 0 = all green). ~3 s.
 //
 // Two arms:
@@ -10,13 +8,11 @@
 //             counts, so a silently shrinking corpus is visible.
 // The plugin ships no workflow of its own (ywr-harness ADR 0215), so no live corpus arm exists.
 //
-// The pwsh suite named most cases with a letter and no ID. Each test here is `WG<n> <the old name>`, so the
-// parity check of ADR 0227 decision 8 matches the names.
-// Patterns are pwsh -match sources (case-insensitive; see toRx in lib/selftest-lib.mjs).
+// Each test is named `WG<n> <case name>` (ADR 0227 decision 1).
+// Patterns are case-insensitive regex sources (see toRx in lib/selftest-lib.mjs).
 //
-// The fixtures below use .claude/workflows, the default corpus path of a consuming repo, and the
-// `--dir` option is exercised by case A. If only the option were tested, the default could rot
-// unnoticed in consumers.
+// The fixtures use .claude/workflows, the default corpus path of a consuming repo. Case A exercises
+// the `--dir` option, so both paths stay tested.
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -77,8 +73,8 @@ const passSelftest = 'process.exit(0)\n'
 const failSelftest = "console.log('fixture selftest is meant to fail');\nprocess.exit(1)\n"
 
 // A counts: a two-workflow corpus under a non-default `--dir`. Negatives pin that no arm reported
-// a failure and that the vacuity guards stayed quiet — a green run whose counts came from an empty
-// glob is the class this gate is built to refuse.
+// a failure and that the vacuity guards stayed quiet. A green run whose counts came from an empty
+// glob is the class this gate refuses.
 test('WG1 A counts, --dir corpus', () => {
   const fxCounts = path.join(fxBase, 'counts')
   mkdirSync(path.join(fxCounts, 'flows'), { recursive: true })
@@ -94,7 +90,7 @@ test('WG1 A counts, --dir corpus', () => {
 })
 
 // B a syntax error is caught and named. Negatives: a parse failure must not coexist with a green
-// verdict — that combination is the whole failure mode this gate exists to close.
+// verdict, the failure mode this gate exists to close.
 const fxBroken = newFixture('broken', { 'bad.js': broken, 'bad.selftest.mjs': passSelftest })
 test('WG2 B syntax error fails', () => {
   assertCase(invokeGate(fxBroken), 1, ['FAIL — \\.claude/workflows/bad\\.js: SyntaxError'], ['green —'])
@@ -108,20 +104,14 @@ test('WG3 C legal shape clean', () => {
     ['FAIL —'])
 })
 
-// D why this gate is not a `node --check` wrapper, MEASURED rather than argued (2026-07-25, node
-// v24.14.0): the `export` line makes the file module-detected and NOT syntax-checked, so --check
-// exits 0 on the same broken file case B rejects — proven on a real workflow with
-// an unbalanced paren injected mid-file, not only on this fixture. The failure mode once worried
-// about was the opposite direction (a false alarm on a valid file); the direction that matters is
-// the silent pass.
-// Re-measured 2026-10-06 on node v24.21.0 (Linux parity image): --check now syntax-checks the file and
-// rejects case B's — and rejects case C's legal file too ("Illegal return statement": a workflow body is
-// a function body, its top-level `return` is not module syntax), a real workflow
-// included. Either direction makes --check unusable, so both are a PASS — the second only on that
-// exact error. A node whose --check accepts C, or rejects it for any other reason, WARNs rather than
-// fails — the trigger to re-verify the reasoning above, not a defect signal.
-// The pwsh suite put the legal file's exit code into the PASS name of the second branch. The probe runs
-// when this file loads, so the test name can say the same.
+// D why this gate is not a `node --check` wrapper. On some node versions the `export` line makes the
+// file module-detected and not syntax-checked, so --check exits 0 on the broken file case B rejects.
+// On others --check syntax-checks the file and rejects case B's, and it also rejects case C's legal
+// file ("Illegal return statement": a workflow body is a function body, so its top-level `return` is
+// not module syntax). Either direction makes --check unusable, so both are a PASS, the second only on
+// that exact error. A node whose --check accepts C, or rejects it for any other reason, WARNs rather
+// than fails. That is the trigger to re-verify this reasoning, not a defect signal.
+// The probe runs when this file loads, so the test name can carry the legal file's exit code.
 const dBroken = runNode(['--check', path.join(fxBroken, '.claude/workflows/bad.js')])
 const dOut = dBroken.stdout + dBroken.stderr
 const dLegal = runNode(['--check', path.join(fxLegal, '.claude/workflows/good.js')])
@@ -166,7 +156,7 @@ test('WG8 H missing corpus dir fails', () => {
   assertCase(invokeGate(fxNoDir), 1, ['\\.claude/workflows/ not found'], ['green —', 'ok — parsed'])
 })
 
-// I a nested workflow is discovered too — the glob is recursive, so a file parked one level down
+// I a nested workflow is discovered too. The glob is recursive, so a file one level down
 // cannot sit outside the gate while the summary still counts green.
 test('WG9 I nested file is gated', () => {
   const fxNested = newFixture('nested', { 'good.js': legal, 'good.selftest.mjs': passSelftest })
@@ -175,17 +165,15 @@ test('WG9 I nested file is gated', () => {
   assertCase(invokeGate(fxNested), 1, ['FAIL — \\.claude/workflows/sub/deep\\.js: SyntaxError'], ['green —'])
 })
 
-// META — the empty-MustNotMatch guard must fire through this file's wrapper, and on the guard
-// reason alone. The guard itself lives in the shared assertion core, so this proves the WIRING,
-// not the guard.
+// META: the empty-MustNotMatch guard must fire through this file's wrapper, and on the guard
+// reason alone. The guard lives in the shared assertion core, so this proves the wiring, not the guard.
 test('WG10 META', () => {
   const f = caseFailures({ code: 0, out: 'meta probe' }, 0, ['meta probe'], [])
   assert.ok(f.length === 1 && /no MustNotMatch/iu.test(f[0]),
     `guard did not fire — accepted=${f.length === 0} reason='${f.join('; ')}'`)
 })
-// The OTHER arm: the noNegative forwarding is this wrapper's job, and no real
-// case here passes a reason, so without this the parameter is write-only and a dropped
-// passthrough stays invisible until someone needs the escape hatch.
+// The other arm: this wrapper forwards noNegative, and no real case passes a reason. Without this
+// case the parameter is write-only and a dropped passthrough stays invisible.
 test('WG11 META exemption honored', () => {
   const f = caseFailures({ code: 0, out: 'meta probe' }, 0, ['meta probe'], [], 'META: proves this wrapper forwards noNegative to the shared core')
   assert.deepEqual(f, [], 'noNegative exemption rejected')

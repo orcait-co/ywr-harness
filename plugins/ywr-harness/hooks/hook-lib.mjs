@@ -1,15 +1,13 @@
 // Shared helpers for the plugin's Node hooks (hooks.json exec form: command `node`). Node built-ins
-// only, ESM, no install step — the same stack rule as the rest of the plugin.
+// only, ESM, no install step (ywr-harness ADR 0220).
 //
-// Why Node and not pwsh: a pwsh hook costs ~780 ms per invocation on the owner's box (~375 ms
-// startup + ~300 ms for the FIRST cmdlet call of any kind, whose module auto-load every hook pays);
-// the same logic in Node measures ~70 ms. `node` is one command name on every OS and a real .exe on
-// Windows (an exec-form `command` must resolve to a real executable, never a .cmd/.bat shim).
+// `node` is one command name on every OS and a real .exe on Windows. An exec-form `command` must
+// resolve to a real executable, never a .cmd/.bat shim.
 //
 // Contract every hook built on this file keeps: fail-open (a parse or I/O failure is a silent
 // exit 0, never a blocked tool call), one compact JSON line on stdout, UTF-8 without BOM both ways.
-// No file here may exit the process — exiting before stdout drains truncates the hook's output;
-// a hook returns and lets Node end naturally.
+// No file here may exit the process: exiting before stdout drains truncates the hook's output.
+// A hook returns and lets Node end naturally.
 import fs from 'node:fs'
 import path from 'node:path'
 import { git_result, which_on_path } from '../scripts/harness_git.mjs'
@@ -22,7 +20,7 @@ import { git_result, which_on_path } from '../scripts/harness_git.mjs'
 export const whichOnPath = which_on_path
 
 /**
- * One git call at the parse boundary (CLAUDE.md's git subprocess rule), run through `harness_git.mjs`:
+ * One git call at the parse boundary (ywr-harness ADR 0223), run through `harness_git.mjs`:
  * the pins, no shell, stdout captured as bytes and decoded once as UTF-8, git spawned by absolute path.
  * { absent } is true when no git is on PATH or the spawn reports ENOENT; { status } is the exit code
  * (null when the call could not complete). stderr is read and dropped.
@@ -73,7 +71,7 @@ export function sleep(ms) {
 
 /**
  * All of stdin as a string: UTF-8 decode, every leading U+FEFF stripped (a BOM-prefixed payload is
- * a real input class — config-change-audit 2026-07-23). '' when stdin cannot be read.
+ * a real input class). '' when stdin cannot be read.
  */
 export function readStdin() {
   const chunks = []
@@ -84,8 +82,8 @@ export function readStdin() {
     try {
       n = fs.readSync(0, buf, 0, buf.length, null)
     } catch (e) {
-      // EAGAIN: a non-blocking pipe with nothing yet — wait briefly, bounded. EOF: how Windows
-      // reports the end of a closed pipe.
+      // EAGAIN: a non-blocking pipe with nothing yet, so wait briefly, bounded. Any other error is
+      // the end of input: Windows reports a closed pipe as EOF.
       if (e && e.code === 'EAGAIN' && Date.now() < giveUpAt) { sleep(5); continue }
       break
     }
@@ -104,14 +102,14 @@ export function parseJson(text) {
 }
 
 /**
- * A JSON FILE the way PowerShell 7's `ConvertFrom-Json` read it (Newtonsoft, measured 2026-10-01 on
- * 7.6.6): `//` and `/* *\/` comments, trailing commas, single-quoted strings and unquoted keys are
+ * A JSON FILE read with the rules of PowerShell 7's `ConvertFrom-Json` (Newtonsoft): `//` and
+ * `/* *\/` comments, trailing commas, single-quoted strings and unquoted keys are
  * accepted; `#` comments and doubled commas are refused; `NaN`/`Infinity` come back as the strings
  * PowerShell's `[string]` would print; an empty, blank or comment-only file is null; two keys of one
  * object that differ only by case are refused (an exact repeat is last-wins). Throws on what
- * PowerShell refused, so a caller keeps its old unparseable branch. Two inputs PowerShell took are
- * refused here, neither a settings-file shape: a leading-zero number (Newtonsoft read `010` as octal)
- * and an elided array element (`[ , 1]`). Stdin payloads are host-written strict JSON and keep
+ * PowerShell refuses, so a caller keeps its unparseable branch. Two inputs PowerShell takes are
+ * refused here, neither a settings-file shape: a leading-zero number (Newtonsoft reads `010` as octal)
+ * and an elided array element (`[ , 1]`). Stdin payloads are host-written strict JSON and use
  * `parseJson`.
  */
 export function parseJsonLoose(text) {
@@ -219,14 +217,14 @@ export function parseJsonLoose(text) {
   return JSON.parse(json)
 }
 
-/** A JSON object — not null, not an array (PowerShell's PSCustomObject test, `-is`). */
+/** A JSON object: not null, not an array (PowerShell's PSCustomObject test, `-is`). */
 export function isObject(v) {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
 /**
- * PowerShell's `[string]` cast of a parsed JSON value, so a ported hook records what its .ps1
- * recorded: null/missing -> '' (never "undefined"/"null"), booleans -> True/False, an array its
+ * PowerShell's `[string]` cast of a parsed JSON value, so a hook records the same text for it:
+ * null/missing -> '' (never "undefined"/"null"), booleans -> True/False, an array its
  * elements joined by a space, an object `@{k=v; ...}`.
  */
 export function psString(v) {
@@ -238,7 +236,7 @@ export function psString(v) {
   return String(v)
 }
 
-/** PowerShell's `-eq` on two strings: case-insensitive (the .ps1 hooks compared event/tool names so). */
+/** PowerShell's `-eq` on two strings: case-insensitive. Event and tool names compare this way. */
 export function ieq(a, b) {
   return a.toUpperCase() === b.toUpperCase()
 }
@@ -253,9 +251,9 @@ export function getProp(obj, name) {
   return k === undefined ? undefined : obj[k]
 }
 
-// .NET String.Trim() trims Char.IsWhiteSpace — U+0009-000D, U+0020, U+0085, U+00A0, U+1680,
+// .NET String.Trim() trims Char.IsWhiteSpace: U+0009-000D, U+0020, U+0085, U+00A0, U+1680,
 // U+2000-200A, U+2028, U+2029, U+202F, U+205F, U+3000. JS trim() differs (it trims U+FEFF and not
-// U+0085), and the pwsh Inline() it was ported from is the reference, so the set is spelled out by code unit.
+// U+0085), so the set is spelled out by code unit.
 function isNetSpace(c) {
   return (c >= 0x09 && c <= 0x0d) || c === 0x20 || c === 0x85 || c === 0xa0 || c === 0x1680 ||
     (c >= 0x2000 && c <= 0x200a) || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000
@@ -272,8 +270,8 @@ export function netTrim(s) {
 
 // The flattened class (harness_config.CONTROL's, plus the backtick): C0 U+0000-001F, DEL U+007F,
 // NEL U+0085, LS U+2028, PS U+2029. A model reads hook output and may take any of the three Unicode
-// breaks as a line break, so a payload-authored value must not carry one. By code unit — never
-// spell these characters (or their escapes) in source: the escape text can materialize as the
+// breaks as a line break, so a payload-authored value must not carry one. Match by code unit. Never
+// spell these characters or their escapes in source: the escape text can materialize as the
 // literal character through an editor.
 function isFlattened(c) {
   return c <= 0x1f || c === 0x7f || c === 0x85 || c === 0x2028 || c === 0x2029 || c === 0x60
@@ -294,10 +292,9 @@ export function inline(text, max = 80) {
   return t
 }
 
-// Drift-key order: case-insensitive, locale-aware (the pwsh originals' Sort-Object was culture-aware),
-// with an ordinal tiebreak so the order is deterministic. Exact parity with Sort-Object across cultures
-// is not possible; the received keys of a real payload are lowercase ASCII and sort identically.
-// Exported for scaffold-refresh-nudge's `lastUpdated` order, which the original compared the same way.
+// Drift-key order: case-insensitive and locale-aware, with an ordinal tiebreak so the order is
+// deterministic. The received keys of a real payload are lowercase ASCII, so every culture sorts them
+// the same. Exported for scaffold-refresh-nudge's `lastUpdated` order, which compares the same way.
 export const collator = new Intl.Collator(undefined, { sensitivity: 'accent' })
 
 /**

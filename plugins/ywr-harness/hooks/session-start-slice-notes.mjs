@@ -1,28 +1,24 @@
 // SessionStart (matcher `compact`) — re-injects the session's own slice notes after a context
 // compaction (ywr-harness ADR 0172, ywr-harness spec 0006 §3.2).
 //
-// Why it exists: a slice's decisions used to reach paper only at the close. A compaction between a
-// decision and the close keeps whatever the host's summary keeps, so a reason could vanish with it.
-// The session appends one line per decision with `slice_note.mjs add` (ywr-harness spec 0007 §3.10) to a journal
-// under `git rev-parse --git-path`. This hook runs `slice_note.mjs show` after a compaction and hands
-// the output back as `additionalContext`. It is the only reader besides /ywr-harness:slice-close and it does not
-// parse the journal itself: one reader owns the format (ywr-harness ADR 0172 option I, rejected).
+// A compaction between a decision and the slice close can drop the reason with the host's summary.
+// The session appends one line per decision with `slice_note.mjs add` (ywr-harness spec 0007 §3.10)
+// to a journal under `git rev-parse --git-path`. This hook runs `slice_note.mjs show` after a
+// compaction and returns the output as `additionalContext`. It never parses the journal: one reader
+// owns the format (ywr-harness ADR 0172).
 //
-// Why a matcher: the event fires on startup, resume, clear, compact and fork. Only a compaction loses
-// context mid-slice; a start or a clear begins a new slice from the handoff. `compact` therefore
-// registers this hook alone, so the other four sources never pay the `node` spawn (the speed rule).
+// The matcher is `compact` alone. The event fires on startup, resume, clear, compact and fork, but
+// only a compaction loses context mid-slice, so the other sources never pay the `node` spawn.
 //
-// Payload and output contract, read from the official hooks reference (code.claude.com/docs/en/hooks.md,
-// raw) on 2026-10-26:
+// Payload and output contract (hooks reference):
 //   cwd    : working directory of this firing
-//   source : startup | resume | clear | compact | fork — the matcher filters on it; the script does not
-//            re-check it, so a manual run speaks like a compaction would
-// `hookSpecificOutput.additionalContext` joins the model's context; `systemMessage` is shown to the
-// member; plain stdout on exit 0 also becomes context, so every non-speaking path prints NOTHING.
-// Each of those strings is capped at 10,000 characters, measured on its own; over the cap the host
-// spills it to a file and keeps a 2,000-character preview, and it never asks the model to read the
-// file (hooks reference, "A hook's additionalContext, systemMessage, ... capped at 10,000 characters").
-// MAX_NOTES below is sized from that cap, and the selftest proves the worst case fits.
+//   source : startup | resume | clear | compact | fork. The matcher filters on it. The script does
+//            not re-check it, so a manual run speaks like a compaction would.
+// `hookSpecificOutput.additionalContext` joins the model's context. `systemMessage` is shown to the
+// member. Plain stdout on exit 0 also becomes context, so every silent path prints NOTHING.
+// The host caps each of those strings at 10,000 characters, measured on its own. Over the cap it
+// spills the string to a file, keeps a 2,000-character preview and never asks the model to read the
+// file. MAX_NOTES is sized from that cap, and the selftest proves the worst case fits.
 //
 // Decision table:
 //   wrong event / unparseable stdin ........................ silent
@@ -35,14 +31,15 @@
 //   spawn error / timeout / non-zero exit ................... one Korean systemMessage naming the
 //                                                              failure and the `show` command
 //
-// The notes are the session's own claims and slice_note.mjs already refuses control, format and line
-// separator characters on write and on read, so the model sees one plain line per note. The framing
-// line says what they are and that each needs a check against the tree (ywr-harness ADR 0105: input, never
-// proof). A path, an exit code or a payload key echoed into a banner goes through inline().
+// The notes are the session's own claims. slice_note.mjs refuses control, format and line separator
+// characters on write and on read, so the model sees one plain line per note. The framing line
+// says that each note needs a check against the tree (ywr-harness ADR 0105). A path, an exit code
+// or a payload key echoed into a banner goes through inline().
 //
-// The reader runs under the Node that runs this hook (`process.execPath`), with no shell and no PATH lookup
-// (ywr-harness spec 0006 §3.1): a bare-name spawn would search the working directory first on Windows. The hook
-// never exits the process: it returns, so stdout drains and the exit code stays 0.
+// The reader runs under the Node that runs this hook (`process.execPath`), with no shell and no
+// PATH lookup (ywr-harness spec 0006 §3.1): a bare-name spawn searches the working directory first
+// on Windows. The hook never exits the process. It returns, so stdout drains and the exit code
+// stays 0.
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -51,11 +48,10 @@ import { readStdin, parseJson, isObject, getProp, psString, ieq, netTrim, inline
 
 const JOURNAL = 'ywr-harness/slice-notes.jsonl'
 // Sized from the 10,000-character cap on one hook string. One `show` line holds at most about 540
-// UTF-16 units (index, time, kind and a note that slice_note.mjs bounds at 500 UTF-16 units, so an
-// astral character counts twice). The framing line (236), the header with its base (up to ~106), a
+// UTF-16 units (index, time, kind and a note that slice_note.mjs bounds at 500 units, so an astral
+// character counts twice). The framing line (236), the header with its base (up to ~106), a
 // refused-handoff warning line (~130) and the two trailer lines (~100) hold under 700 together:
-// 17 x 540 + 700 = 9,880. A fix-check leg measured 9,590 with 17 astral-character notes; the selftest
-// builds an ASCII worst case.
+// 17 x 540 + 700 = 9,880. The selftest builds an ASCII worst case.
 const MAX_NOTES = 17
 const TIMEOUT_MS = 10000
 const SCRIPT = fileURLToPath(new URL('../scripts/slice_note.mjs', import.meta.url))

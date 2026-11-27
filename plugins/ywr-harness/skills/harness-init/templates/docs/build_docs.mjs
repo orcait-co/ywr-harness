@@ -24,7 +24,7 @@
 //                                       the build itself refuses; a rebuild cannot fix it, so it never
 //                                       reads as drift.
 // The file rejects an unknown argument with exit 2 before it writes. One YYYY-MM-DD argument is read
-// and ignored, because an older wrapper passed one.
+// and ignored, so a wrapper that still passes a date keeps working.
 //
 // Branding: the declared `docs.site_title` of `.harness.json` is the source of the page title. The
 // environment variable DOCS_SITE_TITLE is a one-run override only. If the environment were the only
@@ -75,9 +75,10 @@ const STATUS_LABEL = new Map([
 ])
 
 // ------------------------------------------------------------------------------------------------
-// Python semantics. The corpus text is read the way Python read it (universal newlines, Unicode
-// `\s \w \d`, code-point slicing and sorting), so one corpus gives one set of bytes in either
-// runtime. Each helper below names the Python behavior it keeps.
+// Python semantics. The corpus text is read with Python's rules (universal newlines, Unicode
+// `\s \w \d`, code-point slicing and sorting), so one corpus gives one set of bytes, and the digest
+// that `scripts/harness/verify_map.mjs` recomputes stays equal. Each helper below names the Python
+// behavior it keeps.
 // ------------------------------------------------------------------------------------------------
 
 // `sys.exit(<message>)` as an exception: a string code prints to stderr and exits 1, a number is the
@@ -1510,8 +1511,8 @@ function build_artifact(adrs, specs) {
 // ------------------------------------------------------------------------------------------------
 const CUSTOMER_FILES = ['spec.md', 'user-guide.md', 'release-notes.md']
 const RECENT_GROUP_LABEL = '최근 업데이트'
-// The css class of a default badge (FUT/UAT/PROD) is `rs-` plus the lower-cased tag, byte for byte what
-// the consumer repo that used this vocabulary first had (rs-fut, rs-uat, rs-prod). Only a custom tag gets
+// The css class of a default badge (FUT/UAT/PROD) is `rs-` plus the lower-cased tag, byte for byte
+// (rs-fut, rs-uat, rs-prod), so the output of a repo that already uses this vocabulary stays unchanged. Only a custom tag gets
 // the helper class rs-mid or rs-fin, which tells the final stage from a middle one (see the CSS).
 const KNOWN_STAGE_CLASSES = new Set(['rs-fut', 'rs-uat', 'rs-prod'])
 
@@ -1641,8 +1642,8 @@ function collect_customer_docs(cfg, root) {
 /**
  * Replace the `[TAG]` token at the end of a release-notes H2 with the badge of the declared
  * release_stages. The default vocabulary (FUT/UAT/PROD) keeps the css class `rs-` plus the lower-cased
- * tag, byte for byte as the consumer repo that used it first; only a custom tag gets the helper class
- * rs-mid or rs-fin.
+ * tag, byte for byte, so the output of a repo that already uses it stays unchanged; only a custom tag
+ * gets the helper class rs-mid or rs-fin.
  */
 function mark_release_status(html_text, stages) {
   if (!stages.length) return html_text
@@ -2235,7 +2236,7 @@ export async function _load_panels(cfg, root) {
     const label = T(decl_label) ? decl_label : `패널 ${i + 1}`
     if (!T(mod_rel)) sys_exit(`[오류] docs.customer.panels[${i}] 에 module 이 없습니다.`)
     // A panel is code the builder imports, so only an `.mjs` module can be one. A module of another kind
-    // (a `.py` panel kept from before the Node port) refuses the whole build here, before any surface is
+    // (such as a `.py` file) refuses the whole build here, before any surface is
     // written, rather than dropping the tab with a warning: a silent drop would leave the customer surface
     // without a tab that its readers expect.
     if (!py_str(mod_rel).endsWith('.mjs')) {
@@ -2305,7 +2306,7 @@ export async function _load_panels(cfg, root) {
       updated: updated || '', chips: [...chips] })
   }
   // Isolation is a scope class plus the author's discipline: the CSS is not rewritten. Only a selector
-  // that touches a class name of the canon or of another panel outside `.panel-<id>` warns, as one line
+  // that touches a class name of the page CSS or of another panel outside `.panel-<id>` warns, as one line
   // on stderr and never as a refusal. A unique name (`.pm-card`) stays quiet: a leak needs a name clash.
   for (const pl of panels) {
     const others = css_classes(CUSTOMER_CSS)
@@ -2346,7 +2347,7 @@ function css_classes(css) {
 }
 
 /**
- * Find the selectors of a panel CSS that touch a class in `other_classes` (the canon and the other panels)
+ * Find the selectors of a panel CSS that touch a class in `other_classes` (the page CSS and the other panels)
  * and own no class of the panel: such a rule lands later at the same specificity and overrides the
  * documents tab (for example a `.mono` or `.clip` rule of the panel). A class unique to the panel
  * anywhere in the selector (`.envpanel .mono`, `.pm-dom.on`) limits the rule to that element and its
@@ -2735,9 +2736,8 @@ async function main() {
   }
 }
 
-// The parsing and rendering helpers, under the names the Python builder gave them. A selftest pairing or a
-// panel module imports them; an import never runs main(). `parse_frontmatter` returns [meta, body] with
-// meta as a Map in source order.
+// The parsing and rendering helpers. A selftest pairing or a panel module imports them; an import
+// never runs main(). `parse_frontmatter` returns [meta, body] with meta as a Map in source order.
 export { split_frontmatter, parse_frontmatter, fm_digest, convert_body, esc, inline,
   strip_leading_h1 as _strip_leading_h1, flow_depth as _flow_depth }
 

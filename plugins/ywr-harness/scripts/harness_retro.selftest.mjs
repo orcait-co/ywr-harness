@@ -7,32 +7,28 @@
 // is an advisory gate people stop reading, and there is no exit code to notice the regression.
 //
 // The subtlest case in the file is D2: a body-only ADR edit must NOT demand a rebuild, because the
-// committed outputs are frontmatter-derived. That distinction was learned the expensive way in
-// ywr-platform and is the single most likely thing to be broken by a well-meaning simplification.
+// committed outputs are frontmatter-derived. That distinction is the single most likely thing to be broken
+// by a well-meaning simplification.
 //
-// This is the Node port of the pwsh suite of the same name (ADR 0227). The pwsh suite named the cases of
-// sections A, B, C, E, F, G, H, I, J, K and Q with a bare letter, which is no case ID. Each such test here
-// is `RT<n> <the old name>`, so the parity check of ADR 0227 decision 8 matches the names. The cases that
-// carried an ID keep it. Patterns are pwsh -match sources (case-insensitive; see toRx in lib/selftest-lib.mjs).
+// A test name starts with its case ID. The cases of sections A, B, C, E, F, G, H, I, J, K and Q have no ID, so
+// each such test is `RT<n> <its name>`. Patterns are .NET -match sources (case-insensitive; see toRx in
+// lib/selftest-lib.mjs).
 //
-// The pwsh suite built each section's fixture repos in line, one section after the next, and later sections
-// reused earlier repos (the G repo feeds I and K2, the K repo feeds SZ6, the DL5 ledger feeds DL6). A
-// section here is one `lazy` scenario that builds its repos and runs the retro, and a test then asserts on the
-// stored run. A scenario that needs an earlier repo calls that scenario, and the two share one worker group
-// (see GROUPS), so a dependent scenario still sees the repo state that the pwsh suite gave it. A throw in a
-// scenario fails every test of it with that cause.
+// A section is one `lazy` scenario that builds its fixture repos and runs the retro, and a test then asserts on
+// the stored run. Some scenarios read an earlier repo (the G repo feeds I and K2, the K repo feeds SZ6, the DL5
+// ledger feeds DL6). A scenario that needs an earlier repo calls that scenario, and the two share one worker
+// group (see GROUPS). A throw in a scenario fails every test of it with that cause.
 //
-// The pwsh suite wrote the three small child scripts of D7, D8 and G4 as text files. Here each is a function
-// whose source is written to a file and run by `node`, so the child keeps its own process and its own module
-// cache, as before. The pwsh suite ran the retro with `node` found on PATH; this suite runs it with the node
-// that runs the suite. The `node absent` skip of the pwsh suite has no case here: the suite is running on node.
+// Each of the three small child scripts of D7, D8 and G4 is a function whose source is written to a file and
+// run by `node`, so the child keeps its own process and its own module cache. The suite runs the retro with the
+// node that runs the suite.
 //
-// Speed (O207). The scenarios share no repo, no folder and no state beyond the dependencies named in GROUPS,
+// Speed: the scenarios share no repo, no folder and no state beyond the dependencies named in GROUPS,
 // and each spends its time waiting on child processes. The first test runs each group in its own worker
-// thread of this same file, a few at a time, and every test then reads the stored result as before. A worker
-// thread runs the same synchronous scenario code, so the code of a scenario is unchanged, and each retro run
-// stays a child process. A seed repo is built once and copied with fs.cpSync into each fixture repo that
-// declares the same config, instead of `git init`, `git add` and `git commit` per repo.
+// thread of this same file, a few at a time, and every test then reads the stored result. A worker
+// thread runs the same synchronous scenario code, and each retro run stays a child process. A seed repo is
+// built once and copied with fs.cpSync into each fixture repo that declares the same config, instead of
+// `git init`, `git add` and `git commit` per repo.
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -47,7 +43,7 @@ const retro = path.join(here, 'harness_retro.mjs')
 const fxBase = fixtureRoot('harness-retro-selftest')
 if (isMainThread) after(() => { removeFixtureRoot(fxBase) })
 
-// Fixture identity through the environment, once: a per-repo `git config user.*` was two spawns per
+// Fixture identity through the environment, once: a per-repo `git config user.*` costs two spawns per
 // fixture repo. Neither harness_retro nor a case reads a repo-local user.* value.
 process.env.GIT_AUTHOR_NAME = 'selftest'; process.env.GIT_COMMITTER_NAME = 'selftest'
 process.env.GIT_AUTHOR_EMAIL = 'selftest@example.invalid'; process.env.GIT_COMMITTER_EMAIL = 'selftest@example.invalid'
@@ -83,7 +79,7 @@ const CFG = `{
 }
 `
 
-// stdout and stderr together, as `2>&1` read them. The retro writes its stderr lines first.
+// stdout and stderr together. The retro writes its stderr lines first.
 function runRetro(args, env) {
   const r = runNode([retro, ...args], { env: env ? { ...process.env, ...env } : undefined })
   return { out: r.stderr + r.stdout, code: r.status }
@@ -169,7 +165,7 @@ function ready() {
   return readyRun
 }
 // A small child script: a function with no free variables, written to a file and run by `node` with its
-// arguments. The pwsh suite wrote the same scripts as text.
+// arguments.
 function runChild(name, fn, args) {
   const file = path.join(fxBase, `${name}.mjs`)
   fs.writeFileSync(file, `await (${fn.toString()})(...process.argv.slice(2))\n`)
@@ -188,8 +184,8 @@ const A = lazy('A', () => {
   writeF(a, 'docs/adr/0001-a.md', adr('0001'))
   commit(a, 'chore: dep with adr')
   const rA2 = invokeRetro(a)
-  // A3: a rename can TRIGGER a check but never SATISFY one (ADR 0081 arm, B low). Renaming the
-  // existing ADR is not a new decision — `added` counted R, so the rename used to silence DEP.
+  // A3: a rename can TRIGGER a check but never SATISFY one (spec 0007 §3.4). Renaming the
+  // existing ADR is not a new decision, so `added` must not count R.
   writeF(a, 'pyproject.toml', "[project]\nname='x'\nversion='3'\n")
   git(a, ['mv', 'docs/adr/0001-a.md', 'docs/adr/0001-renamed.md'])
   commit(a, 'chore: dep with a renamed adr')
@@ -220,8 +216,7 @@ const B = lazy('B', () => {
   commit(b2, 'feat: schema with a moved spec')
   const rB3 = invokeRetro(b2)
 
-  // B4: a DELETED spec updated nothing either (review 2026-09-26: the D line's path sat in the
-  // suppressor set).
+  // B4: a DELETED spec updated nothing either, so the D line's path stays out of the suppressor set.
   writeF(b2, 'migrations/versions/004_z.py', '# migration\n')
   git(b2, ['rm', '-q', 'docs/spec/0001-moved.md'])
   commit(b2, 'feat: schema with a deleted spec')
@@ -414,7 +409,7 @@ const CL = lazy('CL', () => {
   const rCL9 = invokeRetro(e, ['HEAD~1'])
   const rCL9b = invokeRetro(e, ['HEAD~2'])
   const rCL4 = invokeRetro(e2, ['--coverage', '--class-message', msgFile])
-  // The refusal text says "no other argument", so --repo is refused too (dist #18). An older commit-msg hook passes the
+  // The refusal text says "no other argument", so --repo is refused too. An older commit-msg hook passes the
   // message file alone, so this refuses no hook call. The call names --repo itself, so it does not rest on invokeRetro.
   const rCL4b = runRetro(['--class-message', msgFile, '--repo', e2])
   return { rCL, rCL2, rCL3, rCL9, rCL9b, rCL4, rCL4b }
@@ -463,9 +458,9 @@ const F = lazy('F', () => {
   commit(f4, 'chore: add owned source')
   const rF4 = invokeRetro(f4)
 
-  // F5: the MULTI-LINE flow form owns its files too (dist issue #6). Before 0.54.0 this parser read
-  // nothing from it — `\[(.*?)\]` needs the `]` on the key's own line — so both files fired UNMAPPED
-  // while the builder (after the same fix) indexed them as owned: the two parsers disagreed on one field.
+  // F5: the MULTI-LINE flow form owns its files too. A parser whose `\[(.*?)\]` needs the `]` on the key's
+  // own line reads nothing from it, so both files would fire UNMAPPED while the builder indexes them as
+  // owned: the two parsers must not disagree on one field.
   const f5 = newRepo('unmapped-owned-flow', CFG)
   writeF(f5, 'docs/spec/0001-s.md', '---\nid: "0001"\ntype: spec\nimplements_in: [\n  "src/flow_a.py",\n  src/flow_b.py,   # trailing comma\n]\ntags: [x]\n---\n# spec\n')
   writeF(f5, 'src/flow_a.py', 'a = 1\n')
@@ -497,9 +492,9 @@ const G = lazy('G', () => {
   commit(g, 'docs: map a file that does not exist')
   const rG = invokeRetro(g)
 
-  // G2: an item carrying ']' (the Next.js catch-all route) in a one-line list (dist issue #6). The
-  // lazy `\[(.*?)\]` stopped at the FIRST ']': it mapped `app/api/auth/[...nextauth` — a false
-  // DEADMAP on every commit — and dropped every later item, so src/c.py fired UNMAPPED as well.
+  // G2: an item carrying ']' (the Next.js catch-all route) in a one-line list. A lazy `\[(.*?)\]`
+  // stops at the FIRST ']': it maps `app/api/auth/[...nextauth`, a false DEADMAP on every commit, and
+  // drops every later item, so src/c.py fires UNMAPPED as well.
   const g2 = newRepo('deadmap-bracket-item', CFG)
   writeF(g2, 'app/api/auth/[...nextauth]/route.ts', 'export {}\n')
   writeF(g2, 'src/c.py', 'c = 1\n')
@@ -520,8 +515,8 @@ const G = lazy('G', () => {
   const rG3c = invokeRetro(g3, ['--coverage'])
 
   // G5: the multi-line form of G2's class, end to end — a last item ending in `]` (a Next.js dynamic
-  // route DIRECTORY) with the closing `]` on its own line. The old close rule (first line ending in
-  // `]`) cut it to `app/[slug` in both parsers alike, so the pairing passed while the retro fired a
+  // route DIRECTORY) with the closing `]` on its own line. A close rule of "first line ending in
+  // `]`" cuts it to `app/[slug` in both parsers alike, so the pairing passes while the retro fires a
   // false DEADMAP on every commit; the bracket balance reads the item whole.
   const g5 = newRepo('deadmap-bracket-dir-multiline', CFG)
   writeF(g5, 'app/[slug]/page.tsx', 'export {}\n')
@@ -539,16 +534,16 @@ t('G3 the shipped template maps nothing out of its own comment (no DEADMAP)', ()
 t('G3 --coverage agrees: no dead mappings', () => { ok(has(G().rG3c.out, 'dead mappings: none'), G().rG3c.out) })
 
 // G4: PAIRING — this parser against the docs builder's, shape by shape. They are two parsers of one
-// field by necessity (the retro reads committed sources, not an index that may not be rebuilt), and
-// until 0.54.0 they disagreed on three shapes (dist issue #6). The builder is the TEMPLATE copy the
-// plugin ships (byte-identical to the canon's docs/build_docs.mjs — manifest-gate's dogfood sweep).
+// field by necessity (the retro reads committed sources, not an index that may not be rebuilt). The builder
+// is the TEMPLATE copy the plugin ships (byte-identical to the canon's docs/build_docs.mjs — manifest-gate's
+// dogfood sweep).
 // Each shape carries the EXPECTED builder value, compared TYPED (type name + value, so an int 7 is
 // not a string '7'): the retro must equal it as a list, or [] where the builder indexes a non-list,
 // and the builder must equal it exactly — so a rule dropped from BOTH parsers (the column-0 key
 // guard, the bracket balance, the comment-only cut) still fails, which a bare pairing cannot see.
 // "flow unclosed before a key" is the guard's pin: without the guard both parsers swallow `next: 3`
-// into the list and close it at the stray `]`. The "ends in ]" shapes are the balance rule's pin: the
-// old rule (first line ending in `]` closes) truncated `app/[slug]` to `app/[slug` in both parsers.
+// into the list and close it at the stray `]`. The "ends in ]" shapes are the balance rule's pin: a rule
+// that closes at the first line ending in `]` truncates `app/[slug]` to `app/[slug` in both parsers.
 const G4 = lazy('G4', () => runChild('pairing', async (scriptsDir, builderPath) => {
   const path = (await import('node:path')).default
   const { pathToFileURL } = await import('node:url')
@@ -639,9 +634,9 @@ t('RT9 J per-commit reports the split', () => { ok(has(J().rJ1.out, 'SPEC:'), J(
 t('RT9 J over the whole range it is silent', () => { ok(!has(J().rJ2.out, 'SPEC:'), J().rJ2.out) })
 
 // --- L: a merge commit is a range in disguise (ADR 0043) -----------------------------------------
-// diff-tree without -m prints NOTHING for a merge commit, so before the fix the retro ran all
-// seven checks over an empty change set — a conflicted `git pull` concluded with `git commit`
-// fired post-commit and passed silently having checked nothing. L1 is the mutation anchor: it
+// diff-tree without -m prints NOTHING for a merge commit, so without the HEAD^2 probe the retro runs every
+// check over an empty change set: a conflicted `git pull` concluded with `git commit`
+// fires post-commit and passes silently having checked nothing. L1 is the mutation anchor: it
 // fails when the HEAD^2 probe is removed. L2 pins the silence half — first-parent scope must not
 // over-report a merge that landed nothing interesting.
 const L = lazy('L', () => {
@@ -664,10 +659,9 @@ const L = lazy('L', () => {
   git(l, ['merge', '-q', '--no-ff', '--no-edit', 'side2'])
   const rL2 = invokeRetro(l)
 
-  // L3: an octopus merge is covered by the same range. The review's octopus concern (2026-08-10, low)
-  // claimed non-first legs escape the diff. They do not — HEAD^1..HEAD is a tree diff plus a
-  // reachability log, both of which include every leg — and this case MEASURES that: the SPEC-firing
-  // change lives on the SECOND merged branch.
+  // L3: an octopus merge is covered by the same range. Non-first legs do not escape the diff:
+  // HEAD^1..HEAD is a tree diff plus a reachability log, both of which include every leg. This case
+  // checks that: the SPEC-firing change lives on the SECOND merged branch.
   const l3 = newRepo('merge-octopus', CFG)
   writeF(l3, 'src/app.py', 'x = 1\n')
   writeF(l3, 'docs/spec/0001-s.md', spec('0001', ['src/app.py']))
@@ -695,10 +689,8 @@ const K = lazy('K', () => {
   const k = newRepo('nocfg', '{ "retro": {} }')
   const rK = invokeRetro(k, ['--coverage'])
   const rK2 = invokeRetro(G().g, ['--coverage'])
-  // K3: the report survives a console that cannot encode it (dist issue #6 claimed a cp949 crash;
-  // not reproduced — the UTF-8 pin has run at import since v0.9.0). This is the regression guard for
-  // that pin: ascii:strict is the harshest stdout a member's console can hand the old Python gate, and the
-  // DISABLED lines carry '—'. Removing the pin raises UnicodeEncodeError here and exits 1.
+  // K3: the report keeps its '—' on stdout. The DISABLED lines carry it, and the retro writes UTF-8. Node
+  // ignores PYTHONIOENCODING, so this case checks exit 0 and an intact UTF-8 dash, not a Python encode error.
   return { k, rK, rK2, rK3: invokeRetro(k, ['--coverage'], { PYTHONIOENCODING: 'ascii:strict' }) }
 })
 t('RT10 K an undeclared scope is reported as DISABLED', () => { ok(has(K().rK.out, 'source_scope not declared.*DISABLED'), K().rK.out) })
@@ -710,10 +702,10 @@ t('K3 --coverage on an ascii:strict console exits 0 with no UnicodeEncodeError',
 })
 t('K3 and the em dash arrives intact (UTF-8, not a replacement)', () => { ok(has(K().rK3.out, 'not declared — the checks it drives are DISABLED'), K().rK3.out) })
 
-// --- N: a git failure is LOUD, never a false clean retro (O41(c), ADR 0041's principle) ---------
-// git() swallowed every failure as empty output, so an unresolvable range read as "nothing
-// changed" — silent, exit 0, indistinguishable from case H. Now: a stdout FAILED marker, exit 1
-// (the post-commit hook's `|| true` keeps the commit untouched). N2 is the silence half: the
+// --- N: a git failure is LOUD, never a false clean retro (ADR 0041's principle) ------------------
+// A git failure read as empty output would make an unresolvable range read as "nothing
+// changed": silent, exit 0, indistinguishable from case H. So the gate prints a stdout FAILED marker and
+// exits 1 (the post-commit hook's `|| true` keeps the commit untouched). N2 is the silence half: the
 // semantic exits (rev-parse -q --verify on a root commit's HEAD^) still read as absent.
 const N = lazy('N', () => {
   const n = newRepo('git-failure', CFG)
@@ -725,9 +717,9 @@ t('N1 an unresolvable range prints a FAILED marker on stdout', () => {
 t('N1 and exits non-zero, no traceback', () => { const r = N().rN; ok(r.code === 1 && !has(r.out, 'Traceback'), `exit=${r.code}: ${r.out}`) })
 t('N2 a root commit (HEAD^ absent, exit 1) is still a clean silent run', () => { const r = N().rN2; ok(r.code === 0 && blank(r.out), `exit=${r.code}: ${r.out}`) })
 
-// --- O: a path carrying U+2028 stays ONE path (O41(c), ADR 0077) ---------------------------------
-// `.splitlines()` over `diff-tree --name-status` broke `src/a<U+2028>b.py` into `src/a` (no .py —
-// out of scope) + `b.py` (no tab — dropped), so UNMAPPED stayed SILENT on a new unowned file.
+// --- O: a path carrying U+2028 stays ONE path (ADR 0077) -----------------------------------------
+// Splitting `diff-tree --name-status` on Unicode line breaks would break `src/a<U+2028>b.py` into `src/a` (no
+// .py, out of scope) + `b.py` (no tab, dropped), so UNMAPPED would stay SILENT on a new unowned file.
 // The separator is built from its code point at runtime, never a literal in this file.
 const O = lazy('O', () => {
   const ls = String.fromCharCode(0x2028)
@@ -745,10 +737,11 @@ t('O2 --coverage: the U+2028 path is ONE unowned file (ls-files -z)', () => {
 })
 
 // --- P: frontmatter_at — absence is asked structurally, every other git fatal is LOUD ------------
-// `git show pre:path` exited 128 both for "absent at pre" and for any fatal, so a missing blob
-// read as "absent" (a silent difference). P1 deletes the loose object of the pre-side ADR blob:
-// ls-tree still lists the path, the batch reply is `missing`, and `git show` must fail → FAILED marker, exit 1. P2 is the silence
-// half: an ADR ADDED in the commit (absent at pre) still reads as a difference, not a failure.
+// `git show pre:path` exits 128 both for "absent at pre" and for any fatal, so a missing blob
+// would read as "absent" (a silent difference). P1 deletes the loose object of the pre-side ADR blob:
+// ls-tree still lists the path, the batch reply is `missing`, and `git show` must fail → FAILED marker,
+// exit 1. P2 is the silence half: an ADR ADDED in the commit (absent at pre) still reads as a difference,
+// not a failure.
 function dropLooseBlob(repo, blob) {
   const obj = path.join(repo, '.git', 'objects', blob.slice(0, 2), blob.slice(2))
   const had = fs.existsSync(obj)
@@ -812,9 +805,9 @@ t('RT11 Q a missing git binary prints the FAILED marker and exits 1, no tracebac
   ok(r.status === 1 && has(out, String.raw`\[slice-retro\] FAILED — git could not be run`) && !has(out, 'Traceback'), `exit=${r.status}: ${out}`)
 })
 
-// --- R: a directory implements_in entry owns every file below it (ADR 0104, dist issue #7) -------
-// Exact-string ownership read every file added under a directory entry as UNMAPPED, and a change
-// there never fired SPEC. The prefix is `entry + "/"`: `src/notice` must not own `src/notice_old.py`.
+// --- R: a directory implements_in entry owns every file below it (ADR 0104) ----------------------
+// Exact-string ownership would read every file added under a directory entry as UNMAPPED, and a change
+// there would never fire SPEC. The prefix is `entry + "/"`: `src/notice` must not own `src/notice_old.py`.
 const R = lazy('R', () => {
   const r = newRepo('dir-entry', CFG)
   writeF(r, 'docs/spec/0001-s.md', spec('0001', ['src/notice', 'src/board/']))
@@ -841,12 +834,12 @@ t('R2 --coverage agrees: only the sibling is unowned', () => {
 })
 t('R3 a deletion under a directory entry fires SPEC for its spec', () => { ok(has(R().rR3.out, String.raw`SPEC:.*0001-s\.md`), R().rR3.out) })
 
-// --- S: a docs source that opens with an HTML comment is read like the builder reads it (canon #59) -
-// spec_map and frontmatter_at kept their own looser parse until 0.60.1 and required line 1 to be `---`;
-// the index (build_docs.split_frontmatter, via hc.fm_block) skips a leading HTML comment. So a spec
-// written `<!-- note -->` + frontmatter was INDEXED as owning its files while the retro read it as
-// owning nothing (a false UNMAPPED), and a frontmatter edit under such a header read as
-// `<no-frontmatter>` on both sides (a silently missed BUILD).
+// --- S: a docs source that opens with an HTML comment is read like the builder reads it -----------
+// The index (build_docs.split_frontmatter, via hc.fm_block) skips a leading HTML comment, so spec_map and
+// frontmatter_at must not require line 1 to be `---`. Otherwise a spec written `<!-- note -->` +
+// frontmatter is INDEXED as owning its files while the retro reads it as owning nothing (a false
+// UNMAPPED), and a frontmatter edit under such a header reads as `<no-frontmatter>` on both sides (a
+// silently missed BUILD).
 const S = lazy('S', () => {
   const s1 = newRepo('comment-led-spec', CFG)
   writeF(s1, 'docs/spec/0001-s.md', '<!-- note -->\n---\nid: "0001"\ntype: spec\nimplements_in: ["src/a.py"]\n---\n# spec\n')
@@ -967,7 +960,7 @@ t('DL3 two null-id files stay two sessions', () => {
 
 // DL4: usage errors — the report takes no range and does not combine with --coverage.
 const DL4 = lazy('DL4', () => {
-  DL3() // the order of the pwsh suite: the two null-id slot files exist when the usage errors run
+  DL3() // the two null-id slot files exist when the usage errors run
   const { dl } = DL1()
   return { r: invokeRetro(dl, ['--delegations', 'HEAD~1..HEAD']), rb: invokeRetro(dl, ['--delegations', '--coverage']) }
 })
@@ -982,7 +975,7 @@ const DL5 = lazy('DL5', () => {
   const dir = ledger(dl5)
   // A teammate (2.1.289+) is written as an agent-tool loop whose spawn row says teammate: true.
   const mate = { subagent_type: 'researcher', model_param: null, model: 'claude-sonnet-5-5', teammate: true }
-  // Controls: `teammate: false` (every non-teammate spawn the 0.62.1 writer emits) and a non-boolean "true"
+  // Controls: `teammate: false` (every non-teammate spawn the writer emits) and a non-boolean "true"
   // stay agent-tool — the reader re-kinds on the boolean true only.
   const notMate = { subagent_type: 'Explore', model_param: null, model: 'claude-haiku-4-5', teammate: false }
   const strMate = { subagent_type: 'Plan', model_param: null, model: 'claude-haiku-4-5', teammate: 'true' }
@@ -1018,7 +1011,6 @@ t('DL5 teammate false and a non-boolean "true" stay agent-tool rows', () => {
 // the count must not follow the resolved model: the counted one runs on sonnet (not main's opus), while a
 // worker given `opus` runs on main's model and a named type with no model given (it may pin) is not
 // counted either. Two counted loops against one on main's model: a model-equality rule reads 1, not 2.
-// The unspawned control keeps its old line.
 const wf = (type, modelParam, model, runId, idx) => ({ subagent_type: type, model_param: modelParam, model, teammate: false, workflow: { run_id: runId, agent_index: idx } })
 const wfNone = wf('workflow-subagent', null, 'claude-sonnet-5-5', 'wf_a', 2)
 const DL7 = lazy('DL7', () => {
@@ -1054,10 +1046,11 @@ t('DL7 workflow sorts after main and before unspawned', () => {
   ok(o.indexOf('workflow workflow-subagent') < o.indexOf('   unspawned ·') && o.indexOf('   main ·') < o.indexOf('workflow workflow-subagent'), o)
 })
 
-// DL8: malformed workflow rows. A list `model_param` was an unhashable row key and a number beside a
-// string broke the row sort, so each was a traceback; an empty `model_param` counted as an inherit. A
-// non-string or empty value reads as "?" and never counts as an inherit. A null spawn and a missing type stay "?" rows. The one well-formed inherit still counts, and
-// a step_fields entry that is not a string makes the file a named skip, not a zip over a list key.
+// DL8: malformed workflow rows. A list `model_param` is an unhashable row key, and a number beside a
+// string breaks the row sort: each must give a row, never a crash. A non-string or empty value reads as "?"
+// and never counts as an inherit. A null spawn and a missing type stay "?" rows. The one well-formed
+// inherit still counts, and a step_fields entry that is not a string makes the file a named skip, not a
+// zip over a list key.
 const DL8 = lazy('DL8', () => {
   const dl8 = newLedgerRoot('delegations-8')
   const wfList = wf('workflow-subagent', ['opus'], 'claude-opus-5-5', 'wf_m', 1)
@@ -1100,8 +1093,8 @@ t('DL8 a non-string step_fields entry skips its file, named', () => {
 // row `3 resume(s)`. Agent a3 resumes once on sonnet and again on haiku: its loops land in TWO rows (the row
 // key holds the models), and its maximum 2 is credited once, to the row of the loop that holds it, never 1 + 2.
 // Loops with no string agent_id cannot be matched, so each adds its own value. A zero, a
-// missing field, a string, a negative number and a boolean all read 0 through _count(), so those rows print
-// exactly what they printed before.
+// missing field, a string, a negative number and a boolean all read 0 through _count(), so those rows
+// add no resumes.
 const DL9 = lazy('DL9', () => {
   const dl9 = newLedgerRoot('delegations-9')
   const dl9Spawn = (type, resumes) => ({ subagent_type: type, model_param: null, model: 'claude-sonnet-5-5', ...(resumes === undefined ? {} : { resumes }) })
@@ -1221,7 +1214,7 @@ t('SZ8 with no in-scope file at or over the limit --coverage prints a none line 
 // git detects three renames (ADR 0188): a 1200-line file moves INTO scope, an in-scope 1000-line file moves,
 // and a 900-line file moves and grows to 1100. A rename counts its old path's lines before, so only the
 // growth reports. The 1500-line file is deleted (a deleted file never reports). The repo sets every color
-// key that `hc.GIT_PINS` pins to `always` (dist #14): without the pins, git grep prints ESC codes before
+// key that `hc.GIT_PINS` pins to `always`: without the pins, git grep prints ESC codes before
 // each path, and SZ3 and SZ8 go red. The other keys guard a later caller; on git 2.53 no other parsed
 // command colors its output. The keys go into the repo's config file in one write, and one git read
 // asserts that each took, so a failed write cannot weaken the anchor unseen (twelve `git config` calls
@@ -1312,7 +1305,7 @@ t('DL6 under SLICE_RETRO=0 the report still prints and the usage error still fir
 t('DL6 an abbreviated flag (--deleg, argparse prefix) is the same request', () => { ok(has(DL6().ra.out, 'ADR 0117 D6:'), DL6().ra.out) })
 t('DL6 control: SLICE_RETRO=0 still silences --coverage', () => { const { rc } = DL6(); ok(rc.code === 0 && !rc.out.trim(), rc.out) })
 
-// --- scenario workers (O207) ---------------------------------------------------------------------
+// --- scenario workers ----------------------------------------------------------------------------
 // One group is the scenarios that must run in ONE worker, in this order: each needs the repo of an earlier one
 // (I and K read the G repo, SZ6 changes the K repo, DL2 to DL4 grow one ledger, DL6 reads the DL5 ledger, Q runs
 // on the P2 repo). The groups are listed longest first, so the pool ends close together. Every scenario is in

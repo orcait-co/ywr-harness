@@ -1,33 +1,26 @@
-// Install the harness statusline into the USER scope, so it applies to every Claude Code session
-// on this machine rather than one repo. Node 22 or later, built-in modules only (ywr-harness ADR 0220).
+// Installs the harness statusline into the user scope, so it applies to every Claude Code session on
+// this machine. Node 22 or later, built-in modules only (ywr-harness ADR 0220).
 //
 //   node install.mjs [--claude-dir <dir>] [--dry-run]
 //
-// Why an installer instead of a plugin component: a plugin cannot contribute the main status line.
-// A plugin's `settings.json` supports only `agent` and `subagentStatusLine` (plugins-reference,
-// "File locations reference"). The status line is a user-scope setting, so a user-scope writer is
-// the only mechanism that exists. ywr-harness ADR 0016 records the decision and the rejected alternatives.
-//
-// Two effects, and the second is deliberately conservative — it edits a file this script does not
-// own, following the same rule ywr-harness ADR 0015 set for `core.hooksPath`:
-//
-//   1. SCRIPT — `harness-statusline.js` is copied to <user>/.claude/. TOOLCHAIN: overwritten every
-//      run, which is how a canon fix reaches this machine.
-//   2. WIRING — `statusLine` in <user>/.claude/settings.json:
+// An installer, not a plugin component, because a plugin cannot contribute the main status line
+// (ywr-harness ADR 0016). Two effects. The second edits a file this script does not own, so it is
+// conservative (the rule of ywr-harness ADR 0015 for `core.hooksPath`):
+//   1. SCRIPT: copies `harness-statusline.js` to <claude-dir>, overwritten every run so a canon fix
+//      reaches this machine.
+//   2. WIRING: sets `statusLine` in <claude-dir>/settings.json.
 //        absent                        -> written
 //        already pointing at this file -> left alone
 //        anything else                 -> REFUSED, existing value reported, nothing changed
 //
-// Every other key in settings.json is preserved. Exit 0 = installed (with or without a refusal).
+// Every other key in settings.json is preserved. Exit 0 = installed, with or without a refusal.
 // Exit 1 = a CLAUDE_CONFIG_DIR that is set but relative or blank, a canon script missing beside this
 // file, a script that could not be placed, or a settings.json that exists and is not a JSON object.
 // Exit 2 = a usage error (an unknown flag).
 //
-// settings.json is read the way the PowerShell original read it (hook-lib parseJsonLoose: comments
-// and trailing commas accepted), and the PowerShell semantics the branches rest on are kept: the
-// command comparison ignores letter case, and "absent" is PowerShell falsiness (null, false, 0, '',
-// an empty array). One difference: two keys of one object that differ only by case are refused as
-// unparseable, where the original accepted them.
+// settings.json is read by hook-lib parseJsonLoose: comments and trailing commas pass, and two keys of
+// one object that differ only by case are refused as unparseable. The command comparison ignores
+// letter case. "Absent" is PowerShell falsiness: null, false, 0, '' or an empty array.
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -53,14 +46,10 @@ function main() {
   const dryRun = args['dry-run']
   const here = path.dirname(fileURLToPath(import.meta.url))
 
-  // Resolve the default target (ywr-harness ADR 0046). When omitted, the default is the user scope THIS
-  // SESSION runs under: CLAUDE_CONFIG_DIR when set, else ~/.claude. A default that ignored the env var
-  // installed into a directory a config-dir session never reads — silently, which looks identical to
-  // "the plugin did nothing". An explicit --claude-dir is trusted verbatim; the env var is NOT — a
-  // relative or blank-but-set value (an unexpanded '$HOME/.claude', a stray './cfg') would resolve
-  // against whatever directory this script was run FROM, recreating exactly the silent wrong-dir
-  // install this default exists to prevent. A value this script cannot interpret is refused loudly,
-  // the same posture as the foreign-statusLine refusal below.
+  // Default target: CLAUDE_CONFIG_DIR when set, else ~/.claude (ywr-harness ADR 0046). An explicit
+  // --claude-dir is trusted verbatim. The env var is not: a relative or blank value, such as an
+  // unexpanded '$HOME/.claude', would resolve against the directory the script runs from and install
+  // where no session reads. Such a value is refused loudly.
   let claudeDir = args['claude-dir']
   if (claudeDir === undefined) {
     const rawCfg = process.env.CLAUDE_CONFIG_DIR ?? ''
@@ -106,8 +95,8 @@ function main() {
   say(`  script: ${SCRIPT_NAME} ${scriptState}`)
 
   // --- 2. the wiring -----------------------------------------------------------------------------
-  // node is what runs the line. Absent node is REPORTED, not silent: the setting would be written and
-  // the status line would simply never render, which looks identical to "the plugin did nothing".
+  // Node runs the line. A missing node is reported, because the status line would never render and
+  // that looks like "the plugin did nothing".
   if (!whichOnPath('node')) say('  note: node is not on PATH — the status line will not render until it is')
 
   const settingsPath = psJoin(claudeDir, 'settings.json')
@@ -124,13 +113,12 @@ function main() {
       try {
         settings = parseJsonLoose(rawText)
       } catch (e) {
-        // Refusing here is the point: rewriting a file we could not parse would destroy settings.
+        // Rewriting a file that did not parse would destroy settings.
         say(`  FAIL settings.json does not parse — refusing to rewrite it: ${e.message}`)
         manualSnippet()
         return 1
       }
-      // Valid JSON is not enough: `[]`, `null`, `"x"` and `3` cannot carry a statusLine key. The same
-      // refusal, the same exit.
+      // `[]`, `null`, `"x"` and `3` are valid JSON that cannot carry a statusLine key.
       if (!isObject(settings)) {
         say('  FAIL settings.json is valid JSON but not an object — refusing to rewrite it')
         manualSnippet()
@@ -144,13 +132,9 @@ function main() {
   const current = Object.prototype.hasOwnProperty.call(settings, 'statusLine') ? settings.statusLine : null
   const currentCmd = isObject(current) ? psString(current.command) : ''
 
-  // The block this script writes is the command alone. Through v0.62.1 it also carried
-  // `refreshInterval: 30` (ywr-harness ADR 0059); ywr-harness ADR 0122 dropped it: the payload's rate_limits come from the
-  // session's own API responses (ywr-harness fact 97), and the one segment that can move while a session idles — the
-  // installed plugin version, read from disk as a restart signal — can wait for the next exchange. A refreshInterval
-  // already on our block is left as it is — whether this script or the member put it there cannot be told apart
-  // (the ywr-harness ADR 0015 rule, same as the foreign-statusLine refusal below) — and the run says so instead of
-  // keeping quiet.
+  // The block written is the command alone, with no `refreshInterval` (ywr-harness ADR 0122,
+  // ywr-harness fact 97). A `refreshInterval` already on the block stays: the script cannot tell its own write from
+  // the member's. The run reports it.
   if (!psTruthy(current)) {
     if (dryRun) {
       say('  wiring: statusLine absent — would set it')
@@ -160,15 +144,14 @@ function main() {
       say('  wiring: statusLine set — wired')
     }
   } else if (ieq(currentCmd, wanted)) {
-    // current is necessarily an object here — currentCmd is only non-empty for one.
+    // currentCmd is non-empty only for an object, so `current` is an object here.
     say('  wiring: statusLine already points here — already wired')
     if (Object.prototype.hasOwnProperty.call(current, 'refreshInterval')) {
       const kept = current.refreshInterval === null ? 'null' : psString(current.refreshInterval)
       say(`          refreshInterval ${kept} kept — no longer wired (ywr-harness ADR 0122); delete it from settings.json if you did not set it yourself`)
     }
   } else {
-    // Same rule as ywr-harness ADR 0015's hooksPath: a value this script did not write is a decision it cannot
-    // see the reasons for.
+    // A value this script did not write is the member's decision (ywr-harness ADR 0015).
     say('  wiring: statusLine is already set to something else — REFUSED to change it')
     say(`          existing: ${currentCmd}`)
     say(`          wanted:   ${wanted}`)
@@ -177,7 +160,7 @@ function main() {
   return 0
 }
 
-// .NET Path.IsPathRooted: on Windows a drive letter or a leading separator, elsewhere a leading '/'.
+// Rooted means a drive letter or a leading separator on Windows, a leading '/' elsewhere.
 function isRooted(p) {
   return process.platform === 'win32' ? /^([A-Za-z]:|[\\/])/.test(p) : p.startsWith('/')
 }

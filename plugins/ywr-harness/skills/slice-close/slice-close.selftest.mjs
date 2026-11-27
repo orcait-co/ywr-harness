@@ -5,16 +5,14 @@
 // The skill is prose a model executes, so what can regress silently is (1) a rare-case pointer
 // that no longer resolves and (2) a contract line reverting to the old, costlier ritual. Case T1 is
 // structural: every trigger in SKILL.md names a section reference.md has, and every section has a
-// trigger (ADR 0090, S10 - the rare cases moved out behind one-line triggers, and a dangling
-// trigger is exactly how a rare case goes missing). The C cases pin the ADR 0090 contract lines,
-// each with the old wording as its negative, so a partial revert turns red instead of passing on
-// presence alone. Non-ASCII in patterns is built from code points (SECTION, ARROW below), so this file stays ASCII.
+// trigger (ADR 0090). A dangling trigger is how a rare case goes missing. The C cases pin the
+// contract lines, each with the old wording as its negative, so a partial revert turns red instead
+// of passing on presence alone. Non-ASCII in patterns is built from code points (SECTION, ARROW below), so this file stays ASCII.
 //
-// The pwsh suite named its two META cases without IDs. Here each is `M<n> META ...`, so the parity check
-// of ADR 0227 decision 8 matches the names. Patterns are pwsh -match sources (case-insensitive; see toRx in
-// lib/selftest-lib.mjs), written with String.raw. A backtick inside such a pattern is written \` , which a
-// regular expression reads as the backtick itself. The patterns that the pwsh suite built with
-// [regex]::Escape go through esc() below.
+// The META cases are named `M<n> META ...`, and the parity check matches the names (ADR 0227 decision 8).
+// Patterns are case-insensitive regex sources (toRx in lib/selftest-lib.mjs), written with String.raw.
+// A backtick inside such a pattern is written \` , which a regular expression reads as the backtick
+// itself. Literal text goes through esc() below.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
@@ -30,7 +28,7 @@ const r = String.raw
 // The section sign and the arrow of the skill's trigger lines, built from code points so this file stays ASCII.
 const SECTION = String.fromCharCode(0x00A7)
 const ARROW = String.fromCharCode(0x2192)
-// [regex]::Escape of the pwsh suite: the text as a literal pattern.
+// The text as a literal pattern.
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 const readText = (p) => (existsSync(p) ? readFileSync(p, 'utf8') : '')
 const skill = readText(skillPath)
@@ -143,8 +141,8 @@ textCase('C8 ADR 0072 rule stays named in SKILL.md in one line', skill,
   [r`re-arms it only over the overlap \(ywr-harness ADR 0072\)`, 'hand-resolved conflict', 'review basis:'],
   [r`\(in the reviewed scope or\s+not`])
 
-// C9: the verify procedure (spec 0007 s3.7) follows C1's rule - its agent passes the range to the mapper
-// as given; the old git pre-check wording is the negative, the no-silent-fallback rule must survive.
+// C9: the verify procedure (spec 0007 section 3.7) follows C1's rule. Its agent passes the range to the mapper
+// as given. The git pre-check wording is the negative, and the no-silent-fallback rule must survive.
 textCase('C9 verify procedure: range goes to the mapper as given, no own git pre-check, no silent fallback', readText(procPath),
   ['Pass it to the mapper as given', r`the mapper is the range check \(ywr-harness ADR 0041`, 'Do NOT silently fall back', 'scope: FAILED'],
   ['Sanity-check it first', 'git rev-parse'])
@@ -153,7 +151,7 @@ textCase('C9 verify procedure: range goes to the mapper as given, no own git pre
 // (a report taken on trust), a same-line reuse that skips the emitter's trailer (config and ignored
 // paths are outside the tree), a changed tree that still skips stages 1 and 3, or a changed file that
 // never re-arms the review. The negatives are the loosened rules a rewrite could slip in beside the
-// required lines (review 2026-09-28, low: presence alone let a contradicting sentence pass).
+// required lines, because presence alone lets a contradicting sentence pass.
 textCase('C10 prepared close: reuse only on an identical --tree line, verbatim in this session, with the emitter re-run; a change re-runs stages 1+3 and re-arms the review over the changed files', ref,
   [esc('scripts/harness_gates.mjs" --tree'),
     'verbatim in THIS session',
@@ -171,21 +169,21 @@ textCase('C10 prepared close: reuse only on an identical --tree line, verbatim i
 textCase('C10 SKILL.md states who runs the close, asks open owner questions first, and records a reused preparation', skill,
   [r`\*\*The person or the main session runs it\*\* \(ywr-harness ADR 0201\)`, 'every owner question of the slice has an answer', 'refuses a call from a subagent', 'prepared: reused at'],
   ['(?m)^disable-model-invocation:', '(?i)owner-typed on purpose', 'ywr-harness ADR 0198'])
-// The description is the one line the host shows for model invocation: it must say that the main session may call the
-// close once every owner question has an answer, that a subagent never does, and no longer say "owner-typed".
+// The description is the one line the host shows for model invocation. It says that the main session may call the
+// close once every owner question has an answer, that a subagent never does, and it never says "owner-typed".
 const descLine = /^description:.*$/mu.exec(skill)?.[0] ?? ''
 textCase('C10 SKILL.md description (frontmatter): the main session calls it once every owner question of the slice has an answer; a subagent never calls it; no owner-typed', descLine,
   ['^description: ', 'the person types it, or the main session calls it after its ready report', 'once every owner question of the slice has an answer', r`A subagent never calls it\.`],
   ['(?i)owner-typed'])
 
-// C11: the three disposition buckets (ADR 0163, pstack candidate 9). What
-// can regress silently is a "valid, no action" with no record behind it, a "false on reading" with no
-// quoted line, or the old two-way wording that let a true claim close on a bare reason.
+// C11: the three disposition buckets (ADR 0163). What can regress silently is a "valid, no action"
+// with no record behind it, a "false on reading" with no quoted line, or a two-way wording that
+// lets a true claim close on a bare reason.
 textCase('C11 disposition: three buckets, no-action names its record, false-on-reading quotes the code', skill,
   ['ends in exactly one of three buckets', r`\*\*fixed\*\*`, r`\*\*valid, no action\*\*`, 'names the record that keeps it', 'A true claim with no record is not this bucket', r`\*\*false on reading\*\*`, 'quotes the line or guard', 'count per bucket'],
   ['every confirmed finding is fixed or gets an explicit reason'])
-// C11b: ADR 0215 retires the low list, the class line and the fix proof. What can regress silently is one of
-// them back in the skill or the stage-5 record list, or the prepared report still asking for proof output.
+// C11b: the skill has no low list, class line or fix proof (ADR 0215). What can regress silently is one of
+// them back in the skill or the stage-5 record list, or the prepared report asking for proof output.
 textCase('C11b no low list, no class line, no class tally, no fix proof in the skill; the record carries level, count and buckets', skill,
   ['the level, the item count, the usage line and the cap note of stage 2', "each finding's severity and bucket", r`each fix passed to an open item or \`none\``],
   ['fix_proof', '(?i)class line', '(?i)class tally', 'high_ids', '(?i)lows are listed', 'the low list of stage 2', 'commit-msg hook', r`\`--coverage\``])

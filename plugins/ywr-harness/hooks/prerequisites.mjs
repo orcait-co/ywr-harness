@@ -1,48 +1,40 @@
-// Hooks module (Claude Mods; ywr-harness ADR 0142) — the PREREQUISITE check and its install command. `mods.mjs`, the
-// entry `hooks.json` names under `modules`, registers it beside the delegation ledger.
+// Hooks module (Claude Mods; ywr-harness ADR 0142): the PREREQUISITE check and its install command. `mods.mjs`,
+// the entry `hooks.json` names under `modules`, registers it.
 //
-// The plugin needs one tool on PATH: `node` 22+ runs the settings hooks (ywr-harness ADR 0116), the skills' scripts,
-// the gate scripts, the docs builder and the statusline installer (ywr-harness ADR 0220, ywr-harness ADR 0223). No
-// script runs Python on a member machine. A settings hook cannot report its own runtime's absence, so this check is a mod: the host runs a mod in an engine
-// environment of its own, with no Node (ywr-harness fact 135), and `$.process.run` reaches the host's commands.
+// The plugin needs `node` 22+ on PATH (ywr-harness ADR 0116, ywr-harness ADR 0220, ywr-harness ADR 0223). A settings
+// hook cannot report its own runtime's absence, so this check is a mod. The host runs a mod in an engine
+// environment with no Node (ywr-harness fact 135), and `$.process.run` reaches the host's commands.
 //
-// What it does:
-// - `session.start`: after `next(e)` resolves it starts the `--version` probes on a
-//   `$.clock.after(0, …)` timer and does not wait for them, so the probes never delay the session start
-//   (ywr-harness ADR 0164; a host without the call runs them directly). A probe that rejects with ENOENT / "not
-//   found", or a command that exits non-zero (a Windows Store alias stub does), is MISSING; a
-//   tool below its minimum (`node` below 22) is OLD; anything else (a timeout, a surface without
-//   `$.process`) is UNKNOWN and never speaks. On Windows a not-found refusal is tried once more by the
-//   app execution alias path (`aliasPath`, ywr-harness ADR 0150): the runner refuses a bare alias name when the cwd
-//   is an ancestor of the alias folder, as the home folder is (ywr-harness fact 147).
-// - `ui.render` on `AbovePrompt`: while a tool is missing or old, one Korean band (ywr-harness ADR 0045) names the
-//   tools and `/ywr-harness:setup`. The engine's own `[-]` collapses it. Nothing missing: `next(e)`.
-// - The model note: when the probes find a missing or old tool, `$.session.append` adds ONE English
-//   meta user row, which the person does not see. It tells Claude the cause of the hook errors and
-//   failing scripts it will see, the command, and to install nothing unasked. The module adds no
-//   `prompt.compose` section: on 2.1.296 the engine skips that hook for a user-tier plugin (ywr-harness fact 136).
-//   The row belongs to the conversation, so a `/clear` drops it, and a resume or a fork adds it again.
-// - `command.run` on `ywr-harness:setup` (the command `skills/setup/SKILL.md` declares; a
-//   `$.command.register` name carries no plugin prefix — ywr-harness fact 136): the member typed it, which is the
-//   consent. On Windows with `winget` it probes again and runs `winget install` for each missing or old
-//   tool, one at a time, each output piece's last line in the plugin status line, then reports each
-//   result and asks for a restart (a running session keeps its PATH). Off Windows, or without `winget`,
-//   it prints the commands and runs nothing. The hook answers the command itself, so no model turn
-//   runs; on a host that drops mods the skill body runs instead.
+// - `session.start`: starts the `--version` probes on a `$.clock.after(0, …)` timer after `next(e)` resolves,
+//   so the probes never delay the session start (ywr-harness ADR 0164). A probe that rejects with ENOENT or
+//   "not found", or exits non-zero (a Windows Store alias stub does), is MISSING. A tool below its minimum is
+//   OLD. Anything else (a timeout, a surface without `$.process`) is UNKNOWN and never speaks. On Windows a
+//   not-found refusal is tried once more by the app execution alias path (`aliasPath`, ywr-harness ADR 0150,
+//   ywr-harness fact 147).
+// - `ui.render` on `AbovePrompt`: while a tool is missing or old, one Korean band (ywr-harness ADR 0045) names
+//   the tools and `/ywr-harness:setup`.
+// - The model note: `$.session.append` adds ONE English meta user row that the person does not see. It tells
+//   Claude the cause of the hook errors, the command, and to install nothing unasked. The module adds no
+//   `prompt.compose` section, because the engine skips that hook for a user-tier plugin (ywr-harness fact 136).
+//   A `/clear` drops the row, and a resume or a fork adds it again.
+// - `command.run` on `ywr-harness:setup` (declared by `skills/setup/SKILL.md`; a `$.command.register` name
+//   carries no plugin prefix, ywr-harness fact 136): the member typed it, which is the consent. On Windows with
+//   `winget` it runs `winget install` for each missing or old tool, one at a time, then reports each result and
+//   asks for a restart (a running session keeps its PATH). Off Windows, or without `winget`, it prints the
+//   commands and runs nothing. The hook answers the command itself, so no model turn runs. On a host that
+//   drops mods the skill body runs instead.
 //
-// It never installs unasked, never denies, and passes every other event on unchanged. Text from a
-// child's output reaches the status line only through `flatten()` (the `hook-lib.mjs` `inline()`
-// class; the module cannot import hook-lib, which needs Node).
+// It never installs unasked, never denies, and passes every other event on unchanged. Child output reaches the
+// status line only through `flatten()` (the class of `hook-lib.mjs` `inline()`; the module cannot import
+// hook-lib, which needs Node).
 //
-// The pure half (`TOOLS`, `parseVersion`, `verdictOf`, `needsOf`, `bandText`, `noteText`, `manualText`,
-// `lastLine`, `flatten`, `aliasPath`, `wingetArgv`, `resultLine`, `resultNote`, `unknownText`) is exported so `prerequisites.selftest.mjs` drives it
-// under plain node with a fake engine; the engine imports only `register`.
+// The pure half is exported so `prerequisites.selftest.mjs` drives it under plain node with a fake engine. The
+// engine imports only `register`.
 
 export const COMMAND = 'ywr-harness:setup'
 // An interrupt aborts the command's dispatch, and an aborted dispatch kills the spawned winget (the
 // `$.process.spawn` contract). Whether Esc aborts it, and what a killed winget leaves of an installer
-// it started, is unmeasured (ywr-harness ADR 0142), so the status line says so while an install runs. The next
-// session's probe shows the band again for anything left half-installed.
+// it started, is unmeasured (ywr-harness ADR 0142), so the status line warns while an install runs.
 export const ESC_WARN = 'Esc 를 누르면 설치가 끊길 수 있습니다'
 export const PROBE_TIMEOUT_MS = 15000
 // winget's "no applicable upgrade" (APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE): the package is
@@ -96,7 +88,7 @@ export function needsOf(verdicts) {
 // The per-user folder of Windows app execution aliases. `winget` and a Store stub of a tool are aliases there
 // (0-byte reparse points). `$.process.run` refuses a bare alias name with the not-found error when the
 // session's cwd is an ancestor of that folder, the home folder included, and runs the same alias by its
-// absolute path (ywr-harness fact 147, ywr-harness ADR 0150). The Desktop session that showed it ran in the home folder.
+// absolute path (ywr-harness fact 147, ywr-harness ADR 0150).
 const BS = '\\'
 export function aliasPath(localAppData, name) {
   const base = String(localAppData ?? '')

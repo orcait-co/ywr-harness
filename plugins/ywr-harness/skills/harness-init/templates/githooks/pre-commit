@@ -1,52 +1,49 @@
 #!/bin/sh
-# pre-commit — run the harness's deterministic gates on the staged files, before any LLM review
-# sees them (org guide: "mechanical defects stay out of the LLM pipeline").
+# pre-commit: run the harness's deterministic gates on the staged files, before any LLM review.
 #
-# TOOLCHAIN (ywr-harness ADR 0010/0015): placed by /ywr-harness:harness-init and OVERWRITTEN on
-# every re-run. Do not hand-edit — fix it in the canon and re-run the scaffold.
+# TOOLCHAIN (ywr-harness ADR 0010/0015): placed by /ywr-harness:harness-init and overwritten on
+# every re-run. Do not hand-edit it. Fix it in the ywr-harness canon and re-run the scaffold.
 #
-# What it does: asks scripts/harness/harness_gates.mjs which gates the staged files earn, then runs
-# them. The emitter only prints; this is where the printing turns into enforcement.
+# It asks scripts/harness/harness_gates.mjs which gates the staged files earn, then runs them. The
+# emitter only prints. This hook turns the printing into enforcement.
 #
-# WHAT IT DELIBERATELY DOES NOT DO:
+# It deliberately does not:
 #
-#   * Whole-program gates (pytest, tsc, vitest, cargo-test, go-vet) are SKIPPED and reported. A
-#     pre-commit hook that runs the test suite is a pre-commit hook people turn off, and CI
-#     (.github/workflows/harness-gates.yml) already runs them on the committed content.
-#   * It gates the staged file LIST but runs the commands against the WORKING TREE. Gating staged
-#     *content* would mean stashing unstaged changes, and a hook that stashes is a hook that can
-#     lose work (ywr-harness ADR 0015). If those differ for you, the CI run is the authority.
+#   * Run whole-program gates (pytest, tsc, vitest, cargo-test, go-vet). It skips and reports them.
+#     A hook that runs the test suite is a hook people turn off, and CI
+#     (.github/workflows/harness-gates.yml) runs them on the committed content.
+#   * Gate staged content. It gates the staged file LIST but runs the commands against the WORKING
+#     TREE, because gating staged content means stashing unstaged changes, and a hook that stashes
+#     can lose work (ywr-harness ADR 0015). Where the two differ, the CI run is the authority.
 #
-# Failure is a blocked commit. `git commit --no-verify` is the documented escape hatch; a missing
-# interpreter is a REPORTED skip, never a silent pass.
+# Failure blocks the commit. `git commit --no-verify` is the documented escape hatch. A missing
+# interpreter is a reported skip, never a silent pass.
 #
 # Copyright (c) 2026 YWR Labs Inc. All rights reserved.
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 
 # Refuse a staged `enabledPlugins` key (ywr-harness ADR 0022). A committed `enabledPlugins` enables
-# the plugin for everyone who clones this repo. That forcing is exactly what ywr-harness ADR 0010/0012
-# kept out of the managed-settings payload. BOTH scopes that write into the tree are
-# covered: `--scope project` writes .claude/settings.json and `--scope local` writes
-# .claude/settings.local.json. Gating only the first would let a reinstall with `--scope local`
-# put the same key into the tree.
+# the plugin for everyone who clones this repo, which ywr-harness ADR 0010/0012 keep out of the
+# managed-settings payload. Both scopes that write into the tree are covered: `--scope project`
+# writes .claude/settings.json and `--scope local` writes .claude/settings.local.json.
 #
-# The KEY is refused regardless of its value. `enabledPlugins` is host install state and does not
-# belong in a shared settings file even when empty: an uninstall leaves `{ "enabledPlugins": {} }`
-# behind, and every member's install rewrites it. The FILE stays legitimate; only the key does not.
+# The key is refused whatever its value. `enabledPlugins` is host install state and does not belong
+# in a shared settings file even when empty: an uninstall leaves `{ "enabledPlugins": {} }` behind,
+# and every member's install rewrites it. The file stays legitimate. Only the key does not.
 #
 # Three deliberate properties:
-#   * It reads STAGED content, not the working tree. What lands in the commit is the whole question.
+#   * It reads STAGED content, not the working tree. What lands in the commit is the question.
 #   * It runs BEFORE the emitter and interpreter checks below, so a repo with no harness scripts and
-#     no node on PATH is still protected. This gate must not be skippable by environment.
-#   * That is also its limit: a literal match cannot see a `\uXXXX`-escaped spelling of the key,
-#     which is valid JSON the host still honors. CI parses the file and catches that; this hook is
-#     the floor, not the authority (same split as ywr-harness ADR 0015).
+#     no node on PATH is still protected. The environment must not be able to skip this gate.
+#   * It is a literal match, so it cannot see a `\uXXXX`-escaped spelling of the key, which is valid
+#     JSON that the host still honors. CI parses the file and catches that. This hook is the floor,
+#     CI is the authority (ywr-harness ADR 0015).
 #
-# `grep -Fqx -e` : -F literal (the paths carry regex metacharacters), -x whole line, -e because a
-# value in command position must never be read as an option (a path starting with a dash).
-# --diff-filter=AM only: without -M/-C git reports no R or C, so listing them read as rename
-# handling this check does not do.
+# `grep -Fqx -e`: -F literal (the paths carry regex metacharacters), -x whole line, -e so that a
+# path starting with a dash is never read as an option.
+# `--diff-filter=AM` only: without -M/-C git reports no R or C, so listing them would claim rename
+# handling that this check does not do.
 for _cfg in .claude/settings.json .claude/settings.local.json; do
     git diff --cached --name-only --diff-filter=AM 2>/dev/null | grep -Fqx -e "$_cfg" || continue
     if git show ":$_cfg" 2>/dev/null | grep -q '"enabledPlugins"'; then
@@ -70,39 +67,37 @@ if [ ! -f "$EMITTER" ]; then
     exit 0
 fi
 
-# `-c core.quotepath=false`: the list is handed to the emitter as explicit files, which it takes
-# verbatim. Unpinned, a clone with core.quotepath=true (Git for Windows' default) lists a non-ASCII
-# path as `"docs/\355\225\234...md"` — quoted and octal-escaped — so it matched no group and this
-# hook printed a FALSE "matched NO declared group — CI's harness-gates run FAILS" line for a file
-# CI (--all/--range, whose git reads carry the pin) groups correctly (ywr-harness ADR 0077). The pin
-# fixes GROUP MATCHING only: a non-ASCII name still fails the emitter's
-# SAFE_TOKEN gate, so here exactly as in CI it is reported as excluded from file-scoped gate
-# arguments — no file-scoped gate (a linter) ever receives it. Git still C-quotes a path holding
-# `"`, `\` or a control character under this pin; only a NUL-separated list would carry those, and
-# this newline-delimited list cannot.
+# `-c core.quotepath=false`: the emitter takes the list as explicit files, verbatim. Unpinned, a
+# clone with core.quotepath=true (the Git for Windows default) lists a non-ASCII path quoted and
+# octal-escaped, such as `"docs/\355\225\234...md"`. That path matches no group, and this hook
+# would print a false "matched NO declared group" line for a file that CI groups correctly
+# (ywr-harness ADR 0077). The pin fixes group matching only. A non-ASCII name still fails the
+# emitter's SAFE_TOKEN gate, so it is reported as excluded from file-scoped gate arguments, here
+# as in CI. Git still C-quotes a path that holds `"`, `\` or a control character under this pin.
+# Only a NUL-separated list carries those, and this newline-delimited list cannot.
 STAGED=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMR)
 [ -n "$STAGED" ] || exit 0
 
-# The harness scripts need Node 22 or later (ywr-harness ADR 0220). Nothing here checks the version: an
-# older node runs the gates on a runtime nobody tested, and only CI, which installs Node 22, holds the floor.
+# The harness scripts need Node 22 or later (ywr-harness ADR 0220). This hook does not check the
+# version. An older node runs the gates on an untested runtime, and only CI, which installs Node 22,
+# holds the floor.
 NODE=$(command -v node 2>/dev/null)
 if [ -z "$NODE" ]; then
     echo "[harness] SKIP pre-commit gates — no node on PATH (reported, not silent). CI still gates this commit."
     exit 0
 fi
 
-# awk parses the emitter's output below. Without this check a missing awk yields an EMPTY command
-# list, which this hook would otherwise report as "no gate matched" — a silent false pass, and the
-# hardest kind of gate failure to notice because it looks exactly like success.
+# awk parses the emitter's output below. A missing awk would yield an empty command list, which
+# this hook would report as "no gate matched": a silent false pass.
 if ! command -v awk >/dev/null 2>&1; then
     echo "[harness] SKIP pre-commit gates — no awk on PATH, so the emitter's output cannot be parsed"
     echo "[harness]   (reported, not silent — an unparsed emitter would look like 'no gates matched'). CI still gates this commit."
     exit 0
 fi
 
-# The emitter takes explicit files, which is what keeps this scoped to the slice rather than the
-# tree. NUL-delimited via `xargs -0` (portable; `xargs -d` is GNU-only) so a path with spaces
-# survives. Its warnings go to stderr and are shown; only stdout is parsed.
+# The emitter takes explicit files, which scopes the run to the staged files, not the tree. The list
+# is NUL-delimited through `xargs -0` (portable, unlike the GNU-only `xargs -d`) so a path with
+# spaces survives. Warnings go to stderr and show. Only stdout is parsed.
 OUT=$(printf '%s\n' "$STAGED" | tr '\n' '\0' | xargs -0 "$NODE" "$EMITTER" --repo "$ROOT")
 EMIT_RC=$?
 if [ $EMIT_RC -ne 0 ]; then
@@ -110,10 +105,10 @@ if [ $EMIT_RC -ne 0 ]; then
     exit 0
 fi
 
-# Gate command lines are indented exactly four spaces under `gates:`. Two things are excluded:
-#   ( ... )          the "(no gate declared for this group)" note — a parenthetical, not a command.
-#                    Running it would be a shell syntax error blamed on the hook.
-#   # whole-program  the emitter's own marker for unscoped gates; deferred to CI, see the header.
+# Gate command lines are indented exactly four spaces under `gates:`. Two kinds are excluded:
+#   ( ... )          the "(no gate declared for this group)" note, which is no command. Running it
+#                    would be a shell syntax error blamed on the hook.
+#   # whole-program  the emitter's marker for unscoped gates, which CI runs (see the header).
 CMDS=$(printf '%s\n' "$OUT" | awk '
     /^gates:/         { g = 1; next }
     /^ungrouped \(/   { g = 0 }
@@ -125,18 +120,16 @@ CMDS=$(printf '%s\n' "$OUT" | awk '
         if (length($0)) print
     }
 ')
-# `grep -c` always prints a count and exits 1 when that count is zero, so a `|| echo 0` fallback
-# would append a second line and make the variable non-numeric. Let the exit status go unused.
+# `grep -c` prints a count and exits 1 when the count is zero, so a `|| echo 0` fallback would add a
+# second line and make the variable non-numeric. The exit status stays unused.
 DEFERRED=$(printf '%s\n' "$OUT" | grep -c '# whole-program')
 [ -n "$DEFERRED" ] || DEFERRED=0
 STAGED_N=$(printf '%s\n' "$STAGED" | wc -l | tr -d ' ')
 
-# Group headers are `  [name] N file(s)` (2-space indent) inside the same window CMDS reads.
-# Collected so the no-commands report below can tell DECLARED coverage from a coverage HOLE: files
-# that matched groups declaring `gates: []` must not be reported in the same words as files no
-# group claims. Coverage is declared, never inferred from silence. The scaffold-claimed
-# section's 2-space file lines cannot match: its paths are closed-set constants, none starting
-# with `[`, and its column-0 header closes the window first anyway.
+# Group headers are `  [name] N file(s)` (2-space indent) inside the window CMDS reads. The
+# no-commands report below uses them to tell declared coverage from a coverage hole: files in a
+# group that declares `gates: []` need other words than files that no group claims. The
+# scaffold-claimed section cannot match: its column-0 header closes the window first.
 MATCHED_GROUPS=$(printf '%s\n' "$OUT" | awk '
     /^gates:/              { g = 1; next }
     /^scaffold-claimed \(/ { g = 0 }
@@ -156,11 +149,10 @@ MATCHED_GROUPS=$(printf '%s\n' "$OUT" | awk '
     END { print out }
 ')
 
-# Files no group claims are reported by the emitter but blocked ONLY in CI ("Fail on ungrouped
-# files"), so a local run reads as passing right up to the first CI run (ywr-harness ADR 0062). Said
-# here, at the earliest local point, and never blocking: a mid-slice commit legitimately adds a
-# file before the declaration catches up, and the emitter's exit contract stays advisory
-# (ywr-harness ADR 0041).
+# The emitter reports files that no group claims, but only CI blocks on them, so a local run would
+# read as passing until the first CI run (ywr-harness ADR 0062). This hook says so and never blocks:
+# a commit may add a file before the declaration catches up, and the emitter's exit contract stays
+# advisory (ywr-harness ADR 0041).
 UNGROUPED_N=$(printf '%s\n' "$OUT" | sed -n 's/^ungrouped (\([0-9][0-9]*\) file.*/\1/p' | head -n 1)
 if [ -n "$UNGROUPED_N" ]; then
     echo "[harness] pre-commit: $UNGROUPED_N staged file(s) matched NO declared group — CI's harness-gates run FAILS on ungrouped files (not blocked here; add a groups entry to .harness.json)."
@@ -180,17 +172,17 @@ fi
 
 echo "[harness] pre-commit gates on $STAGED_N staged file(s):"
 
-# Newline-delimited iteration. `set -f` disables globbing for the loop: a gate command carrying a
-# `*` would otherwise be expanded against the hook's working directory before it ever runs.
+# Newline-delimited iteration. `set -f` disables globbing for the loop: a gate command that carries
+# a `*` would otherwise expand against the hook's working directory before it runs.
 #
-# Runner preflight (ywr-harness ADR 0015: "a missing interpreter is a reported skip, never a silent pass").
-# The runner is derived the way CI's extraction does it (harness-gates.yml `cmds` step): the first
-# token, or the 4th when compose() prefixed a `groups[].cwd` as `cd <dir> && …` — `cd` is a builtin
-# `command -v` accepts, so reading the first token there would wave every cwd gate through to a
-# 127. A runner missing HERE is a counted SKIP, never FAILED: a hard failure would block every
-# commit of a member without `uv` on PATH, leaving --no-verify (which also skips the enabledPlugins
-# refusal above) as the only way out. CI preflights the same runners and fails by name, so it stays
-# the authority. A runner that exists and fails still blocks.
+# Runner preflight (ywr-harness ADR 0015): a missing interpreter is a reported skip, never a silent
+# pass. The runner is derived as CI's extraction does it (harness-gates.yml `cmds` step): the first
+# token, or the 4th when a `groups[].cwd` prefixed the command as `cd <dir> && ...`. `cd` is a
+# builtin that `command -v` accepts, so reading the first token would pass every cwd gate through
+# to a 127. A runner missing here is a counted SKIP, never FAILED: a hard failure would block every
+# commit of a member without the runner, leaving --no-verify (which also skips the enabledPlugins
+# refusal above) as the only way out. CI preflights the same runners and fails by name. A runner
+# that exists and fails still blocks.
 FAILED=0
 RAN=0
 SKIPPED=0

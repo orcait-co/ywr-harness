@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# docs-as-code 빌드 — adr/·spec/ 의 .md(frontmatter 포함)에서 네 산출물을 재생성.
-#   index.json (기계) · INDEX.md (목차) · docs.html (브라우징) · docs.artifact.html (Artifact 발행용)
-# 산출물은 직접 편집 금지 — .md frontmatter/본문만 고친 뒤 재실행한다.
+# Docs build: regenerates four outputs from the .md files (frontmatter included) under adr/ and spec/.
+#   index.json (machine index) · INDEX.md (table of contents) · docs.html (browsing) · docs.artifact.html (publishing)
+# Never edit an output by hand. Edit the .md frontmatter or body, then run this script again.
 #
-# 사용: bash docs/build.sh   (mac/Linux/WSL · GitHub Actions 러너)
+# Usage: bash docs/build.sh   (macOS, Linux, WSL, GitHub Actions runner)
 #
 # Copyright (c) 2026 YWR Labs Inc. All rights reserved.
 set -euo pipefail

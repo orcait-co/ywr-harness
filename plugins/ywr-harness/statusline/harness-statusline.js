@@ -1,56 +1,31 @@
 // ywr-harness statusline — location · model · effort · context% · rate-limit% · installed
 // plugin version, plus terminal tab-title sync.
 //
-// TOOLCHAIN (ywr-harness ADR 0010/0016): this is the canon. `install.ps1` copies it to the user scope and it
-// is OVERWRITTEN on every re-run. Do not hand-edit the installed copy — fix it here.
+// Canon of the statusline (ywr-harness ADR 0010/0016). `install.mjs` copies it to the user scope and
+// overwrites the copy on every run, so fix it here and never in the installed copy. A plugin cannot
+// contribute the main status line, which is why it ships with an installer (ywr-harness ADR 0016).
 //
-// A plugin CANNOT contribute the main status line: a plugin's `settings.json` supports only the
-// `agent` and `subagentStatusLine` keys (plugins-reference, "File locations reference"). So this
-// ships as canon + an installer that writes the user's own settings, rather than as a component
-// Claude Code loads on its own. That constraint is the whole reason ywr-harness ADR 0016 exists.
+// The payload arrives as JSON on stdin. The keys used:
+//   model.display_name, model.id (display fallback), effort.level
+//   workspace.current_dir, workspace.project_dir (location fallback), cwd (last fallback)
+//   workspace.git_worktree: the linked-worktree name, a string, present only inside a linked
+//     worktree (ywr-harness ADR 0059, ywr-harness spec 0010 §3.1)
+//   context_window.used_percentage, context_window.context_window_size (a session constant)
+//   rate_limits.{five_hour,seven_day}.used_percentage: the account-wide windows, all the payload
+//     carries. The model-scoped weekly of /usage is not in it, so no weekly renders next to the
+//     model name (ywr-harness ADR 0049)
 //
-// ## The payload
+// A key that is absent makes its segment disappear. A segment never renders `0%` for an unmeasured
+// value. Rate-limit keys are missing before the first API response of a session.
 //
-// stdin is the statusline JSON. Keys used, all confirmed against live payloads (2.1.220,
-// 2026-07-27; the rate_limits cap re-confirmed on 2.1.228, 2026-08-12) rather than read off
-// the docs:
-//
-//   model.display_name · model.id (display fallback) · effort.level
-//   workspace.current_dir · workspace.project_dir (location fallback) · cwd (last fallback)
-//   workspace.git_worktree               — the linked-worktree NAME (a string), present only
-//                                          inside a `git worktree add` checkout, absent in the
-//                                          main working tree. DOC-VERIFIED 2026-08-19 (ywr-harness ADR 0059;
-//                                          statusline docs example `"git_worktree":
-//                                          "feature-xyz"`) and LIVE-CONFIRMED the same day on
-//                                          2.1.235 from a captured payload (ywr-harness spec 0010 §3.1).
-//   context_window.used_percentage       — context consumed
-//   context_window.context_window_size   — window size, a session constant
-//   rate_limits.{five_hour,seven_day}.used_percentage   — the ACCOUNT-WIDE windows, and ALL the
-//                                          payload carries. /usage additionally shows a
-//                                          model-scoped weekly (e.g. Fable vs its Team-plan cap)
-//                                          that is NOT in the payload — do not render any
-//                                          weekly next to the model name until it is
-//                                          (ywr-harness ADR 0049; upstream anthropics/claude-code#85964)
-//
-// A key absent on some version or plan means its segment DISAPPEARS. It is never rendered as
-// `0%`: unmeasured and zero are different states, and a status line that says 0% when it does not
-// know is worse than one that says nothing. Rate-limit keys are legitimately missing on the first
-// render of a session, before the first API response — that is not a regression.
-//
-// ## Why the model's "(1M context)" is stripped
-//
-// The window size is constant for the whole session, so spending label width on it every render
-// buys nothing; what changes — and what anyone actually wants — is how much of it is gone. The
-// size is not discarded, it moves next to the percentage (`ctx 24%/1M`), because 24% of 200k and
-// 24% of 1M are different situations and a bare percentage cannot tell them apart.
+// The model name loses its "(1M context)" suffix because the window size is constant. The size moves
+// next to the percentage (`ctx 24%/1M`), because 24% of 200k and 24% of 1M differ.
 "use strict";
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-// Display label for the plugin-version segment: the plugin's own manifest name, equally true on
-// every machine this file reaches. (This segment replaced the retired org-guide one —
-// ywr-harness ADR 0027; guide drift detection belongs to ywr-harness spec 0003 §7, not to a glance surface.)
+// Label of the plugin-version segment: the plugin's manifest name (ywr-harness ADR 0027).
 const PLUGIN_LABEL = "ywr-harness";
 
 const DIM = "\x1b[2m";
@@ -73,8 +48,7 @@ function seg(label, value, warn, crit) {
 // Quota: comfortable / watch / close.
 const pct = (label, value) => seg(label, value, 50, 80);
 
-// Context has a different curve — 50% is ordinary working state. What matters is nearing the
-// point where the window is about to be summarized away.
+// Context warns later than quota: 50% is ordinary working state.
 const ctxPct = (label, value) => seg(label, value, 70, 90);
 
 // 1000000 -> "1M", 200000 -> "200k".
@@ -88,20 +62,16 @@ function windowSize(n) {
   return String(n);
 }
 
-// "Opus 5 (1M context)" -> "Opus 5". Only a TRAILING parenthetical that mentions `context` is
-// removed; "(preview)" and friends carry information and stay.
+// "Opus 5 (1M context)" -> "Opus 5". Only a trailing parenthetical that mentions `context` goes.
+// "(preview)" carries information and stays.
 function stripContextSuffix(name) {
   return String(name).replace(/\s*\([^()]*\bcontext\b[^()]*\)\s*$/i, "").trim() || String(name);
 }
 
-// The user scope this session runs under: explicit non-empty arg -> CLAUDE_CONFIG_DIR ->
-// ~/.claude (ywr-harness ADR 0046; an empty explicit arg counts as absent). Claude Code's registry and
-// settings follow the env var, so a canon that read `~/.claude` unconditionally reported the
-// OTHER account's install on a multi-account machine. The env value is trusted only when
-// ABSOLUTE: a relative value would resolve against whatever cwd the renderer was spawned with,
-// making the version segment flicker with the spawn point — so a set-but-malformed value
-// returns "" and the caller treats the registry as unmeasured (the segment disappears;
-// absent != 0, and falling back to ~/.claude would resurrect the wrong-account read).
+// The user scope this session runs under: a non-empty arg, else CLAUDE_CONFIG_DIR, else ~/.claude
+// (ywr-harness ADR 0046). The env value counts only when absolute, because a relative one would
+// resolve against the renderer's spawn directory. A set but malformed value returns "", so the
+// segment disappears. A fallback to ~/.claude would read the other account's install.
 function claudeDir(dir, env = process.env) {
   if (dir) return dir;
   const raw = String(env.CLAUDE_CONFIG_DIR || "").trim();
@@ -110,12 +80,9 @@ function claudeDir(dir, env = process.env) {
 }
 
 // Tab-title head: the config-dir account (`.claude-ywrlabs` -> `claude-ywrlabs`), or "" when no
-// CLAUDE_CONFIG_DIR is set. The account is the one session dimension with no other surface —
-// `loc` is already the line's first segment — and it is what distinguishes two otherwise
-// identical terminals (ywr-harness ADR 0046). Unlike claudeDir(), no absoluteness demand: the label is a
-// pure string transform with no filesystem meaning, so the basename of even a relative value is
-// still the account the member set. Anything that strips to nothing yields "" and tabTitle()
-// falls back to the location — never a bare "/model" title.
+// CLAUDE_CONFIG_DIR is set. It tells two otherwise identical terminals apart (ywr-harness ADR 0046).
+// It is a string transform, so unlike claudeDir() it accepts a relative value. A value that strips
+// to nothing yields "", and tabTitle() falls back to the location.
 function accountLabel(env = process.env) {
   const dir = String(env.CLAUDE_CONFIG_DIR || "").trim();
   if (!dir) return "";
@@ -124,32 +91,20 @@ function accountLabel(env = process.env) {
 }
 
 function pluginVersion(dir) {
-    // The version of this plugin actually INSTALLED for this account, read from Claude Code's
-    // install registry (`<config-dir>/plugins/installed_plugins.json`, resolution above).
-    //
-    // Deliberately the ON-DISK value, not the running session's: with marketplace auto-update on,
-    // disk moves ahead of a live session — and that visible mismatch is exactly the "restart to
-    // apply" signal worth surfacing. Same honesty rule the retired org-guide segment followed,
-    // one link further down the chain: show what this machine HAS, never what a repo or the
-    // marketplace published.
-    //
-    // Only the plugin name is pinned; the `@marketplace` half of the key is not, because a
-    // consuming org may register the marketplace under another name. Absent file, unparseable
-    // JSON, no entry, or a version the registry records as "unknown" -> empty, and the segment
-    // disappears. Same rule as every other segment here: unmeasured is not the same as a value.
+    // The version installed for this account, read from Claude Code's install registry
+    // (`<config-dir>/plugins/installed_plugins.json`). It is the on-disk value, not the running
+    // session's: when disk is ahead of a live session, the mismatch signals a restart (ywr-harness ADR 0027).
+    // Only the plugin name is pinned, not the `@marketplace` half, because an org may name the
+    // marketplace differently. A missing file, bad JSON, no entry or an "unknown" version gives "".
     try {
         const base = claudeDir(dir);
-        if (!base) return ""; // set-but-malformed CLAUDE_CONFIG_DIR: unmeasured, never a guess
+        if (!base) return ""; // a malformed CLAUDE_CONFIG_DIR is unmeasured
         const p = path.join(base, "plugins", "installed_plugins.json");
         const j = JSON.parse(fs.readFileSync(p, "utf8"));
-        // A usable version carries at least one digit. That one shape test subsumes the
-        // registry's literal "unknown" sentinel AND the corrupted-write shapes ("v", whitespace)
-        // — none of which may render as a confident-looking version.
+        // A usable version has a digit. This rejects the registry's "unknown" and corrupted shapes such as "v".
         const usable = (v) => v != null && /\d/.test(String(v));
-        // Several installs can coexist (a project-scope entry alongside the user-scope one).
-        // This file is placed machine-wide, so the user-scope entry is the relevant one: prefer
-        // it, then break remaining ties by most-recent lastUpdated — never by registry order,
-        // which would let a stale project-scope entry listed first shadow the real install.
+        // Several installs can coexist. The file is placed machine-wide, so the user-scope entry wins.
+        // Ties go to the latest lastUpdated, never to registry order.
         let best = null;
         for (const key of Object.keys((j && j.plugins) || {})) {
             if (!key.startsWith("ywr-harness@")) continue;
@@ -176,12 +131,8 @@ function render(j, ver = pluginVersion()) {
     (j.workspace && (j.workspace.current_dir || j.workspace.project_dir)) || j.cwd || "";
   const parts = String(cwd).replace(/\\/g, "/").split("/").filter(Boolean);
   const loc = parts.slice(-2).join("/") || cwd || "?";
-  // Linked-worktree name (ywr-harness ADR 0059). Guarded to the documented STRING shape: anything else —
-  // absent, object, number — renders nothing, per the absence rule. A wrong host shape must
-  // show up as a missing segment, never as a wrong one. The CONTENT is sanitized too
-  // (review 2026-08-19, low): the name is a member-chosen directory name interpolated between
-  // this line's own escape codes, and a raw ESC or newline in it would break the line or leak
-  // color into the next segment — control bytes are stripped, never rendered.
+  // Linked-worktree name (ywr-harness ADR 0059). Only a string renders. The name is member-chosen
+  // and sits between this line's escape codes, so control bytes are stripped.
   const wt =
     (j.workspace && typeof j.workspace.git_worktree === "string"
       ? j.workspace.git_worktree.replace(/[\x00-\x1f\x7f]/g, "").trim()
@@ -201,41 +152,29 @@ function render(j, ver = pluginVersion()) {
     effort,
     line:
       `\x1b[36m${loc}${RESET}` +
-      // The worktree segment rides right after the location — it IS a location fact. Cyan like
-      // loc, dim `wt` label like every other label.
       (wt ? ` ${DIM}·${RESET} ${DIM}wt${RESET} \x1b[36m${wt}${RESET}` : "") +
       ` ${DIM}·${RESET} \x1b[1m${model}${RESET}` +
       (effort ? ` ${DIM}·${RESET} \x1b[33m${effort}${RESET}` : "") +
       ctxSeg +
-      // The size rides along only when the percentage actually rendered — a bare "/1M" with no
-      // number in front of it is noise.
+      // The size renders only after a percentage.
       (ctxSeg && size ? `${DIM}/${size}${RESET}` : "") +
       pct("5h", rl.five_hour && rl.five_hour.used_percentage) +
-      // The weekly stays at the TAIL for every model, Fable included: v0.32.0 rendered it
-      // inside the Fable model chunk and it read as a Fable-scoped figure — which /usage now
-      // actually shows, on a different denominator (the Team-plan Fable cap) — while this is
-      // the account-wide number, the only weekly the payload carries (ywr-harness ADR 0049, superseding
-      // ywr-harness ADR 0047; re-measured 2.1.228).
+      // The weekly stays at the tail for every model, because it is account-wide and a model chunk
+      // would read as a model-scoped figure (ywr-harness ADR 0049).
       pct("7d", rl.seven_day && rl.seven_day.used_percentage) +
-      // Last. The LABEL is dim like every other label; the VERSION gets magenta — readable
-      // without shouting, and deliberately outside the green/yellow/red family so it is never
-      // mistaken for a threshold. Dim-on-dim was the first attempt and was simply too faint to
-      // read against a dark terminal.
+      // The version is magenta, outside the green/yellow/red threshold colors.
       (ver ? ` ${DIM}·${RESET} ${DIM}${PLUGIN_LABEL}${RESET} ${MAGENTA}${ver}${RESET}` : ""),
   };
 }
 
-// Tab title: account (falling back to location when no CLAUDE_CONFIG_DIR account is active),
-// then model/effort. Usage percentages are deliberately NOT in the title — they change on every
-// render and would make the tab flicker.
+// Tab title: account (location when no account is active), then model and effort. It holds no usage
+// percentage, because the tab would flicker on every render.
 function tabTitle(r, env = process.env) {
   const head = accountLabel(env) || r.loc;
   return `${head}/${r.model}${r.effort ? "/" + r.effort : ""}`;
 }
 
-// Exported for the selftest, which asserts on render() directly rather than on a spawned process:
-// a status line is a pure function of its payload, and testing it through stdio would measure the
-// harness more than the renderer.
+// Exported for the selftest, which asserts on render() directly.
 module.exports = { render, stripContextSuffix, windowSize, seg, pluginVersion, claudeDir, accountLabel, tabTitle, PLUGIN_LABEL };
 
 if (require.main === module) {
@@ -257,8 +196,7 @@ if (require.main === module) {
       fs.writeSync(out, `\x1b]0;${title}\x07`);
       fs.closeSync(out);
     } catch {
-      // Absent on non-Windows and on redirected consoles. Best effort by design: a status line
-      // must never fail because a terminal would not take a title.
+      // CONOUT$ is absent on non-Windows and on redirected consoles. The title is best effort.
     }
   process.stdout.write(r.line);
   });

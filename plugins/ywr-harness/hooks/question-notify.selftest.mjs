@@ -2,38 +2,34 @@
 // AskUserQuestion answer (PreToolUse) and removes when the answer arrives (PostToolUse).
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout hooks/question-notify.selftest.mjs
 //
-// Fixture provenance: the payload carries `hook_event_name`, `tool_name`, `session_id`, `cwd` and
-// `tool_input`. For AskUserQuestion, `tool_input.questions` is a list of {question, header, options,
-// multiSelect}; the hook reads `header` and `question` of the first object entry and the count of entries.
-// This suite builds those payloads by hand; it never captured one live.
+// The payload carries `hook_event_name`, `tool_name`, `session_id`, `cwd` and `tool_input`. For AskUserQuestion,
+// `tool_input.questions` is a list of {question, header, options, multiSelect}. The hook reads `header` and
+// `question` of the first object entry and the count of entries. This suite builds those payloads by hand.
 //
-// THIS SUITE NEVER STARTS POWERSHELL TO SHOW A TOAST. A started child would show a real toast on the
+// THIS SUITE NEVER STARTS POWERSHELL TO SHOW A TOAST, because a started child would show a real toast on the
 // machine that runs the suite. Two rules keep that true:
-//   - the pure half (`notice`, `tagOf`, `script`, `encoded`, `powershellExe`, `optedOut`, `isMain`) is called
-//     in ONE node process per group, with an explicit `platform` and explicit `env` objects, so every case is
-//     the same on Linux CI and nothing spawns. `run` is called there with a FAKE `spawnFn` that records its
-//     call and starts nothing, and with a SystemRoot that holds a PLAIN FILE at the PowerShell path;
-//   - each end-to-end case runs the hook as a child process with a `--import` preload module that (a) sets
-//     `SystemRoot` in `process.env` before the hook file runs as the main module (a node process cannot START
-//     without the real SystemRoot: it aborts in its random-number init, exit 134, measured 2026-11-13, so the
-//     child starts with the real one) and (b) replaces `child_process.spawnSync` with a stub that appends its
+//   - The pure half (`notice`, `tagOf`, `script`, `encoded`, `powershellExe`, `optedOut`, `isMain`) is called
+//     in one node process per group, with an explicit `platform` and explicit `env` objects, so every case is
+//     the same on Linux CI and nothing spawns. `run` is called there with a fake `spawnFn` that records its
+//     call and starts nothing, and with a SystemRoot that holds a plain file at the PowerShell path.
+//   - Each end-to-end case runs the hook as a child process with a `--import` preload module. The preload
+//     (a) sets `SystemRoot` in `process.env` before the hook file runs as the main module, because a node
+//     process cannot start without the real SystemRoot (it aborts in its random-number init, exit 134), so the
+//     child starts with the real one, and (b) replaces `child_process.spawnSync` with a stub that appends its
 //     call to a log file and starts nothing (`syncBuiltinESMExports` carries the replacement to the hook's
-//     named import). The root is an EMPTY temp dir where a case wants "no powershell.exe", and a dir with a
+//     named import). The root is an empty temp dir where a case wants "no powershell.exe", and a dir with a
 //     plain file at the PowerShell path where a case wants the hook to reach its spawn. A case that proves a
-//     SILENCE (an opt-out, a wrong tool, bad stdin) uses the second root, so a deleted check shows as a logged
+//     silence (an opt-out, a wrong tool, bad stdin) uses the second root, so a deleted check shows as a logged
 //     call: against an empty root that case would pass with the check gone. The root and the log path reach
 //     the preload through variables set on the child's environment only.
-// The one pwsh child that this suite starts only PARSES the two child scripts (cases S1 and S2) and shows
-// nothing: `Parser.ParseInput` reads text and runs none of it. It needs pwsh on PATH, as the pwsh runners
-// do. A missing pwsh fails S1 and S2 with a stated reason, never passes them.
+// The one pwsh child that this suite starts only parses the two child scripts (cases S1 and S2) and shows
+// nothing: `Parser.ParseInput` reads text and runs none of it. It needs pwsh on PATH. A missing pwsh fails
+// S1 and S2 with a stated reason, never passes them.
 //
-// Escapes: line-break and control characters are built from char codes here, never spelled in the file
-// (an escape in an editor can land as the literal character). The node program that drives the pure half
-// is a temp file, not `node -e`: argument quoting differs by version and platform.
-//
-// The pwsh suite names one case without an ID, META. A Node test name starts with a case ID, so META is
-// `QN0 META` here, and the parity check of ADR 0227 decision 8 matches the name behind the ID. Every other
-// case keeps its ID and its text.
+// Line-break and control characters are built from char codes here, never spelled in the file, because an
+// escape in an editor can land as the literal character. The node program that drives the pure half is a
+// temp file, not `node -e`, because argument quoting differs by version and platform.
+// The case META is `QN0 META`: a Node test name starts with a case ID.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -77,11 +73,11 @@ const b64Utf16 = s => Buffer.from(s, 'base64').toString('utf16le')
 const sortCs = a => [...a].sort()
 
 // ---------------------------------------------------------------------------------------------------
-// R1. REGISTRATION. The cases below call the exported functions and run the file by hand, so none of them
-//     sees whether the runtime ever calls the hook. A matcher of `askuserquestion` (the exact-string match
+// R1. registration. The cases below call the exported functions and run the file by hand, so none of them
+//     sees whether the runtime calls the hook. A matcher of `askuserquestion` (the exact-string match
 //     is case-sensitive) or a wrong event key would leave it inert with every other case green. The hook
-//     needs BOTH events: PreToolUse shows the toast and PostToolUse removes it. This pins the wiring; that
-//     it FIRES is a live `--plugin-dir` probe's to show.
+//     needs both events: PreToolUse shows the toast and PostToolUse removes it. This pins the wiring.
+//     A live `--plugin-dir` probe shows that it fires.
 addCase('R1 hooks.json registers this script under PreToolUse and PostToolUse: matcher exactly AskUserQuestion, exec-form node <script>, timeout 10, async true', () => {
   const regFails = []
   try {
@@ -788,7 +784,7 @@ test('E7 the child setup left this process environment alone', () => {
   assert.deepEqual(f, [], f.join(' · '))
 })
 
-// META — the comparison helper must be able to fail: a wrong expectation is reported, not absorbed.
+// META: the comparison helper must be able to fail, so a wrong expectation is reported, not absorbed.
 test('QN0 META', () => {
   const f = equalFailures({ meta: { title: 'x', text: 'y' } }, { meta: { text: 'z' } })
   assert.ok(f.length === 1 && /text: got 'y', want 'z'/.test(f[0]), `equalFailures accepted a wrong expectation: [${f.join('; ')}]`)

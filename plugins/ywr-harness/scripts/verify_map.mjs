@@ -1,12 +1,12 @@
 // Changed-files -> verify-script reverse index. Backend for the /ywr-harness:verify skill.
 //
-// Reads the generated docs index (single source of truth: spec frontmatter `implements_in`), maps
-// changed files to owning specs, and prints the verify scripts registered under those specs.
-// Advisory — no LLM, no network, nothing executed; exits 0 with TWO exceptions, each printing a
-// stdout FAILED marker and exiting non-zero because an empty advisory output reads as a pass to
-// every consumer: a git failure resolving the changed-file scope (`scope: FAILED`, ywr-harness ADR 0041), and a
-// docs index that exists but cannot be read (`index: FAILED`, ywr-harness ADR 0110). An ABSENT index is a
-// stdout `index: ABSENT` line with exit 0 — a repo with no docs corpus yet.
+// Reads the generated docs index (spec frontmatter `implements_in`), maps changed files to owning
+// specs, and prints the verify scripts registered under those specs. Advisory: no LLM, no network,
+// nothing executed.
+// Exit 0, except two cases that print a stdout FAILED marker and exit non-zero, because an empty
+// output reads as a pass to every consumer: a git failure that resolves the changed-file scope
+// (`scope: FAILED`, ywr-harness ADR 0041) and an index that exists but cannot be read
+// (`index: FAILED`, ywr-harness ADR 0110). An absent index prints `index: ABSENT` and exits 0.
 //
 // Usage:
 //   node verify_map.mjs                       # working tree vs HEAD + untracked
@@ -14,19 +14,17 @@
 //   node verify_map.mjs path/to/file [...]    # explicit files
 //   node verify_map.mjs --repo <dir>          # repo root (default: search upward)
 //
-// --range is a union with the current working tree (tracked changes AND untracked files), so
-// "verify the slice" always includes the not-yet-committed state; after a clean commit the union
-// degenerates to the range alone.
+// `--range` is a union with the working tree (tracked changes and untracked files), so a verify run
+// always covers the uncommitted state.
 //
-// The committed index carries a frontmatter digest (`fm_digest`, ywr-harness ADR 0043); this script recomputes
-// it and prints an `index: STALE` advisory line when the docs sources have moved on — the local
-// mid-slice complement to CI's on-merge drift gate. A missing stamp is reported, never silent.
+// The index carries a frontmatter digest (`fm_digest`, ywr-harness ADR 0043). The script recomputes
+// it and prints an `index: STALE` line when the docs sources differ. A missing stamp is reported too.
 //
-// Unowned product files are listed as unmapped unless the slice retro's ignore register
-// (`retro.ignore_file`) exempts them — one register for both readers (ywr-harness ADR 0115); an exempt file is
-// counted, never dropped silently.
+// Unowned product files are listed as unmapped, unless the slice retro's ignore register
+// (`retro.ignore_file`) exempts them. Both readers share that register (ywr-harness ADR 0115).
+// Exempt files are counted, never dropped silently.
 //
-// Repo-specific values come from `.harness.json` via harness_config — one reader, one validator.
+// Repo-specific values come from `.harness.json` via harness_config.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -35,23 +33,17 @@ import { fileURLToPath } from 'node:url'
 import * as hc from './harness_config.mjs'
 
 // ---------------------------------------------------------------------------------------------
-// Staleness-stamp recomputation (ywr-harness ADR 0043). MUST mirror the docs builder's `fm_digest`
-// exactly — the file rule (sorted NNNN-*.md, 0000- excluded) and the block rule (`hc.fm_block`, the
-// builder's split_frontmatter: CRLF fold, lead-HTML-comment skip, opening '---' line, closing
-// line strip() == '---'). The two implementations are held together by a pairing selftest
-// (build-docs.selftest.mjs): change one side alone and that suite fails. There is no shared
-// import because the builder stays a standalone file (ywr-harness spec 0001); the
-// duplication is deliberate and selftest-gated.
+// Staleness-stamp recomputation (ywr-harness ADR 0043). It must mirror the docs builder's
+// `fm_digest` exactly: the file rule (sorted NNNN-*.md, 0000- excluded) and the block rule
+// (`hc.fm_block`, the builder's frontmatter split). The builder is a standalone file with no shared
+// import (ywr-harness spec 0001), so a pairing selftest holds the two copies together.
 //
-// The digest hashes the bytes the builder hashes: each file is read as UTF-8 with undecodable bytes
-// replaced, and a lone `\r` or a `\r\n` read as `\n` (the builder reads in text mode), then the
-// text of the block is encoded back to UTF-8.
+// The digest hashes what the builder hashes: UTF-8 text with undecodable bytes replaced and every
+// `\r\n` or lone `\r` read as `\n`, then the block encoded back to UTF-8.
 //
-// The corpus location is DERIVED, never assumed: the builder resolves adr/ and spec/ as siblings
-// of its own file, and it writes index.json into that same directory — so the corpus dirs are
-// always siblings of the index the declaration points at. Hardcoding `docs/` here would report
-// a permanent false STALE for any repo that customizes docs.index, and a false alarm that never
-// clears teaches readers to ignore the real one.
+// The corpus location comes from the index path, never from a hardcoded `docs/`: the builder writes
+// the index beside adr/ and spec/, and a fixed path would report a permanent false STALE in a repo
+// that customizes `docs.index`.
 // ---------------------------------------------------------------------------------------------
 // The builder's file rule `^\d{4}-.*\.md$`: `\d` reads any Unicode decimal digit, `.` any character but
 // a line feed, and `$` also matches before one trailing line feed.
@@ -107,20 +99,17 @@ function py_json(v) {
 }
 
 /**
- * The normalized `implements_in` paths of one index entry — never a crash on its shape.
+ * The normalized `implements_in` paths of one index entry. Never throws on its shape.
  *
- * An index is a generated file, but the generator that wrote it may be older than this script:
- * builders before plugin 0.54.0 parsed only the one-line `[a, b]` list, so a spec written as a
- * block list lands as `null` and a multi-line flow list as the string `"["`. Iterating either
- * would crash (`null`: a non-zero exit that fails CI's verify step) or silently walk
- * the string character by character into an empty mapping. Both read as "this spec owns
- * nothing" and are WARNED, naming the spec, because either one is an ownership hole the
- * reader must see. An absent key is an honest empty list and stays silent.
+ * An index may come from an older builder that parsed only the one-line `[a, b]` list. A block
+ * list then lands as `null` and a multi-line flow list as the string `"["`. Iterating either would
+ * crash or walk the string character by character into an empty mapping. Both mean "this spec owns
+ * nothing" and are warned with the spec id, because each is an ownership hole. An absent key is an
+ * honest empty list and stays silent.
  *
- * A current builder also writes a non-list for a value that is not a list in the source — an
- * empty or comment-only `implements_in:` (null), an unterminated `[` (a string) — and a rebuild
- * reproduces it, so the warning names that remedy too: a warning whose only named fix cannot
- * clear it is the alarm fatigue this script exists to avoid.
+ * A current builder also writes a non-list for a source value that is no list (an empty
+ * `implements_in:` or an unterminated `[`), and a rebuild reproduces it. The warning names that
+ * remedy too, so the warning's fix can always clear it.
  * @param {Object} spec @param {string[]} warns @returns {string[]}
  */
 export function spec_files(spec, warns) {
@@ -146,9 +135,9 @@ export function spec_files(spec, warns) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The command line. It reads and refuses what the interpreter's own option parser did, with the same
-// words: an abbreviated long option, `--name=value`, a negative number as a value, `--` before a
-// value that starts with a dash, `-h`, and an exit of 2 with a usage line for a bad invocation.
+// The command line. It follows argparse's rules and wording: an abbreviated long option,
+// `--name=value`, a negative number as a value, `--` before a value that starts with a dash, `-h`,
+// and exit 2 with a usage line for a bad invocation.
 // ---------------------------------------------------------------------------------------------
 class Exit extends Error {
   constructor(code) {
@@ -270,7 +259,7 @@ function resolve_path(p) {
   }
 }
 
-// The Python exception type behind a failure to read or parse the index, for the FAILED line.
+// The exception name the FAILED line shows for an unreadable index (`JSONDecodeError` and the like).
 function index_error_name(e) {
   if (e && e.name === 'SyntaxError') return 'JSONDecodeError'
   if (e && typeof e.code === 'string') return hc._oserr(e).name
@@ -284,11 +273,9 @@ function main(argv) {
   const [cfg, warns] = hc.load(root)
   for (const w of warns) hc.warn(w)
 
-  // An ABSENT index is a repo with no docs corpus yet — stated on stdout, exit 0
-  // (ywr-harness ADR 0110). An index that exists but cannot be read as an object with a `spec`
-  // list is a broken build, the same class as the scope failure below: it must print a FAILED
-  // line on stdout and exit non-zero, because a consumer reading stdout plus the exit code
-  // would otherwise see a clean "nothing mapped" run.
+  // An absent index is a repo with no docs corpus yet: stdout line, exit 0. An index that exists
+  // but is no object with a `spec` list prints FAILED and exits non-zero, because a consumer
+  // would otherwise read a clean "nothing mapped" run (ywr-harness ADR 0110).
   const index_path = path.join(root, cfg.index)
   if (!fs.existsSync(index_path) && !is_symlink(index_path)) {  // a dangling link is FAILED below
     hc.say(`index: ABSENT — ${cfg.index} does not exist, so no spec owns any file and ` +
@@ -327,11 +314,8 @@ function main(argv) {
   }
   const specs = hc._get(index, 'spec', [])  // a non-object entry is REFUSED per entry in the loop below
 
-  // Staleness signal (ywr-harness ADR 0043). The committed index carries a digest of the corpus
-  // frontmatter; recompute it and ADVISE when the sources have moved on — the local mid-slice
-  // run otherwise maps changed files against ownership someone forgot to rebuild, silently.
-  // Advisory only: CI's drift gate is the enforcement on merge. A missing stamp is reported
-  // too — silence has to mean "current", never "too old to know".
+  // Staleness signal (ywr-harness ADR 0043): advisory only, CI's drift gate enforces on merge.
+  // A missing stamp is reported too, so silence means "current".
   const stamp = hc._get(index, 'fm_digest')
   if (stamp === null) {
     hc.say('index: no staleness stamp (index predates ywr-harness ADR 0043) — rebuild once to enable: ' +
@@ -348,9 +332,7 @@ function main(argv) {
     [files, prov] = hc.changed_files(root, args.rev_range, args.files)
   } catch (e) {
     if (e.name !== 'CalledProcessError') throw e
-    // The one non-zero exit (ywr-harness ADR 0041) — same principle as the gate emitter's scope path:
-    // a silent empty output is indistinguishable from "nothing to verify", and the /ywr-harness:verify
-    // skill would read exactly that.
+    // An empty output would read as "nothing to verify" to the /ywr-harness:verify skill (ywr-harness ADR 0041).
     process.stderr.write(`git diff failed: ${hc.py_strip(e.stderr || '')}\n`)
     hc.say('scope: FAILED — git could not resolve the changed-file scope; NOTHING was ' +
            'verified. This run must not be read as a pass (ywr-harness ADR 0041).')
@@ -367,9 +349,8 @@ function main(argv) {
   const scope_re = hc.compile_re(cfg.product_scope, 'verify.product_scope', late)
   for (const w of late) hc.warn(w)
 
-  // Collected during composition below and printed at the END of the run. NOT appended to
-  // `late`: that list is already drained above, so anything added afterwards would be swallowed
-  // — and a swallowed warning about a refused value looks exactly like a good configuration.
+  // Printed at the end of the run. Not appended to `late`, which is already drained above: a
+  // swallowed warning about a refused value looks like a good configuration.
   const refused = []
   const hits = new Map()
   const owned = new Set()
@@ -380,9 +361,8 @@ function main(argv) {
                    'rebuild the index (node docs/build.mjs)')
       return
     }
-    // An entry without a usable id still MAPS: dropping it would hide its verify
-    // scripts — a coverage gap reading as "no spec owns this". Shown under a placeholder and
-    // WARNED, the same "never crash, never silent" rule as a non-list implements_in.
+    // An entry without a usable id still maps: dropping it would hide its verify scripts as "no
+    // spec owns this". It shows under a placeholder and is warned.
     let sid = hc._get(spec, 'id')
     if (typeof sid !== 'string' || !hc.py_strip(sid)) {
       sid = `(index entry ${n}, no id)`
@@ -398,14 +378,10 @@ function main(argv) {
   })
 
   let unmapped = scope_re ? hc._sorted(files.filter((f) => hc.re_match(scope_re, f) && !hc.owned(owned, f))) : []
-  // The retro's ignore register exempts the same files here (ywr-harness ADR 0115): the list below
-  // calls itself "a slice-retro UNMAPPED finding in the making", which needs both readers on one
-  // register — otherwise a file the register exempts would be listed here as debt the retro never
-  // reports. One register is necessary, not sufficient: the SCOPES stay two declarations
-  // (`verify.product_scope` here, `retro.source_scope` there), so a file inside the first and
-  // outside the second is still listed — the repo keeps the two in step. Exempt files are COUNTED,
-  // never dropped silently; a bad register line is warned at the end like any refusal, and only
-  // on a run with something unmapped to filter (no list, no read).
+  // The retro's ignore register exempts the same files (ywr-harness ADR 0115), so this list never
+  // shows debt the retro does not report. The scopes stay two declarations (`verify.product_scope`
+  // here, `retro.source_scope` there): a file in the first and outside the second is still listed.
+  // The register is read only when something is unmapped. A bad register line is warned at the end.
   const ign = unmapped.length ? hc.load_ignore(root, cfg.retro_ignore_file, refused) : []
   const exempt = unmapped.filter((f) => hc.any_match(ign, f))
   unmapped = unmapped.filter((f) => !hc.any_match(ign, f))
@@ -415,19 +391,15 @@ function main(argv) {
   }
   for (const sid of hc._sorted([...hits.keys()])) {
     const h = hits.get(sid)
-    // Everything below is printed through `hc.say()`, the single stdout exit. It matters most
-    // here of all places: id, title and the filenames are repo-supplied, and this output's
-    // consumer is a MODEL told to run the `run:` lines — so a newline in any of them could spell
-    // a `run:` line nobody registered (same rule as for a shell consumer, here with a model).
+    // Print through `hc.say()`, the one stdout exit: id, title and filenames are repo-supplied, and a
+    // newline in one could forge a `run:` line for the model that reads this output.
     hc.say(`spec ${sid} — ${hc._str(h.title)}`)
     for (const f of h.matched) hc.say(`  changed: ${f}`)
     if (h.verify.length) {
       for (const v of h.verify) {
         const cmd = hc.verify_command(cfg, v, refused)
-        // A refusal must NOT occupy the `run:` slot. This output's only consumer is the
-        // /ywr-harness:verify skill — an LLM told to run the printed commands — and unlike the two
-        // shell parsers it has no `(`-prefix convention to fall back on. So a refused
-        // path gets a differently-labelled line that reads as a finding, not a command.
+        // A refusal never takes the `run:` slot: the /ywr-harness:verify skill runs every `run:` line,
+        // so a refused path gets a `REFUSED:` line that reads as a finding.
         hc.say(!cmd.startsWith('(')
           ? `  run:     ${cmd}`
           : "  REFUSED: this spec's registered verify script path is not a safe " +

@@ -157,10 +157,9 @@ async function invokeGate(gatePath, args = [], input = undefined) {
   return { out, code: r.status, aborted: false, stdout: r.stdout }
 }
 
-// --- copy once, reset per case (handoff O31) ------------------------------------------------------
-// A per-case copy of the whole plugin tree was part of the suite's floor. Each fixture family
-// now copies ONCE into a pristine snapshot plus one working tree; before every case the working tree
-// is reset to the snapshot and the reset is ASSERTED: the full state (every file's relative path and
+// --- copy once, reset per case (ADR 0111) --------------------------------------------------------
+// Each fixture family copies once into a pristine snapshot plus one working tree. Before every case
+// the working tree is reset to the snapshot and the reset is asserted: the full state (every file's relative path and
 // SHA-256, every directory, and the Unix mode off Windows) must equal the snapshot's, or the suite
 // throws. A case therefore never sees a previous case's mutation — an added file or directory, a
 // `.git` from `git init`, a deleted file, an edited byte — and a reset that missed one is a loud
@@ -275,10 +274,8 @@ function resetTree(fx, t) {
 }
 // The plugin tree a fixture copies is the WORK TREE MINUS ITS GITIGNORED FILES: `git ls-files --cached
 // --others --exclude-standard`, so an unadded new file is in and the owner's eval results, the mod
-// build's types, __pycache__ and tsconfig.json are out — half the tree's bytes, never shipped, and
-// copied and SHA-256-hashed into every fixture family before (O80, measured 2026-10-11: suite 110 →
-// 74 s, all mutations still caught). CI's checkout has none of them, so the fixture now matches the
-// tree CI gates. Outside a git work tree (the Linux parity image mounts the plugin alone) or on any
+// build's types, __pycache__ and tsconfig.json are out: they are never shipped, and CI's checkout has
+// none of them, so the fixture matches the tree CI gates. Outside a git work tree (the Linux parity image mounts the plugin alone) or on any
 // git failure it falls back to the whole-directory copy. A tracked file deleted in the work tree is
 // skipped. `to` must not exist yet. `env` adds variables to the git call, for the fallback case.
 const gitHere = !git_absent()
@@ -642,7 +639,7 @@ mg('audit-paths-selects-the-surface', () => {
   assert.ok(r.status === 0 && got.join('|') === apWant.join('|') && r.stdout.endsWith('\0'), `exit=${r.status} got=${got.join(', ')} stderr=${r.stderr.trim()}`)
 })
 
-// copyPluginTree's two branches (O80 review): every fixture above takes the git-listed branch from
+// copyPluginTree's two branches: every fixture above takes the git-listed branch from
 // this checkout, so the whole-directory fallback — the Linux parity image's path — needs its own case.
 // A GIT_DIR that does not exist makes `ls-files` fail wherever the temp root sits. The fallback must
 // carry every file (an ignored-looking one included) and an empty directory, un-nested under `to`.
@@ -678,13 +675,11 @@ mg('fixture-copy-git-skips-ignored', () => {
 })
 
 // --- release lockstep (ADR 0073) ----------------------------------------------------------------
-// Canon-shape fixtures that ARE git repos — the check needs a tag to compare against. ONE such repo is
-// built per suite run (handoff O31, ADR 0111): the canon shape at version 9.9.9 with README.md as LF and
-// a non-ASCII-named file, then init · config · add · commit · tag once (measured 2026-09-03 on this box
-// under review-agent load: 183 + 60 + 692 + 411 + 64 ms, ≈1.4 s) and packed, so `.git` holds a handful
-// of files instead of ~400 (assertFixturePristine hashes every file of it after every reset). Each case
-// then resets that tree — zero fixture spawns per case; the ten cases paid the ≈1.4 s ten times —
-// and applies ONLY its working-tree mutation. A case that corrupts `.git` (lockstep-git-fails-after-tag
+// Canon-shape fixtures that are git repos: the check needs a tag to compare against. One such repo is
+// built per suite run (ADR 0111): the canon shape at version 9.9.9 with README.md as LF and a
+// non-ASCII-named file, then init, config, add, commit and tag once, and packed, so `.git` holds a
+// handful of files (assertFixturePristine hashes every file of it after every reset). Each case then
+// resets that tree with zero fixture spawns and applies only its working-tree mutation. A case that corrupts `.git` (lockstep-git-fails-after-tag
 // writes `.git/index`) is undone by the reset like any other mutation, and so is any index refresh the
 // gate's own `git diff` writes; the asserted reset proves it. The gate's own three or four git calls
 // (≈0.5 s on top of a gate run) stay per case. The plain canon-shape fixtures above are not git
@@ -836,11 +831,9 @@ const canonGuess = (() => {
 })()
 const realAdrDir = canonGuess ? p2(canonGuess, 'docs/adr') : ''
 const badNum = '09' + '99'
-// ONE such repo per suite run (handoff O31, ADR 0111), built lazily: the canon
-// shape minus the owner's gitignored eval results, the docs/adr/ stubs, then init · config · add -A once.
-// Each case resets it (asserted) and pays ONE spawn — `git add` of only the paths the case wrote — in
-// place of init · config · add -A over ~250 files (≈0.7 s for the add alone, measured 2026-09-30); the
-// stub ADR files are already in the snapshot's index, and the case's `untracked` files are written after
+// One such repo per suite run (ADR 0111), built lazily: the canon shape minus the owner's gitignored
+// eval results, the docs/adr/ stubs, then init, config and add -A once. Each case resets it (asserted)
+// and pays one spawn, a `git add` of only the paths the case wrote. The stub ADR files are already in the snapshot's index, and the case's `untracked` files are written after
 // that add so they stay untracked. The snapshot holds one commit, for packing only — the check reads
 // the index (`git ls-files`), and a case's `git add` stays uncommitted.
 const adrSkipReason = (!gitHere || !realAdrDir || !(existsSync(realAdrDir) && statSync(realAdrDir).isDirectory()))
@@ -1068,6 +1061,47 @@ adrCase('js-git-boundary-selftest-and-boundary-not-read', async () => {
   const countOk = !!batch && !!ctl && Number(batch[1]) === Number(ctl[1]) + 1 && Number(batch[2]) === Number(ctl[2]) + 1
   assert.ok(g.rc === 1 && !m(g.out, String.raw`j5\.selftest\.mjs:\d`) && !m(g.out, String.raw`tools/deep/harness_git\.mjs:\d`) && countOk,
     `exit=${g.rc} control=[${ctl?.[1] ?? ''},${ctl?.[2] ?? ''}] batch=[${batch?.[1] ?? ''},${batch?.[2] ?? ''}]\n${g.out}`)
+})
+
+// --- code comments tell no history (review canon invariant 12, ADR 0234) --------------------------
+// The control run reads the copied canon tree, which names no slice and no open item in a comment.
+adrCase('comment-history-control-passes', async () => {
+  const g = await adrControl()
+  assert.ok(g.rc === 0 && m(g.out, String.raw`PASS  code comments: [1-9]\d* comment line\(s\) in [1-9]\d* code file\(s\) name no slice number and no open-item ID`) &&
+    m(g.out, 'code comments: an ID from O1 to O9 is not read'), `exit=${g.rc}\n${g.out}`)
+})
+// One batch names each history site by its line. A string, a template, a regex, a one-digit case ID, a
+// non-sh file under githooks/, a `$#` and a heredoc body are no comment or no finding. A `<<` shift opens
+// no heredoc, and a bash hook is read.
+adrCase('comment-history-batch-names-each-site', async () => {
+  const files = {
+    'scripts/c1.mjs': lf(['// slice 12 left this', "const s = 'slice 13 in a string'", 'const t = `O45 in a template`',
+      '/* a block that names O123', '   and continues */ const r = /slice 9/', '// case O7 is a case ID',
+      'const u = 1 // trailing O88', '// a slicer 5 and Slices 2']),
+    'scripts/c2.sh': lf(['#!/bin/sh', '# slice 4 here', 'echo "# O55 not a comment"', 'x=$# # O66 trailing',
+      'y=$((x << n))', '# O56 after a shift', "cat <<'EOF'", '# O57 in a heredoc', 'EOF', '# O58 after the heredoc']),
+    'tools/githooks/c3': lf(['#!/bin/sh', '# O77 hook']),
+    'tools/githooks/c7': lf(['#!/usr/bin/env bash', '# O79 bash hook']),
+    'tools/githooks/c4': lf(['not a script', '# O78']),
+    'scripts/c5.mjs': lf(['const a = 1', '/* never closed', '// O99']),
+  }
+  const g = await adrRun('comment-history', files, { 'scripts/c6.mjs': lf(['// slice 1']) })
+  const want = ["code comment: scripts/c1\\.mjs:1 names 'slice 12'", "code comment: scripts/c1\\.mjs:4 names 'O123'",
+    "code comment: scripts/c1\\.mjs:7 names 'O88'", "code comment: scripts/c1\\.mjs:8 names 'Slices 2'",
+    "code comment: scripts/c2\\.sh:2 names 'slice 4'", "code comment: scripts/c2\\.sh:4 names 'O66'",
+    "code comment: scripts/c2\\.sh:6 names 'O56'", "code comment: scripts/c2\\.sh:10 names 'O58'",
+    "code comment: tools/githooks/c3:2 names 'O77'", "code comment: tools/githooks/c7:2 names 'O79'",
+    "code comment: scripts/c5\\.mjs:3 names 'O99'",
+    'code comments: scripts/c5\\.mjs:2 opens a block comment that never closes',
+    "code comment: scripts/c6\\.mjs:1 \\(untracked\\) names 'slice 1'"]
+  const spare = ['c1\\.mjs:[2356] ', 'c2\\.sh:([135789]) ', 'c2\\.sh:\\d+ opens', 'githooks/c4', 'PASS  code comments']
+  const missing = want.filter((x) => !m(g.out, x))
+  const wrong = spare.filter((x) => m(g.out, x))
+  assert.ok(g.rc === 1 && missing.length === 0 && wrong.length === 0, `exit=${g.rc} missing=[${missing.join(' | ')}] wrongly-named=[${wrong.join(' | ')}]\n${g.out}`)
+})
+adrCase('comment-history-skip-not-git', async () => {
+  const g = await notGitRun()
+  assert.ok(m(g.out, 'code comments: skipped — the canon shape is not inside a git work tree') && !m(g.out, String.raw`code comments: \d+ comment`), `exit=${g.rc}\n${g.out}`)
 })
 
 // --- eval suite structure (ADR 0076 / spec 0014) -------------------------------------------------

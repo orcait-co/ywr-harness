@@ -1,30 +1,24 @@
 // Self-test for directory-added-guard.mjs (harness-scope gate).
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout hooks/directory-added-guard.selftest.mjs
 //
-// Fixture provenance matters here: the payload shape asserted below is the hooks reference's
-// "DirectoryAdded input" (re-read 2026-09-27; first read out of the 2.1.220 binary's zod
-// schema). An invented shape is exactly how
-// the sibling config-change-audit hook stayed green while being inert, so cases 1 and 2
-// are ground truth, not guesses. Every case carries MustNotMatch as well as MustMatch —
-// an assertion set with no negatives is the empty-MustNotMatch class this repo has hit
-// three times, with follow-ups tracked.
+// The payload shape asserted below is the hooks reference's "DirectoryAdded input", so cases 1 and 2
+// are ground truth, not guesses. An invented shape keeps a guard green while it is inert.
+// Every case carries MustNotMatch as well as MustMatch, because an assertion set with no negatives
+// cannot fail on an overclaim.
 //
-// Case 3's `rich` fixture carries exactly ONE of the two plugin keys because the first draft
-// asserted the OPPOSITE (review medium): it wrote an EMPTY settings.json and demanded the banner
-// claim both keys anyway, freezing an existence-vs-selection overclaim as the expected answer.
-// Case 3 now proves the guard names what is there and stays silent about what is not; cases 6-7
-// (a settings file with neither key, an unparseable one) come from the same review.
+// Case 3's `rich` fixture carries exactly ONE of the two plugin keys. The guard names the key that is
+// there and stays silent about the one that is not. Cases 6-7 cover a settings file with neither
+// key and an unparseable one.
 //
-// The banner's reader is CLAUDE, not the person (ADR 0097: an /add-dir systemMessage is next-turn
-// model context, a register_repo_root one a debug-log line), so it is English — cases 1 and 10
-// refuse any Hangul in the guard's own prose — and it carries a relay instruction to the model.
+// The banner's reader is the model, not the person (ADR 0097: an /add-dir systemMessage is next-turn
+// model context, a register_repo_root one a debug-log line). So the banner is English, cases 1 and 10
+// refuse any Hangul in the guard's own prose, and it carries a relay instruction to the model.
 //
-// Port notes (ADR 0227). The pwsh suite named its cases without IDs, apart from R1. Each test here is
-// `DA<n> <the old name>`, numbered in file order, so the parity check of ADR 0227 decision 8 matches the
-// names. The comments keep the case numbers of the pwsh suite. Patterns are pwsh -match sources
-// (case-insensitive; see toRx in lib/selftest-lib.mjs). The environment variable of cases 4-9 is set per
-// hook call, never in the suite's own process, so no case leaks it into another. Every special
-// character of the class under test is built from a code point.
+// Tests are named `DA<n> <text>`, numbered in file order, and the parity check matches the names
+// (ADR 0227 decision 8). The numbers in the comments below are case labels, not DA numbers.
+// Patterns are case-insensitive regex sources (toRx in lib/selftest-lib.mjs). The environment
+// variable of cases 4-9 is set per hook call, never in the suite's own process, so no case leaks it
+// into another. Every special character of the class under test is built from a code point.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
@@ -37,10 +31,10 @@ import { matchFailures, fixtureRoot, removeFixtureRoot } from '../lib/selftest-l
 const here = path.dirname(fileURLToPath(import.meta.url))
 const hook = path.join(here, 'directory-added-guard.mjs')
 const ch = (...c) => String.fromCharCode(...c)
-const esc = s => s.replace(/[\\*+?|{[()^$.#\s]/g, '\\$&')   // regex.Escape of .NET, for the characters a path carries
+const esc = s => s.replace(/[\\*+?|{[()^$.#\s]/g, '\\$&')   // regex-escapes the characters a path carries
 const MD_VAR = 'CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD'
 
-// stdin as pwsh piped it: the text plus one newline. stdout and stderr together, as `2>&1` read them.
+// stdin is the text plus one newline. The output joins stdout and stderr.
 // `md` is the value of MD_VAR for this one call; undefined removes it from the child's environment.
 function invokeHook(stdin, md) {
   const env = { ...process.env }
@@ -51,8 +45,7 @@ function invokeHook(stdin, md) {
 }
 const payload = fields => JSON.stringify({ hook_event_name: 'DirectoryAdded', ...fields })
 
-// The empty-MustNotMatch guard and the match loops live in the shared helper; what is file-specific is
-// the envelope.
+// The empty-MustNotMatch guard and the match loops live in the shared helper. Only the envelope is file-specific.
 function sysMsgFailures({ out, exit }, mustMatch, mustNotMatch, noNegative = '') {
   const pre = []
   if (exit !== 0) pre.push(`exit ${exit} (want 0 — fail-open contract; a non-zero exit sends output to the debug log)`)
@@ -90,14 +83,14 @@ const localmd = mk('localmd')
 // exactly ONE of the two contributing keys, so the banner must name it and omit the other
 writeFileSync(path.join(rich, '.claude/settings.json'), '{"extraKnownMarketplaces":{}}')
 writeFileSync(path.join(rich, 'CLAUDE.md'), '# other project')
-// a settings file with NO contributing key — the common real-world shape
+// a settings file with NO contributing key, the common shape
 writeFileSync(path.join(plain, '.claude/settings.json'), '{"hooks":{},"permissions":{"allow":[]}}')
 writeFileSync(path.join(broken, '.claude/settings.json'), '{ not json at all')
 writeFileSync(path.join(localmd, 'CLAUDE.local.md'), '# local only')
 
 const bareRx = esc(bare)
 const richRx = esc(rich)
-const noExist = path.join(tmpdir(), 'dag-no-such-dir')   // platform-neutral: a literal `C:\x` is a NON-EXISTENT DRIVE on Linux CI
+const noExist = path.join(tmpdir(), 'dag-no-such-dir')   // platform-neutral: a literal `C:\x` names a non-existent drive on Linux
 
 // 1. /add-dir of a plain directory -> banner names the path + source, states BOTH
 //    consequences and the relay instruction, in English (its reader is the model, ADR 0097);
@@ -118,7 +111,7 @@ test('DA2 register_repo_root source', () => {
 })
 
 // 3. the config surfaces that DO load are named, and ONLY the settings key actually
-//    present is claimed (permissions reference table, 5 rows at the 2026-09-27 re-read)
+//    present is claimed (permissions reference table, 5 rows)
 test('DA3 config surfaces enumerated', () => {
   assertSysMsg(invokeHook(payload({ directory: rich, source: 'slash_command' })),
     [richRx, String.raw`skills from \.claude/skills`, String.raw`subagent definitions from \.claude/agents`,
@@ -127,7 +120,7 @@ test('DA3 config surfaces enumerated', () => {
 })
 
 // 3a. command files load from an added directory too (the reference table's fifth row,
-//     absent from the guard until ADR 0097's re-read) — named alone when alone
+//     ADR 0097) and are named alone when alone
 test('DA4 command files enumerated', () => {
   assertSysMsg(invokeHook(payload({ directory: cmds, source: 'slash_command' })),
     [String.raw`command files from \.claude/commands`, 'same-named command of this project wins'],
@@ -147,28 +140,27 @@ test('DA6 CLAUDE.md present, env set', () => {
 })
 
 // 5a. the reference gates the merge on `=1`: a set-but-not-1 value (0, the usual way to switch a
-//     flag off) must NOT be reported as a merge — the model would assume instructions it lacks
+//     flag off) must NOT be reported as a merge, or the model would assume instructions it lacks
 test('DA7 env var 0 is not a merge', () => {
   assertSysMsg(invokeHook(payload({ directory: rich, source: 'slash_command' }), '0'),
     ['is not 1, so they are NOT in your context'], ['MERGE'])
 })
 
-// 6. EXISTENCE IS NOT SELECTION (review medium): a settings file carrying neither
+// 6. EXISTENCE IS NOT SELECTION: a settings file carrying neither
 //    contributing key must produce NO configuration claim at all
 test('DA8 settings file without the two keys claims nothing', () => {
   assertSysMsg(invokeHook(payload({ directory: plain, source: 'slash_command' })),
     ['was added as a working directory'], ['enabledPlugins', 'extraKnownMarketplaces', 'Loaded from it', 'UNKNOWN'])
 })
 
-// 7. an unparseable settings file is UNKNOWN, never silently absent (the canon review invariant 4)
+// 7. an unparseable settings file is UNKNOWN, never silently absent (honest reporting)
 test('DA9 unparseable settings reports unknown', () => {
   assertSysMsg(invokeHook(payload({ directory: broken, source: 'slash_command' })),
     ['UNKNOWN, not absent', String.raw`settings\.json`], ['Loaded from it', 'SCHEMA DRIFT'])
 })
 
-// 7a. settings KEYS match case-insensitively (the original's `-contains` did), and a UTF-8 BOM in front of
-//     the file does not make it unparseable (Get-Content dropped it; a Windows editor writes one) — a BOM
-//     read as garbage would report a real file as UNKNOWN.
+// 7a. settings KEYS match case-insensitively, and a UTF-8 BOM in front of the file does not make it
+//     unparseable. A Windows editor writes a BOM, and one read as garbage would report a real file as UNKNOWN.
 test('DA10 BOM-prefixed settings with case-drifted keys is parsed, names both keys', () => {
   const ci = mk('ci', '.claude')
   writeFileSync(path.join(ci, '.claude/settings.json'), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"ENABLEDPLUGINS":{},"extraknownmarketplaces":{}}', 'utf8')]))
@@ -176,9 +168,8 @@ test('DA10 BOM-prefixed settings with case-drifted keys is parsed, names both ke
     [String.raw`(?-i)enabledPlugins \+ extraKnownMarketplaces from its settings`], ['UNKNOWN', 'SCHEMA DRIFT'])
 })
 
-// 7b. an EMPTY settings file parses to nothing — no keys, no claim, and not UNKNOWN (ConvertFrom-Json
-//     emitted nothing for it); a UTF-16 file (Windows PowerShell 5.1's default redirect encoding) is
-//     decoded by its BOM rather than reported as unparseable.
+// 7b. an EMPTY settings file parses to nothing: no keys, no claim, and not UNKNOWN. A UTF-16 file
+//     (Windows PowerShell 5.1's default redirect encoding) is decoded by its BOM, not reported as unparseable.
 test('DA11 empty settings file claims nothing and is not UNKNOWN', () => {
   const emp = mk('emp', '.claude')
   writeFileSync(path.join(emp, '.claude/settings.json'), Buffer.alloc(0))
@@ -192,9 +183,8 @@ test('DA12 UTF-16 settings file is decoded by its BOM', () => {
     ['(?-i)enabledPlugins from its settings'], ['UNKNOWN', 'extraKnownMarketplaces', 'SCHEMA DRIFT'])
 })
 
-// 7c. a settings file with comments, a trailing comma, a single-quoted string and an unquoted key parses as
-//     ConvertFrom-Json parsed it (hook-lib parseJsonLoose) — not UNKNOWN; a `#` comment, which
-//     ConvertFrom-Json refused too, still reports UNKNOWN.
+// 7c. a settings file with comments, a trailing comma, a single-quoted string and an unquoted key
+//     parses through hook-lib's parseJsonLoose, so it is not UNKNOWN. A `#` comment still reports UNKNOWN.
 test('DA13 commented settings file with trailing commas is parsed, names both keys', () => {
   const cmt = mk('cmt', '.claude')
   const lf = ch(10)
@@ -212,7 +202,7 @@ test('DA14 a # comment is still unparseable (ConvertFrom-Json refused it too)', 
 })
 
 // 8. CLAUDE.local.md carries a SECOND precondition the other instruction files do
-//    not (review low) — env set: merges only while the local settings source is on
+//    not: with the env set, it merges only while the local settings source is on
 test('DA15 CLAUDE.local.md extra precondition, env set', () => {
   assertSysMsg(invokeHook(payload({ directory: localmd, source: 'slash_command' }), '1'),
     [String.raw`CLAUDE\.local\.md is present`, "'local' setting source", 'one precondition more'],
@@ -225,9 +215,8 @@ test('DA16 CLAUDE.local.md, env unset', () => {
     ['NOT in your context'], ["'local' setting source", 'one precondition more'])
 })
 
-// 10. ANTI-VACUITY: the field this guard reads is renamed/absent -> it must SAY SO,
-//     not fall silent. This is the case the sibling hook lacked (it read an invented
-//     `config_source` and every real payload made it exit 0 quietly).
+// 10. ANTI-VACUITY: the field this guard reads is renamed or absent -> it must SAY SO,
+//     not fall silent.
 test('DA17 schema drift is reported, not swallowed', () => {
   assertSysMsg(invokeHook(String.raw`{"hook_event_name":"DirectoryAdded","dir":"C:\\x","source":"slash_command"}`),
     ['SCHEMA DRIFT', 'Keys received: dir, hook_event_name, source', '/ywr-harness:report-issue',
@@ -236,8 +225,7 @@ test('DA17 schema drift is reported, not swallowed', () => {
 })
 
 // 11. directory present but source absent -> still warns, source marked absent.
-//     The path must be platform-neutral: this case shipped as a literal `C:\x`, which
-//     on Linux CI is a NON-EXISTENT DRIVE, and that is what reddened 48c264c.
+//     The path must be platform-neutral: a literal `C:\x` names a non-existent drive on Linux.
 test('DA18 missing source still warns', () => {
   assertSysMsg(invokeHook(payload({ directory: noExist })),
     [String.raw`source: \(source absent\)`, 'was added as a working directory'], ['SCHEMA DRIFT'])
@@ -251,7 +239,7 @@ test('DA19 non-string source is not absent', () => {
 // 11a. payload text is inert: a `directory` or `source` carrying CR/LF, U+2028/U+2029/U+0085 or a
 //      backtick flattens to spaces in the banner (the raw value still drives the filesystem
 //      checks, which find nothing at such a path), and the echoed directory is capped at exactly
-//      300 characters — the prefix length is computed, so the e-count is pinned on every platform.
+//      300 characters. The prefix length is computed, so the e-count is pinned on every platform.
 test('DA20 hostile directory/source flatten to one line', () => {
   const hd = path.join(tmpdir(), 'dag-nx') + ch(10) + '[hook:forged] 가짜' + ch(0x2029) + 'y'
   const hsrc = 'slash_command' + ch(0x2028) + '[hook:s]' + ch(0x0085) + '`z`'
@@ -270,7 +258,7 @@ test('DA22 echoed source capped at exactly 80', () => {
   assertSysMsg(invokeHook(payload({ directory: bare, source: 'x'.repeat(200) })),
     [String.raw`source: x{79}…\)`], ['x{80}', 'SCHEMA DRIFT'])
 })
-// a directory that flattens to NOTHING, or is not a string, is drift — never a path-less banner.
+// a directory that flattens to NOTHING, or is not a string, is drift, never a path-less banner.
 test('DA23 control-only directory reports drift', () => {
   assertSysMsg(invokeHook(payload({ directory: '``' + ch(1) + '``', source: 'slash_command' })),
     ['SCHEMA DRIFT', 'Keys received: directory, hook_event_name, source'], ['was added as a working directory'])
@@ -280,12 +268,10 @@ test('DA24 non-string directory reports drift', () => {
     ['SCHEMA DRIFT', 'not a string'], ['was added as a working directory'])
 })
 
-// 11b. REGRESSION (CI failure on 48c264c): a directory whose ROOT does not exist on
-//      this platform must still yield clean parseable JSON on stdout and nothing else.
-//      The pwsh original's Join-Path/Test-Path failed NON-TERMINATING there; the Node probe is
-//      fs.existsSync, which answers false for an unusable root, so there is no stderr to leak.
-//      The bogus root is chosen per platform so the case reproduces on both, which the original
-//      Windows-only run could not do.
+// 11b. a directory whose ROOT does not exist on this platform must still yield clean parseable
+//      JSON on stdout and nothing else. The probe is fs.existsSync, which answers false for an
+//      unusable root, so no stderr leaks. The bogus root is chosen per platform, so the case
+//      reproduces on both.
 test('DA25 unresolvable root emits clean JSON only', () => {
   let bogusRoot = 'C:\\no-such-root\\x'
   if (process.platform === 'win32') {
@@ -304,15 +290,14 @@ test('DA26 vanished path does not crash', () => {
     ['was added as a working directory'], ['SCHEMA DRIFT', 'Loaded from it', 'UNKNOWN'])
 })
 
-// 13. UTF-8 BOM prefixed stdin -> still parses (config-change-audit incident 07-23:
-//     TrimStart alone is not enough without InputEncoding set to UTF8 first)
+// 13. UTF-8 BOM prefixed stdin -> still parses
 test('DA27 BOM-prefixed stdin', () => {
   assertSysMsg(invokeHook(ch(0xfeff) + payload({ directory: bare, source: 'slash_command' })), [bareRx], ['SCHEMA DRIFT'])
 })
 
-// 13a. PSCustomObject member access and `-ne` were case-insensitive in the original; the port keeps both:
-//      case-drifted KEYS and a lowercase event name still read (a case-sensitive lookup would see no
-//      `directory` and report drift). The drift key list sorts case-insensitively too.
+// 13a. key lookup and the event-name compare are case-insensitive: case-drifted KEYS and a lowercase
+//      event name still read (a case-sensitive lookup would see no `directory` and report drift).
+//      The drift key list sorts case-insensitively too.
 test('DA28 case-drifted keys and a lowercase event name still guard', () => {
   assertSysMsg(invokeHook(JSON.stringify({ Hook_Event_Name: 'directoryadded', DIRECTORY: bare, Source: 'register_repo_root' })),
     [bareRx, 'source: register_repo_root'], ['SCHEMA DRIFT'])
@@ -321,8 +306,8 @@ test('DA29 drift key list sorts case-insensitively', () => {
   assertSysMsg(invokeHook('{"hook_event_name":"DirectoryAdded","zeta":1,"Alpha":2,"beta":3}'),
     [String.raw`Keys received: Alpha, beta, hook_event_name, zeta\.`], ['was added as a working directory'])
 })
-// 13b. a trimmed directory: .NET Trim() semantics (padding spaces and U+00A0 drop; the filesystem checks
-//      run on the trimmed path, so a padded real directory is still enumerated)
+// 13b. a trimmed directory: padding spaces and U+00A0 drop, and the filesystem checks run on the
+//      trimmed path, so a padded real directory is still enumerated
 test('DA30 padded directory is trimmed and still enumerated', () => {
   assertSysMsg(invokeHook(payload({ directory: '  ' + rich + ch(0xa0), source: 'slash_command' })),
     [String.raw`skills from \.claude/skills`, 'extraKnownMarketplaces from its settings'], ['SCHEMA DRIFT', 'UNKNOWN'])
@@ -336,9 +321,8 @@ test('DA31 wrong event silent', () => {
 // 15. garbage stdin -> silent exit 0 (infra failure is not a finding)
 test('DA32 garbage fail-open', () => { assertEmptyStdout(invokeHook('not json at all {{{')) })
 
-// Inline(): the hook owns no copy — it imports hook-lib.mjs's inline(), the one class every Node hook
-// shares (hook-lib.selftest.mjs holds that function's behaviour). The flattening cases above (11a) are
-// behavioural through the real hook. A local Inline/inline would split the class again.
+// The hook owns no copy of inline(). It imports hook-lib.mjs's, which every Node hook shares
+// (hook-lib.selftest.mjs holds its behaviour). A local copy would split the flattening class.
 test('DA33 inline() is imported from hook-lib.mjs and the hook defines no Inline/inline of its own', () => {
   const src = readFileSync(hook, 'utf8')
   const importsInline = /^import\s*\{[^}]*\binline\b[^}]*\}\s*from\s*'\.\/hook-lib\.mjs'/mu.test(src)
@@ -382,11 +366,10 @@ test('R1 hooks.json registers this script once: DirectoryAdded, no matcher, exec
   assert.deepEqual(fails, [], fails.join(' · '))
 })
 
-// META — every case above already carried a negative (the file's header rule), so the
-// empty-MustNotMatch guard is PREVENTIVE here. This case is what keeps a preventive guard from
-// being deleted with nothing turning red. The guard lives in the shared helper, so what is
-// proven here is this file's WIRING to it: a wrapper that dropped the mustNotMatch passthrough
-// would leave the helper intact and every case in this file unguarded.
+// META: every case above carries a negative, so the empty-MustNotMatch guard is preventive here.
+// These cases keep it from being deleted with nothing turning red. The guard lives in the shared
+// helper, so they prove this file's wiring to it: a wrapper that dropped the mustNotMatch
+// passthrough would leave the helper intact and every case in this file unguarded.
 const metaOut = { out: '{"systemMessage":"meta probe"}', exit: 0 }
 test('DA34 META', () => {
   const f = sysMsgFailures(metaOut, ['meta probe'], [])

@@ -1,9 +1,9 @@
 #!/bin/sh
-# pre-push — scan the commits being pushed for secrets, at the last point where history is still
+# pre-push: scan the commits being pushed for secrets, at the last point where history is still
 # cheap to rewrite (org guide: "Never commit secrets").
 #
-# TOOLCHAIN (ywr-harness ADR 0010/0015): placed by /ywr-harness:harness-init and OVERWRITTEN on
-# every re-run. Do not hand-edit — fix it in the canon and re-run the scaffold.
+# TOOLCHAIN (ywr-harness ADR 0010, ywr-harness ADR 0015): placed by /ywr-harness:harness-init and
+# overwritten on every re-run. Do not hand-edit it. Fix it in the canon and re-run the scaffold.
 #
 # Scope, and why each bound is here:
 #   * ADDED lines only. A secret already in history is a rotation problem, not a push to block, and
@@ -19,9 +19,8 @@
 #
 # Copyright (c) 2026 YWR Labs Inc. All rights reserved.
 
-# Patterns are deliberately written so none of them matches THIS FILE's own source — a hook that
-# flags its own addition is a hook nobody can install. The plugin's selftest asserts exactly that
-# (case: "does not flag its own source"), so the property is measured rather than assumed.
+# No pattern may match this file's own source: a hook that flags its own addition cannot be installed.
+# The ywr-harness selftest asserts that property.
 #
 # Each entry: <label>|<extended regex>
 PATTERNS='aws-access-key-id|AKIA[0-9A-Z]{16}
@@ -37,9 +36,8 @@ npm-token|npm_[A-Za-z0-9]{36}
 generic-assigned-secret|(secret|token|passwd|password|api_?key|access_?key)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'[:space:]]{12,}["'"'"']'
 
 # --- resolve the commit set ---------------------------------------------------------------------
-# A commit list that git failed to produce is never an empty set: an empty set passes the push, so a
-# failure there would let it through unread. Failure (non-zero exit) blocks; an empty list with exit 0
-# is a quiet pass.
+# A commit list that git failed to produce is never an empty set, because an empty set passes the push
+# unread. A non-zero exit blocks. An empty list with exit 0 is a quiet pass.
 unresolved() {
     echo "[harness] pre-push BLOCKED — the commit set for $1 could not be resolved (git rev-list failed),"
     echo "[harness]   so no commit of it was scanned for secrets."
@@ -52,11 +50,9 @@ COMMITS=''
 # `read` returns non-zero on a last line that has no newline, with the fields already set. The second
 # test keeps that line: dropping it would pass its ref unread.
 while read -r _local_ref local_oid _remote_ref remote_oid || [ -n "$_local_ref" ]; do
-    # Strip CR. git itself feeds LF-terminated lines, but anything that hands this hook CRLF (a
-    # wrapper, a test harness, a Windows tool in the chain) would otherwise leave \r inside the
-    # trailing field — and `git rev-list <sha>\r..<sha>` matches NOTHING, so the scan would report
-    # a clean push having examined nothing at all. Silent-empty is the worst failure mode a secret
-    # scanner has; two subshells per ref is a cheap price for not having it.
+    # Strip CR. A wrapper or a Windows tool that hands this hook CRLF would leave \r in the trailing
+    # field, and `git rev-list <sha>\r..<sha>` matches nothing, so a clean report would follow an
+    # empty scan.
     local_oid=$(printf '%s' "$local_oid" | tr -d '\r')
     remote_oid=$(printf '%s' "$remote_oid" | tr -d '\r')
     [ -n "$local_oid" ] || continue
@@ -65,10 +61,10 @@ while read -r _local_ref local_oid _remote_ref remote_oid || [ -n "$_local_ref" 
 
     case "$remote_oid" in
         *[!0]*)
-            # Existing remote branch: exactly what this push adds. A FAILED rev-list is not an empty
-            # one: when the remote oid is no local object (a force-push over commits that were never
-            # fetched) the list fails, and reading that as "nothing to scan" would pass the push
-            # unread. Fall back to the wider set a new branch gets, and say so.
+            # Existing remote branch: exactly what this push adds. A failed rev-list is not an empty one.
+            # When the remote oid is no local object (a force-push over commits never fetched), the list
+            # fails, and reading that as "nothing to scan" would pass the push unread. Fall back to the
+            # wider set that a new branch gets, and say so.
             if ! found=$(git rev-list "$remote_oid..$local_oid" 2>/dev/null); then
                 echo "[harness] pre-push: $remote_oid is not a local object, so the range for $_local_ref is unknown;"
                 echo "[harness]   scanning every commit of it that is not on a remote instead."
@@ -108,11 +104,10 @@ report_clean() {
 # settings change them.
 #
 # The scan runs in the C locale, and every grep in it takes `-a`. Under a UTF-8 locale (every Linux
-# CI runner) GNU grep treats a line that is not valid UTF-8 as binary and DROPS it from its output,
-# printing only "binary file matches" on stderr — such a line (a CP949 fixture, say) never reaches the
-# pattern loop, and the commit is still counted as scanned. In the C locale every byte is a
-# character, so no line is an encoding error and `[^...]` classes match non-ASCII bytes too; `-a`
-# covers the remaining binary trigger, a NUL byte in a diff that git prints as text.
+# CI runner) GNU grep treats a line that is not valid UTF-8 as binary and drops it from its output.
+# Such a line never reaches the pattern loop, and the commit still counts as scanned. In the C locale
+# every byte is a character, so no line is an encoding error and `[^...]` classes match non-ASCII bytes
+# too. `-a` covers the remaining binary trigger, a NUL byte in a diff that git prints as text.
 LC_ALL=C
 export LC_ALL
 HITS=''
@@ -121,15 +116,15 @@ IFS='
 '
 
 # Prefilter: one git process prints every commit's -U0 diff and one grep reads all of it. The loop
-# below starts about fourteen processes per commit, most of a minute for thirty commits on Windows.
-# The prefilter only ever answers "clean", and only with proof it read every commit: the header
+# below starts about fourteen processes per commit, which is slow on Windows.
+# The prefilter only ever answers "clean", and only with proof that it read every commit: the header
 # lines must number $N_COMMITS, and git's own exit status must reach the stream as `harness-status 0`.
-# The count alone is not enough — a stream cut inside the last commit's diff still has every header.
-# A git that failed or lacks an option fails one of the two, so the loop runs as before. A match
-# falls through to the loop too, which builds the labelled report. Neither marker line has a leading
-# `+`, so no added line can forge one. The status is taken from the git command itself, directly
-# before the filters, because sh has no pipefail and a filter's status says nothing about git. The
-# stream goes to a file in the git dir because a large push does not fit a shell variable.
+# The count alone is not enough, because a stream cut inside the last commit's diff still has every header.
+# A git that failed or lacks an option fails one of the two, so the loop runs instead. A match falls
+# through to the loop too, which builds the labelled report. Neither marker line has a leading `+`, so
+# no added line can forge one. The status is taken from the git command itself, directly before the
+# filters, because sh has no pipefail and a filter's status says nothing about git. The stream goes to
+# a file in the git dir because a large push does not fit a shell variable.
 PF=''
 GD=$(git rev-parse --git-dir 2>/dev/null) && PF="$GD/harness-pre-push.$$"
 trap 'rm -f "$PF"' EXIT
@@ -145,7 +140,7 @@ if [ -n "$PF" ]; then
         set --
         for entry in $PATTERNS; do set -- "$@" -e "${entry#*|}"; done
         grep -a -E -q "$@" "$PF" 2>/dev/null
-        # 1 is "no line matched". 0 is a match and 2 or more is a grep that did not run — both go to the loop.
+        # 1 is "no line matched". 0 is a match and 2 or more is a grep that did not run. Both go to the loop.
         [ $? -eq 1 ] && report_clean
     fi
     rm -f "$PF"
@@ -173,10 +168,9 @@ harness-status 0') ;;
     for entry in $PATTERNS; do
         label=${entry%%|*}
         rx=${entry#*|}
-        # `-e` is load-bearing, not style. `private-key-block`'s regex begins with `-----`, so
-        # without it grep parses the pattern as an option bundle, prints "unknown option", and
-        # returns NOTHING — the pattern is silently skipped while the hook still reports a clean
-        # scan. A scanner that reports clean because it never ran is the worst failure mode it has.
+        # `-e` is required. The `private-key-block` regex begins with `-----`, so without `-e` grep
+        # parses it as an option bundle, prints "unknown option" and returns nothing. The pattern is
+        # then skipped while the hook still reports a clean scan.
         hit=$(printf '%s\n' "$added" | grep -a -E -m 3 -e "$rx")
         if [ -n "$hit" ]; then
             short=$(git rev-parse --short "$sha" 2>/dev/null)
@@ -192,7 +186,7 @@ if [ -n "$HITS" ]; then
     echo "[harness] pre-push BLOCKED — possible secret in added lines across $N_COMMITS commit(s):"
     printf '%s' "$HITS"
     echo "[harness]"
-    # Each commit's own diff is scanned, so only the commit that ADDS a line can exempt it — a later
+    # Each commit's own diff is scanned, so only the commit that ADDS a line can exempt it. A later
     # commit carrying the marker clears nothing. The message below names rebase as well as amend,
     # because amend reaches only a hit in the tip commit.
     echo "[harness] If a hit is a false positive, append the marker  harness:allow-secret  to that line"

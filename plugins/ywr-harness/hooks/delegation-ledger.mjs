@@ -1,43 +1,21 @@
-// Hooks module (Claude Mods, Claude Code 2.1.287+; ywr-harness ADR 0117, ywr-harness ADR 0118) — the OBSERVE-ONLY per-request
-// delegation ledger. `mods.mjs`, the entry `hooks.json` names under `modules`, registers it
-// with the prerequisites and decision-prompts modules; the settings hooks beside it are unaffected.
+// Hooks module: the observe-only per-request delegation ledger (ywr-harness ADR 0117/0118). `mods.mjs`
+// registers it. The record per finished model loop is in ywr-harness spec 0006 §3.4. The loop kinds are
+// `main`, `agent-tool`, `workflow` (ywr-harness ADR 0126) and `unspawned`. A resumed agent keeps its first
+// spawn row and counts the resume in `resumes` (ywr-harness ADR 0147, ywr-harness fact 141). Before
+// Claude Code 2.1.292 a workflow worker raises no `agent.spawn`, so its loop is `unspawned` (ywr-harness fact 89).
 //
-// What it records, per finished model loop (the main loop's turn, or one run of a subagent's loop):
-// every request the loop made (`turn.step`: the model the engine resolved, the effort it sends, the
-// usage the API reported), the loop's end (`turn.complete`: reason, duration, summed usage) and, for
-// a spawned agent, the spawn itself (`agent.spawn`: type, the per-call model as given, the parent
-// model, the resolved model). An agent-team teammate raises `agent.spawn` too from Claude Code 2.1.289
-// (`e.isTeammate`); its loop keeps the `agent-tool` kind and its spawn row says `teammate: true`, which
-// is what the reader splits on (schema 2 unchanged — the field is additive). A Workflow `agent()` worker
-// raises `agent.spawn` from Claude Code 2.1.292 with `e.workflow` ({runId, agentIndex}); its spawn row
-// carries `workflow: {run_id, agent_index}` and its loop is kind `workflow` (ywr-harness ADR 0126), and a row with
-// no `model_param` proves the call gave no model, so the worker inherited the session's. On 2.1.287 to
-// 2.1.291 such a worker raises no `agent.spawn` (ywr-harness fact 89): its loop is written with `spawn: null` and
-// `loop: 'unspawned'`, whose steps still name the model and effort it ran on. On 2.1.292+ `unspawned`
-// means an evicted spawn row. From Claude Code 2.1.299 a resumed agent raises `agent.spawn` again with
-// `e.resume` ({agentId}; ywr-harness fact 141): its first spawn row is KEPT and counts the resume in `resumes`, so
-// the per-call model and the first `tool_use_id`/`background` survive (ywr-harness ADR 0147). A resume with no row
-// in memory starts one from the resume event, flagged `from_resume`.
+// Observe-only: every hook passes the event on unchanged (`next(e)`, `yield* next(e)`). It never
+// rewrites `model` or `effort`, never denies and never draws. Recording runs after `next` resolved,
+// inside try/catch, because a hook that fails mid-stream leaves the event where it stood.
 //
-// Observe-only, by contract: every hook passes the event on unchanged (`next(e)`, `yield* next(e)`),
-// never rewrites `model`/`effort`, never denies, never draws, and swallows its own failures — the
-// recording code runs after `next` resolved and inside try/catch, because a hook that fails
-// mid-stream is "left where it stood". It never carries a gate: hosts < 2.1.287, `disableAllHooks`,
-// `--safe-mode` and a managed `allowManagedModsOnly` all drop it (ywr-harness ADR 0117).
-//
-// What it never writes: a prompt, a task description, an answer or any other message text (never
-// persist what may carry a secret). Where it writes (ywr-harness ADR 0118): a RING of twenty
-// session files, `<project root>/.claude/telemetry/delegations/slot-00.json`..`slot-19.json` —
-// gitignored by the scaffold and the canon — and only where the root holds `.harness.json` (a repo
-// that adopted the harness), so a session in a home directory or a stranger's checkout leaves nothing
-// behind. `$.fs` has no delete, so the bound is by construction: a session claims a missing slot or
-// the oldest by `mtimeMs`, and its file keeps its last 500 loops within 360 KiB. `$.fs.write` is not
-// atomic and replaces the whole file, so a session's writes are serialized, and a slot another
-// session took (its `mtimeMs`/`size` moved since this session's last write) is given up for a new one.
+// It writes no message text, because message text may carry a secret. It writes a ring of twenty
+// session files, `<project root>/.claude/telemetry/delegations/slot-00.json` to `slot-19.json`, and only
+// where the root holds `.harness.json` (ywr-harness ADR 0118). `$.fs` has no delete, so a session claims
+// a missing slot or the oldest by `mtimeMs`. `$.fs.write` is not atomic, so a session's writes are
+// serialized, and a slot whose `mtimeMs` or `size` moved since the last write is given up.
 //
 // The pure half (`createLedger`, `createSessionLog`, `pickSlot`, `stepRow`, `spawnRow`, `fingerprint`)
-// is exported so `delegation-ledger.selftest.mjs` drives it under plain node with a fake engine; the
-// engine imports only `register`.
+// is exported for `delegation-ledger.selftest.mjs`. The engine imports only `register`.
 
 export const SCHEMA = 2
 export const LEDGER_DIR = '.claude/telemetry/delegations'
@@ -54,11 +32,10 @@ export const MAX_STEPS = 200
 // Open loops are held in module memory until their loop ends. A loop that never ends (killed agent,
 // crash) would otherwise leak; past this many, the oldest is dropped unwritten.
 export const MAX_OPEN = 256
-// Spawn rows outlive their loop (a resumed agent runs again under the same id), so they are capped
-// separately and higher (a row is ~330 B); a resume moves its row to the newest end. An evicted row would make that agent's later run read as
-// `unspawned` — the workflow signal ywr-harness ADR 0117 Decision 6 counts on hosts before 2.1.292, and a plain
-// eviction after — so each record carries `spawn_rows_evicted`, the session's running count, and a
-// reader discounts `unspawned` when it is > 0.
+// Spawn rows outlive their loop, because a resumed agent runs again under the same id. They have a
+// separate, higher cap (a row is ~330 B), and a resume moves its row to the newest end. An evicted row
+// makes the agent's later run read as `unspawned`, so each record carries `spawn_rows_evicted` and a
+// reader discounts `unspawned` when it is above 0 (ywr-harness ADR 0117 Decision 6).
 export const MAX_SPAWNS = 4096
 // Session loop lists held at once (a `/clear` starts a new session in the same module).
 export const MAX_SESSIONS = 4
@@ -124,10 +101,9 @@ export function spawnRow(e, r) {
   }
 }
 
-// A step row is a TUPLE in STEP_FIELDS order (~67 B, against ~236 B as an object): the ledger is
-// read by analysis code, never by eye, and the file names the fields once, as `step_fields`. The
-// token counts are null when the request reported no usage; `usage_model` (the model the API
-// reported) is null when it equals `model` or no usage came back.
+// A step row is a tuple in STEP_FIELDS order (~67 B, against ~236 B as an object). The file names the
+// fields once, as `step_fields`. Token counts are null when the request reported no usage.
+// `usage_model` is null when it equals `model` or no usage came back.
 export const STEP_FIELDS = ['index', 'model', 'effort', 'message_count', 'stop_reason', 'input_tokens',
   'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'usage_model']
 
@@ -151,8 +127,8 @@ export function stepRow(e, r) {
 
 const present = x => x !== null && x !== undefined
 
-// The ledger's bookkeeping, engine-free. `spawn` / `step` / `complete` take the event and the result
-// `next` resolved to; `complete` answers the loop's row (empty steps when nothing was open).
+// The ledger's bookkeeping, free of the engine. `spawn`, `step` and `complete` take the event and the
+// result `next` resolved to. `complete` returns the loop's row, with empty steps when nothing was open.
 export function createLedger({ maxOpen = MAX_OPEN, maxSpawns = MAX_SPAWNS, maxSteps = MAX_STEPS } = {}) {
   const spawns = new Map()   // agentId -> spawn row (kept across that agent's runs)
   const open = new Map()     // `${agentId|main}\u0000${turnId}` -> { steps, dropped, models, efforts }
@@ -165,7 +141,7 @@ export function createLedger({ maxOpen = MAX_OPEN, maxSpawns = MAX_SPAWNS, maxSt
       if (!agentId) return
       const first = spawns.get(agentId)
       if (e.resume && first) {
-        // ywr-harness ADR 0147: a loop row already written holds its own copy, so the count is the resumes so far.
+        // A loop row already written holds its own copy of the spawn (ywr-harness ADR 0147).
         // A denied resume runs nothing, so it changes nothing.
         if ('deny' in r && r.deny) return
         first.resumes++
@@ -277,18 +253,16 @@ async function flush($, s, root, iso) {
   if (s.root !== root) { s.root = root; s.slot = null; s.seen = null; s.mark = null }
   if (s.slot !== null && s.seen) {
     const now = await statOf($, `${dir}/${slotName(s.slot)}`)
-    // moved since this session's last write: another session claimed it. A stat that fails (a missing
-    // slot among the causes) proves nothing either way, so the read-back below decides.
+    // A moved stat means another session claimed the slot. A failed stat proves nothing, so the
+    // read-back below decides.
     if (!now) s.seen = null
     else if (now.mtimeMs !== s.seen.mtimeMs || now.size !== s.seen.size) s.slot = null
   }
   if (s.slot !== null && !s.seen) {
-    // the last write or a stat failed, so there is no stat to compare: the file itself says whose
-    // it is. A missing or empty file stays ours; so does the very text this session last wrote whole
-    // (its fingerprint, which covers a stat that keeps failing), and a file starting with our own
-    // header (a partial write of ours keeps it). A file that exists but cannot be read proves
-    // nothing, and neither does a null session id's header (every id-less session writes the same
-    // one), so both are given up.
+    // With no stat to compare, the file says whose it is. These stay ours: a missing or empty file,
+    // the text this session last wrote whole (its fingerprint), and a file that starts with our header
+    // (a partial write keeps it). A file that exists but cannot be read is given up. So is a file that
+    // starts with a null session id's header, because every id-less session writes the same one.
     const path = `${dir}/${slotName(s.slot)}`
     let text = ''
     try { text = await $.fs.read(path) } catch {

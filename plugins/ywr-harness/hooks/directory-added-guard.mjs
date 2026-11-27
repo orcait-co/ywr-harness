@@ -1,52 +1,16 @@
-// DirectoryAdded (NO matcher — the matcher for this event filters on `source`, and a
-// guard must not be bypassable by a future third source value) — mid-session
-// working-directory registration guard.
-//
-// Visibility ONLY, by construction: DirectoryAdded carries no decision control and
-// fires AFTER the sandbox/permission refresh, so the directory is already live when
-// this runs. Blocking would need a permissions deny rule instead (deliberately not
-// taken).
-//
-// Payload (hooks reference "DirectoryAdded input", re-read raw 2026-09-27 on 2.1.283; first
-// read out of the 2.1.220 binary's zod schema before the event was documented):
-//   directory : absolute path of the directory that was added
-//   source    : "slash_command" (/add-dir) | "register_repo_root" (SDK control request)
-//
-// THE READER IS CLAUDE, NOT THE PERSON (ywr-harness ADR 0097). Per the reference, a `slash_command`
-// systemMessage is delivered "to Claude as context on the next conversation turn, rather than
-// showing it to you", and a `register_repo_root` one goes to the debug log only. So the banner
-// is English (ywr-harness ADR 0045's reader rule, narrowed by ywr-harness ADR 0097), states what the model should do,
-// and asks it to relay one sentence to the user. The hook runs in the background after the add
-// has completed; a failed hook shows only as a failure COUNT in the transcript (/add-dir) or not at
-// all (register_repo_root), its output going to the debug log — so always exit 0.
-//
-// Anti-vacuity: a DirectoryAdded payload with no `directory` emits a SCHEMA-DRIFT
-// banner listing the keys actually received, rather than failing open into silence.
-// The sibling config-change-audit hook read an invented field name and was silently
-// inert while its selftest stayed green — a guard that cannot report its
-// own drift is indistinguishable from an absent guard.
-//
-// Existence is not selection (review finding, medium): the two settings keys an added
-// directory can contribute are PARSED for, not inferred from the settings file merely
-// existing — a `.claude/settings.json` holding only hooks or permissions contributes
-// nothing, and claiming otherwise would be the same existence-vs-selection confusion
-// this slice exists to retire. An unparseable settings file is reported as unknown,
-// never as absent (the canon review invariant 4).
-//
-// Payload-authored text is echoed through inline() (hook-lib.mjs: C0, DEL, U+0085 NEL,
-// U+2028/U+2029 and the backtick become a space, then a hard cap), so a hostile value cannot forge
-// a second `[hook:*]` line in the banner the model reads.
-//
-// Ported from PowerShell (ywr-harness ADR 0116) with its semantics kept: the event name is compared
-// case-insensitively, payload keys and the settings keys are matched case-insensitively (PSCustomObject
-// access and `-contains` were), the directory is trimmed with .NET Trim semantics, and the instruction
-// env var is trimmed the same way. A settings file loses its BOM before parsing (Get-Content did), and a
-// UTF-16 one is decoded by its BOM; an empty file or a one-element array reads as ConvertFrom-Json read
-// it (settingsKeys). Deliberate deviations (ywr-harness spec 0006 §3.1): a payload string stays a
-// string (no DateTime coercion) and the drift key order is Intl.Collator's. A settings file is parsed
-// as leniently as ConvertFrom-Json did (hook-lib's parseJsonLoose: comments, trailing commas, single
-// quotes, unquoted keys). The hook never exits the process: it returns, so
-// stdout drains and the exit code stays 0.
+// DirectoryAdded guard: reports a working directory that the session added mid-run (ywr-harness spec 0006 §3.1).
+// No matcher, because the event matcher filters on `source` and a future third source value would bypass the guard.
+// Visibility only. The event has no decision control and fires after the permission refresh, so the directory is already live.
+// Payload: `directory` (absolute path) and `source` ("slash_command" or "register_repo_root").
+// The reader is Claude, not the person, so the banner is English and asks the model to relay one sentence (ywr-harness ADR 0097).
+// Always exit 0: a failed hook shows only as a failure count or in the debug log.
+// A payload with no usable `directory` emits a SCHEMA DRIFT banner, so a guard that reads a wrong field never goes silent.
+// The two settings keys that an added directory contributes are parsed for, never inferred from the file existing.
+// An unparseable settings file is reported as unknown, never as absent.
+// Payload text is echoed through inline() (hook-lib.mjs), so a hostile value cannot forge a second `[hook:*]` line.
+// Matching is case-insensitive and the directory is trimmed like .NET Trim; the settings reader drops a BOM,
+// decodes UTF-16 by its BOM and parses leniently via parseJsonLoose (ywr-harness ADR 0116, ywr-harness spec 0006 §3.1).
+// The hook returns instead of calling process.exit, so stdout drains.
 import fs from 'node:fs'
 import path from 'node:path'
 import { readStdin, parseJson, parseJsonLoose, isObject, getProp, psString, ieq, netTrim, inline, emit, driftKeys } from './hook-lib.mjs'
@@ -56,8 +20,7 @@ function drift(payload) {
   emit({ systemMessage: `[hook:dir-added] SCHEMA DRIFT — the DirectoryAdded payload's 'directory' field is missing, empty or not a string, so this guard cannot report which directory was added to the session. Keys received: ${keys}. The hooks reference's DirectoryAdded input may have changed. In your next reply, tell the user in one sentence, in their language, that this is a ywr-harness plugin defect to report with /ywr-harness:report-issue.` })
 }
 
-// A settings file's text the way Get-Content -Raw read it: a UTF-8 BOM is dropped, a UTF-16 BOM selects
-// the decoding. Throws when the file cannot be read (the caller reports it as unparsed).
+// A UTF-8 BOM is dropped and a UTF-16 BOM selects the decoding. Throws when the file cannot be read.
 function readText(file) {
   const b = fs.readFileSync(file)
   if (b.length >= 2 && b[0] === 0xff && b[1] === 0xfe) return b.subarray(2).toString('utf16le')
@@ -67,9 +30,7 @@ function readText(file) {
   return s
 }
 
-// The top-level key names of a settings file, which the caller matches case-insensitively. As with
-// ConvertFrom-Json: an empty or whitespace-only file parses to nothing (no keys, not an error), and a
-// one-element array is unwrapped to its element; any other non-object result names no key.
+// The top-level key names of a settings file. An empty file names no key, and a one-element array reads as its element.
 function settingsKeys(file) {
   const text = readText(file)
   if (!netTrim(text)) return []
@@ -79,9 +40,8 @@ function settingsKeys(file) {
 }
 
 function main(payload) {
-  // The raw directory drives the filesystem checks; drift is judged on what the banner would echo
-  // (a value of only control bytes or backticks survives Trim() but echoes as nothing), and a
-  // non-string `directory` is a shape change — both are drift.
+  // The raw directory drives the filesystem checks. Drift is judged on what the banner would echo:
+  // a value of only control bytes or backticks echoes as nothing, and a non-string `directory` is a shape change.
   const rawDir = getProp(payload, 'directory')
   const dir = typeof rawDir === 'string' ? netTrim(rawDir) : ''
   // A `source` that is present but not a string is named as such, never folded into 'absent'.
@@ -91,11 +51,8 @@ function main(payload) {
 
   if (!inline(dir)) return drift(payload)
 
-  // What the addition actually pulls in, per the official permissions reference table
-  // "Additional directories grant file access, not configuration" (5 rows, re-read 2026-09-27;
-  // the `.claude/commands` row was absent from the 2026-07-25 read). Note the table's own caveat:
-  // these exceptions apply to --add-dir / /add-dir only, NOT to permissions.additionalDirectories,
-  // which grants file access and nothing else.
+  // What the addition pulls in, per the permissions reference table "Additional directories grant file access,
+  // not configuration". The exceptions apply to --add-dir and /add-dir only, never to permissions.additionalDirectories.
   const loads = []
   const unparsed = []
   const instr = []
@@ -117,8 +74,7 @@ function main(payload) {
     }
     if (keysFound.length) loads.push(`${keysFound.join(' + ')} from its settings (the only settings keys an added directory contributes)`)
 
-    // CLAUDE.local.md is listed apart because the reference gives it a SECOND
-    // precondition the others do not have (review finding, low).
+    // CLAUDE.local.md is listed apart because the reference gives it a second precondition.
     for (const p of ['CLAUDE.md', '.claude/CLAUDE.md', '.claude/rules']) {
       if (has(p)) instr.push(p)
     }

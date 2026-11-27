@@ -4,15 +4,13 @@
 // Hermetic by construction (fact 16): every child runs with the guarded variables CLEARED and
 // CLAUDE_CONFIG_DIR / CLAUDE_PROJECT_DIR / USERPROFILE / HOME pointed into the fixture, then gets
 // only the case's own values — the owner's real settings.json and a CI runner's environment never
-// reach a verdict. Payload shape: the SessionStart contract of the raw hooks doc (read 2026-09-29:
-// `source`, optional `model`); the hook needs only `hook_event_name` (and `cwd` as a project-dir
-// fallback), so the cases send the documented fields and nothing invented.
+// reach a verdict. Payload shape: the SessionStart contract of the raw hooks doc (`source`, optional
+// `model`); the hook needs only `hook_event_name` (and `cwd` as a project-dir fallback), so the cases send
+// the documented fields and nothing invented.
 // Every match-based case carries MustNotMatch as well as MustMatch (the empty-MustNotMatch class).
 //
-// The pwsh suite changed the process environment around each child and restored it afterwards. Here the
-// child gets its own environment object, so the suite process never changes. The case names are the old
-// names, and the parity check of ADR 0227 decision 8 reads them. The one old name without an ID, META,
-// is `META1 <the old name>`. Patterns are pwsh -match sources (case-insensitive; see toRx in
+// Each child gets its own environment object, so the suite process environment never changes. The META case
+// is `META1 <what it proves>`. Patterns are .NET -match sources (case-insensitive; see toRx in
 // lib/selftest-lib.mjs).
 //
 // Special characters in patterns and values are built from code points: the class under test includes
@@ -52,9 +50,9 @@ function setJson(p, text) {
 // Env: the case's variables. User / Project / Local / HomeUser: settings file text ('' = absent).
 // noConfigDir leaves CLAUDE_CONFIG_DIR unset so the home fallback is read; noProjectDir leaves
 // CLAUDE_PROJECT_DIR unset so the payload cwd is the project.
-// An empty stdin means the default payload and is tested for emptiness (a null test sent an empty payload
-// and left every speaking case silent — caught by META).
-// Returns the output of stdout and stderr together, as `2>&1` read them, and the exit code.
+// An empty stdin means the default payload, tested for emptiness: a null test would send an empty payload
+// and leave every speaking case silent, which META catches.
+// Returns the output of stdout and stderr together, and the exit code.
 function invokeGuard({ env = {}, user = '', project = '', local = '', homeUser = '', stdin = '', preflight = false, noConfigDir = false, noProjectDir = false } = {}) {
   setJson(path.join(userDir, 'settings.json'), user)
   setJson(path.join(proj, '.claude/settings.json'), project)
@@ -112,7 +110,7 @@ function assertPreflight(r, want, mustMatch, mustNotMatch) { const f = preflight
 
 const core = ['^\\[hook:model-route\\]', 'family alias', '지우세요', '막지 않았습니다']
 
-// --- preflight (the eval runner's refusal) ---------------------------------------------------
+// --- preflight (the eval wrapper's refusal) --------------------------------------------------
 test('P1 a clean shell is clear, exit 0', () => {
   assertPreflight(invokeGuard({ preflight: true }), 0, ['^preflight: clear'], ['REFUSED'])
 })

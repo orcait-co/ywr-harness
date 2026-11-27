@@ -1,79 +1,71 @@
-// Hooks module (Claude Mods; ywr-harness ADR 0174, narrowed by ywr-harness ADR 0175 and ywr-harness ADR 0215) — the AUTO switch and its stage prompts.
-// `mods.mjs`, the entry `hooks.json` names under `modules`, registers it beside the ledger and the
-// prerequisite check.
+// Hooks module (Claude Mods; ywr-harness ADR 0174, narrowed by ywr-harness ADR 0175 and ywr-harness ADR 0215): the AUTO switch and its stage prompts.
+// `mods.mjs` registers it. The contract is ywr-harness spec 0006 §3.7.
 //
 // While `/ywr-harness:auto on` holds in this checkout AND `.harness.json` declares `decision_prompts`, the
-// module adds the repo's own prompt to the model's input at two slice stages, and with `check: true`
-// it also asks one side-check model call and adds its answer beside the prompt:
-//
+// module adds the repo's own prompt to the model's input at two slice stages. With `check: true` it also
+// asks one side-check model call and adds its answer beside the prompt:
 // - `review-start`: a main-loop Skill call of the built-in `/code-review` (`isReviewCall`, ywr-harness ADR 0215
-//   Decision 10). The stage data is the call's args, which hold the review level. The review runs as a
-//   background agent, and its findings reach the session as a later notification. The module adds nothing at
-//   that notification.
+//   Decision 10). The stage data is the call's args, which hold the review level.
 // - `ready-report`: a main-loop shell call whose last step is `harness_gates.mjs --tree` (`isTreeRun` of
-//   `slice-status.mjs`, which stays unregistered — ywr-harness ADR 0140; this module imports its pure half only).
+//   `slice-status.mjs`, which stays unregistered, ywr-harness ADR 0140; this module imports its pure half only).
 //
-// `slice-close` is not a stage: its detector needs `skill.prompt`, and the built-in guard
-// `cc-plugin-sec-default` skips a user-tier plugin's `skill.prompt` and `classic.*` hooks (ywr-harness ADR 0175).
-// `review-digest` is not a stage either: ywr-harness ADR 0215 retired it with the review workflow. A
-// `.harness.json` that still declares it gets a problem line that names `review-start`, never a silent ignore.
+// `slice-close` is not a stage: its detector needs `skill.prompt`, which the built-in guard
+// `cc-plugin-sec-default` skips for a user-tier plugin (ywr-harness ADR 0175). `review-digest` is not a
+// stage either (ywr-harness ADR 0215). A `.harness.json` that still declares either gets a problem line,
+// never a silent ignore.
 //
-// The subagent deny (ywr-harness ADR 0201) is no stage either: no prompt file, no side check, no stage log. A close
-// writes the handoff and one commit, so only the main loop may run it. The `tool.call` hook answers a Skill call of
-// `ywr-harness:slice-close` that carries an `agentId` with `SUBAGENT_CLOSE_DENY`, whatever the switch state, with no
-// file read and no git call. A main-loop call of that skill goes on to `next(e)` untouched, in any session, with the
-// switch on or off, on any branch. A typed `/ywr-harness:slice-close` never reaches `tool.call`, so it is untouched.
+// The subagent deny (ywr-harness ADR 0201) is no stage: no prompt file, no side check, no stage log. Only
+// the main loop may run a close, which writes the handoff and one commit. The `tool.call` hook answers a
+// Skill call of `ywr-harness:slice-close` that carries an `agentId` with `SUBAGENT_CLOSE_DENY`, whatever the
+// switch state, with no file read and no git call. A typed `/ywr-harness:slice-close` never reaches `tool.call`.
 //
-// The module shows the person no toast (ywr-harness ADR 0202). The person reads the stage state with
-// `/ywr-harness:auto status` and the stage log.
+// The module shows the person no toast (ywr-harness ADR 0202).
 //
-// The hook runs the stage call first, then reads the switch, `.harness.json` and every declared prompt file
-// once at each stage (a switch turned off takes effect at once; a changed input withholds the stage until
-// the person types `on` again, ywr-harness ADR 0176), then awaits the side check for at most
-// `CHECK_WAIT_MS` (ywr-harness ADR 0175 Decisions 5, 7 and 9). The side check is `$.model.complete` on the `sonnet` alias at
-// effort low, NOT `$.model.fork`: a fork continued the main task, tried tools and held the stage 8–11 s,
-// where the completion answered from the stage data in about 1 s (ywr-harness fact 178). Its prompt is `FRAME`, the
-// prompt file and the stage's own data; it reads no conversation. A call with an `agentId` (a
-// subagent) never starts a stage, and one side check runs at a time.
+// At each stage the hook runs the stage call first. It then reads the switch, `.harness.json` and every
+// declared prompt file once, and awaits the side check for at most `CHECK_WAIT_MS` (ywr-harness ADR 0175
+// Decisions 5, 7 and 9). The side check is `$.model.complete` on the `sonnet` alias at effort low, NOT
+// `$.model.fork`: a fork continues the main task, tries tools and holds the stage for seconds
+// (ywr-harness fact 178). Its prompt is `FRAME`, the prompt file and the stage's own data. It reads no conversation.
+// A call with an `agentId` (a subagent) never starts a stage, and one side check runs at a time.
 //
-// The edit guard (ywr-harness ADR 0175 Decision 13) covers the main loop and every subagent. While the switch is on,
-// an Edit / Write / NotebookEdit of `.harness.json` or a declared prompt file is denied. The switch file
-// itself is denied to those tools on or off, so only the typed command turns the switch. Paths compare
-// after `.` / `..` resolution, a relative path joined to the session's cwd. A shell write, a symbolic link,
-// a hard link and, on Windows, a trailing dot or space, a `::$DATA` stream suffix, an 8.3 short name or a
-// drive-relative `C:x` pass; a subagent in another worktree has its relative path joined to the SESSION's
-// cwd (a wrong deny, never a wrong pass). Those limits are recorded, not closed (ywr-harness ADR 0175, re-review).
+// The edit guard (ywr-harness ADR 0175 Decision 13) covers the main loop and every subagent. While the
+// switch is on, an Edit / Write / NotebookEdit of `.harness.json` or a declared prompt file is denied.
+// The switch file is denied to those tools on or off, so only the typed command turns the switch. Paths
+// compare after `.` / `..` resolution, a relative path joined to the session's cwd. A shell write, a
+// symbolic link, a hard link and, on Windows, a trailing dot or space, a `::$DATA` stream suffix, an 8.3
+// short name or a drive-relative `C:x` pass. A subagent in another worktree has its relative path joined to
+// the SESSION's cwd, which gives a wrong deny, never a wrong pass.
 //
-// The input baseline (ywr-harness ADR 0176) closes the shell-write gap of the edit guard for the stage prompts. The
-// typed `/ywr-harness:auto on` records the SHA-256 of `.harness.json` and of each declared prompt file in
-// this module's memory, which no shell call reaches; no file holds it. A stage hashes the texts it read and
+// The input baseline (ywr-harness ADR 0176) closes the shell-write gap of the edit guard for the stage
+// prompts. The typed `/ywr-harness:auto on` records the SHA-256 of `.harness.json` and of each declared
+// prompt file in this module's memory, which no shell call reaches. A stage hashes the texts it read and
 // uses those same texts, so the check and the use see one read. A changed input, or a session where nobody
 // typed the command (a new session, `--resume`, a plugin reload, a switch file a shell wrote), withholds the
 // stage: no static prompt, no side check, one fixed line for the model (`withheldText`).
-// `/ywr-harness:auto on` again takes a new baseline; `off` drops it.
+// `/ywr-harness:auto on` again takes a new baseline, and `off` drops it.
 //
-// The switch state is `<git-path>/ywr-harness/auto.json` (ywr-harness ADR 0174 Decision 3), per worktree, never
-// tracked. `/ywr-harness:auto on|off|status` is answered here by `command.run`, with no model turn
-// (ywr-harness fact 136); the skill body runs only where the host drops the module.
+// The switch state is `<git-path>/ywr-harness/auto.json` (ywr-harness ADR 0174 Decision 3), per worktree and
+// never tracked. `command.run` answers `/ywr-harness:auto on|off|status` with no model turn
+// (ywr-harness fact 136). The skill body runs only where the host drops the module.
 //
 // The stage log (ywr-harness ADR 0180): while the switch is on, each detected stage appends one JSON line
-// `{at, stage, outcome, check, ms}` to `auto-stages.jsonl` beside the switch file, so a later session can
-// tell whether a stage ran. `$.fs` has no append call: the hook reads the whole file, adds the line, keeps
-// the last `LOG_MAX` lines and writes it whole. A failed write is swallowed and changes nothing at the stage.
-// A failed read of a log that exists skips the write, so the stage leaves the log as it was; a missing log
-// starts empty (ywr-harness ADR 0181). At a stage with the switch off the hook neither reads nor writes it. `status`, `on`
-// and `off` print the last line, rebuilt from its five fields after a shape check (`shownStage`); a line of
-// another shape prints as `LOG_ODD` (ywr-harness ADR 0181). The file is shell-writable, so a line proves nothing about a stage. `ms` runs from the
-// switch read to the end of the stage work, without the log write itself. A stage whose work throws leaves no
-// line. Two stages whose log writes overlap can lose one line: the later whole-file write wins (ywr-harness ADR 0180).
+// `{at, stage, outcome, check, ms}` to `auto-stages.jsonl` beside the switch file. `$.fs` has no append
+// call, so the hook reads the whole file, adds the line, keeps the last `LOG_MAX` lines and writes it
+// whole. A failed write is swallowed. A failed read of a log that exists skips the write, and a missing
+// log starts empty (ywr-harness ADR 0181). At a stage with the switch off the hook neither reads nor writes
+// it. `status`, `on` and `off` print the last line, rebuilt from its five fields after a shape check
+// (`shownStage`). A line of another shape prints as `LOG_ODD` (ywr-harness ADR 0181), because the file is
+// shell-writable and a line proves nothing about a stage. `ms` runs from the switch read to the end of the
+// stage work, without the log write. A stage whose work throws leaves no line. Two overlapping log writes
+// can lose one line, because the later whole-file write wins (ywr-harness ADR 0180).
 //
-// A checkout with the switch off pays one `git rev-parse`, started without a wait at the first main turn,
-// and no file read or model call on a call that is not a stage: the stage shapes are pure checks on `e`,
-// and the edit guard only compares paths while the cached state is off. The cache is refreshed at each stage and each `/ywr-harness:auto`, so a switch
-// turned on from ANOTHER session reaches this session's edit guard only at its next stage.
+// A checkout with the switch off pays one `git rev-parse`, started without a wait at the first main turn.
+// A call that is not a stage costs no file read and no model call. The cache is refreshed at each stage
+// and each `/ywr-harness:auto`, so a switch turned on from ANOTHER session reaches this session's edit
+// guard only at its next stage.
 //
 // The pure half is exported so `decision-prompts.selftest.mjs` drives it under plain node with a fake
-// engine; the engine imports only `register`.
+// engine. The engine imports only `register`.
 import { isTreeRun } from './slice-status.mjs'
 
 export const COMMAND = 'ywr-harness:auto'

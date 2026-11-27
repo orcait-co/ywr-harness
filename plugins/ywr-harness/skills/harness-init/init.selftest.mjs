@@ -7,16 +7,15 @@
 //
 // Fixtures live under the system temp root and are removed when the process ends.
 //
-// This is the Node port of init.selftest.ps1 (ADR 0227). The pwsh suite named most cases without an ID. Each
-// such test here is `IN<n> <the old name>`, so the parity check of ADR 0227 decision 8 matches the names.
-// Patterns are pwsh -match sources (case-insensitive, `(?-i)` for -cmatch; see toRx in lib/selftest-lib.mjs).
+// A test with no case ID is named `IN<n> <name>`, so the parity check of ADR 0227 decision 8 matches the names.
+// Patterns are regex sources (case-insensitive, `(?-i)` for a case-sensitive match; see toRx in
+// lib/selftest-lib.mjs).
 //
-// How the cases share state. The pwsh suite was one script: a run's result fed later cases (`$rK`, `$rB`,
-// `$rT4`, ...) and a fixture directory was changed by a later section. Here each chain of runs is a `section`
-// (see below). Sections start together and share a small pool of child processes. A section that continues an
-// earlier one awaits it. The tests run one at a time in the order written, after every section has settled. A
-// test that reads a fixture a later step of its chain changes reads a value the section recorded at the right
-// point instead (case R). A section that throws fails each test that needs it.
+// How the cases share state: each chain of runs is a `section` (see below). Sections start together and
+// share a small pool of child processes. A section that continues an earlier one awaits it. The tests run
+// one at a time in the order written, after every section has settled. A test that reads a fixture that a
+// later step of its chain changes reads a value that the section recorded at the right point instead
+// (case R). A section that throws fails each test that needs it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -38,13 +37,13 @@ const fxBase = fixtureRoot('harness-init-selftest')
 process.on('exit', () => removeFixtureRoot(fxBase))
 
 // --- small helpers -------------------------------------------------------------------------------------
-// -match / -cmatch / -eq as pwsh evaluated them. toRx is case-insensitive and reads a leading `(?m)`.
+// `m` matches case-insensitively and `cm` case-sensitively. toRx reads a leading `(?m)`.
 const m = (s, rx) => toRx(rx).test(String(s ?? ''))
 const cm = (s, rx) => toRx(`(?-i)${rx}`).test(String(s ?? ''))
 const eqi = (a, b) => String(a).toLowerCase() === String(b).toLowerCase()
-// [regex]::Escape, minus the escaping of white space, which a JavaScript pattern needs no escape for.
+// Regex-escape a string, leaving white space alone, which a JavaScript pattern needs no escape for.
 const esc = (s) => String(s).replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&')
-// [regex]::Matches(text, pattern).Count: case-sensitive, as the static .NET call is.
+// The number of matches of a pattern in a text, case-sensitive.
 const countRx = (text, src, flags = 'g') => [...String(text).matchAll(new RegExp(src, flags))].length
 const ok = (cond, detail = '') => assert.ok(cond, String(detail || 'condition was false'))
 
@@ -58,9 +57,8 @@ const nm = (name) => (ID_RX.test(name.split(' ')[0]) ? name : `IN${++inCount} ${
 // starts while the file is read, runs its children through a small pool, and keeps its value or its error. A
 // chain that continues an earlier one (B after A, C after B) awaits the earlier section's `done`. A test waits
 // until every section has settled, then reads the section's value synchronously, so a section that threw
-// fails each test that needs it, as it did when a run happened at the first test that read it. Independent
-// chains share no directory, no cwd and no environment, so they only trade wall time for load. A disabled
-// section never starts (its tests carry the matching skip).
+// fails each test that needs it. Independent chains share no directory, no cwd and no environment, so
+// they only trade wall time for load. A disabled section never starts (its tests carry the matching skip).
 const POOL = innerJobs(6, 2)
 let slots = POOL
 const waiters = []
@@ -140,7 +138,7 @@ function childEnv(extra = {}) {
 }
 
 // Child invocation (ADR 0220): init.mjs runs as a `node` child process, its stdout and stderr decoded
-// as UTF-8 bytes. Contract of the returned code/out/aborted shape, the one the suites keep from the in-process runner:
+// as UTF-8 bytes. The returned shape is code, out and aborted:
 //   code    — init.mjs's own exit code: 0 placed, 1 a guard refused or a write failed, 2 a usage error.
 //   aborted — true with code -1 when the script never ran or crashed: the file is missing, the child
 //             was stopped at the time bound, or it exited non-zero AND Node's uncaught-error report is on
@@ -187,9 +185,9 @@ async function invokeNodeScriptA(scriptPath, nodeArgs = [], env = {}) {
     return { ...settleChild(scriptPath, r), elapsed: (performance.now() - t0) / 1000 }
   } finally { release() }
 }
-// Call sites pass the pwsh-style argv arrays the suite always had ('-Target', x, '-DryRun'); this is the ONE
-// place that maps them to init.mjs's flags: -DryRun -> --dry-run, -Target x -> --target=x. A switch takes no
-// value; any other name takes the next token, joined with '=' so a value that starts with '-' stays a value.
+// Call sites pass argv arrays such as ('-Target', x, '-DryRun'). This is the one place that maps them to
+// init.mjs's flags: -DryRun -> --dry-run, -Target x -> --target=x. A switch takes no value. Any other name
+// takes the next token, joined with '=' so a value that starts with '-' stays a value.
 function convertToInitArgv(args) {
   const switches = ['DryRun', 'Force', 'AllowUpstreamAhead']
   const argv = []
@@ -252,7 +250,7 @@ function getHooksPath(repo) {
 const hooksLine = (run) => run.out.split('\n').filter((l) => m(l, R`\bhooks:`)).join(' ')
 
 // --- pwsh, for the one case that needs a PowerShell process ---------------------------------------------
-// Case T6 holds a file open from pwsh. A Microsoft Store install puts pwsh on PATH only as an
+// Case T6 holds a file open from pwsh, because Node cannot open a file without sharing. A Microsoft Store install puts pwsh on PATH only as an
 // app execution alias: a reparse point under WindowsApps that stat cannot read (EACCES) and CreateProcess
 // starts. which_on_path skips it, so on Windows such an alias `pwsh.exe` is accepted by its link entry.
 function resolvePwsh() {
@@ -396,15 +394,14 @@ T('A stamp written with the plugin version', () => {
   ok(isFile(path.join(a, '.harness-version')) && eqi(stampOf(a), manifestVer), `stamp missing or wrong; manifest=${manifestVer} out=${rA.out}`)
 })
 T('A stamp is reported', () => ok(m(secA().rA.out, R`stamp: \.harness-version`), secA().rA.out))
-// Issue #52: the stamp is claimed BUILT-IN since ADR 0044 — the old "claim it in .harness.json
-// groups" instruction sent members declaring an entry the emitter already owns.
+// Issue #52: the emitter claims the stamp built-in (ADR 0044), so the output must not tell a member to
+// declare an entry for it in .harness.json groups.
 T('A stamp line says claimed built-in, not claim-it-yourself', () => {
   const o = secA().rA.out
   ok(m(o, 'claimed built-in by the emitter') && !m(o, R`claim it in \.harness\.json groups`), o)
 })
 // The point of the corpus seed: a scaffolded repo must BUILD. Without a record the builder exits 1
-// ("found no .md with frontmatter") and no tooling can query the repo's decisions — the defect the
-// first end-to-end run surfaced, which this case pins.
+// ("found no .md with frontmatter") and no tooling can query the repo's decisions.
 // The build runs with the Node that runs init.mjs, so no tool lookup can skip it.
 T('A build produced index.json', () => ok(isFile(path.join(secA().a, 'docs', 'index.json')), `out=${secA().rA.out}`))
 T('A build reported, not skipped', () => ok(m(secA().rA.out, R`built: index\.json`), secA().rA.out))
@@ -447,7 +444,7 @@ const secD = section(async () => {
 })
 T('D existing seeds reported preserved', () => ok(m(secD().rD.out, R`preserved=2\b`), secD().rD.out))
 T('D existing seed is byte-identical afterwards', () => ok(read(path.join(secD().d, 'CLAUDE.md')) === mine, 'CLAUDE.md was modified'))
-// A REVIEW.md that an older scaffold seeded is no scaffold claim any more (ADR 0217): the run neither counts nor touches it.
+// The scaffold places no REVIEW.md (ADR 0217): the run neither counts nor touches one that an older scaffold seeded.
 T('D an existing REVIEW.md is byte-identical afterwards and not counted as a preserved seed (ADR 0217)', () =>
   ok(read(path.join(secD().d, 'REVIEW.md')) === mineReview, 'REVIEW.md was modified'))
 T('D preserved seed still warns the reader', () => ok(m(secD().rD.out, 'never clobber'), secD().rD.out))
@@ -461,7 +458,7 @@ T('D rewritten CLAUDE.md/REVIEW.md never carry a drift note', () => ok(!m(secD()
 // declares both with no `check`, so the placed .harness.json turns the switch's stages on as soon as
 // the member types `on`. No regex of `review.docs_only` exempts docs/prompts/. The declaration checks
 // read the .harness.json this run PLACED, not the template, so a placement that rewrote it fails here.
-// It reads case D's run, so it costs no init run of its own (owner, 2026-10-30).
+// It reads case D's run, so it costs no init run of its own.
 T('D2 an existing stage prompt is byte-identical afterwards (ADR 0180 - SEED)', () =>
   ok(read(path.join(secD().d, 'docs', 'prompts', 'ready-report.md')) === minePrompt, 'ready-report.md was modified'))
 T('D2 the absent stage prompt is placed, equal to its template', () =>
@@ -538,8 +535,8 @@ T('I existing record untouched', () => ok(m(read(secI().mine0001), 'mine'), 'exi
 T('I run exits 0', () => ok(secI().rI.code === 0, `exit=${secI().rI.code}`))
 
 // --- I2: records that do not match ^\d{4}- still suppress the seed -----------------------------------
-// The shipped v0.12.1 defect: detection matched only `^\d{4}-` names, so a repo whose log used
-// another convention (ADR-001-*, 001-*, dated names) was seeded with a second decision log.
+// Detection must not match only `^\d{4}-` names: a repo whose log uses another convention
+// (ADR-001-*, 001-*, dated names) must not get a second decision log.
 const secI2 = section(async () => {
   const i2 = target('has-records-other-naming')
   mk(path.join(i2, 'docs', 'adr'))
@@ -581,8 +578,8 @@ T('I4 README/template alone do not suppress', () => ok(isFile(seedPath(secI4().i
 T('I4 run exits 0', () => ok(secI4().rI4.code === 0, `exit=${secI4().rI4.code}`))
 
 // --- I5: 'template' inside a record's TITLE does not exclude it (anchored suffix match) --------------
-// The review-caught regression: an unanchored -notmatch 'template' excluded a real record about
-// templating, reproducing the seeded-second-log bug via filename content instead of convention.
+// An unanchored match on 'template' would exclude a real record about templating and seed a second
+// log, through the file name instead of the convention.
 const secI5 = section(async () => {
   const i5 = target('record-about-templating')
   mk(path.join(i5, 'doc', 'adr'))
@@ -608,11 +605,8 @@ T('I6 foreign location reported in the same run', () => ok(m(secI6().rI6.out, 'o
 T('I6 run exits 0', () => ok(secI6().rI6.code === 0, `exit=${secI6().rI6.code}`))
 
 // --- J: a hostile console encoding must not break the build ------------------------------------------
-// The windows-latest failure this case pinned: the Python builder encoded stdout with the console codepage,
-// so a non-UTF-8 codepage made its OWN output raise UnicodeEncodeError and exit 1 — after index.json had
-// already been written. The builder is Node now and ignores PYTHONIOENCODING, so the variable set below
-// reaches no subject: the case checks that the build output and index.json arrive intact and no longer
-// proves an encoding defence.
+// The builder is Node and ignores PYTHONIOENCODING, so the variable set below reaches no subject. The
+// case checks that the build output and index.json arrive intact, and proves no encoding defence.
 const secJ = section(async () => { const j = target('cp1252'); return { j, rJ: await runInitA(['-Target', j], init, { PYTHONIOENCODING: 'cp1252' }) } })
 T('J build survives an inherited cp1252 stdout encoding', () => ok(m(secJ().rJ.out, R`built: index\.json`), secJ().rJ.out))
 T('J index.json exists under cp1252', () => ok(isFile(path.join(secJ().j, 'docs', 'index.json')), 'index.json missing'))
@@ -682,17 +676,15 @@ const secO = section(async () => {
 T('O subdirectory target refuses to wire', () => ok(m(secO().rO.out, 'not the repository root'), secO().rO.out), { skip: NO_GIT })
 T('O parent repo hooksPath is untouched', () => { secO(); ok(getHooksPath(secK().k) === '.githooks', `parent value='${getHooksPath(secK().k)}'`) }, { skip: NO_GIT })
 
-// Y: the SAME directory in another spelling is "already wired", never REFUSED — and the value is
-// left byte-identical: the scaffold does not rewrite it even to its own spelling, because it did
-// not write this one. The literal compare against '.githooks' REFUSED an absolute value (the
-// canon's own clone, 2026-09-02), a './' prefix, the Git-Bash-on-Windows MSYS form and a
-// '~/'-wired clone, and told the reader the placed hooks were inert while they ran on every
-// commit. The emitter's hooks: line got the resolved-path compare on 2026-09-02
-// (harness_gates.selftest K6–K6e); this is the scaffold's half of the same rule. Mutation
-// anchor: the literal compare fails Y1/Y2/Y3, a `--get` read (no tilde expansion) fails Y4.
-// Y5 is the control — a DIFFERENT absolute directory stays REFUSED and untouched.
-// Assertions read the `hooks:` LINE, not the whole run: the summary line's `refused=0` matches a
-// case-insensitive 'REFUSED', which turned the first cut of Y1 red on a correct run.
+// Y: the same directory in another spelling is "already wired", never REFUSED, and the value stays
+// byte-identical: the scaffold does not rewrite a value that it did not write. A literal compare
+// against '.githooks' would REFUSE an absolute value, a './' prefix, the Git-Bash-on-Windows MSYS form
+// and a '~/'-wired clone, and tell the reader that the placed hooks are inert while they run on every
+// commit. The emitter applies the same resolved-path compare to its hooks: line (harness_gates.selftest
+// K6-K6e), and this is the scaffold's half of the rule. The literal compare fails Y1/Y2/Y3, and a
+// `--get` read with no tilde expansion fails Y4. Y5 is the control: a DIFFERENT absolute directory
+// stays REFUSED and untouched. Assertions read the `hooks:` LINE, not the whole run, because the
+// summary line's `refused=0` matches a case-insensitive 'REFUSED'.
 const secY = section(async () => {
   const y = newGitTarget('wire-spelling')
   const absY = path.join(y, '.githooks')
@@ -752,11 +744,10 @@ const LINK = (() => {
   }
 })()
 
-// Y6: `.githooks` reached THROUGH a link and core.hooksPath written as the link's REAL
-// target. Git runs the hooks the scaffold placed (it opens the target directory), the emitter's
-// `_hooks_path_is` says wired (Python `resolve()` follows the link), and a lexical GetFullPath
-// compare said REFUSED (review 2026-09-07, medium). Mutation anchor: drop Resolve-RealPath from
-// Test-HooksPathNames and Y6 goes red. SKIP is reported when the link cannot be made.
+// Y6: `.githooks` reached THROUGH a link and core.hooksPath written as the link's REAL target. Git runs
+// the hooks that the scaffold placed (it opens the target directory), and the emitter's
+// `_hooks_path_is` follows the link and says wired. A lexical compare would say REFUSED, so the
+// scaffold compares real paths. SKIP is reported when the link cannot be made.
 const secY6 = section(async () => {
   const y6 = newGitTarget('wire-linked')
   const y6real = path.join(fxBase, 'wire-linked-real-hooks')
@@ -772,9 +763,9 @@ T('Y6 the real-target value survives byte-identical', () => ok(getHooksPath(secY
 T('Y6 the hooks were placed through the link', () => ok(isFile(path.join(secY6().y6real, 'pre-commit')), 'pre-commit missing in the real directory'), { skip: Y6SKIP })
 
 // Y7: a WORKTREE-scoped core.hooksPath (`extensions.worktreeConfig`) outranks `.git/config`. A
-// `--local`-only read called this clone "already wired" while git ran hooks from `.elsewhere`
-// (review 2026-09-07, medium). Nothing is written at either scope on that branch. Y7b: the
-// worktree value naming `.githooks` is wired.
+// `--local`-only read would call this clone "already wired" while git runs hooks from `.elsewhere`.
+// Nothing is written at either scope on that branch. Y7b: the worktree value naming `.githooks`
+// is wired.
 const secY7 = section(async () => {
   const y7 = newGitTarget('wire-worktree-scope')
   git_result(y7, ['config', '--local', 'core.hooksPath', '.githooks'])
@@ -797,9 +788,8 @@ T('Y7 run exits 0', () => ok(secY7().rY7.code === 0, `exit=${secY7().rY7.code}`)
 T('Y7b a worktree-scoped value naming .githooks is already wired', () => ok(m(secY7().hY7b, 'worktree scope') && m(secY7().hY7b, 'already wired'), secY7().hY7b), { skip: NO_GIT })
 
 // --- Q: GUARDED placement — post-commit is the one filename repos already use ------------------------
-// TOOLCHAIN would destroy working automation (this canon's own repo uses post-commit to republish
-// the docs artifact); SEED would silently deny the retro to any repo that has one. So: refresh ours,
-// refuse theirs.
+// TOOLCHAIN would destroy a repo's own post-commit automation, and SEED would silently deny the
+// retro to any repo that has one. So the scaffold refreshes its own copy and refuses a foreign one.
 const mineQ = '#!/bin/sh\n# my own post-commit\necho hello\n'
 const secQ = section(async () => {
   const q = target('guarded-foreign')
@@ -825,11 +815,10 @@ T('Q2 a marked post-commit is refreshed from canon', () =>
 T('Q2 nothing is refused', () => ok(m(secQ2().rQ2.out, 'refused=0'), secQ2().rQ2.out))
 
 // --- R: a CRLF-materialized plugin cache still places LF ---------------------------------------------
-// The shipped v0.23.0 defect: the installed plugin is checked out by the CONSUMER's git, where
-// core.autocrlf stamps CRLF onto every template (measured: 162 CRLF pairs in the cached
-// githooks/pre-commit). Copy-Item placed those bytes verbatim, so an eol=lf repo saw ten spurious
-// modifications after every re-run, and a POSIX clone got sh hooks that die with
-// "/bin/sh^M: bad interpreter". Placement owns the line discipline now: LF out, whatever came in.
+// The installed plugin is checked out by the CONSUMER's git, where core.autocrlf stamps CRLF onto
+// every template. Verbatim placement would give an eol=lf repo spurious modifications after every
+// re-run, and a POSIX clone sh hooks that die with "/bin/sh^M: bad interpreter". Placement owns the
+// line discipline: LF out, whatever came in.
 // Runs a COPY of the skill with CRLF stamped onto every template; the real plugin is never modified.
 const secR = section(async () => {
   const crlfSkill = copySkill('crlf-skill')
@@ -849,19 +838,17 @@ T('R no placed file carries a CR', () => {
   const { withCr } = secR()
   ok(withCr.length === 0, `CR found in: ${withCr.join(', ')}`)
 })
-// Re-run against the same CRLF cache. What each assertion pins (review 2026-08-06, low — an
-// earlier comment implied this one covered the verbatim revert): the CR-absence assertion above
-// kills a revert to verbatim Copy-Item placement; THIS assertion kills the normalize-write-but-
-// raw-compare regression (ADR 0036's rejected Option C — LF on disk vs a CRLF template differs
-// raw, so every re-run would re-report every placement as refreshed). A full revert passes this
-// assertion alone: verbatim run 1 makes run 2's raw compare byte-identical.
+// Re-run against the same CRLF cache. The CR-absence assertion above kills a revert to verbatim
+// placement. THIS assertion kills the normalize-write-but-raw-compare regression (ADR 0036's rejected
+// Option C: LF on disk against a CRLF template differs raw, so every re-run would report every
+// placement as refreshed). A full revert passes this assertion alone, because verbatim run 1 makes
+// run 2's raw compare byte-identical.
 const secR2 = section(async () => { const [{ r, crlfInit }] = await after(secR); return (await runInitA(['-Target', r], crlfInit)).out })
 T('R re-run refreshes nothing (CR-only delta is not a change)', () => ok(m(secR2(), 'refreshed=0') && m(secR2(), 'created=0'), secR2()))
-// A LONE CR (0x0D with no LF after it) is also not a change: the compare is ADR 0033's fold
-// verbatim — drop every 0x0D — NOT a CRLF-pair fold, so the scaffold and the refresh nudge agree
-// on lone-CR deltas too (review 2026-08-06, medium: a CRLF-pair fold counted this as a refresh
-// the nudge stays silent on). The byte itself is left as placed: the compare only decides whether
-// a re-run would change anything, and line endings belong to git's attributes.
+// A LONE CR (0x0D with no LF after it) is also not a change: the compare is ADR 0033's fold, which
+// drops every 0x0D, not a CRLF-pair fold, so the scaffold and the refresh nudge agree on lone-CR
+// deltas. The byte itself is left as placed: the compare only decides whether a re-run would
+// change anything, and line endings belong to git's attributes.
 const secR3 = section(async () => {
   const [, { r, crlfInit }] = await after(secR2, secR)
   const loneTarget = path.join(r, 'docs', 'build.mjs')
@@ -888,10 +875,9 @@ async function scaffolded(name) {
 }
 
 // --- S: downgrade guard + stamp lifecycle (ADR 0042) -------------------------------------------------
-// The multi-writer destructive path this section pins: writer A refreshes a repo at vN+1 and
-// merges; writer B (plugin vN) re-runs the scaffold — pre-0042 it silently placed the older
-// templates over A's refresh. Now it must REFUSE before writing anything, and -Force must remain
-// the deliberate-rollback path.
+// The multi-writer destructive path this section pins: writer A refreshes a repo at vN+1 and merges,
+// and writer B (plugin vN) re-runs the scaffold. B must REFUSE before it writes anything, because it
+// would place older templates over A's refresh. -Force stays the deliberate-rollback path.
 const secS = section(async () => {
   const s = target('stamp-newer')
   const rS0 = await runInitA(['-Target', s])
@@ -936,8 +922,8 @@ T('S3 garbage stamp is rewritten to the plugin version', () => ok(eqi(stampOf(se
 // same guard through the same git query — UA6 below pins it through init.mjs, the hook suite's 10b legs
 // through the hook. The guard's path is the stamp ALONE (UA5): a toolchain-only upstream commit is a hand
 // edit, not a scaffold run. UA7 pins the patch-equivalence filter (a rebased or amended stamp commit).
-// The legs run in one function, because each leg builds on the state the last one left. It records what each
-// case reads at the moment the pwsh suite read it, and the tests below assert on those records.
+// The legs run in one function. It records what each case reads, and the tests below assert on those
+// records.
 const uaGit = (dir, args) => gitOk(dir, ['-c', 'user.name=selftest', '-c', 'user.email=selftest@example.invalid', '-c', 'commit.gpgsign=false', ...args])
 const uaRev = (dir, args) => git_result(dir, args).stdout.trim()
 // A path-and-hash list of every file outside .git, so "nothing was written" is a byte comparison.
@@ -993,7 +979,7 @@ const secUA = section(async () => {
     o.rUA1a = await runInitA(['-Target', uaC, '-DryRun', '-AllowUpstreamAhead'])
     uaGit(uaC, ['remote', 'set-url', 'origin', uaRemote])
     // UA1b: the same unfetched clone, remote reachable again: the run fetches by itself, so the refusal sees the
-    // push that no one fetched — the residual ADR 0135 left to the skill's prose (O76). Dry run: nothing written.
+    // push that no one fetched, the case that ADR 0135 leaves to the skill's prose. Dry run: nothing written.
     o.rUA1b = await runInitA(['-Target', uaC, '-DryRun'])
     o.uaFetchedMoved = uaRev(uaC, ['rev-parse', 'origin/main']) !== uaUnfetched
     o.uaCStampedAfter1b = isFile(path.join(uaC, '.harness-version'))
@@ -1165,9 +1151,9 @@ UA('UA4 a git repo with no remote: the guard stays silent and the run exits 0', 
 })
 
 // --- T: preserved-seed drift note (ADR 0051) — report only, never a merge ----------------------------
-// The measured blind spot this section pins (issue #44): a repo scaffolded at vN re-runs at vN+k
-// and its preserved .harness.json / .gitattributes silently lack template-side additions
-// (review.derived; the load-bearing `.githooks/* text eol=lf` line) that only a hand diff found.
+// Issue #44: a repo scaffolded at vN re-runs at vN+k, and its preserved .harness.json /
+// .gitattributes silently lack template-side additions (review.derived; the load-bearing
+// `.githooks/* text eol=lf` line) that only a hand diff finds.
 const tplDecl = () => JSON.parse(read(path.join(templates, 'harness.json')))
 const writeJson = (p, obj) => write(p, JSON.stringify(obj, null, 2))
 const secT = section(async () => {
@@ -1203,11 +1189,11 @@ T('T4 complete seeds (with repo-only additions) carry no note', () => ok(secT4()
 const secT5 = section(async () => { const t5 = target('seed-bad-json'); write(path.join(t5, '.harness.json'), '{ not json'); return { rT5: await runInitA(['-Target', t5]) } })
 T('T5 unparseable seed: probe skip is reported, run exits 0', () => ok(secT5().rT5.code === 0 && m(secT5().rT5.out, 'drift probe skipped'), `exit=${secT5().rT5.code} out=${secT5().rT5.out}`))
 
-// T6: an UNREADABLE line-based seed must not abort the run (review 2026-08-12, high): the probe's
-// ReadAllBytes on a locked seed used to throw uncaught under the script-global EAP=Stop, turning a
-// fully successful placement into a non-zero exit. Windows-gated: the exclusive-share lock that
-// forces the read failure is mandatory there and advisory on POSIX (CI's windows-latest runs it).
-// Node cannot open a file with no sharing, so a pwsh child holds the lock (FileShare.None) while init runs.
+// T6: an UNREADABLE line-based seed must not abort the run: an uncaught throw from the probe's read
+// of a locked seed would turn a successful placement into a non-zero exit. Windows-gated: the
+// exclusive-share lock that forces the read failure is mandatory there and advisory on POSIX (CI's
+// windows-latest runs it). Node cannot open a file with no sharing, so a pwsh child holds the lock
+// (FileShare.None) while init runs.
 const T6SKIP = WIN ? NO_PWSH : 'POSIX — FileShare.None is advisory there; windows-latest CI runs this case'
 function withExclusiveLock(file, fn) {
   const script = `$f = [IO.File]::Open(${psq(file)}, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None); [Console]::Out.WriteLine('locked'); [Console]::Out.Flush(); [void][Console]::In.ReadLine(); $f.Dispose()`
@@ -1247,12 +1233,12 @@ T('T7 gitignore drift note names count + first missing line', () =>
   ok(m(secT7().rT7.out, R`= \.gitignore \(existing seed preserved — template has \d+ line\(s\) this seed lacks, e\.g\. 'docs/docs\.artifact\.html'`), secT7().rT7.out))
 T('T7 the seed itself is untouched (report only)', () => ok(read(path.join(secT7().t7, '.gitignore')) === t7gi, 'the probe wrote into .gitignore'))
 
-// T8: scaffold gate lines (ADR 0129). Arrays are leaves to the key probe, so a docs group that
-// predates ADR 0094 hid the file-scoped check_docs.mjs line — the one path by which the STE-lite
-// gate (ADR 0128) ever sees a staged spec. Coverage is per PATH: the emitter runs the gates of
-// every group whose match claims a path, so the line must sit in a group claiming the path, and
-// the line in some other group is no coverage (owner 2026-10-09: docs-generated alone never sees
-// a spec). The note names the uncovered scaffold paths, the exact line and the template groups.
+// T8: scaffold gate lines (ADR 0129). Arrays are leaves to the key probe, so a docs group without
+// the file-scoped check_docs.mjs line (ADR 0094) would hide it, and that line is the one path by
+// which the STE-lite gate (ADR 0128) sees a staged spec. Coverage is per PATH: the emitter runs the
+// gates of every group whose match claims a path, so the line must sit in a group that claims the
+// path, and the line in some other group is no coverage (docs-generated alone never sees a spec).
+// The note names the uncovered scaffold paths, the exact line and the template groups.
 const t8Gate = esc(' declares the scaffold gate { "runner": "node", "script": "docs/check_docs.mjs", "files": true } (template: ')
 const t8Corpus = R`docs/adr/README\.md, docs/adr/0000-template\.md, docs/spec/README\.md, docs/spec/0000-template\.md, docs/adr/0001-adopt-docs-as-code\.md`
 const t8All = `no group claiming ${t8Corpus}, docs/index\\.json${t8Gate}` + R`docs-corpus, docs-generated\)`
@@ -1278,7 +1264,7 @@ T('T8a gates: [] in both docs groups names every uncovered path, the line once, 
   ok(m(t8a().r.out, R`= \.harness\.json \(existing seed preserved — ${t8All}\)`), t8a().r.out))
 const t8b = t8Run('seed-gate-whole-program', (d) => { for (const g of docsGroups(d, (g) => g.name.startsWith('docs-'))) g.gates[0].files = false })
 T('T8b the pre-ADR 0094 files:false gate is not the line (runner + script + files)', () => ok(t8b().r.code === 0 && m(t8b().r.out, t8All), `exit=${t8b().r.code} out=${t8b().r.out}`))
-// The owner's case: the line in docs-generated only. Present in the file, absent where specs land.
+// The line in docs-generated only: present in the file, absent where specs land.
 const t8g = t8Run('seed-gate-generated-only', (d) => { for (const g of docsGroups(d, (g) => g.name === 'docs-corpus')) g.gates = [] })
 T('T8g the line in docs-generated alone still names the corpus paths', () =>
   ok(m(t8g().r.out, R`\(existing seed preserved — no group claiming ${t8Corpus}${t8Gate}` + R`docs-corpus\)\)`), t8g().r.out))
@@ -1316,12 +1302,12 @@ T('T8e a missing docs.ste_lite key and the gate line join with "; "', () =>
 // A top level that is not an object declares no group: reported, never fatal.
 const t8f = section(async () => { const dir = target('seed-gate-array'); write(path.join(dir, '.harness.json'), '[]'); return { r: await runInitA(['-Target', dir]) } })
 T('T8f a bare-array seed names the gate line and the run exits 0', () => ok(t8f().r.code === 0 && m(t8f().r.out, t8All), `exit=${t8f().r.code} out=${t8f().r.out}`))
-// A match .NET refuses claims nothing, so the note speaks rather than staying silent.
+// A match that the engine refuses claims nothing, so the note speaks rather than staying silent.
 const t8i = t8Run('seed-gate-bad-regex', (d) => { for (const g of docsGroups(d, (g) => g.name === 'docs-generated')) g.match = '^docs/(index' })
 T('T8i an unparseable group match leaves its path uncovered, run exits 0', () =>
   ok(t8i().r.code === 0 && m(t8i().r.out, R`no group claiming docs/index\.json${t8Gate}` + R`docs-generated\)`), `exit=${t8i().r.code} out=${t8i().r.out}`))
 // T8j: a repo that moved its docs.index (its own declaration) is not probed at the template's
-// index path — that file does not exist there (review 2026-10-09, low).
+// index path, because that file does not exist there.
 const t8j = t8Run('seed-gate-moved-index', (d) => {
   d.docs.index = 'documentation/index.json'
   for (const g of docsGroups(d, (g) => g.name === 'docs-generated')) { g.match = '^documentation/index\\.json$'; g.gates = [] }
@@ -1338,8 +1324,8 @@ const t8l = t8Run('seed-gate-escape', (d) => {
 T('T8l an unbalanced match claims nothing, so the corpus gap still speaks', () => ok(m(t8l().r.out, R`no group claiming ${t8Corpus}${t8Gate}` + R`docs-corpus\)`), t8l().r.out))
 // T8m: the template side is ours — a template match the engine refused would silence the probe for
 // every consumer, so every one must compile here, alone and wrapped.
-// The engine is JavaScript's now: one node run compiles every template match and docs_only pattern the way init.mjs
-// does (Python's (?P<n> spellings translated, alone and wrapped in ^(?:...)) and prints the refused ones.
+// One node run compiles every template match and docs_only pattern the way init.mjs does (Python's
+// (?P<n> spellings translated, alone and wrapped in ^(?:...)) and prints the refused ones.
 const rxCheckSrc = [
   "import fs from 'node:fs'",
   "const t = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))",
@@ -1398,9 +1384,9 @@ T('T8o a throwing probe is a reported skip, the run exits 0 and still stamps', (
   const { r } = t8o()
   ok(r.code === 0 && m(r.out, 'scaffold gate probe skipped: injected probe failure') && m(r.out, 'stamp: '), `exit=${r.code} out=${r.out}`)
 })
-// T8p: the placed paths are samples (owner 2026-10-09). A gated group that claims the placed
-// template files but no real spec must still get a note — the real spec under the same directory
-// is probed, and it leads the list so the display cap never hides it.
+// T8p: the placed paths are samples. A gated group that claims the placed template files but no real
+// spec must still get a note: the real spec under the same directory is probed, and it leads the list
+// so the display cap never hides it.
 const t8p = t8Run('seed-gate-real-spec', (d) => {
   for (const g of docsGroups(d, (g) => g.name === 'docs-corpus')) g.match = '^docs/(adr|spec)/(0000-template|README|0001-adopt-docs-as-code)\\.md$'
 }, { args: ['-DryRun'], setup: (dir) => { mk(path.join(dir, 'docs', 'spec')); write(path.join(dir, 'docs', 'spec', '0002-real.md'), '# real spec\n') } })
@@ -1414,9 +1400,9 @@ const t8q = t8Run('seed-gate-backref', (d) => {
   d.groups.push({ name: 'specs', match: '^(docs)/spec/(.*\\1|README|0000-template)\\.md$', cwd: '', strip_prefix: '', gates: [{ runner: 'node', script: 'docs/check_docs.mjs', files: true }] })
 }, { args: ['-DryRun'], setup: (dir) => { mk(path.join(dir, 'docs', 'spec')); write(path.join(dir, 'docs', 'spec', '0002-docs.md'), '# real spec\n') } })
 T('T8q a backreference keeps its own group numbering (no false gap)', () => ok(!m(t8q().r.out, 'declares the scaffold gate'), t8q().r.out))
-// T8r: a conditional `(?(1)…)` is a Python construct that JavaScript cannot compile (the .NET engine could, and
-// this case once pinned that the spec group's (?(1) kept its own numbering). It is refused like any pattern
-// the engine refuses: the group claims nothing, so the note speaks and names the real spec it cannot cover.
+// T8r: a conditional `(?(1)…)` is a Python construct that JavaScript cannot compile. It is refused like
+// any pattern the engine refuses: the group claims nothing, so the note speaks and names the real spec
+// it cannot cover.
 const t8r = t8Run('seed-gate-conditional', (d) => {
   for (const g of docsGroups(d, (g) => g.name === 'docs-corpus')) g.match = '^docs/(adr)/.*\\.md$'
   d.groups.push({ name: 'specs', match: '^(docs)?(?(1)/spec/.*\\.md|zz)$', cwd: '', strip_prefix: '', gates: [{ runner: 'node', script: 'docs/check_docs.mjs', files: true }] })
@@ -1451,8 +1437,8 @@ const t8u = t8Run('seed-gate-hidden-link', (d) => { for (const g of docsGroups(d
 })
 T(`T8u a hidden draft${LINK.ok ? ' and a linked directory are' : ' is'} not listed`, () => ok(!m(t8u().r.out, 'declares the scaffold gate'), t8u().r.out))
 if (!LINK.ok) T('T8u link half', () => {}, { skip: `could not create a directory link: ${LINK.reason}` })
-// T8v: a listing that throws keeps the sample gaps and says where it stopped (re-review
-// 2026-10-09, low). Runs a COPY of the skill whose listing throws; the real plugin is never modified.
+// T8v: a listing that throws keeps the sample gaps and says where it stopped. Runs a COPY of the skill
+// whose listing throws; the real plugin is never modified.
 const listHook = 'listFiles(full, true)'
 // The copy also carries T9i: the docs_only listing throws too (ADR 0191).
 const t9iHook = "listFiles(full, d !== '')"
@@ -1476,8 +1462,8 @@ T('T8v a throwing listing keeps the sample gaps and names where it stopped', () 
 })
 T('T4 a template-complete seed names no scaffold gate', () => ok(!m(secT4().rT4.out, 'declares the scaffold gate'), secT4().rT4.out))
 
-// T9: review.docs_only value probe (ADR 0191, dist #15). Arrays are leaves to the key probe, so an
-// old docs_only made CLAUDE.md, docs/ code and the stage prompts review-exempt with no note. The
+// T9: review.docs_only value probe (ADR 0191, dist #15). Arrays are leaves to the key probe, so a
+// docs_only that exempts CLAUDE.md, docs/ code or the stage prompts from review needs this probe. The
 // probe names each probe path the repo exempts and the template reviews; the narrower direction is
 // safe and silent. T9a is the reported seed value. T9b, T9f, T9g, T9i, T9j and T9k assert on the T8
 // runs above, whose seeds or skill copies carry their case: a skill copy costs about a second.
@@ -1505,8 +1491,8 @@ T('T9b a template-complete seed gets no docs_only note', () => ok(!m(secT4().rT4
 // T9c: one seed for the pattern forms. `prompts/` is unanchored and matches mid-path, as the emitter's
 // rx.search does. A Python named group converts. A pattern the regex engine refuses and a non-string item are
 // named as not compared, and the other patterns still compare. A real root file follows the placed
-// paths in the displayed list. REVIEW.md is a real file here, as in a repo that an older scaffold seeded:
-// no scaffold places it any more (ADR 0217), and the probe still lists it as a real root file.
+// paths in the displayed list. The scaffold places no REVIEW.md (ADR 0217), and the probe still lists
+// one as a real root file.
 const t9c = section(async () => {
   const dir = newT9Seed('seed-docs-only-forms', ['prompts/', '^(?P<n>CLAUDE)\\.md$', '^zz*+', 5, '^(REVIEW|AGENTS)\\.md$'])
   write(path.join(dir, 'AGENTS.md'), '# agents\n')
@@ -1542,10 +1528,10 @@ T('T9h every template docs_only pattern compiles in the engine init.mjs uses', (
 })
 
 // --- U: first-run TOOLCHAIN collision refuses (ADR 0055, issue #50) ----------------------------------
-// The measured brownfield loss: a repo's own docs/README.md silently replaced and labeled
-// "toolchain refreshed from canon" on the FIRST run. No stamp file = first run; a differing file
-// at a toolchain path is then refused, the stamp is withheld (else the next run re-runs with
-// overwrite semantics and the guard defeats itself), and -Force is the deliberate replacement.
+// A brownfield repo's own docs/README.md must not be silently replaced and labeled "toolchain
+// refreshed from canon" on the FIRST run. No stamp file means first run. A differing file at a
+// toolchain path is then refused, the stamp is withheld (else the next run would overwrite and the
+// guard would defeat itself), and -Force is the deliberate replacement.
 const ownDocs = "# my own docs index — not the canon's\n"
 const secU = section(async () => {
   const u = target('first-run-collision')
@@ -1570,9 +1556,8 @@ T('U1 the colliding file survives byte-identical', () => ok(secU().docsAfterU1 =
 T('U1 refusal is counted (docs/README.md)', () => ok(m(secU().rU1.out, 'refused=1'), secU().rU1.out))
 T('U1 the stamp is withheld while refusals stand', () => ok(!secU().stampAfterU1 && m(secU().rU1.out, 'stamp: NOT written'), secU().rU1.out))
 T('U1 never labeled as a canon refresh', () => ok(!m(secU().rU1.out, R`docs/README\.md \(toolchain refreshed`), secU().rU1.out))
-// "First run" is inferred from the stamp's absence, and a scaffolded repo can lose its stamp —
-// the refusal must state the inference and the stamp-lost remedy, never assert the file's origin
-// as fact (review 2026-08-17, medium).
+// "First run" is inferred from the stamp's absence, and a scaffolded repo can lose its stamp, so the
+// refusal must state the inference and the stamp-lost remedy and never assert the file's origin as fact.
 T('U1 the refusal states the inference and the stamp-lost remedy', () => ok(m(secU().rU1.out, 'Nothing marks it as this scaffold') && m(secU().rU1.out, 'only the stamp is missing'), secU().rU1.out))
 T('U2 re-run still refuses (stamp was withheld, so still a first run)', () => ok(m(secU().rU2.out, 'REFUSED — first run') && !secU().stampAfterU2, secU().rU2.out))
 T('U3 dry run shows the refusal too', () => ok(m(secU().rU3.out, 'REFUSED — first run'), secU().rU3.out))
@@ -1594,10 +1579,10 @@ T('U5 identical-content collision is a no-op, not a refusal; run stamps', () => 
   const { u5, rU5 } = secU5()
   ok(rU5.code === 0 && !m(rU5.out, 'REFUSED — first run') && isFile(path.join(u5, '.harness-version')), `exit=${rU5.code} out=${rU5.out}`)
 })
-// U6: a REFUSED hook keeps its mode — "left byte-identical" includes the executable bit. The
-// chmod block must never grant +x to a first-run-refused hook (or a marker-less post-commit):
-// that would turn a preserved foreign script into a live hook once wired (review 2026-08-17,
-// high). POSIX-gated: the mode bit does not exist on Windows; CI ubuntu measures this.
+// U6: a REFUSED hook keeps its mode, because "left byte-identical" includes the executable bit. The
+// chmod block must never grant +x to a first-run-refused hook (or a marker-less post-commit), which
+// would turn a preserved foreign script into a live hook once wired. POSIX-gated: the mode bit does
+// not exist on Windows, and CI ubuntu runs this case.
 const U6SKIP = WIN ? 'Windows — no POSIX mode bit; CI ubuntu runs this case' : false
 const secU6 = section(async () => {
   const u6 = target('first-run-foreign-hook-mode')
@@ -1617,17 +1602,14 @@ T('U6 a hook this run PLACED is still made executable', () => {
 }, { skip: U6SKIP })
 
 // --- AA: first-appearance TOOLCHAIN collision guard (ADR 0074, extending ADR 0055) -------------------
-// The measured gap in case U's guard: it fires only when the run is a first run — computed ONCE from
-// whether ANY .harness-version stamp exists. A repo already stamped by an EARLIER plugin version
-// (e.g. 0.46.0) is not first-run overall, but for a path this scaffold started shipping LATER
-// (docs/check_docs.mjs, new in 0.85.0 — ADR 0074) it IS a first appearance: that repo may well
-// have independently created its own file at the same plausible name (client-pjems's own
-// scripts/check_docs_drift.py is the real-world example) and nothing here has ever proven the
-// canon's file is what's there. Case U's guard would silently overwrite it and report
-// "refreshed" — exactly the ADR 0055 data loss, just missed because the guard only ever asked
-// "has this REPO run before", never "has this PATH been offered to this repo before".
-// Letter note: every single letter A-Z is already a case in this file (Z0 included) — "AA" is the
-// first unused, alphabetically-next name, not a reuse of the unrelated bare "N" (hooksPath dry run).
+// Case U's guard fires only on a first run, computed once from whether ANY .harness-version stamp
+// exists. A repo already stamped by an EARLIER plugin version (e.g. 0.46.0) is not first-run overall,
+// but for a path that the scaffold started shipping LATER (docs/check_docs.mjs, ADR 0074) it IS a
+// first appearance: that repo may have created its own file at the same plausible name, and nothing
+// proves that the canon's file is what sits there. Case U's guard alone would overwrite it and report
+// "refreshed", the ADR 0055 data loss. The guard must ask "has this PATH been offered to this repo
+// before", not only "has this REPO run before".
+// The case ID AA is the first unused name: every single letter A-Z is a case in this file.
 const aaForeign = '# my own drift check\n'
 const aaIntroducedM = /\['docs\/check_docs\.mjs',\s*'(\d+\.\d+\.\d+)'\]/u.exec(read(path.join(here, 'placement.mjs')))
 const secAA = section(async () => {
@@ -1655,11 +1637,9 @@ const secAA = section(async () => {
 T('AA setup run exits 0', () => ok(secAA().rAA0.code === 0, `exit=${secAA().rAA0.code}`))
 T('AA1 run exits 0', () => ok(secAA().rAA1.code === 0, `exit=${secAA().rAA1.code}`))
 T('AA1 REFUSED names the path', () => ok(m(secAA().rAA1.out, R`docs/check_docs\.mjs REFUSED`), secAA().rAA1.out))
-// The introducing version is the INTRODUCED_IN entry for the path, read from placement.mjs itself —
-// NOT the manifest version. The first cut asserted `new in $manifestVer`, which was true only while
-// the plugin version still equalled the version that introduced the path; the first bump after
-// 0.47.0 (0.48.0, 2026-09-14) turned AA1 red on a correct refusal. A missing entry fails loudly
-// here rather than letting the assertion pass on an empty pattern.
+// The introducing version is the INTRODUCED_IN entry for the path, read from placement.mjs itself,
+// never the manifest version, which moves with every release. A missing entry fails loudly here
+// rather than letting the assertion pass on an empty pattern.
 T('AA1 placement.mjs carries an INTRODUCED_IN entry for docs/check_docs.mjs', () => ok(Boolean(aaIntroducedM), 'no entry parsed — the guard under test has no version to name'))
 T('AA1 the introducing version is named', () => {
   const aaIntroduced = aaIntroducedM ? aaIntroducedM[1] : 'NO-ENTRY-PARSED'
@@ -1690,10 +1670,9 @@ T('AA3 identical content is a no-op, not a refusal', () => {
   const { rAA3 } = secAA3()
   ok(rAA3.code === 0 && !m(rAA3.out, R`docs/check_docs\.mjs REFUSED`) && m(rAA3.out, 'refused=0'), rAA3.out)
 })
-// AA4 (control): a repo already stamped AT the path's introducing version follows TODAY's
-// same-version-drift semantics (ADR 0067) — no "new in" refusal at all, just the existing
-// revert-and-report path Test-PathIntroducedAfterStamp never reaches (introduced -gt stamp is
-// false when they're equal).
+// AA4 (control): a repo already stamped AT the path's introducing version follows the same-version
+// drift semantics (ADR 0067): no "new in" refusal, just the revert-and-report path that
+// testPathIntroducedAfterStamp never reaches (introduced > stamp is false when they are equal).
 const secAA4 = section(async () => {
   const aa4 = await scaffolded('introduced-later-control')
   write(path.join(aa4, 'docs', 'check_docs.mjs'), '# hand edit at the current version')
@@ -1714,14 +1693,13 @@ const secAA5 = section(async () => {
 T('AA5 dry run reports the would-be refusal', () => ok(m(secAA5().rAA5.out, R`docs/check_docs\.mjs REFUSED`), secAA5().rAA5.out))
 T('AA5 dry run writes nothing to the foreign file', () => ok(read(path.join(secAA5().aa5, 'docs', 'check_docs.mjs')) === aa5Foreign, 'dry run modified the foreign file'))
 T('AA5 dry run leaves the stamp untouched', () => ok(stampOf(secAA5().aa5) === '0.46.0', 'dry run rewrote the stamp'))
-// Mutation anchor: removing the INTRODUCED_IN comparison from Test-PathIntroducedAfterStamp (or
-// hardcoding it to false) turns AA1 and AA5 red — the refusal never fires, so check_docs.mjs is
-// silently "refreshed" instead of refused. AA3 and AA4 stay green either way: AA3 never reaches the
-// collision check (the identical-content return is earlier in Place()), and AA4's equal-version
-// stamp already fails "introduced -gt stamp" on its own, so it exercises the EXISTING
-// same-version-drift branch regardless of this change — both are the controls.
+// Removing the INTRODUCED_IN comparison from testPathIntroducedAfterStamp, or hardcoding it to false,
+// turns AA1 and AA5 red: the refusal never fires, and check_docs.mjs is silently "refreshed". AA3 and
+// AA4 are the controls and stay green either way. AA3 never reaches the collision check, because
+// place() returns earlier on identical content. AA4's equal-version stamp already fails
+// "introduced > stamp" on its own, so it exercises the same-version-drift branch.
 
-// --- V: the install→init E2E the #47/#48 issues measured — a fresh scaffold must pass its OWN
+// --- V: the install→init E2E of issues #47/#48 — a fresh scaffold must pass its OWN
 // full-tree audit (ADR 0041) after the first commit, html surfaces and ledger ignored (ADR 0052/
 // 0053), review canon present (ADR 0054), and the growth loop (a new ADR) must stay claimed.
 const secV = section(async () => {
@@ -1737,8 +1715,7 @@ const secV = section(async () => {
   const o = { v, rV0, tracked, ignored: git_result(v, ['check-ignore', '-q', '.claude/telemetry/delegations/slot-00.json']).status }
   const audit = async () => (await invokeNodeScriptA(path.join(v, 'scripts', 'harness', 'harness_gates.mjs'), ['--all', '--repo', v])).out
   o.rV1 = await audit()
-  // The growth loop: After-running step 3 writes an ADR — the measured "each decision makes
-  // the audit redder" half of #47.
+  // The growth loop: After-running step 3 writes an ADR, and the audit must stay green (issue #47).
   write(path.join(v, 'docs', 'adr', '0002-first-decision.md'), '---\nid: "0002"\n---\n# 0002. first\n')
   o.rV2 = await audit()
   return o
@@ -1804,8 +1781,8 @@ T('X1 the report pointer is the namespaced skill', () => ok(m(secX().rX1.out, '/
 T('X2 real run prints the SAME-VERSION block', () => ok(m(secX().rX2.out, 'upstream: SAME-VERSION drift'), secX().rX2.out))
 T('X2 the file is reverted to canon', () => ok(!m(secX().editAfterX2, 'local patch'), 'local edit survived a real refresh'))
 T('X2 pre-revert copy exists and holds the local content', () => ok(secX().bakHoldsLocal, `dir='${secX().xDir}' out=${secX().rX2.out}`))
-// The dir name must carry a per-process component after the second-resolution timestamp — two
-// same-second runs sharing the dir would -Force over each other's backups (review 2026-08-31).
+// The dir name must carry a per-process component after the second-resolution timestamp, because two
+// same-second runs that share the dir would overwrite each other's backups.
 T('X2 copies dir name ends in timestamp-pid, never timestamp alone', () => ok(m(secX().xDir, R`-\d{8}-\d{6}-\d+$`), `dir='${secX().xDir}'`))
 
 // X3: an OLDER stamp is a normal update — refresh happens, no conflict verdict. The drifted file is one
@@ -1821,11 +1798,11 @@ T('X3 older-stamp drift refreshes WITHOUT the block', () => ok(m(secX3().rX3.out
 const secX4 = section(async () => { const [{ x }] = await after(secX); return { rX4: await runInitA(['-Target', x]) } })
 T('X4 no drift, no upstream line', () => ok(!m(secX4().rX4.out, 'upstream:'), secX4().rX4.out))
 
-// X6: an ALL-FAILED copy run must say FAILED and must NOT print the "pre-revert copies:" line —
-// the dir name is assigned before the copy that can fail, so an unguarded print would name a dir
-// holding nothing (review 2026-08-31, medium; the refresh itself must still proceed). Failure is
-// injected by pointing the CHILD's temp at a fixture whose 'ywr-harness-reverted' is a FILE, so
-// the backup dir cannot be created. os.tmpdir() reads TMP/TEMP (Windows) and TMPDIR (POSIX).
+// X6: an ALL-FAILED copy run must say FAILED and must NOT print the "pre-revert copies:" line: the dir
+// name is assigned before the copy that can fail, so an unguarded print would name a dir that holds
+// nothing. The refresh itself must still proceed. Failure is injected by pointing the CHILD's temp at
+// a fixture whose 'ywr-harness-reverted' is a FILE, so the backup dir cannot be created. os.tmpdir()
+// reads TMP/TEMP (Windows) and TMPDIR (POSIX).
 const secX6 = section(async () => {
   const x6 = await scaffolded('copy-fail-drift')
   write(path.join(x6, 'scripts', 'harness', 'harness_gates.mjs'), '# local patch')
@@ -1858,18 +1835,19 @@ const secX5 = section(async () => {
   write(path.join(x5, 'scripts', 'harness', 'harness_gates.mjs'), '# canon-side propagation edit')
   return (await runInitA(['-Target', x5], x5Init)).out
 })
-// -cmatch: the dogfood note itself says "same-version drift" in lowercase, and -notmatch is
-// case-insensitive — the first run of this case failed on exactly that. The second assertion is
-// the real discriminator: the dogfood note never prompts for a report.
+// `cm` is case-sensitive: the dogfood note itself says "same-version drift" in lowercase, and `m` is
+// case-insensitive. The second assertion is the real discriminator: the dogfood note never prompts
+// for a report.
 T('X5 in-tree run prints the dogfood note, not the report prompt', () =>
   ok(m(secX5(), 'canon dogfood') && !cm(secX5(), 'SAME-VERSION drift') && !m(secX5(), 'ywr-harness:report-issue'), secX5()))
 T('X5 in-tree run makes no pre-revert copies', () => ok(!m(secX5(), 'pre-revert copies:'), secX5()))
 
 // --- RT1: a retired file is named, never removed (ADR 0220) ------------------------------------------
-// docs/build.ps1 is the docs wrapper that 0.84.0 replaced with docs/build.mjs. A re-run never deletes a
-// file, so a repo that took the older scaffold still holds it: init names it once, on a dry run and a real
-// run alike, asks for `git rm`, leaves the file byte-identical, and changes neither the exit code nor the
-// stamp. The line starts with neither `~` nor `!`, the two shapes report-issue reads as drift or foreign.
+// docs/build.ps1 is a docs wrapper that the scaffold no longer places (docs/build.mjs replaces it). A
+// re-run never deletes a file, so a repo that took an older scaffold still holds it: init names it
+// once, on a dry run and a real run alike, asks for `git rm`, leaves the file byte-identical, and
+// changes neither the exit code nor the stamp. The line starts with neither `~` nor `!`, the two
+// shapes that report-issue reads as drift or foreign.
 const rtOld = '# the wrapper an older scaffold placed\n'
 const rtLine = '^  retired: docs/build\\.ps1 — ywr-harness no longer places this file since 0\\.84\\.0 \\(ywr-harness ADR 0220\\); delete it with git rm\\r?$'
 const secRT1 = section(async () => {
@@ -1899,7 +1877,7 @@ for (const mode of ['dry run', 'real run']) {
 }
 T('RT1 a target without the retired file gets no retired line', () => ok(!m(secB().rB.out, 'retired:') && !m(secRT1().rtFirst.out, 'retired:'), `out=${secB().rB.out}`))
 
-// --- RT2: the seven Python files of the Node port are named, never removed (ywr-harness ADR 0223) ------
+// --- RT2: the seven retired Python files are named, never removed (ywr-harness ADR 0223) ------
 // A repo that took the 0.84.0 scaffold holds docs/build_docs.py, docs/check_docs.py and five scripts/harness
 // Python files. The update places the .mjs successors, names each old file once with the same git rm advice,
 // and leaves every old file byte-identical, on a dry run and a real run alike.

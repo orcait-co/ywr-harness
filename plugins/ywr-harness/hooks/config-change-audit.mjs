@@ -1,42 +1,21 @@
-// ConfigChange(user_settings|project_settings|local_settings|policy_settings) — mid-session
-// config-edit audit. Visibility ONLY: never blocks (no decision emitted) — the
-// point is that a permission/hook self-modification cannot happen silently mid-session
-// (house rule: such changes need explicit user approval). The `skills` matcher is
-// deliberately NOT subscribed (fires on every skill load — noise).
+// ConfigChange(user_settings|project_settings|local_settings|policy_settings): mid-session config-edit audit.
+// Visibility only: it never blocks and emits no decision (ywr-harness spec 0006 §3.2).
+// The `skills` matcher stays unsubscribed because it fires on every skill load.
 //
-// Payload field name FIXED 2026-07-25: this hook shipped reading
-// `config_source`, a field no hook payload has ever carried — the only two occurrences of
-// that name in the shipped binary are an unrelated OpenTelemetry attribute. Every real
-// ConfigChange therefore left the tier empty and the hook exited 0 in silence from its first
-// day, while its 6-case selftest stayed green on the invented name. The event carries
-// `source` (which tier changed) and an optional `file_path`. Both names are from the
-// 2.1.220 binary's zod schema AND the official hooks reference — its ConfigChange input
-// section and JSON example, read from the raw `.md` (a WebFetch summary of that page drops
-// the field names, which is how a review finding on that fix wrongly called this citation
-// false; check the raw file, not a summary). Line numbers are not cited: the page moves.
+// The payload carries `source` (the changed tier) and an optional `file_path`. No payload has a
+// `config_source` field. A parseable payload without `source` is schema drift and is reported, never swallowed.
 //
-// Output is JSON `systemMessage` (user-facing banner), NOT plain stdout: ConfigChange
-// exit-0 stdout is transcript-view only and never reaches the model; `additionalContext`
-// is not honored for this event either (doc-verified 2026-07-23, re-verified 2026-07-25,
-// https://code.claude.com/docs/en/hooks.md). Fail-open on infra: an unparseable payload
-// emits nothing and exits 0. A PARSEABLE payload missing `source` is different — that is
-// schema drift, and it is reported rather than swallowed, so this hook can never again be
-// silently inert.
+// Output is JSON `systemMessage`. ConfigChange stdout never reaches the model, and `additionalContext`
+// is not honored for this event (https://code.claude.com/docs/en/hooks.md). An unparseable payload
+// emits nothing and exits 0.
 //
-// Payload-authored text is echoed through inline() (hook-lib.mjs: C0, DEL, U+0085 NEL,
-// U+2028/U+2029 and the backtick become a space, then a hard cap), so a hostile value cannot forge
-// a second `[hook:*]` line in the banner a person or a model reads.
-//
-// Ported from PowerShell (ywr-harness ADR 0116) with its semantics kept: the event name is compared
-// case-insensitively and payload keys are read case-insensitively (as PSCustomObject member access
-// was); `file_path` goes through the PowerShell [string] cast. Deliberate deviations (ywr-harness spec 0006
-// §3.1): a payload string stays a string (ConvertFrom-Json turned an ISO-date-shaped one into a
-// DateTime, which then read as "not a string"), and the drift key order is Intl.Collator's. The hook
-// never exits the process: it returns, so stdout drains and the exit code stays 0.
+// Payload-authored text goes through inline() (hook-lib.mjs), so a hostile value cannot forge a second
+// `[hook:*]` line in the banner (ywr-harness spec 0006 §3.1). The event name and payload keys compare
+// case-insensitively. The hook returns instead of exiting the process, so stdout drains and the exit
+// code stays 0 (ywr-harness ADR 0116).
 import { readStdin, parseJson, isObject, getProp, psString, ieq, inline, emit, driftKeys } from './hook-lib.mjs'
 
-// Judged on what the banner would echo: a non-string `source`, or one that flattens to nothing
-// (control bytes and backticks only), is drift — never a tier-less banner.
+// A non-string `source`, or one that flattens to nothing, is drift, never a tier-less banner.
 function drift(payload) {
   const keys = driftKeys(payload)
   emit({ systemMessage: `[hook:config-audit] SCHEMA DRIFT — ConfigChange 페이로드의 'source' 필드가 없거나 비어 있거나 문자열이 아니어서, 어떤 설정 계층이 변경되었는지 확인할 수 없습니다. 수신된 키: ${keys}. hooks 레퍼런스의 ConfigChange 입력 형식이 바뀌었을 수 있습니다 — 플러그인 쪽 문제이니 /ywr-harness:report-issue 로 알려 주세요.` })

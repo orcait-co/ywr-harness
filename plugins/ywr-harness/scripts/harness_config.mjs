@@ -1,56 +1,35 @@
-// Shared reader for `.harness.json` — the ONE place repo-specific harness values are parsed.
+// Shared reader for `.harness.json`: the one place repo-specific harness values are parsed. The
+// harness scripts import it as `import * as hc from './harness_config.mjs'`, and no script reads the
+// file itself. Two readers of one schema would diverge (ywr-harness ADR 0010).
 //
-// Imported by the harness scripts as `import * as hc from './harness_config.mjs'`; no script reads
-// the file itself. There is deliberately one reader for one schema: two readers of the same file is
-// the divergence this plugin exists to prevent (ywr-harness ADR 0010), and a validator that only
-// some consumers apply is not a validator.
+// ESM, Node built-ins only, synchronous only. This library never calls `process.exit`. Where a caller
+// catches an error by type, the Error carries the type in `.name` (`CalledProcessError`,
+// `FileNotFoundError`, `OSError`, `KeyError`, `UnicodeDecodeError`, `JSONDecodeError`). Repo-relative
+// paths stay POSIX (`/`). The `warns` argument is an array that the function appends to. For
+// `compose`, `verify_command` and `gate_command` it may be the array or `{warns}`. JSON is read with
+// `JSON.parse`, so `1.0` is the integer `1`, the `NaN` and `Infinity` literals are refused, and an
+// object key that looks like an array index (`"1"`) iterates before the other keys.
 //
-// Port conventions (ESM, Node built-ins only, synchronous only):
-//   - Every top-level name keeps the name it has in the Python reader, helpers with a leading
-//     underscore included, so a caller reads `hc.name(...)` in both.
-//   - A Python tuple, list or dict is an array or a plain object, None is null, a compiled pattern
-//     is a RegExp, a `Path` argument is a string. Repo-relative paths stay POSIX (`/`).
-//   - A Python keyword argument with a default is a trailing options object. A `warns` list stays a
-//     plain array that the function appends to. For `compose`, `verify_command` and `gate_command`
-//     the `warns` argument may be the array or `{warns}`.
-//   - Where Python raises an exception that a caller catches by type, the Error carries that
-//     type name in `.name` (`CalledProcessError`, `FileNotFoundError`, `OSError`, `KeyError`,
-//     `UnicodeDecodeError`, `JSONDecodeError`). This library never calls `process.exit` and never
-//     raises `SystemExit`.
-//   - JSON is read with `JSON.parse`. Known differences from Python's `json`: `1.0` is the integer
-//     `1` here and a float there; `NaN` and `Infinity` literals are refused here; an object key that
-//     looks like an array index (`"1"`) is iterated before the other keys here.
+// Selectors, not command strings. The consumers print commands for a person or an agent to run, and
+// `.harness.json` lives in the working tree, so a cloned repo could otherwise supply the command that
+// runs (ywr-harness ADR 0012):
+// - `runner` is a selector from a closed set. A `gates` entry is a selector from `GATES`, or a script
+//   gate `{runner, script, files}` (ywr-harness ADR 0024) whose runner is from `RUNNERS` and whose
+//   script is a validated repo-relative path. A value outside a set is refused, the warning names the
+//   set, and the entry is dropped. For `verify.runner` the default is substituted.
+// - A path value with a shell metacharacter or `..` is refused. Every token that reaches a command
+//   position also passes `token_ok()` in the form it will be composed (after `strip_prefix`), and
+//   `as_arg()` neutralizes a leading dash. A changed-file argument alone passes the wider
+//   `file_arg_ok()` (`( ) [ ]` too, always single-quoted; ywr-harness ADR 0112), and a changed file
+//   absent from the working tree never does.
+// - A refused value is echoed in the warning so the reader sees it, and never reaches a printed
+//   command. Those are two properties, asserted separately.
+// - A file that cannot be an argument is excluded and reported as ungated, because silence would read
+//   as coverage.
+// - Regexes are free strings: they select and report, and cannot name an executable.
 //
-// ## Why selectors instead of command strings
-//
-// The consumers that print commands PRINT them for a person or an agent to run. `.harness.json` lives
-// in the working tree, so a cloned repository could otherwise supply the command that ends up
-// executed. Claude Code closed the same hole in its own surface: project-scope `pluginConfigs`
-// entries are ignored because those values "would flow into plugin hook commands"
-// (plugins-reference). So:
-//
-// - `runner` is a SELECTOR from the closed set below. A `gates` entry is either a selector from the
-//   closed `GATES` set, or a script gate `{runner, script, files}` (ywr-harness ADR 0024) whose
-//   runner is a selector from `RUNNERS` and whose script is a validated repo-relative path — the
-//   repo points at code it already carries; it never authors argv. A value outside a set is refused,
-//   the set is named in the warning, and the entry is dropped (for `verify.runner`, the default
-//   substituted).
-// - Path values are refused if they contain a shell metacharacter or `..`. Every token that reaches
-//   a command position — script paths from here AND from the docs index, plus the changed-file
-//   arguments of a file-scoped gate — additionally passes `token_ok()` in the form it will actually
-//   be composed (post `strip_prefix`), and `as_arg()` neutralizes a leading dash. A changed-file
-//   argument alone passes the wider `file_arg_ok()` (`( ) [ ]` too, always single-quoted;
-//   ywr-harness ADR 0112), and a changed file absent from the working tree is never one.
-// - A refused value IS echoed in the warning — the reader has to see what was refused — but never
-//   reaches a printed command. Those are separate properties, asserted separately.
-// - A file that cannot be an argument is EXCLUDED from the gate's arguments and reported as ungated:
-//   a filename is repo-supplied text too, and silence there would read as coverage.
-// - Regexes are accepted as free strings: they select and report, and cannot name an executable.
-//
-// Adding a stack means adding a template HERE, reviewed once, available to every consuming repo.
-// That is the whole mechanism by which this harness is stack-agnostic and still able to grow. A
-// repo-specific entry point — a path no repo-independent selector could ever name — is a script
-// gate instead (ywr-harness ADR 0024).
+// A new stack is a new template here. A repo-specific entry point that no selector can name is a
+// script gate (ywr-harness ADR 0024).
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -278,7 +257,7 @@ function _warns_arg(x) {
   return null
 }
 
-/** The encoding pin of the Python reader. Node writes UTF-8 to a pipe and a console alike, so nothing is left to pin. */
+/** Callers still invoke the encoding pin. Node writes UTF-8 to a pipe and a console alike, so it pins nothing. */
 export function pin_utf8() {}
 
 // Closed set: how a verify script is executed.
@@ -290,11 +269,10 @@ export const RUNNERS = {
   'pwsh': ['pwsh', '-NoProfile', '-File'],
 }
 
-// Closed set: deterministic gates that run BEFORE any LLM review.
-//   files=true   the changed file list is appended — the gate is scoped to the slice.
-//   files=false  whole-program (no per-file scoping). The caller must gate on failures in slice
-//                files or newly introduced by the slice; pre-existing failures elsewhere are debt
-//                to record, not work to absorb into the slice.
+// Closed set: deterministic gates that run before any LLM review.
+//   files=true   the changed file list is appended, so the gate is scoped to the slice.
+//   files=false  whole-program. The caller gates on failures in slice files or new in the slice.
+//                A pre-existing failure elsewhere is debt to record, not work for the slice.
 export const GATES = {
   'ruff':         { cmd: ['uv', 'run', 'ruff', 'check'],                    files: true },
   'ruff-format':  { cmd: ['uv', 'run', 'ruff', 'format', '--check'],        files: true },
@@ -309,36 +287,31 @@ export const GATES = {
   'go-vet':       { cmd: ['go', 'vet', './...'],                            files: false },
   'go-test':      { cmd: ['go', 'test', './...'],                           files: false },
   'actionlint':   { cmd: ['actionlint'],                                    files: true },
-  // shellcheck: the selector for `*.sh` surfaces. It flags mechanically what a review would
-  // otherwise find late (word-list expansion, SC2044/SC2013). The runner rides the ubuntu-latest
-  // image (no install step in the vendored CI); the preflight names it if absent.
+  // shellcheck is the selector for `*.sh` surfaces. The vendored CI installs nothing, so the runner
+  // relies on the ubuntu-latest image, and the preflight names it when absent.
   'shellcheck':   { cmd: ['shellcheck'],                                    files: true },
 }
 
-// Retired script declarations and the file that replaced each. A repo that declared the old script as
-// a Python script gate or artifact check gets the replacement while that file exists under the root,
-// and a warning that asks for the declaration to be updated. A repo whose tree has not taken the
-// replacement yet keeps the declaration it wrote. The list is closed on purpose: a path outside it is
-// never rewritten.
+// Retired script declarations and the file that replaces each. A repo that declares the old script as
+// a script gate or artifact check gets the replacement while that file exists under the root, with a
+// warning that asks for the declaration to change. Without the replacement the declaration stays as
+// written. The list is closed, so a path outside it is never rewritten.
 export const RETIRED_SCRIPTS = { 'docs/check_docs.py': 'docs/check_docs.mjs' }
 
 // ---------------------------------------------------------------------------------------------
-// Built-in claims (ywr-harness ADR 0044): the EXACT destination paths `init.mjs` places or writes
-// — every TOOLCHAIN/GUARDED/SEED/SEED_CORPUS destination plus the generated `.harness-version`
-// stamp. A changed file that no declared group matched is claimed from this set by the emitter
-// (reported under a visible `scaffold-claimed` block, never silently), so a consuming repo never
-// authors a groups entry for a file the scaffold itself placed. The claim ships in the same
-// refresh as the file it claims, so a refreshed file never fails CI for want of its claim. Exact
-// paths, never prefixes or globs: a genuinely new kind of file still surfaces as ungrouped.
-// Declared groups always win; this set only consumes leftovers.
+// Built-in claims (ywr-harness ADR 0044): the exact destination paths `init.mjs` places or writes,
+// meaning every TOOLCHAIN, GUARDED, SEED and SEED_CORPUS destination plus the generated
+// `.harness-version` stamp. The emitter claims a changed file that no declared group matched from
+// this set and reports it under a `scaffold-claimed` block, so a consuming repo never authors a
+// groups entry for a scaffold file. The claim ships in the same refresh as its file. The paths are
+// exact, never prefixes or globs, so a new kind of file still surfaces as ungrouped. Declared groups
+// win, and this set only consumes leftovers.
 //
-// SECOND COPY, BY DESIGN: the ywr-harness plugin's `placement.mjs` placement tables are the first. The
-// consuming repo's emitter cannot read the plugin's placement.mjs (no plugin exists in CI —
-// ywr-harness ADR 0014), so the ywr-harness canon's pairing selftest in
-// `harness_gates.selftest.mjs` (case Z) is the drift gate: it imports the placement.mjs tables
-// and fails the canon build when either side changes alone. Edit BOTH together.
-// `scripts/harness/__pycache__/` is deliberately absent: the vendored `.gitignore` owns it, and
-// claiming bytecode would hide a broken ignore (ywr-harness fact 6).
+// This set is a second copy of the `placement.mjs` tables of the ywr-harness plugin. A consuming
+// repo's emitter cannot read them, because no plugin exists in CI (ywr-harness ADR 0014). The ywr-harness
+// canon's pairing selftest in `harness_gates.selftest.mjs` (case Z) fails when one side changes
+// alone, so edit both together. `scripts/harness/__pycache__/` is absent on purpose: the vendored
+// `.gitignore` owns it, and claiming bytecode would hide a broken ignore (ywr-harness fact 6).
 // ---------------------------------------------------------------------------------------------
 export const SCAFFOLD_CLAIMS = new Set([
   // TOOLCHAIN destinations
@@ -364,8 +337,8 @@ export const SCAFFOLD_CLAIMS = new Set([
   '.githooks/pre-push',
   // GUARDED destination
   '.githooks/post-commit',
-  // SEED destinations (content is repo-owned; the PATH is scaffold-decided, which is what a
-  // claim asserts — never the bytes)
+  // SEED destinations: the repo owns the content and the scaffold decides the path, so a claim
+  // asserts the path only
   'CLAUDE.md',
   '.gitattributes',
   '.gitignore',
@@ -375,13 +348,13 @@ export const SCAFFOLD_CLAIMS = new Set([
   'docs/prompts/ready-report.md',
   // SEED_CORPUS destination
   'docs/adr/0001-adopt-docs-as-code.md',
-  // generated by init.mjs on every successful run (ywr-harness ADR 0042), never a template
+  // generated by init.mjs on every successful run, never a template (ywr-harness ADR 0042)
   '.harness-version',
 ])
 
-// Paths that an older scaffold placed and the current one no longer places. A repo that took the older
-// scaffold still tracks them, because init.mjs never deletes a file. They stay claimed, so that such a
-// repo's partition audit does not fail on them. They are outside the placement.mjs pairing of SCAFFOLD_CLAIMS.
+// Paths that an older scaffold placed and the current one does not. A repo that took the older scaffold
+// still tracks them, because init.mjs never deletes a file. They stay claimed, so its partition audit
+// does not fail on them. The placement.mjs pairing of SCAFFOLD_CLAIMS does not cover them.
 export const RETIRED_SCAFFOLD_CLAIMS = new Set([
   '.githooks/commit-msg',            // the hook left the scaffold in ywr-harness ADR 0215
   'docs/prompts/review-digest.md',   // the seed became docs/prompts/review-start.md (ywr-harness ADR 0215)
@@ -470,38 +443,33 @@ export function safe_path(value, field, warns) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The ONE gate every repo-supplied token passes before it can reach a printed command: script
-// paths (from `.harness.json` AND from the docs index), and the changed-file arguments appended
-// to a file-scoped gate. Composed commands are run by `sh -c` (the vendored CI and pre-commit
-// both do), so a token must survive re-splitting byte-for-byte.
+// The one gate every repo-supplied token passes before it reaches a printed command: script paths
+// (from `.harness.json` and from the docs index) and the changed-file arguments of a file-scoped
+// gate. The vendored CI and pre-commit run composed commands with `sh -c`, so a token must survive
+// re-splitting byte for byte.
 //
-// An ALLOWLIST, not a blocklist. It excludes whitespace (sh re-splits the token), '#' (BOTH
-// output parsers strip a trailing comment), glob characters (the CI runs `sh -c` without
-// `set -f`), ':' (drive-absolute), and every shell metacharacter — including the ones nobody
-// thought to list.
+// An allowlist, not a blocklist. It excludes whitespace (sh re-splits the token), '#' (both output
+// parsers strip a trailing comment), glob characters (the CI runs `sh -c` without `set -f`), ':'
+// (drive-absolute) and every shell metacharacter.
 //
-// WHERE the check happens is load-bearing: every token is validated in the form that ACTUALLY
-// reaches argv. Validating the DECLARED string while composing the STRIPPED one would let
-// `{"strip_prefix": "src/", "script": "src/-c"}` pass validation and reach argv as the bare flag
-// `-c` — with `files: true`, the next token is a changed FILENAME, so `python -c <name>` executes
-// that name as source. `as_arg()` neutralizes a leading dash on top of that, because a value in
-// command position whose FIRST character is hostile is dangerous even when the rest is clean.
+// Validate each token in the form that reaches argv. Validating the declared string while composing
+// the stripped one would let `{"strip_prefix": "src/", "script": "src/-c"}` reach argv as the bare
+// flag `-c`. With `files: true` the next token is a changed filename, so `python -c <name>` would
+// run that name as source. `as_arg()` also neutralizes a leading dash, because a hostile first
+// character in command position is dangerous even when the rest is clean.
 //
-// The patterns end in `$` with no `m` flag, which in JavaScript matches the very end of the string
-// only. Python's `$` ALSO matches just before a trailing newline, so a `$`-anchored full-match
-// there would accept `"a.py\n"` — the one character that can split an output line — and the Python
-// reader uses `\Z`. Every call path strips first (`norm()`, `safe_path` under `safe_cwd`), but the
-// choke point's guarantee must not depend on callers pre-stripping: validate the string that
-// becomes the output, not the value it was built from (ywr-harness fact 36).
+// The patterns end in `$` with no `m` flag, which matches the very end of the string only. Python's
+// `$` also matches before a trailing newline, so `"a.py\n"` would pass there, and a newline can split
+// an output line. The choke point must not depend on callers stripping first, so it validates the
+// string that becomes the output (ywr-harness fact 36).
 // ---------------------------------------------------------------------------------------------
 export const SAFE_TOKEN = /^[A-Za-z0-9._/-]+$/
 
 /**
  * True when `tok` can be spliced into a printed command as one inert argument.
  *
- * `..` is refused as a path SEGMENT, which is what traversal is — not as a substring, so a file
- * honestly named `a..b.py` stays gated. (`safe_path`'s coarser substring rule stays as it is:
- * it guards declaration-time path values.)
+ * `..` is refused as a path segment, not as a substring, so a file named `a..b.py` stays gated.
+ * `safe_path` refuses the substring, because it guards declaration-time path values.
  * @param {string} tok
  * @returns {boolean}
  */
@@ -509,14 +477,13 @@ export function token_ok(tok) {
   return tok.length > 0 && SAFE_TOKEN.test(tok) && !tok.split('/').includes('..') && !tok.startsWith('/')
 }
 
-// A changed-file ARGUMENT is held to a wider set than every other command-position value
-// (ywr-harness ADR 0112): `( ) [ ]` too — Next.js route groups and dynamic segments. They are
-// shlex-unsafe, so compose() always single-quotes them, a literal in sh and in pwsh 7. A file
-// argument always sits after the runner, where no consumer reads a word; cwd, script paths and
-// runner elements do not (the CI awk table reads `$1`/`$2`/`$4` unquoted, ywr-harness fact 65),
-// so they stay on `token_ok`. Read by `unsafe_files()` and `gate_command()`'s file filter ONLY.
-// `@`/`+` stay out (ywr-harness ADR 0112 option C: emitted bare, and a leading `@` splats in
-// PowerShell).
+// A changed-file argument passes a wider set than every other command-position value
+// (ywr-harness ADR 0112): `( ) [ ]` too, for Next.js route groups and dynamic segments. They are
+// shlex-unsafe, so compose() always single-quotes them, which is literal in sh and in pwsh 7. A file
+// argument sits after the runner, where no consumer reads a word. The cwd, script paths and runner
+// elements stay on `token_ok`, because the CI awk table reads `$1`, `$2` and `$4` unquoted
+// (ywr-harness fact 65). Only `unsafe_files()` and the file filter of `gate_command()` read this set. `@` and `+`
+// stay out, because they are emitted bare and a leading `@` splats in PowerShell (ywr-harness ADR 0112).
 export const FILE_ARG = /^[A-Za-z0-9._/()[\]-]+$/
 
 /**
@@ -541,31 +508,28 @@ export function as_arg(tok) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The ONE gate every repo-supplied value passes before it becomes an output LINE. Deliberately
-// separate from `token_ok`: that one guards a value reaching a COMMAND position, this one guards a
-// value that is merely REPORTED — a status label, a refused value echoed so a reader can see it.
-// Reported text is not inert. Both output parsers find the gate-command window by matching LINE
-// SHAPES in stdout (`^gates:`, `^ {4}[^ (]`, `^review tier:`), so a value carrying a newline does
-// not print as one line: it prints as several, and a declaration can spell the window's own start
-// and stop anchors and land a command inside it.
+// The one gate every repo-supplied value passes before it becomes an output line. It is separate
+// from `token_ok`, which guards a command position. This one guards a value that is only reported,
+// such as a status label or a refused value echoed to the reader. Reported text is not inert. Both
+// output parsers find the gate-command window by line shape in stdout (`^gates:`, `^ {4}[^ (]`,
+// `^review tier:`), so a value with a newline prints as several lines, and a declaration can spell
+// the window's own start and stop anchors and land a command inside it.
 //
 // Example: a declared artifact title of `inj\ngates:\n    echo INJECTED\nreview tier: full - x`
-// would print `artifact: ok`, so CI's `^artifact: VIOLATION` step passes, while the workflow's own
+// prints `artifact: ok`, so the CI step `^artifact: VIOLATION` passes, while the workflow's own
 // extraction (`sed -n '/^gates:/,/^\(ungrouped\|review tier\)/p' | grep -E '^ {4}[^ (]'`) returns
-// `echo INJECTED` for `sh -c`. A group NAME is a second such site: it is echoed as
-// `  [<name>] N file(s)` INSIDE the window.
+// `echo INJECTED` for `sh -c`. A group name is a second site, echoed as `  [<name>] N file(s)`
+// inside the window.
 //
-// Same rule as ywr-harness fact 36, one transformation later: validate the string that becomes
-// the LINE, not the value it was built from. Callers additionally REFUSE a control character at
-// the declaration layer where a declarer can be told (a typo deserves a message); this is the
-// structural layer that holds when they cannot.
+// This is the rule of ywr-harness fact 36 one step later: validate the string that becomes the line.
+// Callers also refuse a control character at the declaration layer, where a declarer can be told.
+// This is the structural layer that holds when they cannot.
 // ---------------------------------------------------------------------------------------------
-// U+0085 NEL and U+2028/U+2029 are in the class even though NEITHER shell parser splits on them
-// (sed/grep/awk split on 0x0A only). They are here because the parser set is not the consumer set:
-// a line splitter in a script language DOES split all three, and a MODEL reading this output may
-// render them as breaks — and a model is exactly the consumer /verify's `run:` lines are printed
-// for. One value, one line, under every reader's notion of a line. The three characters are added
-// by code point, so that no source line holds a raw separator.
+// U+0085 NEL and U+2028/U+2029 are in the class although neither shell parser splits on them
+// (sed, grep and awk split on 0x0A only). A line splitter in a script language splits all three, and
+// a model reading this output, such as the `run:` lines of /verify, may render them as breaks. One
+// value then stays one line under every reader. The three characters are added by code point, so no
+// source line holds a raw separator.
 export const CONTROL = new RegExp('[\\x00-\\x1f\\x7f' + String.fromCharCode(0x85, 0x2028, 0x2029) + ']')
 const _CONTROL_G = new RegExp(CONTROL.source, 'g')
 
@@ -589,9 +553,8 @@ export function has_control(value) {
 }
 
 /**
- * Render repo-supplied text so it can only ever occupy ONE output line. The characters become
- * VISIBLE escapes rather than being dropped: a reader diagnosing a refusal has to see what was
- * declared, and a silently stripped newline reads as a value nobody wrote.
+ * Render repo-supplied text so it occupies one output line. The characters become visible escapes
+ * instead of being dropped, so a reader diagnosing a refusal sees what was declared.
  * @param {*} value
  * @returns {string}
  */
@@ -600,18 +563,16 @@ export function one_line(value) {
 }
 
 /**
- * The single stdout exit for the two consumers whose output has a LINE-SHAPE contract (the gate
- * emitter, read by the CI/pre-commit window parsers; the verify mapper, read by a model told to
- * run its `run:` lines). The line ends in LF alone.
+ * The single stdout exit for the two consumers whose output has a line-shape contract: the gate
+ * emitter, read by the CI and pre-commit window parsers, and the verify mapper, read by a model that
+ * runs its `run:` lines. The line ends in LF alone.
  *
- * Not a convenience wrapper. Per-call-site escaping misses sites: a forged `gates:` line in the
- * review-tier line (critical-surface filenames) reproduces the injection end to end, because it
- * RE-ARMS `sed`'s range even after the real window closed. A single exit makes forgetting a call
- * site impossible instead of unlikely, which is the whole difference between a rule and a habit.
+ * Escaping per call site misses sites. A forged `gates:` line in the review-tier line (critical-surface
+ * filenames) re-arms the range of `sed` after the real window closed. One exit makes a forgotten call
+ * site impossible.
  *
- * Our own multi-line literals must write to `process.stdout` directly and sanitize the
- * repo-supplied part themselves — deliberately the awkward path, so multi-line output is a
- * decision, never a default.
+ * Multi-line literals write to `process.stdout` directly and sanitize the repo-supplied part
+ * themselves. The path is awkward on purpose, so multi-line output is a decision.
  * @param {string} [line]
  */
 export function say(line = '') {
@@ -619,12 +580,9 @@ export function say(line = '') {
 }
 
 /**
- * The single stderr exit. No machine parser reads this channel (CI captures stdout through
- * `tee`; the pre-commit hook captures stdout through command substitution) — but it is a human
- * DISPLAY, and a raw ESC sequence in a refused value would repaint the committer's terminal
- * during `git commit`, able to overwrite the hook's own preceding line. Escaped, a refused value
- * is still fully legible, which is the property that made echoing it correct in the first
- * place.
+ * The single stderr exit. No machine parser reads this channel, because CI and the pre-commit hook
+ * capture stdout only. It is a human display, though, and a raw ESC sequence in a refused value would
+ * repaint the committer's terminal during `git commit`. An escaped value stays legible.
  * @param {string} msg
  */
 export function warn(msg) {
@@ -664,24 +622,22 @@ function _retired(runner, script, root) {
 }
 
 /**
- * Validate a script gate `{runner, script, files}` (ywr-harness ADR 0024). The runner stays a
- * closed-set choice; the script is a repo-relative path. BOTH forms are validated — as declared,
- * and as it will actually be composed after the group's `strip_prefix` — because the second is the
- * one that becomes argv. Returns null (and warns) when it cannot be composed safely; a refused
- * value is echoed in the warning and never composed. A retired script declaration is replaced by
- * its successor when the root holds it (RETIRED_SCRIPTS), with a warning.
+ * Validate a script gate `{runner, script, files}` (ywr-harness ADR 0024). The runner is a closed-set
+ * choice and the script is a repo-relative path. Both forms are validated, as declared and as composed
+ * after the group's `strip_prefix`, because the second becomes argv. It returns null and warns when the
+ * gate cannot be composed safely. A refused value is echoed in the warning and never composed. A
+ * retired script declaration is replaced by its successor when the root holds it (RETIRED_SCRIPTS),
+ * with a warning.
  * @param {Object} raw @param {string} group @param {string} strip_prefix @param {string} root
  * @param {string[]} warns
  * @returns {{runner: string, script: string, files: boolean}|null}
  */
 export function script_gate(raw, group, strip_prefix, root, warns) {
   const field = `groups[${group}].gates`
-  // An unknown key is warned about, never silently dropped — a member declaring `"args":
-  // "--fast"` must get a signal that no argument field exists. `//`-prefixed keys stay the
-  // comment convention, as everywhere else in the schema. The sweep runs BEFORE the
-  // runner/script checks on purpose: a gate dropped for a bad runner still reports its unknown
-  // keys, and the two warnings TOGETHER are what diagnose a typo'd key name (`"runer"` →
-  // unknown key 'runer' + runner '' not in the closed set).
+  // An unknown key warns, so a declaration such as `"args": "--fast"` learns that no argument field
+  // exists. `//`-prefixed keys are comments, as everywhere in the schema. The sweep runs before the
+  // runner and script checks, so a gate dropped for a bad runner still reports its unknown keys.
+  // The two warnings together diagnose a typo such as `"runer"`.
   for (const key of Object.keys(raw)) {
     if (!['runner', 'script', 'files'].includes(key) && !key.startsWith('//')) {
       warns.push(`${field}: unknown script-gate key '${key}' ignored ` +
@@ -722,17 +678,16 @@ export function script_gate(raw, group, strip_prefix, root, warns) {
     }
   }
   if (!_is_file(path.join(root, script))) {
-    // Kept, not dropped: dropping would let a typo read as coverage, while the emitted
-    // command fails loudly at run time and this warning names the path at emit time.
+    // Kept, not dropped. A drop would let a typo read as coverage, while the kept command fails
+    // loudly at run time.
     warns.push(`${field}: script-gate path '${script}' does not exist — kept; the emitted ` +
                'command will fail until it does')
   }
   let files = _get(raw, 'files', false)
   if (typeof files !== 'boolean') {
-    // `bool("false")` is True in Python and a non-empty string is truthy here — a JSON string
-    // would silently INVERT the declared intent and append the changed-file list to a script
-    // that never asked for one. The default (false, whole-program) is also the conservative
-    // direction: the script runs exactly as it would with the key absent.
+    // A non-empty string is truthy, so the JSON string "false" would invert the intent and append
+    // the changed-file list to a script that never asked for one. The default, whole-program, runs
+    // the script as if the key were absent.
     warns.push(`${field}: script-gate 'files' must be a JSON boolean (true/false), got ` +
                `'${_str(files)}' — treated as false (whole-program)`)
     files = false
@@ -744,17 +699,16 @@ export function script_gate(raw, group, strip_prefix, root, warns) {
  * Validate an `artifacts.items[].check` drift check (ywr-harness ADR 0068) and compose the ONE
  * command it emits into the gates window.
  *
- * The script-gate shape (ywr-harness ADR 0024) minus `files`: a check is ALWAYS whole-program — its
- * contract is `build_onboarding.mjs`'s (default mode = drift check, exit 1 on drift, writes
- * nothing). No strip_prefix and no cwd: artifact sources are declared repo-root-relative and
- * the check runs from the root, so the declared path IS the composed path.
+ * The script-gate shape (ywr-harness ADR 0024) minus `files`. A check is always whole-program. Its
+ * contract is that of `build_onboarding.mjs`: the default mode is a drift check that exits 1 on drift
+ * and writes nothing. It has no strip_prefix and no cwd, because artifact sources are declared
+ * root-relative and the check runs from the root.
  *
- * Shape/refusal failures land in `problems` — the caller renders them as
- * `artifact: VIOLATION`, which CI fails on. NOT the script-gate warn-and-drop posture, on
- * purpose: a declared check that quietly stops composing is unenforced coverage that still
- * reads as coverage. A missing script FILE stays a warn (the emitted command fails loudly at
- * run time — the script-gate stance for the same case). A retired script declaration is replaced
- * by its successor when the root holds it (RETIRED_SCRIPTS), with a warning.
+ * A shape or refusal failure lands in `problems`, and the caller renders it as `artifact: VIOLATION`,
+ * which CI fails on. It does not warn and drop like a script gate, because a declared check that
+ * quietly stops composing is unenforced coverage that still reads as coverage. A missing script file
+ * is only a warning, as for a script gate, because the emitted command fails loudly. A retired script
+ * declaration is replaced by its successor when the root holds it (RETIRED_SCRIPTS), with a warning.
  * @param {Object} raw @param {string} field @param {string[]} problems @param {string[]} warns
  * @param {string} root
  * @returns {string} the command, or '' when refused
@@ -794,8 +748,7 @@ export function artifact_check(raw, field, problems, warns, root) {
     warns.push(`${field}: check script '${script}' does not exist — kept; the emitted ` +
                'command will fail until it does')
   }
-  // Through compose(), the one place argv becomes a command string — its quoting contract then
-  // covers this site too, instead of a second hand-rolled join that would silently diverge.
+  // compose() is the one place argv becomes a command string, so its quoting contract covers this site.
   return compose([...RUNNERS[runner], as_arg(script)], '')
 }
 
@@ -996,51 +949,45 @@ export function any_match(pats, p) {
 // ---------------------------------------------------------------------------------------------
 // Customer-corpus surface declaration (ywr-harness ADR 0060). `docs.customer` turns on the docs
 // builder's optional program-corpus surface: `<dir>/<Program>/{spec,user-guide,release-notes}.md`
-// → one `docs/customer.artifact.html` (+ `docs/PROJECTS.md` when `projects_md`). Parsed and
-// VALIDATED here; the builder imports this reader instead of re-reading the file, because two
-// validators of one schema diverge: a second copy of the rules inside a consumer's own builder is
-// unreachable by any canon fix (ywr-harness ADR 0010).
+// become one `docs/customer.artifact.html`, plus `docs/PROJECTS.md` when `projects_md` is set. This
+// reader validates the declaration and the builder imports it, because a second copy of the rules
+// inside a consumer's builder is out of reach of a canon fix (ywr-harness ADR 0010).
 //
-// Nothing here reaches a command position: `dir` selects files the builder READS and renders into
-// HTML; every other value is display text or a frontmatter key name. `dir` is still held to the
-// path allowlist — a `..` segment would publish files from OUTSIDE the repo into a customer-facing
-// page, which is a leak rather than a shell injection and is refused for the same reason. Display
-// text is sanitized the way a group name is (control characters escaped, reported): it is echoed
-// in warnings and in the builder's stderr, both line-shaped surfaces.
+// Nothing here reaches a command position. `dir` selects files the builder reads and renders into
+// HTML, and every other value is display text or a frontmatter key name. `dir` still passes the path
+// allowlist, because a `..` segment would publish files from outside the repo into a customer-facing
+// page. Display text is escaped and reported like a group name, because warnings and the builder's
+// stderr are line-shaped surfaces.
 //
-// Three states, distinguished on purpose (the `artifacts.malformed` precedent):
-//   cfg.customer is null            key absent or null — the surface is OFF; nothing is checked
-//   cfg.customer.malformed != ""    declared but unusable — the BUILDER MUST REFUSE (exit 1) and
-//                                   the emitter warns; a declared surface that quietly stops
-//                                   building is the committed-page-goes-stale defect
-//   otherwise                       validated values with defaults filled, plus `declared` —
-//                                   the known keys the declarer wrote (non-null), so an
-//                                   explicit "" stays distinguishable from an absent key
-// An explicitly EMPTY value ("" or []) is never read as absent: it warns and takes the default.
-// The three filenames are the corpus CONTRACT, not a key: a role attaches to each (record file ·
-// guide · release feed), and a declared name without a role is not expressible.
+// Three states (the `artifacts.malformed` precedent):
+//   cfg.customer is null            key absent or null: the surface is off and nothing is checked
+//   cfg.customer.malformed != ""    declared but unusable: the builder must refuse (exit 1) and the
+//                                   emitter warns, because a declared surface that quietly stops
+//                                   building leaves a committed page stale
+//   otherwise                       validated values with defaults filled, plus `declared`, the known
+//                                   keys the declarer wrote (non-null), so an explicit "" differs
+//                                   from an absent key
+// An explicitly empty value ("" or []) is never read as absent: it warns and takes the default.
+// The three filenames are the corpus contract, not a key, because each has a role (record file,
+// guide, release feed).
 // ---------------------------------------------------------------------------------------------
 export const CUSTOMER_FILES = ['spec.md', 'user-guide.md', 'release-notes.md']
 export const CUSTOMER_KEYS = ['dir', 'title', 'eyebrow', 'description', 'contact', 'required_frontmatter',
   'chip_field', 'chip_suffix', 'group_field', 'groups', 'other_label',
   'unkeyed_label', 'project_field', 'projects_md', 'release_stages', 'panels',
   'default_tab', 'footer_date_label']
-// Display defaults are deliberately EMPTY here: the builder owns its UI language and fills them.
-// `release_stages` is a parsing contract (which `[TAG]` tokens a release entry may carry, in
-// stage order — the LAST is the final stage), so its default lives with the validation.
-// `panels` is the extension point (ywr-harness ADR 0060): repo-relative `.mjs` modules, each
-// contributing one top-level tab — the builder imports the module and calls
-// `render_panel(repoRoot)`, which returns the panel's HTML, and reads the optional exports `CSS`,
-// `UPDATED` and `TAB_CHIPS`. The module path is a script-gate-class value
-// (ywr-harness ADR 0024): a path to code the repo already carries, never a command string, held
-// to the same allowlist; a module the builder EXECUTES is exactly why the allowlist matters here
-// even though no shell is involved. A module that passes the allowlist but is not an `.mjs` file is
-// kept with a warning and the builder refuses the build, so a stale Python panel is never dropped
-// silently.
-// Each panel has an `id` (the `#top-<id>` deep link; derived here for EVERY kept entry so
-// `default_tab` can be validated against the final set) and a `position`. The block-level
-// `default_tab` and `footer_date_label` let a panel stop editing the canon DOM
-// (ywr-harness ADR 0061).
+// Display defaults are empty here, because the builder owns its UI language and fills them.
+// `release_stages` is a parsing contract: the `[TAG]` tokens a release entry may carry, in stage
+// order, and the last is the final stage. Its default lives with the validation.
+// `panels` is the extension point (ywr-harness ADR 0060): repo-relative `.mjs` modules, each adding one
+// top-level tab. The builder imports the module, calls `render_panel(repoRoot)` for the panel's HTML,
+// and reads the optional exports `CSS`, `UPDATED` and `TAB_CHIPS`. The module path is a script-gate-class
+// value (ywr-harness ADR 0024): a path to code the repo carries, held to the same allowlist, because
+// the builder executes the module even though no shell is involved. A module that passes the allowlist
+// but is not an `.mjs` file is kept with a warning, and the builder refuses the build.
+// Each panel has an `id`, the `#top-<id>` deep link, derived for every kept entry so `default_tab`
+// validates against the final set, and a `position`. The block-level `default_tab` and
+// `footer_date_label` let a panel avoid editing the canon DOM (ywr-harness ADR 0061).
 export const CUSTOMER_DEFAULTS = {
   dir: 'docs/customer',
   title: '', eyebrow: '', description: '', contact: '',
@@ -1055,17 +1002,17 @@ export const CUSTOMER_DEFAULTS = {
 }
 export const PANEL_KEYS = ['module', 'label', 'id', 'position']
 export const PANEL_POSITIONS = ['before-docs', 'after-docs']
-// A tab id is spliced into `data-top`, a CSS class (`panel-<id>`) and a URL fragment — ASCII
-// token only; `docs` is the documents tab and is checked separately (reserved).
+// A tab id is spliced into `data-top`, a CSS class (`panel-<id>`) and a URL fragment, so it is an
+// ASCII token. `docs` is the documents tab and is reserved.
 export const PANEL_ID = /^[a-z][a-z0-9_-]*$/
-// parse_frontmatter's key shape (build_docs.mjs: a name of [A-Za-z0-9_] before the colon) — a declared
-// key name outside it can never match a parsed key, so it is refused rather than silently never-found.
+// The key shape of parse_frontmatter in build_docs.mjs, a name of [A-Za-z0-9_] before the colon. A
+// declared key outside it never matches a parsed key, so it is refused.
 export const FM_KEY = /^[A-Za-z0-9_]+$/
 export const STAGE_TAG = /^[A-Za-z0-9_-]+$/
 
 /**
- * Repo-supplied display text → one-line form, control characters escaped and REPORTED
- * (the groups[].name rule: a value that never exists raw after load cannot be echoed raw).
+ * Repo-supplied display text in one-line form, with control characters escaped and reported (the
+ * groups[].name rule: a value that is never raw after load cannot be echoed raw).
  * @param {*} value @param {string} field @param {string[]} warns @returns {string}
  */
 export function _display(value, field, warns) {
@@ -1078,9 +1025,8 @@ export function _display(value, field, warns) {
 }
 
 /**
- * A declared frontmatter key name. An EMPTY value is reported, never read as absent: `""`
- * is something a declarer (or their templating) wrote, and a silent default here would be the
- * only path in this block that degrades without a warning.
+ * A declared frontmatter key name. An empty value is reported, never read as absent. A silent
+ * default here would be the only path in this block that degrades without a warning.
  * @param {*} value @param {string} field @param {string[]} warns @param {string} [dflt]
  * @returns {string}
  */
@@ -1123,15 +1069,14 @@ export function customer_decl(raw, root, warns) {
                `${_type_name(raw)} — the customer surface CANNOT be built until fixed`)
     return { malformed: 'expected an object or null' }
   }
-  // Defaults are copied one level DEEPER than the list: `release_stages` holds objects, and a
-  // shallow copy of the list would hand every load the module constant's own objects — one
-  // in-place edit by a consumer (or a selftest) would poison every later load in the process.
+  // Defaults are copied one level deeper than the list. `release_stages` holds objects, and a shallow
+  // copy would hand every load the module constant's own objects, so one in-place edit would poison
+  // every later load.
   const out = Object.fromEntries(Object.entries(CUSTOMER_DEFAULTS).map(([k, v]) =>
     [k, Array.isArray(v) ? v.map((s) => (_is_dict(s) ? { ...s } : s)) : v]))
   out.malformed = ''
-  // Which known keys the declarer actually wrote (non-null). The builder fills its own UI
-  // default ONLY for keys absent here, so `"title": ""` is an intentional blank and an absent
-  // `title` is "use yours" — without this list the two are the same empty string.
+  // The known keys the declarer wrote (non-null). The builder fills its own UI default only for keys
+  // absent here, so `"title": ""` is a blank and an absent `title` means "use yours".
   out.declared = CUSTOMER_KEYS.filter((k) => _get(raw, k) !== null)
   for (const key of Object.keys(raw)) {
     if (!CUSTOMER_KEYS.includes(key) && !key.startsWith('//')) {
@@ -1140,8 +1085,9 @@ export function customer_decl(raw, root, warns) {
     }
   }
 
-  // `dir`: the one path. Refused → malformed, never defaulted: a default would build the surface
-  // from a directory the declarer did not name. Declared EMPTY → the default, reported.
+  // `dir` is the one path. A refused value makes the declaration malformed and is never defaulted,
+  // because a default would build from a directory the declarer did not name. An empty value takes
+  // the default and is reported.
   if (_get(raw, 'dir') !== null) {
     const d = norm(_str(raw.dir)).replace(/\/+$/, '')
     if (!d) {
@@ -1157,8 +1103,7 @@ export function customer_decl(raw, root, warns) {
     }
   }
   if (!out.malformed && !_is_dir(path.join(root, out.dir))) {
-    // Kept, not dropped — the builder refuses at build time and names the path; this names it
-    // at emit time, where CI reads it.
+    // Kept. The builder refuses at build time, and this warning names the path where CI reads it.
     warns.push(`${field}.dir: '${out.dir}' does not exist — the docs build will refuse ` +
                'until the corpus directory is there')
   }
@@ -1167,8 +1112,7 @@ export function customer_decl(raw, root, warns) {
     'other_label', 'unkeyed_label', 'footer_date_label']) {
     if (_get(raw, key) === null) continue
     if (typeof raw[key] !== 'string') {
-      // "ignored" must mean the builder's default applies: leaving the key in `declared`
-      // would make the untouched "" read as an intentional blank.
+      // "Ignored" means the builder's default applies, so the key leaves `declared`.
       warns.push(`${field}.${key}: must be a string — ignored`)
       out.declared = out.declared.filter((k) => k !== key)
       continue
@@ -1228,8 +1172,8 @@ export function customer_decl(raw, root, warns) {
 
   let pm = _get(raw, 'projects_md', false)
   if (typeof pm !== 'boolean') {
-    // The script-gate `files` lesson: a JSON string would read as true and silently INVERT the
-    // declared intent. The default (off) is the conservative direction.
+    // A JSON string would read as true and invert the declared intent, as for the script-gate `files`.
+    // The default is off.
     warns.push(`${field}.projects_md: must be a JSON boolean (true/false), got ` +
                `'${one_line(_str(pm))}' — treated as false (no PROJECTS.md)`)
     pm = false
@@ -1239,8 +1183,7 @@ export function customer_decl(raw, root, warns) {
   const rs = _get(raw, 'release_stages')
   if (Array.isArray(rs)) {
     if (!rs.length) {
-      // An empty list is a declaration too (the `""` rule above, list form): reported as
-      // what it is, not as "every entry was rejected".
+      // An empty list is a declaration too. It is reported as empty, not as "every entry was rejected".
       warns.push(`${field}.release_stages: declared empty — using the default ` +
                  'vocabulary (FUT, UAT, PROD)')
     }
@@ -1297,20 +1240,19 @@ export function customer_decl(raw, root, warns) {
         }
       }
       const module = norm(_str(_get(p, 'module') !== null ? p.module : ''))
-      // The same refusal as a script-gate path — this is a file the builder will IMPORT.
+      // The refusal of a script-gate path applies, because the builder imports this file.
       if (!module || !token_ok(module) || module.startsWith('-')) {
         warns.push(`${pf}: module '${one_line(module)}' refused (a repo-relative path of ` +
                    "[A-Za-z0-9._/-] only, no '..', no leading '/' or '-') — entry ignored")
         return
       }
       if (!module.endsWith('.mjs')) {
-        // Kept, not dropped, like a missing file: dropping the tab would let the page build
-        // without it, and the builder must refuse until the panel is an `.mjs` module.
+        // Kept, as for a missing file. A dropped tab would let the page build without it.
         warns.push(`${pf}: module '${module}' is not an .mjs module — the docs build will ` +
                    'refuse until the panel is an .mjs module exporting render_panel(repoRoot) ' +
                    'and optionally CSS, UPDATED, TAB_CHIPS')
       } else if (!_is_file(path.join(root, module))) {
-        // Kept, not dropped — the builder refuses at build time and names the path.
+        // Kept. The builder refuses at build time and names the path.
         warns.push(`${pf}: module '${module}' does not exist — the docs build will ` +
                    'refuse until it does')
       }
@@ -1320,11 +1262,10 @@ export function customer_decl(raw, root, warns) {
         warns.push(`${pf}: needs a non-empty 'label' (the tab text) — entry ignored`)
         return
       }
-      // `id` (ywr-harness ADR 0061): the tab's `#top-<id>` deep link — a PUBLISHED value, so
-      // a refused or duplicate declared id drops the entry rather than silently renaming the
-      // link the declarer asked for. Absent → derived (label slug, else `panel-<n>` over the
-      // KEPT entries) so existing pages keep their ids; an auto slug that collides falls
-      // back to `panel-<n>` with a warning.
+      // `id` (ywr-harness ADR 0061) is the tab's `#top-<id>` deep link, a published value. A refused or
+      // duplicate declared id drops the entry instead of renaming the link the declarer asked for. An
+      // absent id is derived from the label slug, else `panel-<n>` over the kept entries, so existing
+      // pages keep their ids. A derived slug that collides falls back to `panel-<n>` with a warning.
       const pidRaw = _get(p, 'id')
       let pid
       if (pidRaw !== null) {
@@ -1338,9 +1279,8 @@ export function customer_decl(raw, root, warns) {
         }
       } else {
         pid = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-        // The first FREE `panel-<n>` from the kept-entry index: the index alone can land on
-        // an id an earlier entry declared (`id: "panel-1"` then a Korean label) and two tabs
-        // would share one `data-top` / scope class.
+        // Take the first free `panel-<n>`. The kept-entry index alone can land on an id an earlier
+        // entry declared, and two tabs would then share one `data-top` and scope class.
         let n = panels.length
         while (usedIds.has(`panel-${n}`)) n++
         const fallback = `panel-${n}`
@@ -1371,9 +1311,8 @@ export function customer_decl(raw, root, warns) {
     warns.push(`${field}.panels: expected a list of {module, label} objects — ignored`)
   }
 
-  // `default_tab` (ywr-harness ADR 0061): validated against the FINAL ids above, so it may name a derived
-  // one. The builder's own default is the first tab in rendered order, which is why "" here
-  // means "unset", never "the docs tab".
+  // `default_tab` (ywr-harness ADR 0061) validates against the final ids above, so it may name a derived
+  // one. The builder's default is the first tab in rendered order, so "" means unset, not the docs tab.
   const dt = _get(raw, 'default_tab')
   if (dt !== null) {
     const known = ['docs', ...out.panels.map((pl) => pl.id)]
@@ -1388,14 +1327,13 @@ export function customer_decl(raw, root, warns) {
 }
 
 /**
- * Walk upward ONCE: the nearest directory holding .harness.json, or the nearest holding
- * .git — whichever comes first. Falls back to `start`: every consumer is advisory, so a repo
- * with neither marker still works on defaults rather than failing.
+ * Walk upward once: the nearest directory holding .harness.json or .git, whichever comes first.
+ * It falls back to `start`, so a repo with neither marker works on defaults.
  *
- * One walk, not two: a two-pass form (every ancestor for .harness.json, then .git) would attach
- * a nested repository without a declaration of its own (a submodule, a scratch clone inside a
- * scaffolded repo) to the OUTER repo's declaration and gate its files against the wrong tree.
- * A .git boundary ends the walk; a .harness.json below the git root still wins.
+ * One walk, not two. A pass for every ancestor's .harness.json followed by one for .git would attach a
+ * nested repository with no declaration, such as a submodule, to the outer repo's declaration and gate
+ * its files against the wrong tree. A .git boundary ends the walk, and a .harness.json below the git
+ * root still wins.
  * @param {string} start
  * @returns {string} an absolute path with symlinks resolved
  */
@@ -1411,8 +1349,8 @@ export function find_repo_root(start) {
 }
 
 /**
- * One object-valued top-level section; anything else is warned and read as empty. Typed
- * BEFORE any falsy fallback: `"review": []` or `"verify": ""` must warn, not read as {}.
+ * One object-valued top-level section. Anything else warns and reads as empty. The type check comes
+ * before any falsy fallback, so `"review": []` and `"verify": ""` warn.
  * @param {Object} raw @param {string} key @param {string[]} warns @returns {Object}
  */
 export function _section(raw, key, warns) {
@@ -1426,10 +1364,9 @@ export function _section(raw, key, warns) {
 }
 
 /**
- * Return `[config, warnings]`. Warnings are RETURNED, never printed here — the caller decides
- * where they go, and a silently swallowed warning about a refused value would look exactly like
- * a good configuration. A file that is not valid UTF-8 throws an Error named `UnicodeDecodeError`,
- * as Python's strict read does.
+ * Return `[config, warnings]`. Warnings are returned, never printed here. The caller decides where they
+ * go, and a swallowed warning about a refused value would look like a good configuration. A file that
+ * is not valid UTF-8 throws an Error named `UnicodeDecodeError`.
  * @param {string} root
  * @returns {[Object, string[]]}
  */
@@ -1437,20 +1374,18 @@ export function load(root) {
   const warns = []
   const cfg = { ...DEFAULTS }
   // An undeclared review canon is CLAUDE.md, a memory file every session loads (ywr-harness ADR 0217).
-  // A root REVIEW.md takes its place: no session loads that file by itself, so the canon line names
-  // it and asks for its import instead of passing while no review reads it.
+  // A root REVIEW.md takes its place. No session loads that file by itself, so the canon line names it
+  // and asks for its import.
   if (_is_file(path.join(root, 'REVIEW.md'))) cfg.review_canon = 'REVIEW.md'
   cfg.groups = []
   cfg.review = { docs_only: [], harness_layer: [], critical: [], derived: [] }
-  // Retro surfaces. Free-string regexes like `review`: they select and report, and cannot name
-  // an executable, so the closed-set rule that governs `gates` does not apply here.
+  // Retro surfaces are free-string regexes like `review`. They cannot name an executable, so the
+  // closed-set rule of `gates` does not apply.
   cfg.retro = { source_scope: [], dep_manifests: [], migrations: [] }
-  // Declared claude.ai Artifacts (ywr-harness ADR 0032). Parsed here, CHECKED by the gate emitter: the
-  // README must carry each declared url, each declared title must start with the repo name.
-  // Items are kept raw — per-item validation happens at check time so a malformed entry can
-  // fail the check loudly instead of being dropped into silence at load time. `malformed`
-  // carries a section-level shape error for the same reason: a declaration that cannot be
-  // checked must never read as enforcement.
+  // Declared claude.ai Artifacts (ywr-harness ADR 0032). The gate emitter checks them: the README
+  // carries each declared url, and each declared title starts with the repo name. Items stay raw, so
+  // a malformed entry fails the check loudly instead of vanishing at load time. `malformed` carries a
+  // section-level shape error for the same reason.
   cfg.artifacts = { readme: 'README.md', items: [], malformed: '' }
   // Customer-corpus surface (ywr-harness ADR 0060): null = off. Validated by `customer_decl` below.
   cfg.customer = null
@@ -1560,11 +1495,11 @@ export function load(root) {
     }
   }
 
-  // Derived-copy mappings (ywr-harness ADR 0037). PATH PREFIXES, not regexes: the copy→source mapping is
-  // computed by prefix swap, so each prefix must end with '/' (a bare prefix could match a
-  // sibling directory mid-segment) and pass the same token allowlist as any path value. These
-  // never reach a command position — the emitter only reads bytes at the mapped paths — but a
-  // traversal segment must still be refused: the mapped path is opened relative to the root.
+  // Derived-copy mappings (ywr-harness ADR 0037) are path prefixes, not regexes. The copy-to-source
+  // mapping is a prefix swap, so each prefix ends with '/', or a bare prefix could match a sibling
+  // directory mid-segment, and passes the token allowlist. A mapping never reaches a command position,
+  // because the emitter only reads bytes at the mapped paths. A traversal segment is still refused,
+  // because the mapped path opens relative to the root.
   const der = _get(rev, 'derived')
   if (Array.isArray(der)) {
     der.forEach((d, i) => {
@@ -1640,19 +1575,18 @@ export function load(root) {
       warns.push(`groups[${i}]: needs 'name' and 'match' — ignored`)
       return
     }
-    // The name is a LABEL, echoed by the emitter as `  [<name>] N file(s)` — a line inside the
-    // gate-command window both output parsers execute from. Sanitized HERE, once, so every
-    // downstream use (field labels, the grouping key, the printed label) is the safe form: a
-    // value that never exists in its raw shape after load cannot be echoed raw by a later
-    // caller. A control character is reported, never silently swallowed.
+    // The name is a label that the emitter echoes as `  [<name>] N file(s)`, a line inside the
+    // gate-command window both output parsers execute from. It is sanitized here once, so every later
+    // use (field labels, grouping key, printed label) holds the safe form. A control character is
+    // reported.
     const name = one_line(_str(g.name))
     if (has_control(_str(g.name))) {
       warns.push(`groups[${i}]: control character(s) in the group name were escaped for ` +
                  `display ('${name}') — a group name is echoed inside the gate-command ` +
                  'window, so a raw newline there would forge a gate command')
     }
-    // Resolved BEFORE the gates: a script gate is validated against the form it composes to
-    // under this prefix, so the prefix has to be known (and itself validated) first.
+    // Resolved before the gates, because a script gate validates against the form it composes to
+    // under this prefix.
     const gStrip = safe_path(_get(g, 'strip_prefix', ''), `groups[${name}].strip_prefix`, warns)
     const gates = []
     let rawGates = _or(_get(g, 'gates'), [])
@@ -1695,10 +1629,10 @@ export const BINARY_SNIFF = 8000
 
 /**
  * The line count git gives a file: the `\n` count, plus one for an unterminated last line.
- * null for a binary file, by git's own test. Read in chunks, so a large file costs time, never
- * memory. The gate emitter and the retro share this one count; each caller decides what a
- * symlink, a directory or a missing file means. Throws an Error named for the Python OSError
- * subclass (`FileNotFoundError`, `PermissionError`, ...) when the path cannot be read.
+ * null for a binary file, by git's own test. It reads in chunks, so a large file costs time, not
+ * memory. The gate emitter and the retro share this count, and each caller decides what a symlink,
+ * a directory or a missing file means. It throws an Error named for the OS error class
+ * (`FileNotFoundError`, `PermissionError`, ...) when the path cannot be read.
  * @param {string} p
  * @returns {number|null}
  */
@@ -1728,14 +1662,14 @@ export function text_lines(p) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Scope resolution. Lives here, not in either consumer: both /verify and the gate emitter must
-// answer "which files is this slice" the SAME way, and two implementations of that question would
-// let a slice pass one gate on a different file set than the other saw. The git boundary itself
-// (`git_run`, `git_lines`, `git_paths`, `GIT_PINS`) lives in harness_git.mjs and is re-exported above.
+// Scope resolution lives here, not in a consumer. /verify and the gate emitter must answer "which
+// files is this slice" the same way, or a slice could pass one gate on a different file set than the
+// other saw. The git boundary (`git_run`, `git_lines`, `git_paths`, `GIT_PINS`) is in harness_git.mjs
+// and re-exported above (ywr-harness ADR 0223).
 // ---------------------------------------------------------------------------------------------
 const _normcase = (s) => (process.platform === 'win32' ? s.replaceAll('/', '\\').toLowerCase() : s)
 
-// Python's `os.path.isabs` since 3.13: on Windows a drive or UNC path only, never a bare `\x`.
+// Absolute on Windows means a drive or UNC path only, never a bare `\x`. Elsewhere it means a leading '/'.
 const _isabs = (s) => (process.platform === 'win32' ? /^([A-Za-z]:[\\/]|[\\/]{2})/.test(s) : s.startsWith('/'))
 
 // `os.path.normpath`: collapses `.` and `..` and drops a trailing separator.
@@ -1776,13 +1710,12 @@ export function repo_relative(root, raw) {
 }
 
 /**
- * Return `[files, provenance]`. Provenance is REPORTED by the caller, never dropped: a range
- * that matches nothing while the working tree supplies the files is a vacuous pass — the run
- * looks like it covered the range and did not.
+ * Return `[files, provenance]`. The caller reports the provenance, because a range that matches
+ * nothing while the working tree supplies the files is a vacuous pass.
  *
- * `all_files` is the full-tree audit scope (ywr-harness ADR 0041): git ls-files + untracked. It exists for
- * CI's push runs, where the worktree is a fresh checkout and every diff-shaped scope is empty
- * by construction — partition and gate coverage are TREE properties there, not diff properties.
+ * `all_files` is the full-tree audit scope (ywr-harness ADR 0041): git ls-files plus untracked. CI
+ * push runs use it, because their worktree is a fresh checkout where every diff-shaped scope is empty.
+ * Partition and gate coverage are tree properties there.
  * The fourth argument is `{all_files}` or the boolean itself.
  * @param {string} root @param {string|null} rev_range @param {string[]} explicit
  * @param {{all_files?: boolean}|boolean} [opts]
@@ -1808,20 +1741,18 @@ export function changed_files(root, rev_range, explicit, opts = {}) {
     prov.range_files = ranged.length
     for (const f of ranged) files.add(f)
   }
-  // Current state always counts: staged+unstaged vs HEAD, plus untracked. `git diff` never lists
-  // untracked files, and a new file must surface too.
+  // The current state always counts: staged and unstaged against HEAD, plus untracked files, which
+  // `git diff` never lists.
   let worktree
   try {
     worktree = git_paths(root, ['diff', '--name-only', 'HEAD'])
   } catch (e) {
     if (e.name !== 'CalledProcessError') throw e
-    // An unborn HEAD (no commit yet — a freshly scaffolded repo before its first commit) is a
-    // NORMAL state, not the fail-loud class (ywr-harness ADR 0041: force-pushed base, stale
-    // fetch): letting it escalate would fire `scope: FAILED` on `git init && git add`.
-    // Verify which failure this is: with HEAD genuinely absent, the honest worktree scope is
-    // staged (index vs the empty tree) plus unstaged (index vs worktree), both of which git
-    // answers without HEAD. Any other diff failure re-raises and stays loud.
-    // The exit code is the answer here; no output is read.
+    // An unborn HEAD, a repo before its first commit, is a normal state and not the fail-loud class
+    // of ywr-harness ADR 0041 (force-pushed base, stale fetch). Escalating it would fire
+    // `scope: FAILED` on `git init && git add`. With HEAD absent, the worktree scope is staged (index
+    // against the empty tree) plus unstaged (index against worktree), and git answers both without
+    // HEAD. Any other diff failure re-raises. The probe reads the exit code only.
     const probe = git_result(root, ['rev-parse', '--verify', '--quiet', 'HEAD'])
     if (probe.status === 0) throw e
     worktree = _sorted(new Set([...git_paths(root, ['diff', '--name-only', '--cached']),
@@ -1831,8 +1762,8 @@ export function changed_files(root, rev_range, explicit, opts = {}) {
   const untracked = git_paths(root, ['ls-files', '--others', '--exclude-standard'])
   prov.worktree_files = worktree.length
   prov.untracked_files = untracked.length
-  // The list itself too: the emitter's line measure reads these files, and `git diff --numstat`
-  // never lists them — handed over here so the measure starts no second ls-files.
+  // The emitter's line measure reads the untracked files, and `git diff --numstat` never lists them.
+  // The list travels here so the measure starts no second ls-files.
   prov.untracked = untracked
   for (const f of worktree) files.add(f)
   for (const f of untracked) files.add(f)
@@ -1841,26 +1772,25 @@ export function changed_files(root, rev_range, explicit, opts = {}) {
 
 /**
  * Return `[tree, head]`: the working tree as one git tree id, and HEAD's commit id ("none" when
- * HEAD is unborn). The prepared-close identity (ywr-harness ADR 0105): a session that ran the gates, the
- * review and verify reports this pair, and the owner-typed `/ywr-harness:slice-close` reuses those results
- * only while a fresh snapshot prints the same pair; when it differs, `git diff --name-only
- * <old-tree> <new-tree>` names exactly what changed since.
+ * HEAD is unborn). This pair is the prepared-close identity (ywr-harness ADR 0105). A session that ran
+ * the gates, the review and verify reports it, and the owner-typed `/ywr-harness:slice-close` reuses
+ * those results only while a fresh snapshot prints the same pair. When it differs, `git diff
+ * --name-only <old-tree> <new-tree>` names what changed.
  *
- * The tree is the worktree in its STAGED form: tracked content plus untracked, non-ignored files,
+ * The tree is the worktree in its staged form: tracked content plus untracked, non-ignored files,
  * after clean filters and eol normalization, a submodule by its commit only. It is taken through a
- * COPY of the index, so the real index, refs and worktree are never touched; the copy keeps the
- * index's mtime, because git re-hashes a racily clean entry by comparing against the index file's
- * own mtime, and a fresh one would trust stat data the real index would not. The copy's mtime is
- * set one microsecond BELOW the original (Node sets a time from a floating-point number of seconds,
- * which cannot hold a nanosecond count), so a rounding error can only make git re-hash one entry
- * more, never trust a stale one. The copy's assume-unchanged and skip-worktree bits are cleared
- * first, one `update-index` call per bit (one call with both clears only one, measured on git
- * 2.53): `add -A` never looks at a flagged entry, so an edit to one would leave the id unchanged
- * while the gates read the new bytes. The `-c` pins keep `core.ignoreStat` from setting those bits
- * again and keep an fsmonitor or split index out of it. It writes blob and tree objects,
- * unreferenced, which `git gc` prunes like any `git stash create`, plus whatever a clean filter
- * stores (git-lfs's object store). Every git failure throws; the caller prints the loud marker, and
- * nothing is reused.
+ * copy of the index, so the real index, refs and worktree are never touched. The copy keeps the
+ * index's mtime, because git re-hashes a racily clean entry by comparing with the index file's own
+ * mtime, and a fresh one would trust stat data the real index would not. The copy's mtime is one
+ * microsecond below the original, because Node sets a time from floating-point seconds, which cannot
+ * hold a nanosecond count. A rounding error then makes git re-hash one entry more and never trust a
+ * stale one. The copy's assume-unchanged and skip-worktree bits are cleared first, one `update-index`
+ * call per bit, because one call with both clears only one (git 2.53). `add -A` never looks at a
+ * flagged entry, so an edit to one would leave the id unchanged while the gates read the new bytes.
+ * The `-c` pins keep `core.ignoreStat` from setting those bits again and keep an fsmonitor or split
+ * index out. It writes unreferenced blob and tree objects, which `git gc` prunes like any `git stash
+ * create`, plus whatever a clean filter stores, such as the git-lfs object store. Every git failure
+ * throws, the caller prints the loud marker, and nothing is reused.
  * @param {string} root
  * @returns {[string, string]}
  */
@@ -1870,8 +1800,8 @@ export function worktree_snapshot(root) {
     head = py_strip(git_run(root, ['rev-parse', '--verify', '--quiet', 'HEAD']))
   } catch (e) {
     if (e.name !== 'CalledProcessError') throw e
-    // Unborn is the one failure that means "none": HEAD names a branch that has no ref yet.
-    // Anything else (a corrupt ref, a detached HEAD git cannot resolve) stays loud.
+    // Unborn is the one failure that means "none": HEAD names a branch with no ref yet. A corrupt ref
+    // or a detached HEAD that git cannot resolve stays loud.
     const branch = py_strip(git_run(root, ['symbolic-ref', '-q', 'HEAD']))
     if (py_strip(git_run(root, ['for-each-ref', '--format=%(refname)', branch]))) throw e
     head = 'none'
@@ -1917,8 +1847,8 @@ export function worktree_snapshot(root) {
 }
 
 /**
- * One line naming where the file list came from — the only thing that makes an empty-range run
- * distinguishable from a covered-range run.
+ * One line naming where the file list came from. It is the only thing that tells an empty-range run
+ * from a covered-range run.
  * @param {string[]} files @param {Object} prov
  */
 export function print_scope(files, prov) {
@@ -1950,22 +1880,21 @@ export function print_scope(files, prov) {
 }
 
 /**
- * `cd <cwd> && <cmd>`, or the command alone. `cwd` reaches a command position too, so it is
- * held to the same token gate here — `safe_path` alone permits a space, `#` or `*`, each of
- * which `sh -c` or an output parser would reinterpret. A refused cwd degrades to running from
- * the repo root, which fails loudly on the stripped paths rather than running something else.
+ * `cd <cwd> && <cmd>`, or the command alone. `cwd` reaches a command position too, so it passes the
+ * same token gate. `safe_path` alone permits a space, `#` or `*`, which `sh -c` or an output parser
+ * would reinterpret. A refused cwd runs from the repo root, which fails loudly on the stripped paths
+ * instead of running something else.
  *
- * `warns` is threaded for the same reason `gate_command` threads one: this second-layer refusal
- * is unreachable through `load()` today (`safe_cwd` already scrubbed the value), and a drop
- * with no warns channel is a silent drop waiting for a refactor.
+ * `warns` is threaded as in `gate_command`. This second-layer refusal is unreachable through `load()`,
+ * because `safe_cwd` already scrubbed the value, and a drop with no warns channel would be silent after
+ * a refactor.
  *
- * Every argv element is shell-quoted (`shlex_quote`), so ONE element reaches `sh -c` as ONE
- * argument. The closed set carries an element with a space — `pytest-nondb`'s `-m "not db"` —
- * and a plain space-join delivered it as `-m not db`: pytest took `db` as a path and exited 4.
- * An element made only of SAFE_TOKEN characters is shell-safe and comes out unquoted, so every
- * other command's bytes are unchanged; the round-trip property (a shell split of
- * `compose(cmd, cwd)` gives back the argv) is pinned over every GATES and RUNNERS entry by the
- * ywr-harness canon's harness_gates.selftest.mjs (case AD).
+ * Every argv element is shell-quoted (`shlex_quote`), so one element reaches `sh -c` as one argument.
+ * The closed set carries an element with a space, `-m "not db"` of `pytest-nondb`, and a plain
+ * space-join would deliver `-m not db`, which pytest reads as a path. An element made only of
+ * SAFE_TOKEN characters comes out unquoted, so every other command's bytes are unchanged. The
+ * ywr-harness canon's harness_gates.selftest.mjs (case AD) pins the round trip over every GATES and
+ * RUNNERS entry: a shell split of `compose(cmd, cwd)` gives back the argv.
  * @param {string[]} parts @param {string} cwd @param {string[]|{warns: string[]}|null} [warns]
  * @returns {string}
  */
@@ -1983,11 +1912,11 @@ export function compose(parts, cwd, warns = null) {
 /**
  * Compose the command that runs one spec-registered verify script.
  *
- * The script path comes from the docs index — generated from spec frontmatter, so it is
- * repo-supplied text in the working tree, exactly like a `.harness.json` value. It therefore
- * passes the same token gate, checked on the POST-strip_prefix form that actually becomes argv.
- * A refused path yields a parenthetical that is not a command and does NOT repeat the value:
- * the value belongs in the warning, never in a command position (ywr-harness ADR 0012).
+ * The script path comes from the docs index, which is generated from spec frontmatter, so it is
+ * repo-supplied text like a `.harness.json` value. It passes the same token gate, checked on the form
+ * after `strip_prefix` that becomes argv. A refused path yields a parenthetical that is not a command
+ * and does not repeat the value. The value belongs in the warning, never in a command position
+ * (ywr-harness ADR 0012).
  * @param {Object} cfg @param {string} script @param {string[]|{warns: string[]}|null} [warns]
  * @returns {string}
  */
@@ -2006,8 +1935,8 @@ export function verify_command(cfg, script, warns = null) {
 }
 
 /**
- * True when the gate takes the changed-file list; false for whole-program. One reader for
- * both gate forms so the emitter never branches on shape itself.
+ * True when the gate takes the changed-file list, false for whole-program. One reader serves both
+ * gate forms, so the emitter never branches on shape.
  * @param {string|{files: boolean}} gate @returns {boolean}
  */
 export function gate_is_scoped(gate) {
@@ -2015,10 +1944,10 @@ export function gate_is_scoped(gate) {
 }
 
 /**
- * Changed files that cannot be passed to a gate command as arguments, in their post-strip
- * form. Reported by the caller so the coverage loss is stated rather than silent: a filename is
- * repo-supplied text too — `sh -c` would re-split one containing a space, and both output
- * parsers truncate one containing '#'. `( ) [ ]` are admitted (ywr-harness ADR 0112, `file_arg_ok`).
+ * Changed files that cannot be passed to a gate command as arguments, in their form after
+ * `strip_prefix`. The caller reports them, so the coverage loss is stated. A filename is repo-supplied
+ * text too: `sh -c` would re-split one with a space, and both output parsers truncate one with '#'.
+ * `( ) [ ]` are admitted (ywr-harness ADR 0112, `file_arg_ok`).
  * @param {{strip_prefix: string}} group @param {string[]} files @returns {string[]}
  */
 export function unsafe_files(group, files) {
@@ -2026,11 +1955,10 @@ export function unsafe_files(group, files) {
 }
 
 /**
- * Changed files no longer in the working tree — a deletion in a range or worktree scope. A
- * file-scoped gate is never handed one (ywr-harness ADR 0112): a deleted plain path fails eslint, prettier
- * and ruff for nothing to check, and a deleted `[id]` path is read by eslint and prettier as a
- * GLOB that checks a sibling (`i/`, `d/`) and passes. `lexists`, so a symlink or a submodule
- * path is still passed as before.
+ * Changed files no longer in the working tree: a deletion in a range or worktree scope. A file-scoped
+ * gate is never handed one (ywr-harness ADR 0112). A deleted plain path fails eslint, prettier and
+ * ruff with nothing to check, and eslint and prettier read a deleted `[id]` path as a glob that checks
+ * a sibling (`i/`, `d/`) and passes. It uses `lexists`, so a symlink or a submodule path is still passed.
  * @param {string} root @param {string[]} files @returns {string[]}
  */
 export function absent_files(root, files) {
@@ -2039,17 +1967,15 @@ export function absent_files(root, files) {
 
 /**
  * Compose one gate command. `gate` is a closed-set selector string or a validated script-gate
- * object from `script_gate()` — a raw object from JSON must never reach here.
+ * object from `script_gate()`. A raw object from JSON never reaches here.
  *
- * Every path token is re-checked here even though the declaration was validated at load time.
- * That is deliberate duplication: a validator only some call sites apply is not a validator, and
- * this is the last point before a string becomes a command.
+ * Every path token is re-checked here although `load()` validated the declaration. The duplication is
+ * deliberate, because this is the last point before a string becomes a command.
  *
- * `warns` is threaded for the same reason `verify_command` threads one. Today the refusal below
- * is unreachable through `load()` (it derives `strip_prefix` from the same group object), so this
- * is the channel that keeps the SECOND layer honest if a future caller ever makes it fire: a
- * branch whose message says "see warning" while writing to no warning list is a silent drop
- * waiting for a refactor.
+ * `warns` is threaded as in `verify_command`. The refusal below is unreachable through `load()`,
+ * which derives `strip_prefix` from the same group object. The channel keeps the second layer honest
+ * if a future caller makes it fire, because a branch that says "see warning" and writes to no warning
+ * list is a silent drop.
  * @param {string|Object} gate @param {Object} group @param {string[]} files
  * @param {string[]|{warns: string[]}|null} [warns]
  * @returns {string}
@@ -2060,8 +1986,8 @@ export function gate_command(gate, group, files, warns = null) {
   if (typeof gate === 'string') {
     parts = [..._idx(_idx(GATES, gate), 'cmd')]
   } else {
-    // Mirrors verify_command: strip_prefix applies to the script path too, so a group that
-    // runs from `cwd` addresses its script the same way it addresses its files.
+    // As in verify_command, `strip_prefix` applies to the script path, so a group that runs from
+    // `cwd` addresses its script as it addresses its files.
     const script = strip_group_prefix(_idx(gate, 'script'), group.strip_prefix)
     if (!token_ok(script)) {
       if (w !== null) {
@@ -2077,9 +2003,9 @@ export function gate_command(gate, group, files, warns = null) {
   if (gate_is_scoped(gate)) {
     const rel = _sorted(files.map((f) => strip_group_prefix(f, group.strip_prefix)).filter(file_arg_ok))
     if (!rel.length) {
-      // Emitting the bare command here would be worse than emitting nothing: a file-scoped
-      // gate with no file list is a WHOLE-TREE run (`ruff check` lints everything), so a
-      // group whose every filename was excluded would silently escalate its own scope.
+      // A bare command is worse than none. A file-scoped gate with no file list runs on the whole
+      // tree (`ruff check` lints everything), so a group whose every filename was excluded would
+      // escalate its own scope.
       return "(skipped — none of this group's changed files can be a command argument)"
     }
     parts.push(...rel.map(as_arg))

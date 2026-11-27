@@ -14,9 +14,7 @@
 // message text is persisted, and memory is capped. What it cannot prove — the engine's own event
 // shapes, its `mtimeMs` and that the host loads the module — is `claude plugin validate`'s and the
 // live `--plugin-dir` run's (spec 0012 §3 Mods row); `claude plugin test` stays a local habit.
-//
-// The pwsh suite ran the probe in a child node and read its tab-separated rows. The probe runs in this process
-// now, and the rows become tests. The pwsh suite named its rows without IDs.
+
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
@@ -25,9 +23,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const mod = path.join(here, 'delegation-ledger.mjs')
 
-// The probe below is the pwsh suite's probe, kept as it was: each `eq` row is one check, and a row's verdict is
-// `OK` or `FAIL got <json> want <json>`. It runs once, here, in this process. A throw inside it ends the run
-// of the rest, as it ended the old probe, and case DL0 reports the throw.
+// The probe below runs once, here, in this process. Each `eq` row is one check, and a row's verdict is
+// `OK` or `FAIL got <json> want <json>`. A throw inside it ends the run of the rest, and case DL0
+// reports the throw.
 const results = []
 let probeError = null
 let M
@@ -411,7 +409,7 @@ try {
     await loopEnd(V, 'v2')
     eq('a failing pre-write stat falls to the read-back: a slot taken meanwhile is given up', [last(V)[0], last(V)[1].loops.length, docAt(disk5, 0)?.session_id],
       [slot(1), 2, 'sess-W'])
-    // a full ring: a new session takes the oldest slot; per-loop files of the 0.62.0 dev tree are left alone
+    // a full ring: a new session takes the oldest slot; per-loop files of an older layout are left alone
     const full = newDisk()
     for (let i = 0; i < 20; i++) put(full, slot(i), '{}', 5000 + (i === 7 ? -100 : i))
     put(full, `${DIR}/sess-old/20261002T000000000Z-main-t.json`, '{"schema":1}', 1)
@@ -518,7 +516,7 @@ try {
 
 test('DL0 probe ran', () => { assert.equal(probeError, null, String(probeError?.stack ?? probeError)) })
 test('DL0 probe produced results (an empty list is not a pass)', () => { assert.ok(results.length > 0) })
-// Each row is a test named `DL1 <the old name>`, so the parity check of ADR 0227 decision 8 matches the name
+// Each row is a test named `DL1 <row name>`, so the parity check of ADR 0227 decision 8 matches the name
 // behind the ID.
 for (const [name, verdict] of results) {
   test(`DL1 ${name}`, () => { assert.equal(verdict, 'OK', verdict) })

@@ -1,61 +1,35 @@
-// SessionStart (registered WITHOUT a matcher, deliberately — the event DOES support one, on
-// `source`; the unwired condition below is the filter) — git-hooks wiring nudge, suggest-only
-// (ywr-harness ADR 0029).
+// SessionStart git-hooks wiring nudge, suggest-only (ywr-harness ADR 0029). It writes nothing,
+// not git config and not files (ywr-harness ADR 0015).
 //
-// The gap this closes is temporal, not informational: ywr-harness ADR 0015's `hooks:` drift line prints at
-// slice close and in CI, i.e. AFTER the work. This hook moves the same fact to the start of the
-// session on the unwired machine — before the first commit that would have skipped the gates.
+// It registers WITHOUT a matcher on purpose. The event fires at startup and again on
+// resume, clear, compact and fork. A wired clone is silent on every source, and speaking again
+// after `compact` re-injects a fact that summaries lose.
 //
-// Suggest-only is the contract, not a phase (ywr-harness ADR 0029): ywr-harness ADR 0015 rejected a SessionStart hook that
-// SETS core.hooksPath because of the mutation, and that objection does not reach a hook that only
-// speaks. This hook writes nothing, ever — not git config, not files.
+// Output: `additionalContext` joins the model's context and `systemMessage` shows to the user.
+// Plain stdout on exit 0 also becomes context, so every non-speaking path prints nothing.
+// SessionStart cannot block. The hook exits 0 always and fails open.
 //
-// Payload and output contract, verified against the official hooks reference 2026-08-05
-// (code.claude.com/docs/en/hooks.md — read RAW; a summarized read of the same page reported the
-// matcher as absent and a grep of the raw page showed the opposite, so a field's absence is
-// claimed only from the raw page):
-//   cwd    : working directory of this firing (one per firing; the event fires at startup and
-//            AGAIN on resume/clear/compact/fork — not once per session)
-//   source : startup | resume | clear | compact | fork — the event supports a matcher on this
-//            field; this hook registers WITHOUT one on purpose: a wired clone is silent on
-//            every source, and re-speaking after `compact` deliberately re-injects a fact
-//            summaries lose. Filtering a source out later is a one-line hooks.json matcher,
-//            not a script change.
-// The runtime consumes BOTH `hookSpecificOutput.additionalContext` (joins the model's context)
-// and `systemMessage` (shown to the user) for this event; plain stdout on exit 0 also becomes
-// context, which is why every non-speaking path prints NOTHING. SessionStart cannot block
-// anything; this hook does not try — exit 0 always, fail-open like its siblings.
+// It speaks ONLY when the work tree root carries `.githooks/` and `core.hooksPath` is unset in
+// this clone. A foreign value stays silent by design (ywr-harness ADR 0029).
 //
-// Decision table (ywr-harness ADR 0029): speak ONLY when the resolved work tree root carries `.githooks/`
-// AND `core.hooksPath` is unset in this clone. A foreign value is silent BY DESIGN — that state
-// is a decision (ywr-harness ADR 0015 refuses to clobber it for the same reason), and an unsilenceable
-// per-session nag was judged worse than the residual drift, which the emitter still reports.
+// A payload with no `cwd` emits a SCHEMA-DRIFT banner with the keys received, never silence:
+// a guard that cannot report its own drift looks like an absent guard.
 //
-// Anti-vacuity (the directory-added-guard rule): a SessionStart payload with no `cwd` emits a
-// SCHEMA-DRIFT banner listing the keys actually received, rather than failing open into silence —
-// a guard that cannot report its own drift is indistinguishable from an absent guard.
-//
-// Port notes (ywr-harness ADR 0116): the pwsh original is this file's reference. Event-name comparison, key
-// lookup and the [string] cast keep PowerShell's semantics through hook-lib (case-insensitive
-// lookup/compare, psString, .NET Trim). An absent git is detected by hook-lib's gitRun (no git on PATH, or ENOENT) — the
-// original asked `Get-Command git`. Both git calls follow CLAUDE.md's git subprocess boundary
-// (issue #40): `-c core.quotepath=false`, a BYTES pipe, one explicit UTF-8 decode, no shell, no
-// text-mode newline handling. The hook never exits the process: it returns, so stdout drains and
-// the exit code stays 0.
+// Both git calls follow the git subprocess boundary (ywr-harness ADR 0223): `-c core.quotepath=false`,
+// a bytes pipe, one explicit UTF-8 decode, no shell. The hook never exits the process, so stdout
+// drains and the exit code stays 0.
 import fs from 'node:fs'
 import path from 'node:path'
 import { readStdin, parseJson, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys, markerAbove } from './hook-lib.mjs'
 
-// Test-Path -PathType Container, promoted so every failure (a root that does not exist on this
-// platform, an illegal path) reads as "not there".
+// Every failure, such as a root that does not exist on this platform or an illegal path, reads as "not there".
 function isDir(p) {
   try { return fs.statSync(p).isDirectory() } catch { return false }
 }
 
-// git calls go through hook-lib's gitRun (PATH-resolved, absolute spawn, bytes decoded once).
 const git = gitRun
 
-// The first output line, trimmed ('' when there is none): the original took lines[0].Trim().
+// The first output line, trimmed ('' when there is none).
 function firstLine(text) {
   const i = text.indexOf('\n')
   return netTrim(i < 0 ? text : text.slice(0, i))
@@ -69,14 +43,12 @@ function drift(payload) {
 function main(payload) {
   const cwd = netTrim(psString(getProp(payload, 'cwd')))
   if (!cwd) return drift(payload)
-  // No `.githooks/` from cwd upward: neither the work tree root nor cwd can carry one, so the hook
-  // has nothing to say and starts no git.
+  // No `.githooks/` from cwd upward: nothing to say, and no git starts.
   if (!markerAbove(cwd, '.githooks')) return
 
-  // Resolve the work tree root from cwd so a subdirectory session still finds the repo. A failed
-  // resolution (not a work tree, vanished cwd) is silent: no repo, no hooks story. No git, no
-  // verdict — but `.githooks/` sitting at the cwd is a repo that EXPECTS hooks, so unknown is
-  // reported rather than silently passed (the emitter's hooks_status posture).
+  // Resolve the work tree root from cwd so a subdirectory session finds the repo. A failed
+  // resolution (not a work tree, vanished cwd) is silent. With no git, `.githooks/` at the cwd
+  // marks a repo that expects hooks, so the verdict is reported as UNKNOWN, never passed silently.
   const top = git(['-C', cwd, 'rev-parse', '--show-toplevel'])
   if (top.absent) {
     if (isDir(path.join(cwd, '.githooks'))) {
@@ -88,15 +60,13 @@ function main(payload) {
   if (top.status !== 0 || !root) return
 
   if (!isDir(path.join(root, '.githooks'))) return
-  // A directory name is attacker-authorable text (a cloned repo's) and a model reads this output: echo it flattened.
+  // A cloned repo's directory name is attacker-authorable and a model reads this output: echo it flattened.
   const rootShow = inline(root, 300)
 
-  // `--local` on purpose: the per-clone value is the one that decides whether hooks run HERE, and
-  // it is the value ywr-harness ADR 0015's wiring table reasons about. Any non-empty value — wired or foreign —
-  // is silent (decision table above). Only a CLEAN unset verdict nudges: exit 1 is git's
-  // documented not-found code; any other outcome — a non-0/non-1 exit (unreadable config) or an
-  // empty value at exit 0 — is UNKNOWN, reported as such and never resolved into an actionable
-  // nudge (the no-git branch's posture; review 2026-08-05, low).
+  // `--local` on purpose: the per-clone value decides whether hooks run HERE (ywr-harness ADR 0015).
+  // Any non-empty value, wired or foreign, is silent. Only a clean unset verdict nudges, and
+  // exit 1 is git's not-found code. Any other outcome is UNKNOWN, reported as such and never
+  // turned into a nudge. That covers a non-0/non-1 exit and an empty value at exit 0.
   const cfg = git(['-C', root, 'config', '--local', '--get', 'core.hooksPath'])
   const cfgExit = cfg.status === null ? -1 : cfg.status
   if (firstLine(cfg.text)) return

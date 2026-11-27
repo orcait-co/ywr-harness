@@ -1,10 +1,10 @@
 // Self-test for session-start-scaffold-refresh-nudge.mjs (ADR 0033).
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout hooks/session-start-scaffold-refresh-nudge.selftest.mjs
 //
-// Fixture provenance: the scaffolded fixtures are placed by the REAL init.mjs (one run, then
-// tree copies) — a hand-copied placement would duplicate the map this hook exists not to
-// duplicate, and would test the copy. The fixture-prep assertion below is what fails if
-// init.mjs stops placing what the hook reads, which is exactly the coupling ADR 0033 accepts.
+// Fixture provenance: the scaffolded fixtures are placed by the real init.mjs (one run, then
+// tree copies). A hand-copied placement would duplicate the map this hook exists not to
+// duplicate, and would test the copy. The fixture-prep assertion below fails if init.mjs
+// stops placing what the hook reads, which is the coupling ADR 0033 accepts.
 //
 // The hook's verdict is filesystem-only (unlike the githooks sibling, whose verdict is git
 // state), so almost every case runs on a git-less machine too: with git present the fixtures
@@ -12,11 +12,11 @@
 // cwd-fallback carries the same verdicts. Only the git-dependent cases need git and
 // are a reported SKIP without it (the Linux container), never a silent pass.
 //
-// Slice-note rule (ADR 0172): a scaffold that holds scripts/harness/slice_note.mjs is no longer silent when it
-// has no drift: the hook then states the rule as additionalContext, and only that. The cases that used to assert
-// byte-silence on a clean scaffold assert the rule instead (assertRuleOnly, the rule text pinned verbatim);
-// the drift cases also assert the rule follows the drift text (assertRuleTail); the SCHEMA-DRIFT, EXTRACTION-DRIFT,
-// foreign-tree and no-scaffold paths assert it is absent.
+// Slice-note rule (ADR 0172): a scaffold that holds scripts/harness/slice_note.mjs is never silent. With no
+// drift the hook states the rule as additionalContext, and only that. The clean-scaffold cases assert the
+// rule (assertRuleOnly, the rule text pinned verbatim). The drift cases also assert the rule follows the
+// drift text (assertRuleTail). The SCHEMA-DRIFT, EXTRACTION-DRIFT, foreign-tree and no-scaffold paths
+// assert it is absent.
 //
 // Every match-based case carries mustNotMatch as well as mustMatch (the empty-MustNotMatch
 // class), enforced by matchFailures of lib/selftest-lib.mjs.
@@ -26,9 +26,8 @@
 // cases, the upstream clones of 10b, the fake plugin cache and its stamped repo copy, the noNote copy). Those cases
 // sit together in a nested describe of concurrency 1, in file order, and each change sits inside the first case that
 // needs it, so the order of the cases in a chain is the order of the states. No case outside a chain changes a
-// fixture that another case reads. The non-mutation cases run after the whole block. The pwsh suite
-// named most cases without IDs. Each test here is `SR<n> <the old name>`, so the parity check of ADR 0227
-// decision 8 matches the names. Patterns are pwsh -match sources (case-insensitive; see toRx in
+// fixture that another case reads. The non-mutation cases run after the whole block. Each test is named
+// `SR<n> <case name>` (ADR 0227 decision 1). Patterns are case-insensitive regex sources (see toRx in
 // lib/selftest-lib.mjs). Git runs through scripts/harness_git.mjs, the one git subprocess boundary, for the
 // fixtures and for the release-tag history read too.
 //
@@ -61,8 +60,7 @@ const gitOk = !git_absent()
 // How many independent cases overlap. A case spends most of its time in a hook child process, so this is a CPU-sized pool.
 const CONC = innerJobs(8, 2)
 
-// Join-Path semantics: the child keeps its own slashes, so a fixture path has the same mixed shape on Windows
-// that the pwsh suite handed the hook.
+// The child keeps its own slashes, so a fixture path has a mixed shape on Windows, as a path a host hands the hook does.
 const J = (a, ...rest) => rest.reduce((acc, p) => acc.replace(/[\\/]+$/u, '') + path.sep + p, a)
 const mk = (p) => { fs.mkdirSync(p, { recursive: true }); return p }
 const rm = (p) => fs.rmSync(p, { recursive: true, force: true })
@@ -70,19 +68,18 @@ const copySync = (src, dest) => fs.cpSync(src, dest, { recursive: true, force: t
 // The copies inside the cases are asynchronous, so a copy overlaps the hook children of other cases instead of stalling them.
 const copy = (src, dest) => fsp.cp(src, dest, { recursive: true, force: true })
 const read = (p) => fs.readFileSync(p, 'utf8')
-const write = (p, s) => fs.writeFileSync(p, s)                                   // [IO.File]::WriteAllText
-const setContent = (p, s) => fs.writeFileSync(p, s + os.EOL)                     // Set-Content adds the platform newline
-const addContent = (p, s) => fs.appendFileSync(p, s + os.EOL)                    // Add-Content adds the platform newline
+const write = (p, s) => fs.writeFileSync(p, s)                                   // the text exactly, no newline added
+const setContent = (p, s) => fs.writeFileSync(p, s + os.EOL)                     // adds the platform newline
+const addContent = (p, s) => fs.appendFileSync(p, s + os.EOL)                    // adds the platform newline
 const sha256 = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')
 const lazy = (fn) => { let v; return () => (v ??= fn()) }
 const has = (s, p) => toRx(p).test(s)
-// The .NET Regex.Escape rule: a pattern that matches the text literally.
+// A pattern that matches the text literally.
 const rxEscape = (s) => s.replace(/[\\*+?|{}[\]()^$.# ]/gu, '\\$&').replace(/\n/gu, '\\n').replace(/\t/gu, '\\t')
 const jsonOf = (out) => { try { return JSON.parse(out.trim()) } catch { return null } }
 
-// stdin as pwsh piped it: the text plus one newline. stdout and stderr together, as `2>&1` read them.
-// The run is asynchronous (spawn, not spawnSync) so independent cases overlap their hook starts; the result has the
-// same shape the synchronous run had.
+// stdin is the text plus one newline. The result joins stdout and stderr, as `2>&1` does.
+// The run is asynchronous (spawn, not spawnSync) so independent cases overlap their hook starts.
 function invokeHook(stdin, { hookPath = hook, nodeArgs = [], env } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [...nodeArgs, hookPath], { env, windowsHide: true })
@@ -95,8 +92,8 @@ function invokeHook(stdin, { hookPath = hook, nodeArgs = [], env } = {}) {
     child.stdin.end(Buffer.from(stdin + '\n', 'utf8'))
   })
 }
-// The child environment with PATH emptied: the pwsh suite cleared $env:PATH around the call. The node that
-// runs the hook is started by its absolute path, so only the hook's own git lookup sees the empty PATH.
+// The child environment with PATH emptied. The node that runs the hook is started by its absolute path,
+// so only the hook's own git lookup sees the empty PATH.
 function envWithoutPath() {
   const e = {}
   for (const [k, v] of Object.entries(process.env)) if (k.toUpperCase() !== 'PATH') e[k] = v
@@ -124,8 +121,8 @@ const copyNote = "This repo's CLAUDE.md or .claude/CLAUDE.md holds its own copy 
 // A fresh scaffold holds `.harness.json`, `slice_note.mjs` and a seed CLAUDE.md with no copy: both parts, a blank line between.
 const ruleText = sliceRules + '\n\n' + noteRule
 
-// Envelope adapter (file-specific): the nudge speaks through systemMessage + optional additionalContext, so
-// the matched text is both joined — a pattern that lives only in the context half (the direction-blindness
+// Envelope adapter (file-specific): the nudge speaks through systemMessage and an optional additionalContext, so
+// the matched text joins both. A pattern that lives only in the context half (the direction-blindness
 // caveat) still gets asserted. When additionalContext is present its hookEventName must be SessionStart, or
 // the runtime drops it.
 function nudgeFailures({ out, exit }, mustMatch, mustNotMatch, noNegative = '') {
@@ -152,12 +149,12 @@ function assertEmptyStdout({ out, exit }) {
   const f = []
   if (exit !== 0) f.push(`exit ${exit} (want 0 — fail-open contract)`)
   // Plain stdout on exit 0 becomes session context for this event, so "silent" must mean
-  // BYTE-silent — a stray warning line would be injected into every session's context.
+  // byte-silent. A stray warning line would be injected into every session's context.
   if (out.trim()) f.push(`expected empty stdout, got: ${out.trim()}`)
   assert.deepEqual(f, [], f.join(' · '))
 }
-// A repo with the vendored script and NO drift: the rule is the WHOLE output — additionalContext equal to the
-// rule, event SessionStart, and no systemMessage (nothing for a person to act on). Never "silent" any more.
+// A repo with the vendored script and no drift: the rule is the whole output. That means additionalContext equal to
+// the rule, event SessionStart, and no systemMessage (nothing for a person to act on).
 function assertRuleOnly({ out, exit }, expected = ruleText) {
   const fails = []
   if (exit !== 0) fails.push(`exit ${exit} (want 0 — fail-open contract)`)
@@ -218,7 +215,7 @@ async function invokeSpied(cwd) {
 }
 
 // --- fixtures --------------------------------------------------------------------------------
-// ONE real scaffold run, then tree copies (with .git when present) — each variant then mutates
+// One real scaffold run, then tree copies (with .git when present). Each variant then mutates
 // exactly the file family its case is about.
 const base = mk(J(fx, 'repo-base'))
 if (gitOk) gitInit(base)
@@ -276,9 +273,9 @@ test('SR1 fixture: real init.mjs scaffolded the base repo', async () => {
 // concurrency 1, because each of their cases reads what an earlier case left in the shared fixture.
 describe('scaffold-refresh-nudge cases', { concurrency: CONC }, () => {
 
-// 1. the drifted repo nudges — the fixture was scaffolded by THIS plugin and then hand-mutated,
+// 1. the drifted repo nudges. The fixture was scaffolded by this plugin and then hand-mutated,
 //    so its .harness-version stamp EQUALS the running version and the ADR 0042 verdict is the
-//    hand-edit reading: count, both file names (differ + missing), version, the
+//    hand-edit reading: count, both file names (differ and missing), version, the
 //    REVERT-hand-edits warning, the suggest-only contract.
 const staleRun = lazy(() => run(stale))
 test('SR2 drifted scaffold at the same version reads as a hand-edit', async () => {
@@ -291,9 +288,9 @@ test('SR2 drifted scaffold at the same version reads as a hand-edit', async () =
 })
 test('SR3 1 hand-edit branch: the rule follows the drift text', async () => { assertRuleTail(await staleRun()) })
 
-// 1b. REPO-AHEAD (ADR 0042): stamp newer than the running plugin — the multi-writer everyday
-//     state (another writer refreshed this repo with a newer release). The advice must FLIP:
-//     update the plugin, do NOT init — and the refresh command must not appear as advice.
+// 1b. REPO-AHEAD (ADR 0042): stamp newer than the running plugin, the everyday multi-writer
+//     state (another writer refreshed this repo with a newer release). The advice must flip to
+//     "update the plugin, do not init", and the refresh command must not appear as advice.
 const aheadRun = lazy(async () => {
   const ahead = J(fx, 'repo-ahead')
   await copy(stale, ahead)
@@ -309,9 +306,9 @@ test('SR4 repo-ahead stamp flips the advice to update-the-plugin', async () => {
 })
 test('SR5 1b repo-ahead branch: the rule follows the drift text', async () => { assertRuleTail(await aheadRun()) })
 
-// 1c. REPO-BEHIND: stamp older than the running plugin — the one state where the refresh advice
-//     is measured, not guessed. The pre-0042 uncaveated human banner ('re-run is safe:' without
-//     'here') is a deliberate ANTI-anchor: its reappearance fails this case.
+// 1c. REPO-BEHIND: stamp older than the running plugin, the one state where the refresh advice
+//     is measured, not guessed. An uncaveated human banner ('re-run is safe:' without
+//     'here') is a deliberate anti-anchor: its reappearance fails this case.
 const behindRun = lazy(async () => {
   const behind = J(fx, 'repo-behind')
   await copy(stale, behind)
@@ -327,9 +324,9 @@ test('SR6 repo-behind stamp keeps the refresh advice, direction measured', async
 })
 test('SR7 1c repo-behind branch: the rule follows the drift text', async () => { assertRuleTail(await behindRun()) })
 
-// 1d. NO STAMP (every pre-0042 repo): direction-blind — and the caveat must now sit on the
-//     HUMAN surface too, not only in additionalContext: the 2026-08-10 audit's asymmetry
-//     (an uncaveated 're-run is safe' banner over a caveated context) is what this anchors.
+// 1d. NO STAMP: the advice is direction-blind, and the caveat must sit on the human surface
+//     too, not only in additionalContext. This anchors against an uncaveated 're-run is safe'
+//     banner over a caveated context.
 const nostampRun = lazy(async () => {
   const nostamp = J(fx, 'repo-nostamp')
   await copy(stale, nostamp)
@@ -349,11 +346,11 @@ test('SR10 1d the caveat is in the HUMAN banner, not only the context half', asy
   assert.ok(has(sys, 'direction-blind') && has(sys, 'REVERT'), `systemMessage='${sys}'`)
 })
 
-// 1e. a stamp with NO newline and megabytes of one-line content must degrade to the
-//     direction-blind branch via the BOUNDED read — never a whole-file read on the SessionStart
-//     hot path (review 2026-08-10, medium). The device-symlink hang leg is not portably
-//     testable; the bounded read retires the class by construction, and this case pins the
-//     parse-failure fallback and the clean envelope on the closest committable input.
+// 1e. a stamp with no newline and megabytes of one-line content must degrade to the
+//     direction-blind branch via the bounded read, never a whole-file read on the SessionStart
+//     hot path. The device-symlink hang leg is not portably testable. The bounded read rules
+//     the class out by construction, and this case pins the parse-failure fallback and the
+//     clean envelope on the closest committable input.
 test('SR11 huge one-line stamp degrades to direction-blind cleanly', async () => {
   const hugestamp = J(fx, 'repo-hugestamp')
   await copy(stale, hugestamp)
@@ -364,10 +361,10 @@ test('SR11 huge one-line stamp degrades to direction-blind cleanly', async () =>
       'SCHEMA DRIFT', 'EXTRACTION DRIFT'])
 })
 
-// 1f. component-count normalization (review 2026-08-10, low): a 4-component stamp X.0 names the
-//     SAME release as running X, but [version] pads missing components with -1, so without
-//     normalization it reads NEWER (revision 0 > -1) and flips the advice to update-the-plugin
-//     for a repo that is not ahead. Version-independent fixture: stamp = <manifest>.0.
+// 1f. component-count normalization: a 4-component stamp X.0 names the same release as
+//     running X. A compare that pads missing components with -1 would read it as newer
+//     (revision 0 > -1) and flip the advice to update-the-plugin for a repo that is not ahead.
+//     The fixture is version-independent: stamp = <manifest>.0.
 test('SR12 a 4-component stamp naming the same release reads as EQUALS, not ahead', async () => {
   const padstamp = J(fx, 'repo-padstamp')
   await copy(stale, padstamp)
@@ -380,7 +377,7 @@ test('SR12 a 4-component stamp naming the same release reads as EQUALS, not ahea
 
 // 1g. the shapes a hand-edited or tool-written stamp takes (ADR 0042), read through the bounded 64-byte
 //     read: BOM + `v` prefix + CRLF + a second line still names the running release; a two-component
-//     stamp is padded, not compared against -1; five components, junk and a non-ASCII byte (the .NET
+//     stamp is padded, not compared against -1; five components, junk and a non-ASCII byte (an
 //     ASCII decode turns it into `?`) are unreadable and degrade to direction-blind.
 const stampCases = [
   { n: 'BOM, v prefix, CRLF and a second line still read as the running release', text: ch(0xfeff) + `v${mfVer}\r\nsecond line`,
@@ -408,7 +405,7 @@ stampCases.forEach((sc, i) => {
     assertNudge(await run(sd), sc.want, sc.not)
   })
 })
-// a stamp that is a DIRECTORY is not a stamp (Leaf only) -> direction-blind, and the hook must not hang or fail
+// a stamp that is a directory is not a stamp (files only) -> direction-blind, and the hook must not hang or fail
 test('SR14 1g a .harness-version directory is no stamp', async () => {
   const sdir = J(fx, 'repo-stampdir')
   await copy(stale, sdir)
@@ -417,12 +414,12 @@ test('SR14 1g a .harness-version directory is no stamp', async () => {
   assertNudge(await run(sdir), ['direction-blind'], ['NEWER합니다', 'OLDER합니다', 'EQUALS', 'SCHEMA DRIFT'])
 })
 
-// 2. freshly scaffolded repo -> NO drift, but the scaffold holds slice_note.mjs (the template map places it), so
+// 2. freshly scaffolded repo -> no drift, but the scaffold holds slice_note.mjs (the template map places it), so
 //    the slice-note rule (ADR 0172) is the whole output: additionalContext only, exactly the rule, no systemMessage.
 test('SR15 fresh scaffold states only the slice-note rule', async () => { assertRuleOnly(await run(fresh)) })
 
 // 2a. SAME repo on every other source: the hook is matcher-less, so a compaction (and a start, resume, clear, fork)
-//     carries the rule too — it is the one fact a compaction summary loses and this hook re-injects.
+//     carries the rule too. It is the one fact a compaction summary loses and this hook re-injects.
 for (const src of ['compact', 'startup', 'resume', 'clear', 'fork']) {
   test(`SR16 2a source=${src} still states the rule`, async () => {
     assertRuleOnly(await invokeHook(payload({ cwd: fresh }, src)))
@@ -430,8 +427,8 @@ for (const src of ['compact', 'startup', 'resume', 'clear', 'fork']) {
 }
 
 describe('2b chain', { concurrency: 1 }, () => {
-// 2b. the vendored script absent -> the placement map says it is missing -> drift, named `(missing)`, and NO rule:
-//     the rule is a fact about a scaffold that holds the script. The file must also be a FILE: a directory of that
+// 2b. the vendored script absent -> the placement map says it is missing -> drift, named `(missing)`, and no rule:
+//     the rule is a fact about a scaffold that holds the script. The file must also be a file: a directory of that
 //     name is no script (isFile), the same drift and the same absence of the rule.
 const noNote = J(fx, 'repo-nonote')
 test('SR17 2b identical placements but slice_note.mjs absent: drift (missing), no rule', async () => {
@@ -450,7 +447,7 @@ test('SR18 2b a directory named slice_note.mjs is no script: drift (missing), no
 
 })
 
-// 2c. a repo that is scaffolded and DRIFTED, with the script present: the drift text first, then the rule
+// 2c. a repo that is scaffolded and drifted, with the script present: the drift text first, then the rule
 //     (see the assertRuleTail calls beside the drift cases 1, 1b, 1c, 1d, 10b-2 and 13b for each branch).
 const compactRun = lazy(() => invokeHook(payload({ cwd: stale }, 'compact')))
 test('SR19 2c drift on a compact start: the nudge is unchanged', async () => {
@@ -460,7 +457,7 @@ test('SR19 2c drift on a compact start: the nudge is unchanged', async () => {
 })
 test('SR20 2c drift on a compact start: the rule follows the drift text', async () => { assertRuleTail(await compactRun()) })
 
-// 3. SEED-only edits -> no drift: seeds are the repo's decisions, never compared (ADR 0033). The rule only.
+// 3. seed-only edits -> no drift: seeds are the repo's decisions, never compared (ADR 0033). The rule only.
 test('SR21 seed edits state only the rule (no drift)', async () => { assertRuleOnly(await run(seed)) })
 
 describe('3a-3d chain', { concurrency: 1 }, () => {
@@ -508,8 +505,7 @@ test('SR23 3a the retired close copy: exactly the head and the close rule, the c
 //     whitespace); .claude/CLAUDE.md gets it on one line, so its copy markers hit and the restated rules prove that a
 //     copy holding retired text is no copy. One hook run without drift, one with drift; the same repo copy as 3a.
 // The table is read out of the hook source, from `const CLAUDE_FILES` to the closing bracket of RETIRED_SEED, and
-// evaluated alone, as the pwsh suite did in a node -e call. The hook is never imported: its last lines read stdin and
-// run main on load.
+// evaluated alone. The hook is never imported, because its last lines read stdin and run main on load.
 const hookSrc = read(hook)
 const tableFrom = hookSrc.indexOf('const CLAUDE_FILES')
 const tableTo = hookSrc.indexOf('\n]', hookSrc.indexOf('const RETIRED_SEED')) + 2
@@ -528,7 +524,7 @@ test('SR25 3b each row: a real seed placement, absent from the current seed and 
       // .claude/CLAUDE.md is no placement; its seed text is CLAUDE.md's.
       const placed = J(base, f === '.claude/CLAUDE.md' ? 'CLAUDE.md' : f)
       const isFile = fs.existsSync(placed) && fs.statSync(placed).isFile()
-      // REVIEW.md is the one retired file: no scaffold places it any more, but a repo that older scaffolds seeded keeps it
+      // REVIEW.md is the one retired file: no scaffold places it, but a repo that an earlier scaffold seeded keeps it
       // and an import can load it as the review canon, so the hook still scans it for retired text.
       if (f === 'REVIEW.md' && !isFile) continue
       if (!isFile) { tableFails.push(`${f}: the real init.mjs places no such seed`); continue }
@@ -538,7 +534,7 @@ test('SR25 3b each row: a real seed placement, absent from the current seed and 
   assert.deepEqual(tableFails, [], tableFails.join(' · '))
 })
 
-// The version of each row against history (review F1 of slice 236): the seed at the row's release lacks the phrase,
+// The version of each row against history: the seed at the row's release lacks the phrase,
 // and the seed at the release before it holds it. The release tags are `ywr-harness--vX.Y.Z`; a checkout without them
 // (the CI checkout is shallow) is a reported SKIP. One git cat-file --batch call reads every seed.
 const canonRoot = path.resolve(here, '../../..')
@@ -675,7 +671,7 @@ test('SR35 3a ADR citations alone are no copy: the full text', async () => {
 
 // 3d. The review canon (ADR 0215, ADR 0217), on the same copy. The seed declares the canon `CLAUDE.md`, a memory file
 //     that the session loads at its start, so it needs no import: the rule only, even beside a root REVIEW.md that the
-//     declaration does not name. The import cases below run on the legacy shape, a repo that older scaffolds seeded: a
+//     declaration does not name. The import cases below run on the legacy shape, a repo that an earlier scaffold seeded: a
 //     root REVIEW.md that `.harness.json` declares as the canon. A CLAUDE.md that is a folder is no copy and imports
 //     nothing: the full rule text, then the canon part, and one Korean line that names the canon. The last two cases
 //     leave the canon undeclared: a root REVIEW.md then takes the default, and without it the default is CLAUDE.md.
@@ -731,7 +727,7 @@ test('SR39 3d code in .claude/CLAUDE.md imports nothing: the canon line and part
   assert.ok(canonLine(r.out), r.out)
 })
 // A fenced block ends the paragraph before it, so an indented line right after the closing fence is code with no
-// blank line between (dist #18). Mutation anchor: a closing fence that leaves the blank state alone keeps the line.
+// blank line between. Mutation anchor: a closing fence that leaves the blank state alone keeps the line.
 test('SR40 3d an indented line right after a closing fence imports nothing: the canon line and part', async () => {
   setContent(J(cp, '.claude/CLAUDE.md'), `para text\n${fence}\ncode\n${fence}\n    @../REVIEW.md\n`)
   const r = await run(cp)
@@ -760,7 +756,7 @@ test('SR43 3d CLAUDE.local.md imports @REVIEW.md: the rule only', async () => {
   assertRuleOnly(r)
 })
 // The absolute token through the copy's 8.3 short alias, where the host has one: git reports the long root, and a
-// lexical compare read the short spelling as another file (the GitHub Windows runner's TEMP is a short name).
+// lexical compare would read the short spelling as another file (the GitHub Windows runner's TEMP is a short name).
 test('SR43b 3d an absolute import through the 8.3 short alias: the rule only', { skip: shortAlias(fx) === '' ? 'no 8.3 short name for the fixture root on this host' : false }, async () => {
   const cpShort = shortAlias(cp)
   assert.ok(cpShort !== '', `no short alias for ${cp}`)
@@ -809,10 +805,9 @@ test('SR48 3a no .harness.json: the slice-note rule alone', async () => {
 //    variance legitimate, so raw byte identity would nudge every clone forever
 test('SR49 CRLF-only difference is no drift (the rule only)', async () => { assertRuleOnly(await run(crlf)) })
 
-// 4b. EXACT bytes modulo CR (ADR 0033): "everything else — content, encoding, BOM — stays exact". The
-//     pwsh original compared with `-ne`, which ignores letter case and the culture-ignorable U+00AD and
-//     NUL, so those three differences passed as identical; the Node port compares ordinally, and each
-//     is drift here. A leading BOM is the encoding case the contract names.
+// 4b. Exact bytes modulo CR (ADR 0033): content, encoding and BOM stay exact. The compare is ordinal, so
+//     a letter-case change, a culture-ignorable U+00AD and a NUL are each drift. A leading BOM is the
+//     encoding case the contract names.
 async function addByteVariant(name, mutate) {
   const d = J(fx, name)
   await copy(base, d)
@@ -836,7 +831,7 @@ byteCases.forEach((bc, i) => {
 })
 
 // 5. marker-less post-commit -> no drift (the rule only, no nudge): init.mjs refuses a foreign file, so a re-run would
-//    change nothing — a nudge here would nag forever (the 0029 foreign-value shape)
+//    change nothing, and a nudge here would nag forever
 test('SR51 foreign post-commit is no drift (the rule only)', async () => { assertRuleOnly(await run(foreignpc)) })
 
 // 6. marker-carrying post-commit drifted -> counted like any toolchain file
@@ -844,17 +839,17 @@ test('SR52 guarded post-commit with marker counts', async () => {
   assertNudge(await run(ourspc), ['1개의 벤더링된 툴체인 파일', R`\.githooks[\\/]post-commit`], [R`harness_gates\.mjs`, 'SCHEMA DRIFT', R`\(missing\)`])
 })
 
-// 7. seven drifts -> five named, cap STATED (a silent truncation reads as full coverage)
+// 7. seven drifts -> five named, cap stated (a silent truncation reads as full coverage)
 test('SR53 file list caps at five and says so', async () => {
   assertNudge(await run(many), ['7개의 벤더링된 툴체인 파일', R`\+2 more`], ['SCHEMA DRIFT', R`harness_config\.mjs`])
 })
 
-// 8. scripts/harness/ that is not ours -> silent (file-level sentinel, not the directory gate:
-//    counting a stranger's tree as "all missing" would be a false nudge)
+// 8. scripts/harness/ that is not ours -> silent (a file-level sentinel, not the directory gate,
+//    because counting a stranger's tree as "all missing" would be a false nudge)
 test('SR54 foreign scripts/harness silent', async () => { assertEmptyStdout(await run(notours)) })
 
-// 8b. a repo that holds only a Python script an older scaffold placed (no .mjs yet) is still ours: it is the repo
-//     this nudge must tell to refresh (ywr-harness ADR 0223)
+// 8b. a repo that holds only a Python script that an earlier scaffold placed (no .mjs yet) is still ours: it is
+//     the repo this nudge must tell to refresh (ywr-harness ADR 0223)
 test('SR55 8b a repo with only the old .py scaffold script still gets the nudge', async () => {
   const oldpy = J(fx, 'repo-oldpy')
   mk(J(oldpy, 'scripts/harness'))
@@ -873,22 +868,22 @@ test('SR57 unscaffolded repo spawns no git', async () => {
   assert.ok(r.gitCalls === 0, `${r.gitCalls} git call(s)`)
 })
 
-// 10. subdirectory cwd -> the ROOT is resolved and named (needs git; reported SKIP without)
+// 10. subdirectory cwd -> the root is resolved and named (needs git; reported SKIP without)
 gtest('SR58 subdirectory cwd resolves the root', async () => {
   assertNudge(await run(J(stale, 'subA/subB')), ['repo-stale', '2개의 벤더링된 툴체인 파일'], ['subA', 'SCHEMA DRIFT'])
 })
 
 describe('10b chain', { concurrency: 1 }, () => {
 // 10b. UPSTREAM-AHEAD (ADR 0135): a teammate refreshed the scaffold and pushed; this clone has not pulled.
-//      The probe's path is the stamp ALONE (10b-5: a toolchain-only upstream commit is a hand edit, no hit),
-//      its walk is patch-equivalence filtered (10b-6: an amended stamp commit is no hit), and repo-AHEAD keeps
+//      The probe's path is the stamp alone (10b-5: a toolchain-only upstream commit is a hand edit, no hit),
+//      its walk is patch-equivalence filtered (10b-6: an amended stamp commit is no hit), and repo-ahead keeps
 //      precedence over a hit (10b-8).
-//      Its own stamp is the OLD one, so without the probe the ADR 0042 branch says "genuinely behind, re-run
-//      init" — the wrong remedy, the right one is to pull. ONE bare remote and TWO clones carry every leg:
+//      Clone A's own stamp is old, so without the probe the ADR 0042 branch says "genuinely behind, re-run
+//      init". That is the wrong remedy, and the right one is to pull. One bare remote and two clones carry every leg:
 //      clone A (stamp 0.0.1, one drifted toolchain file) is the session under test, clone B pushes the
 //      refresh (the canon's file and the real stamp). The remaining legs only move A's refs and branch.
-//      The no-remote leg is every drifted fixture above (no remote, unborn HEAD): their 0033/0042 assertions
-//      stay unchanged and case 1 below adds the new text to its MustNotMatch.
+//      The no-remote leg is every drifted fixture above (no remote, unborn HEAD). Case 1 above carries the
+//      ADR 0135 text in its mustNotMatch.
 const uaGit = (dir, ...args) => git_run(dir, ['-c', 'user.name=selftest', '-c', 'user.email=selftest@example.invalid', '-c', 'commit.gpgsign=false', ...args])
 const uaRemote = J(fx, 'up-remote.git')
 const uaA = J(fx, 'up-a')
@@ -913,8 +908,8 @@ const uaSetup = lazy(async () => {
 const tip = (dir, rev) => git_run(dir, ['log', '-1', '--format=%h', rev]).trim()
 let uaSha = ''; let uaStampPath = ''; let uaStampText = ''; let uaNew = ''; let run10b2
 
-// 10b-1. NOT fetched: A's refs know nothing of B's push, so today's advice stands — the documented
-//        freshness limit (refs are as of the last fetch), and the proof the probe makes no network call.
+// 10b-1. not fetched: A's refs know nothing of B's push, so the stamp-direction advice stands. That is the
+//        documented freshness limit (refs are as of the last fetch), and the proof the probe makes no network call.
 gtest('SR59 10b-1 unfetched refs: no hit, the stamp-direction advice stands (freshness limit)', async () => {
   await uaSetup()
   assertNudge(await run(uaA),
@@ -922,8 +917,8 @@ gtest('SR59 10b-1 unfetched refs: no hit, the stamp-direction advice stands (fre
     ['ADR 0135', 'fetch', '다른 클론', 'SCHEMA DRIFT', 'EXTRACTION DRIFT'])
 })
 
-// 10b-2. fetched: the upstream (origin/main) carries B's commit -> upstream-ahead replaces ALL the direction
-//        branches. The ref, the newest sha and a date are named; init is forbidden in both halves; the OLDER /
+// 10b-2. fetched: the upstream (origin/main) carries B's commit -> upstream-ahead replaces all the direction
+//        branches. The ref, the newest sha and a date are named, and init is forbidden in both halves. The OLDER /
 //        "re-run" advice is gone. The model half says not to run or suggest init and to offer pulling.
 gtest('SR60 10b-2 fetched upstream ahead: pull first, never re-run init (ADR 0135)', async () => {
   uaGit(uaA, 'fetch', '-q', 'origin')
@@ -939,7 +934,7 @@ gtest('SR60 10b-2 fetched upstream ahead: pull first, never re-run init (ADR 013
 gtest('SR61 10b-2 upstream-ahead branch: the rule follows the drift text', async () => { assertRuleTail(run10b2) })
 gtest('SR62 10b-2 the sha named is the fetched tip', async () => { assert.ok(/^[0-9a-f]{4,}$/u.test(uaSha), `sha='${uaSha}'`) })
 
-// 10b-3. a feature branch with NO upstream and no origin/HEAD: no candidate ref -> no hit (today's advice) ...
+// 10b-3. a feature branch with no upstream and no origin/HEAD: no candidate ref -> no hit (the stamp-direction advice) ...
 gtest('SR63 10b-3 fixture: the feature branch has no upstream and no origin/HEAD', async () => {
   uaGit(uaA, 'checkout', '-q', '-b', 'feature')
   // git 2.48+ creates origin/HEAD on the first fetch (remote.<name>.followRemoteHEAD), so drop it here.
@@ -960,10 +955,10 @@ gtest('SR65 10b-4 no upstream, origin/HEAD ahead: the remote default branch hits
 })
 
 // The legs below put A on B's pushed tip (stamp = the running version, canon files) and re-add the drift as an
-// UNCOMMITTED edit, so the stamp equals the running version (the ADR 0042 EQUALS / hand-edit branch is the no-hit
-// baseline) and only the REMOTE moves between legs. origin/HEAD stays set, so origin/main is the candidate ref.
+// uncommitted edit, so the stamp equals the running version (the ADR 0042 EQUALS / hand-edit branch is the no-hit
+// baseline) and only the remote moves between legs. origin/HEAD stays set, so origin/main is the candidate ref.
 
-// 10b-5. a toolchain-only upstream commit (a hand edit on main — no stamp change) is NOT a scaffold run: no hit,
+// 10b-5. a toolchain-only upstream commit (a hand edit on main with no stamp change) is not a scaffold run: no hit,
 //        the equal-version hand-edit advice stands.
 gtest('SR66 10b-5 fixture: origin/main is ahead by a commit that leaves the stamp alone', async () => {
   uaGit(uaA, 'reset', '-q', '--hard', 'origin/main')
@@ -986,7 +981,7 @@ gtest('SR67 10b-5 toolchain-only upstream commit: no hit, the hand-edit advice s
 })
 
 // 10b-6. patch-equivalence: A amends the commit that carries the stamp (a rebase does the same). The pre-rewrite commit is
-//        still on origin/main, but HEAD carries its patch: NOT upstream-ahead. The plain walk is the control.
+//        still on origin/main, but HEAD carries its patch, so it is not upstream-ahead. The plain walk is the control.
 gtest('SR68 10b-6 fixture: a plain walk still sees the pre-rewrite stamp commit (only --cherry-pick explains the silence)', async () => {
   uaGit(uaA, 'commit', '-q', '--amend', '-m', 'A: the stamp commit, amended')
   assert.ok(Boolean(git_run(uaA, ['log', '-1', '--format=%h', 'HEAD..origin/main', '--', '.harness-version']).trim()), 'the amend did not diverge from origin/main')
@@ -1008,8 +1003,8 @@ gtest('SR70 10b-7 a new upstream stamp commit hits and replaces the equal-versio
     ['EQUALS', 'hand-edit', 'SCHEMA DRIFT'])
 })
 
-// 10b-8. F2: with that hit standing, a repo-AHEAD stamp (newer than the running plugin) keeps the ADR 0042 AHEAD advice —
-//        "update the plugin, do NOT init" — and the hit does not replace it. Only the working-tree stamp changes.
+// 10b-8. with that hit standing, a repo-AHEAD stamp (newer than the running plugin) keeps the ADR 0042 AHEAD advice,
+//        "update the plugin, do NOT init", and the hit does not replace it. Only the working-tree stamp changes.
 gtest('SR71 10b-8 repo-AHEAD keeps precedence over an upstream hit (ADR 0042 advice, no pull-first)', async () => {
   setContent(uaStampPath, '99.0.0')
   try {
@@ -1022,13 +1017,12 @@ gtest('SR71 10b-8 repo-AHEAD keeps precedence over an upstream hit (ADR 0042 adv
 
 })
 
-// 11. BOM-prefixed stdin -> still parses (the config-change-audit 07-23 incident class)
+// 11. BOM-prefixed stdin -> still parses
 test('SR72 BOM-prefixed stdin', async () => {
   assertNudge(await invokeHook(ch(0xfeff) + payload({ cwd: stale })), ['repo-stale'], ['SCHEMA DRIFT'])
 })
 
-// 11b. PowerShell semantics the Node port keeps (ADR 0116): member access and the event compare are
-//      case-insensitive, `[string]` casts the cwd and `.Trim()` strips it.
+// 11b. Payload keys and the event name compare case-insensitively, and the cwd is trimmed (ADR 0116).
 test('SR73 case-drifted keys and event name still read', async () => {
   assertNudge(await invokeHook(JSON.stringify({ Hook_Event_Name: 'sessionstart', CWD: stale })), ['repo-stale', '2개의 벤더링된 툴체인 파일'], ['SCHEMA DRIFT'])
 })
@@ -1036,8 +1030,8 @@ test('SR74 cwd padded with whitespace is trimmed', async () => {
   assertNudge(await invokeHook(payload({ cwd: `  ${stale} \t ` })), ['repo-stale', '2개의 벤더링된 툴체인 파일'], ['SCHEMA DRIFT'])
 })
 
-// 11c. a non-ASCII work tree path: git's output is decoded as UTF-8 once with quotepath off (CLAUDE.md,
-//      issue #40), and the files under it are read by path — so the verdict and the name are intact.
+// 11c. a non-ASCII work tree path: git's output is decoded as UTF-8 once with quotepath off (spec 0007 §4,
+//      ADR 0223), and the files under it are read by path, so the verdict and the name are intact.
 gtest('SR75 non-ASCII work tree path is named intact and compared', async () => {
   const uni = J(fx, 'repo-유니코드 é')
   await copy(stale, uni)
@@ -1065,8 +1059,8 @@ test('SR77 11e a payload key carrying U+2028 is flattened in the SCHEMA DRIFT ba
 
 // 12. EXTRACTION DRIFT, not silence, when the plugin's own placement.mjs stops carrying a usable map:
 //     a byte-identical copy of the hook runs from a fake plugin tree whose placement.mjs imports but
-//     exports a TOOLCHAIN that is not a table. The copy IS the shipped code (hook-lib.mjs beside it) —
-//     what moves is the script's own directory, which is the resolution path under test. The hook
+//     exports a TOOLCHAIN that is not a table. The copy is the shipped code (hook-lib.mjs beside it),
+//     and what moves is the script's own directory, which is the resolution path under test. The hook
 //     imports the module, so 12/12b/12c and 12d-12e below pin what a usable map is: a non-empty list of
 //     [source, destination] string pairs for TOOLCHAIN and GUARDED, a non-empty string GUARD_MARKER.
 async function newFakeTree(name, placementText) {
@@ -1084,22 +1078,22 @@ async function newFakeTree(name, placementText) {
 const gLit = "export const GUARDED = [['githooks/post-commit', '.githooks/post-commit']]\nexport const GUARD_MARKER = 'ywr-harness:post-commit'\n"
 const tcOne = "export const TOOLCHAIN = [['scripts/harness/harness_gates.mjs', 'scripts/harness/harness_gates.mjs']]\n"
 test('SR78 unreadable placement map reports EXTRACTION DRIFT, not silence', async () => {
-  // $stale holds slice_note.mjs, yet no rule here
+  // The stale repo holds slice_note.mjs, yet no rule appears here.
   assertNudge(await run(stale, { hookPath: await newFakeTree('fake-broken', "export const TOOLCHAIN = 'not a table'\n" + gLit) }),
     ['EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵'],
     ['템플릿과 다릅니다', '제안만 합니다', 'SCHEMA DRIFT', ruleMark])
 })
 
-// 12b. a PARTIAL entry — a pair whose destination is not a string — must fail extraction WHOLE, never
-//      contribute the fragment to the map (the ADR 0033 lesson: a fragment is a wrong path compared quietly).
+// 12b. a partial entry, a pair whose destination is not a string, must fail extraction whole and never
+//      contribute the fragment to the map, because a fragment is a wrong path compared quietly (ADR 0033).
 test('SR79 partial entry fails extraction whole, never a fragment', async () => {
   assertNudge(await run(stale, { hookPath: await newFakeTree('fake-partial', "export const TOOLCHAIN = [['scripts/harness/harness_gates.mjs', 'scripts/harness/' + 5]]\n" + gLit) }),
     ['EXTRACTION DRIFT', 'UNKNOWN, 확인되지 않았습니다', '배치 맵'],
     ['템플릿과 다릅니다', R`\(missing\)`, 'SCHEMA DRIFT'])
 })
 
-// 12c. a fully valid map with NO scripts/harness/*.mjs destination -> the ownership sentinel
-//      is gone; an unchecked empty list would silently disable the hook on every repo forever.
+// 12c. a fully valid map with no scripts/harness/*.mjs destination -> the ownership sentinel
+//      is gone, and an unchecked empty list would silently disable the hook on every repo forever.
 //      The banner, not silence, is the contract.
 test('SR80 sentinel-less map reports EXTRACTION DRIFT, not permanent silence', async () => {
   assertNudge(await run(stale, { hookPath: await newFakeTree('fake-nosentinel', "export const TOOLCHAIN = [['docs/README.md', 'docs/README.md']]\n" + gLit) }),
@@ -1107,8 +1101,8 @@ test('SR80 sentinel-less map reports EXTRACTION DRIFT, not permanent silence', a
     ['템플릿과 다릅니다', 'SCHEMA DRIFT'])
 })
 
-// 13. a template missing from the plugin copy -> the same banner naming the file; freshness is
-//     never resolved into a nudge from an incomplete comparison set
+// 13. a template missing from the plugin copy -> the same banner naming the file. Freshness is
+//     never resolved into a nudge from an incomplete comparison set.
 test('SR81 missing template reports EXTRACTION DRIFT naming the file', async () => {
   const fakeTmpl = J(fx, 'fake-tmpl')
   mk(J(fakeTmpl, 'hooks'))
@@ -1125,7 +1119,7 @@ test('SR81 missing template reports EXTRACTION DRIFT naming the file', async () 
     ['템플릿과 다릅니다', 'SCHEMA DRIFT'])
 })
 
-// 12d-12e. WHAT THE HOOK ACCEPTS. One fake plugin tree (real templates, the hook + hook-lib) per placement.mjs shape.
+// 12d-12e. What the hook accepts. One fake plugin tree (real templates, the hook and hook-lib) per placement.mjs shape.
 //     Accepted: a minimal table of two pairs, behind a comment and a computed-but-string-valued entry. Refused
 //     (EXTRACTION DRIFT, never a fragment and never silence): an empty table, an entry of the wrong arity, a
 //     source repeated in another letter case, a marker that is not a string, a missing GUARDED export, a module
@@ -1152,13 +1146,13 @@ Object.entries(refused).forEach(([name, text], i) => {
 })
 
 describe('13b-13k chain', { concurrency: 1 }, () => {
-// 13b-13f. STALE-BASIS PROBE (ADR 0039): a byte-identical hook copy runs from a fake VERSIONED
-//          CACHE layout (<plugins>/cache/<marketplace>/<name>/<version>) with the real placement.mjs
+// 13b-13f. Stale-basis probe (ADR 0039): a byte-identical hook copy runs from a fake versioned
+//          cache layout (<plugins>/cache/<marketplace>/<name>/<version>) with the real placement.mjs
 //          and templates beside it, so the drift verdict itself stays the real one (repo-stale's
-//          2 files). What varies per case is the sibling installed_plugins.json — the probe's
+//          2 files). What varies per case is the sibling installed_plugins.json, the probe's
 //          only input. The running copy's plugin.json is pinned to 0.0.1 so assertions can tell
 //          RUNNING (v0.0.1) from REGISTERED (v9.9.9) apart. Every one of these cases must still
-//          produce a nudge — the probe may switch the advice, never silence the hook.
+//          produce a nudge: the probe may switch the advice, never silence the hook.
 const fakePlugins = J(fx, 'fake-plugins')
 const staleCopy = J(fakePlugins, 'cache/ywrlabs/ywr-harness/0.0.1')
 const staleHook = J(staleCopy, 'hooks/session-start-scaffold-refresh-nudge.mjs')
@@ -1180,16 +1174,16 @@ const staleCopySetup = lazy(async () => {
   await copy(templates, J(staleCopy, 'skills/harness-init/templates'))
   setContent(manifestPath, '{"name":"ywr-harness","version":"0.0.1"}')
 })
-// JSON.stringify owns the backslash escaping — hand-built JSON with Windows paths is how a
-// fixture silently tests nothing on one platform.
+// JSON.stringify owns the backslash escaping. Hand-built JSON with Windows paths would let a
+// fixture silently test nothing on one platform.
 const setFakeRegistry = (entries) => setContent(fakeRegPath, JSON.stringify({ plugins: { 'ywr-harness@ywrlabs': [entries].flat() } }, null, 2))
 const stdEntry = { scope: 'user', installPath: J(fakePlugins, 'cache/ywrlabs/ywr-harness/9.9.9'), version: '9.9.9', lastUpdated: '2026-08-07T01:00:00Z' }
 const runStale = () => run(staleReg, { hookPath: staleHook })
 const normalNudge = ['2개의 벤더링된 툴체인 파일', '리프레시: 이 저장소에서 /ywr-harness:harness-init']
 const normalNot = ['기준이 STALE', 'reload-plugins', 'SCHEMA DRIFT', 'EXTRACTION DRIFT']
 
-// 13b. registry lists this plugin but NOT this copy -> STALE advice: running vs registered
-//      version named, reload instructed, harness-init forbidden — and the file list stays.
+// 13b. registry lists this plugin but not this copy -> STALE advice: the running and registered
+//      versions are named, reload is instructed, harness-init is forbidden, and the file list stays.
 //      Two entries prove the pick order (user scope wins over a more-recent project entry).
 let run13b
 test('SR84 superseded cache copy reports STALE basis, reload not refresh', async () => {
@@ -1205,28 +1199,27 @@ test('SR84 superseded cache copy reports STALE basis, reload not refresh', async
     [R`v8\.8\.8`, '리프레시: 이 저장소에서', '시드는 보존', 'SCHEMA DRIFT', 'EXTRACTION DRIFT'])
 })
 test('SR85 13b stale-basis branch: the rule follows the drift text', async () => { assertRuleTail(run13b) })
-// Both versions must survive in the HUMAN banner alone, not only in the English context half:
-// assertNudge matches sys+ctx JOINED, and a version dropped from an interpolation (the pwsh original read a
-// Korean particle glued to a variable name as one longer, undefined name) stays green through the ctx half.
-// Caught live 2026-08-11: both versions fell out of the banner while this case stayed green.
+// Both versions must survive in the human banner alone, not only in the English context half:
+// assertNudge matches the joined banner and context, so a version dropped from an interpolation in
+// the banner would stay green through the context half.
 test('SR86 13b both versions survive in the HUMAN banner (interpolation, not ctx)', async () => {
   const { sys } = halves(run13b.out)
   assert.ok(has(sys, R`v0\.0\.1`) && has(sys, R`v9\.9\.9`), `systemMessage='${sys}'`)
 })
 
-// 13c-13i run the NORMAL branch from a fake v0.0.1 cache copy, so pin the fixture's stamp BELOW
-// 0.0.1 first — the real-version stamp the scaffold wrote would otherwise flip these
+// 13c-13i run the normal branch from a fake v0.0.1 cache copy, so the fixture's stamp is pinned below
+// 0.0.1 first. The real-version stamp the scaffold wrote would otherwise flip these
 // registry-fallback cases into the ADR 0042 repo-ahead advice and test the wrong branch.
-// 0.0.0 < 0.0.1 -> the BEHIND wording ('Refresh: run …') is the expected normal nudge here.
+// 0.0.0 < 0.0.1, so the BEHIND wording ('Refresh: run …') is the expected normal nudge here.
 
-// 13c. registry entry IS this copy -> current install, the normal 0033 nudge unchanged
+// 13c. registry entry is this copy -> current install, the normal ADR 0033 nudge
 test('SR87 cache copy that IS the registered install nudges normally', async () => {
   setContent(J(staleReg, '.harness-version'), '0.0.0')
   setFakeRegistry({ scope: 'user', installPath: staleCopy, version: '0.0.1', lastUpdated: '2026-08-07T01:00:00Z' })
   assertNudge(await runStale(), [...normalNudge, R`v0\.0\.1`, '시드는 보존'], normalNot)
 })
 
-// 13d. no registry file -> probe yields nothing, normal nudge (fail toward 0033's behavior)
+// 13d. no registry file -> the probe yields nothing, normal nudge (ADR 0033)
 test('SR88 absent registry falls back to the normal nudge', async () => {
   rm(fakeRegPath)
   assertNudge(await runStale(), normalNudge, normalNot)
@@ -1239,26 +1232,26 @@ test('SR89 garbage registry falls back cleanly', async () => {
   assertNudge(await runStale(), normalNudge, normalNot)
 })
 
-// 13f. registry carries only OTHER plugins (this one uninstalled mid-session) -> no registered
-//      install to reload into; the normal nudge is the conservative fallback
+// 13f. registry carries only other plugins (this one uninstalled mid-session) -> no registered
+//      install to reload into, and the normal nudge is the conservative fallback
 test('SR90 unlisted plugin falls back to the normal nudge', async () => {
   setContent(fakeRegPath, JSON.stringify({ plugins: { 'some-other-plugin@elsewhere': [{ scope: 'user', installPath: J(fakePlugins, 'cache/elsewhere/some-other-plugin/1.0.0'), version: '1.0.0' }] } }, null, 2))
   assertNudge(await runStale(), normalNudge, normalNot)
 })
 
-// 13g. SAME version registered at a DIFFERENT path -> normal nudge, never a self-contradictory
-//      "runs v0.0.1 while the install is v0.0.1" (review 2026-08-07, medium): a same-version
-//      re-registration ships the same templates, so the refresh advice is not inverted
+// 13g. the same version registered at a different path -> normal nudge, never a self-contradictory
+//      "runs v0.0.1 while the install is v0.0.1". A same-version re-registration ships the same
+//      templates, so the refresh advice is not inverted.
 test('SR91 same-version re-registration keeps the normal nudge', async () => {
   setFakeRegistry({ scope: 'user', installPath: J(fakePlugins, 'cache/ywrlabs/ywr-harness/elsewhere-0.0.1'), version: '0.0.1', lastUpdated: '2026-08-07T02:00:00Z' })
   assertNudge(await runStale(), [...normalNudge, R`v0\.0\.1`], normalNot)
 })
 
-// 13h. CROSS-MARKETPLACE union (the '@<marketplace>' half is deliberately unpinned — a consuming
+// 13h. cross-marketplace union (the '@<marketplace>' half is deliberately unpinned, because a consuming
 //      org may register the marketplace under another name): the original key is emptied
-//      (uninstalled there), a DIFFERENT marketplace key carries the registered install at
-//      another version -> STALE names THAT version. This is the union path no single-key
-//      fixture exercises (review 2026-08-07, low).
+//      (uninstalled there), and a different marketplace key carries the registered install at
+//      another version -> STALE names that version. This is the union path no single-key
+//      fixture exercises.
 test('SR92 cross-marketplace registration is unioned into the STALE verdict', async () => {
   setContent(fakeRegPath, JSON.stringify({
     plugins: {
@@ -1271,10 +1264,10 @@ test('SR92 cross-marketplace registration is unioned into the STALE verdict', as
     ['리프레시: 이 저장소에서', 'SCHEMA DRIFT', 'EXTRACTION DRIFT'])
 })
 
-// 13i. corrupted registered-version shapes are skipped, never rendered: an ARRAY version
-//      space-joins under [string] into a digit-bearing "1.0.0 2.0.0" that a bare digit test
-//      would accept (review 2026-08-07, low), and the literal 'unknown' sentinel fails the
-//      digit test — the one usable entry (project scope 6.6.6) must be the version named
+// 13i. corrupted registered-version shapes are skipped, never rendered: an array version
+//      space-joins into a digit-bearing "1.0.0 2.0.0" that a bare digit test would accept,
+//      and the literal 'unknown' sentinel fails the digit test. The one usable entry
+//      (project scope 6.6.6) must be the version named.
 test('SR93 corrupted version shapes are skipped, the usable entry is named', async () => {
   setFakeRegistry([
     { scope: 'user', installPath: J(fakePlugins, 'cache/ywrlabs/ywr-harness/corrupt-a'), version: ['1.0.0', '2.0.0'], lastUpdated: '2026-08-07T09:00:00Z' },
@@ -1286,12 +1279,12 @@ test('SR93 corrupted version shapes are skipped, the usable entry is named', asy
     [R`1\.0\.0 2\.0\.0`, 'version unknown', '리프레시: 이 저장소에서', 'SCHEMA DRIFT', 'EXTRACTION DRIFT'])
 })
 
-// 13j-13k. THE TWO JSON FILES THE HOOK READS PARSE AS LENIENTLY AS ConvertFrom-Json DID (PowerShell 7:
-//      `//` and `/* */` comments, trailing commas, single-quoted strings, unquoted keys). A strict parse of
-//      either would silently turn a hand-edited, commented file into "no manifest" / "no registry" — the
-//      wrong version named in the banner, or the stale-basis verdict lost. 13j: the plugin manifest
-//      carries comments and a trailing comma; 13k: the registry is single-quoted with unquoted keys,
-//      comments and trailing commas. `#` comments stay refused (the registry falls back, 13e's way).
+// 13j-13k. The two JSON files the hook reads parse leniently: `//` and `/* */` comments, trailing commas,
+//      single-quoted strings and unquoted keys (ywr-harness ADR 0116). A strict parse of
+//      either would silently turn a hand-edited, commented file into "no manifest" / "no registry", so
+//      the banner would name the wrong version or the stale-basis verdict would be lost. 13j: the plugin
+//      manifest carries comments and a trailing comma. 13k: the registry is single-quoted with unquoted
+//      keys, comments and trailing commas. `#` comments stay refused (the registry falls back, 13e's way).
 test('SR94 13j a commented manifest with a trailing comma still names the running version', async () => {
   setContent(manifestPath, '// manifest, hand-annotated\n{ "name": "ywr-harness", /* the running copy */ "version": "0.0.1", }')
   setFakeRegistry(stdEntry)
@@ -1338,11 +1331,11 @@ gtest('SR101 14b core.worktree pointing at a scaffold: git names that work tree 
   assertRuleOnly(await invokeSpied(redirect))
 })
 
-// 15. vanished cwd -> silent, and the stdout must be CLEAN (2>&1 is captured, so a stderr wall
-//     would fail the emptiness assertion — the 48c264c class)
+// 15. vanished cwd -> silent, and the stdout must be clean (2>&1 is captured, so a stderr wall
+//     would fail the emptiness assertion)
 test('SR102 vanished cwd silent and clean', async () => { assertEmptyStdout(await run(J(fx, 'no-such-dir'))) })
 
-// 16. a cwd whose ROOT does not exist on this platform -> same clean silence
+// 16. a cwd whose root does not exist on this platform -> same clean silence
 test('SR103 unresolvable root silent and clean', async () => {
   let bogusRoot = 'C:\\no-such-root\\x'
   if (win) {
@@ -1352,13 +1345,13 @@ test('SR103 unresolvable root silent and clean', async () => {
   assertEmptyStdout(await run(bogusRoot))
 })
 
-// 17. ANTI-VACUITY: no `cwd` in the payload -> the hook says so instead of falling silent
+// 17. anti-vacuity: no `cwd` in the payload -> the hook says so instead of falling silent
 test('SR104 schema drift is reported, not swallowed', async () => {
   assertNudge(await invokeHook(payload({})),
     ['SCHEMA DRIFT', '수신된 키: hook_event_name, session_id, source'], ['템플릿과 다릅니다', 'EXTRACTION DRIFT', ruleMark])
 })
 
-// 17b. the received-key list sorts case-insensitively (the original's Sort-Object); a null or blank cwd is drift too
+// 17b. the received-key list sorts case-insensitively, and a null or blank cwd is drift too
 test('SR105 drift key list sorts case-insensitively', async () => {
   assertNudge(await invokeHook('{"hook_event_name":"SessionStart","Zeta":1,"alpha":2,"Beta":3}'),
     ['SCHEMA DRIFT', R`수신된 키: alpha, Beta, hook_event_name, Zeta\.`], ['EXTRACTION DRIFT'])
@@ -1377,8 +1370,8 @@ test('SR107 wrong event silent', async () => {
 // 19. garbage stdin -> silent exit 0 (infra failure is not a finding)
 test('SR108 garbage fail-open', async () => { assertEmptyStdout(await invokeHook('not json at all {{{')) })
 
-// 20-21. the no-git branch, exercised by clearing PATH for the CHILD only: the verdict is
-//        filesystem-only, so a drifted scaffold still nudges with cwd as the root — this is
+// 20-21. the no-git branch, exercised by clearing PATH for the child only: the verdict is
+//        filesystem-only, so a drifted scaffold still nudges with cwd as the root. That is
 //        the documented degradation, not an UNKNOWN. A plain dir stays silent. Runs on
 //        git-less machines too, where it is simply the ambient truth.
 test('SR109 no git: filesystem verdict still nudges', async () => {
@@ -1388,10 +1381,10 @@ test('SR110 no git: plain dir stays silent', async () => { assertEmptyStdout(awa
 
 })
 
-// 22. NON-MUTATION, asserted not assumed: after every invocation above, the fixtures read
-//     byte-identical to their prepared state — the suggest-only contract (ADR 0033) becomes
-//     provable by the suite. Both directions matter: the hook must not "refresh" the drifted
-//     file and must not touch the clean one.
+// 22. non-mutation, asserted not assumed: after every invocation above, the fixtures read
+//     byte-identical to their prepared state, which proves the suggest-only contract (ADR 0033).
+//     Both directions matter: the hook must not "refresh" the drifted file and must not touch
+//     the clean one.
 test('SR111 non-mutation: clean placement untouched', async () => {
   assert.ok(sha256(J(fresh, 'docs/build_docs.mjs')) === freshHash, 'repo-fresh/docs/build_docs.mjs changed — the hook wrote to the repo')
 })
@@ -1399,10 +1392,10 @@ test('SR112 non-mutation: drifted placement not "refreshed"', async () => {
   assert.ok(sha256(J(stale, 'scripts/harness/harness_gates.mjs')) === staleHash, 'repo-stale/scripts/harness/harness_gates.mjs changed — the hook reverted the drift it only reports')
 })
 
-// R1. REGISTRATION. Every case above pipes a payload straight into the script, so none of them sees
-//     whether the runtime ever calls it. This pins the wiring: SessionStart, no matcher (deliberate —
-//     see the hook header), exec-form `node <script>` (ADR 0116) and the 15 s timeout. That it FIRES
-//     is still only a live `--plugin-dir` probe's to show.
+// R1. Registration. Every case above pipes a payload straight into the script, so none of them sees
+//     whether the runtime ever calls it. This pins the wiring: SessionStart, no matcher (deliberate,
+//     see the hook header), exec-form `node <script>` (ADR 0116) and the 15 s timeout. Only a live
+//     `--plugin-dir` probe shows that it fires.
 test('R1 hooks.json registers this script once: SessionStart, no matcher, exec-form node <script>', async () => {
   const fails = []
   try {
@@ -1435,7 +1428,7 @@ test('R1 hooks.json registers this script once: SessionStart, no matcher, exec-f
   assert.deepEqual(fails, [], fails.join(' · '))
 })
 
-// META — proves this file's WIRING to the shared empty-mustNotMatch guard: a wrapper that
+// META: proves this file's wiring to the shared empty-mustNotMatch guard. A wrapper that
 // dropped the mustNotMatch passthrough would leave the core intact and every case above unguarded.
 const metaOut = { out: '{"systemMessage":"meta probe"}', exit: 0 }
 test('SR113 META', async () => {

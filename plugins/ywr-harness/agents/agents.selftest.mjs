@@ -1,11 +1,10 @@
 // Self-test for the plugin's agent definitions (ADR 0100, ADR 0109).
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout agents/agents.selftest.mjs
 //
-// One thing no other suite reads: the PINS. Every agent's model and effort is a decision (ADR 0025/0109),
-// and a frontmatter edit changes what every Agent-tool spawn costs with nothing else failing. The suite
-// enumerates agents/*.md, so an agent added without a decided pin fails here. ADR 0109 retired the
-// Opus-session twin `worker-opus`: `worker` (sonnet · high) is the delegate on every session model,
-// measured faster at equal quality, so no agent pins opus.
+// No other suite reads the pins. Every agent's model and effort is a decision (ADR 0025, ADR 0109),
+// and a frontmatter edit changes what every Agent-tool spawn costs with nothing else failing.
+// The suite enumerates agents/*.md, so an agent added without a decided pin fails here.
+// `worker` (sonnet · high) is the delegate on every session model, so no agent pins opus (ADR 0109).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs'
@@ -14,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-// Frontmatter = the lines between the opening '---' and the next '---' line; body = the rest.
+// Frontmatter is the lines between the opening '---' and the next '---' line. The body is the rest.
 function splitAgent(text) {
   const m = /^---\r?\n(?<fm>[\s\S]*?)\r?\n---\r?\n(?<body>[\s\S]*)$/u.exec(text)
   if (!m) return null
@@ -26,14 +25,13 @@ function splitAgent(text) {
   return { fm, body: m.groups.body }
 }
 
-// The pwsh suite matched with -match and -notmatch, which ignore case, and listed *.md with a filter that ignores
-// case on Windows. This port keeps both: every pattern takes the i flag.
+// Every pattern takes the i flag, and the *.md listing ignores case.
 // Every agent file and its decided pin. An agents/*.md missing here fails A0: deciding its pin is
 // part of adding it.
 const pins = { worker: 'sonnet/high', verifier: 'sonnet/medium', mech: 'haiku/low' }
 
-// A symlink that resolves to a file counts too: the pwsh listing followed it, so a linked agent with no
-// pin must still fail A0. A dangling link resolves to nothing and is no agent.
+// A symlink that resolves to a file counts too, so a linked agent with no pin still fails A0.
+// A dangling link resolves to nothing and is no agent.
 const isFileEntry = (d) => {
   if (d.isFile()) return true
   if (!d.isSymbolicLink()) return false
@@ -55,8 +53,7 @@ for (const n of Object.keys(pins)) {
   test(`A0 ${n}.md exists and parses (frontmatter + body)`, () => { assert.ok(agents[n] !== null) })
 }
 
-// A1: the pins, as decided; and no agent pins opus or fable (ADR 0109: an opus pin would move every
-// spawn of that type off the measured delegate).
+// A1: the pins as decided, and no agent pins opus or fable (ADR 0109).
 for (const n of Object.keys(pins)) {
   test(`A1 ${n} pin is ${pins[n]}`, () => {
     const got = `${agents[n]?.fm.model}/${agents[n]?.fm.effort}`
@@ -71,8 +68,8 @@ for (const n of Object.keys(pins)) {
   })
 }
 
-// A2: worker is the one delegate. It denies Agent (fan-out belongs to the orchestrator), and the
-// retired twin stays retired: no worker-opus file, and no description routes to it.
+// A2: worker is the one delegate. It denies Agent, because fan-out belongs to the orchestrator.
+// The retired worker-opus twin stays retired: no file, and no description routes to it (ADR 0109).
 test('A2 worker denies Agent', () => {
   assert.equal(agents.worker?.fm.disallowedTools, 'Agent', `disallowedTools: ${agents.worker?.fm.disallowedTools}`)
 })
@@ -85,8 +82,8 @@ for (const n of Object.keys(pins)) {
   })
 }
 
-// A3: the routing text a model reads when it picks an agent. worker says it serves every session
-// model, Opus included, and routes neither to general-purpose nor around ultracode (ADR 0108).
+// A3: the routing text a model reads when it picks an agent. The worker description says it serves
+// every session model, Opus included, and names neither general-purpose nor ultracode (ADR 0108).
 test('A3 worker description says it serves every session model, Opus included', () => {
   const wd = agents.worker?.fm.description ?? ''
   assert.ok(/every session model/iu.test(wd) && /Opus included/iu.test(wd) && !/ultracode|general-purpose/iu.test(wd), `description: ${wd}`)

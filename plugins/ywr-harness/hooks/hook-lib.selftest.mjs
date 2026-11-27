@@ -1,17 +1,14 @@
 // Self-test for hook-lib.mjs, the shared helpers of the plugin's Node hooks (ADR 0116).
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout hooks/hook-lib.selftest.mjs
 //
-// No pwsh hook carries an Inline() copy any more (ADR 0142). This suite pins inline() and the other
-// helpers against EXPECTED values, so the module is held to the class itself, never only to another
-// copy of it. It also covers what the hooks' suites reach only through a whole hook: stdin decoding
-// (BOM, empty), fail-open JSON parsing, the PowerShell `[string]` cast, and emit's one-line UTF-8 output.
+// This suite pins inline() and the other helpers against expected values, so the module is held to
+// the character class itself, never to a copy of it (ADR 0142). It also covers what the hook suites
+// reach only through a whole hook: stdin decoding (BOM, empty), fail-open JSON parsing, the PowerShell
+// `[string]` cast, and emit's one-line UTF-8 output.
 //
 // Every special character is built from a code point: the class under test is C0/DEL/NEL/LS/PS, and
 // escape text for those can materialize as the literal character through an editor, so no such
 // character, and no escape for one, appears in this source.
-//
-// The pwsh suite named its cases without IDs. Each test here is `HL<n> <the old name>`, so the parity
-// check of ADR 0227 decision 8 matches the names.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -31,22 +28,22 @@ function unitRows() {
   const A = 'a'
   const results = []
   const eq = (name, got, want) => results.push(got === want ? [name, 'OK'] : [name, 'FAIL got ' + JSON.stringify(got) + ' want ' + JSON.stringify(want)])
-  // every member of the class becomes ONE space between letters; each is a separate case
+  // Every member of the class becomes one space between letters.
   const members = []
   for (let c = 0; c <= 0x1f; c++) members.push(c)
   members.push(0x7f, 0x85, 0x2028, 0x2029, 0x60)
   const bad = members.filter(c => lib.inline(A + ch(c) + 'b') !== 'a b')
   eq('class: every member flattens to a space (' + members.length + ' members)', bad.map(c => c.toString(16)).join(','), '')
-  // neighbours of the class are NOT flattened
+  // The neighbours of the class are not flattened.
   const keep = [0x20, 0x21, 0x5f, 0x61, 0x80, 0x81, 0x84, 0x86, 0x9f, 0xa1, 0x2027, 0x202a, 0x202e, 0x200b, 0xfffd]
   const flat = keep.filter(c => lib.inline(A + ch(c) + 'b') !== A + ch(c) + 'b')
   eq('neighbours of the class survive', flat.map(c => c.toString(16)).join(','), '')
-  // .NET String.Trim semantics after the flatten: NBSP / ideographic space trim, U+FEFF does not
+  // .NET String.Trim semantics after the flatten: NBSP and the ideographic space trim, U+FEFF does not.
   eq('trim: U+00A0 and U+3000 at the edges are trimmed', lib.inline(ch(0xa0, 0x3000) + 'x' + ch(0x3000, 0xa0)), 'x')
   eq('trim: a class char at the edges is trimmed', lib.inline(ch(0x2028, 0x85) + 'x' + ch(0x2029, 0)), 'x')
   eq('trim: U+FEFF at the edges is kept (.NET does not trim it)', lib.inline(ch(0xfeff) + 'x' + ch(0xfeff)), ch(0xfeff) + 'x' + ch(0xfeff))
   eq('flatten before trim: only class chars -> empty', lib.inline(ch(1, 2, 0x60, 0x2028)), '')
-  // the cap: max-1 characters + one ellipsis, the boundary exact
+  // The cap is max-1 characters plus one ellipsis, with an exact boundary.
   const z = n => 'z'.repeat(n)
   const ell = ch(0x2026)
   eq('cap 80: exactly 80 is untouched', lib.inline(z(80)), z(80))
@@ -67,7 +64,7 @@ function unitRows() {
   eq('parseJson fails open to null', String(lib.parseJson('not json {{{')) + String(lib.parseJson('')) + JSON.stringify(lib.parseJson('{"a":1}')), 'nullnull{"a":1}')
   eq('getProp: exact case wins, else first case-insensitive match in key order, else undefined',
     [lib.getProp({ Model: 1, model: 2 }, 'model'), lib.getProp({ MODEL: 3, Model: 4 }, 'model'), lib.getProp({ a: 1 }, 'model')].join(','), '2,3,')
-  // whichOnPath: PATH only (Get-Command's lookup), never the cwd or a default path; shims never count
+  // whichOnPath reads PATH only, never the cwd or a default path, and a shim never counts.
   {
     const win = process.platform === 'win32'
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'whichpath-'))
@@ -86,7 +83,7 @@ function unitRows() {
       [lib.whichOnPath('fakegit', 'real'), lib.whichOnPath('fakegit', '"' + real + '"')].join('|'), '|' + exe)
     fs.rmSync(root, { recursive: true, force: true })
   }
-  // parseJsonLoose: what PowerShell 7.6's ConvertFrom-Json accepted in a FILE (measured side by side 2026-10-01)
+  // parseJsonLoose accepts what PowerShell 7's ConvertFrom-Json accepts in a file (ywr-harness spec 0006 §3.1).
   const loose = t => { try { return JSON.stringify(lib.parseJsonLoose(t)) } catch { return 'THROW' } }
   const LF = ch(10)
   eq('parseJsonLoose: // and /* */ comments', loose('{' + LF + ' // c' + LF + ' "a": /* x */ 1 }'), '{"a":1}')
@@ -108,7 +105,7 @@ function unitRows() {
     [loose('{ # c' + LF + ' "a": 1 }'), loose('{ "a": 1,, }'), loose('{ "a": tru }'), loose('{ "a": "x }'), loose('{ "a": 1 /* x')].join(','),
     'THROW,THROW,THROW,THROW,THROW')
   eq('netTrim is .NET Trim', lib.netTrim(ch(0xa0, 0x20, 9) + 'x' + ch(0x85, 0xa0)) + '|' + (lib.netTrim(ch(0xfeff)).length), 'x|1')
-  // driftKeys: the SCHEMA DRIFT key list every drift banner shares
+  // driftKeys is the SCHEMA DRIFT key list that every drift banner shares.
   eq('driftKeys: no keys -> (none)', lib.driftKeys({}), '(none)')
   eq('driftKeys: case-insensitive order, ordinal tiebreak (A before a), comma-joined',
     lib.driftKeys({ cwd: 1, a: 2, Session_id: 3, A: 4, b: 5 }), 'A, a, b, cwd, Session_id')
@@ -116,7 +113,7 @@ function unitRows() {
     [lib.driftKeys({ ['x' + ch(10) + 'y']: 1 }), lib.driftKeys({ [z(400)]: 1 })].join('|'), 'x y|' + z(299) + ell)
   eq('driftKeys: a lone key that flattens to nothing gives the empty string, never (none) (the hooks printed that)',
     [lib.driftKeys({ [ch(1)]: 1 }), lib.driftKeys({ [ch(0x60, 0x2028)]: 1 })].join('|'), '|')
-  // psJoin: Join-Path's string shape on this platform's separator
+  // psJoin gives Join-Path's string shape on this platform's separator.
   {
     const S = path.sep
     eq('psJoin: one separator at the join (none doubled, a leading one on the child dropped)',
@@ -162,8 +159,7 @@ function runProbe(mode, stdin) {
 test('HL2 readStdin strips every leading BOM and decodes UTF-8', () => {
   const bom = String.fromCharCode(0xfeff)
   const o = JSON.parse(runProbe('stdin', bom + '{"k":"한글"}' + bom).bytes.toString('utf8'))
-  // The pwsh suite compared with -ceq, a culture compare that ignores U+FEFF, so a trailing BOM never
-  // counted there. This case keeps that verdict: the leading BOMs must go, a trailing one may stay.
+  // The leading BOMs must go. A trailing one may stay.
   const text = o.text.endsWith(bom) ? o.text.slice(0, -1) : o.text
   assert.equal(text, '{"k":"한글"}', JSON.stringify(o))
 })

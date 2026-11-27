@@ -1,22 +1,21 @@
-// Self-test for slice-status.mjs, the observe-only slice status line (Claude Mods; ADR 0138), and for
-// mods.mjs, the hooks-module entry. Since ADR 0140 the entry does not register this module: the
-// module stays in the tree, unregistered, and this suite keeps its logic tested for a redesign.
+// Selftest for slice-status.mjs, the observe-only slice status line (ADR 0138), and for mods.mjs, the
+// hooks-module entry. The entry does not register this module (ADR 0140). The module stays in the tree,
+// and this suite keeps its logic tested for a redesign.
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout hooks/slice-status.selftest.mjs
 //
-// CI has no claude CLI, so the module is driven here under plain node with a FAKE engine: a fake `on`
-// captures the hooks, a fake `$` answers session.root, fs.exists and ui.status, and each `next` is a stub
-// whose result the hook must hand back untouched. What this suite proves: every hook is pass-through
-// (the result `next` resolved to is returned as is, the frozen event is never rewritten), the zone
-// boundaries match the org guide's start rule, the `--tree` count starts, grows and resets as ADR 0138
-// Decision 4 says, nothing shows outside a `.harness.json` root, a failing engine call never reaches the
-// call, the line carries no command or path text, and the entry registers the other modules and not this
-// module (the probe imports `mods.mjs` itself, so a missing or renamed module file fails this suite;
-// the manifest gate checks only the entry path). What it cannot
-// prove — the engine's event shapes, `isReadOnly` on a live shell call and how the line looks — is
-// `claude plugin validate`'s and the live `--plugin-dir` probe's; `claude plugin test` stays a local habit.
+// CI has no claude CLI, so a fake engine drives the module under plain node. A fake `on` captures the
+// hooks, a fake `$` answers session.root, fs.exists and ui.status, and each `next` is a stub whose
+// result the hook must hand back untouched. The suite proves these points. Every hook is pass-through:
+// the result `next` resolved to is returned as is, and the frozen event is never rewritten. The zone
+// boundaries match the org guide's start rule. The `--tree` count starts, grows and resets as ADR 0138
+// Decision 4 says. Nothing shows outside a `.harness.json` root. A failing engine call never reaches
+// the call. The line carries no command or path text. The entry registers the other modules and not
+// this one. The probe imports `mods.mjs` itself, so a missing or renamed module file fails this suite,
+// while the manifest gate checks only the entry path. The suite cannot prove the engine's event shapes,
+// `isReadOnly` on a live shell call or how the line looks. `claude plugin validate` and the live
+// `--plugin-dir` probe cover those, and `claude plugin test` stays a local habit.
 //
-// The pwsh suite ran the probe in a child node and read its tab-separated rows. The probe runs in this process
-// now, and the rows become tests. The pwsh suite named its rows without IDs.
+// The probe runs in this process, and each `eq` row becomes a test.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
@@ -26,9 +25,8 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const mod = path.join(here, 'slice-status.mjs')
 const entry = path.join(here, 'mods.mjs')
 
-// The probe below is the pwsh suite's probe, kept as it was: each `eq` row is one check, and a row's verdict is
-// `OK` or `FAIL got <json> want <json>`. It runs once, here, in this process. A throw inside it ends the run
-// of the rest, as it ended the old probe, and case SS0 reports the throw.
+// Each `eq` row of the probe is one check, and a row's verdict is `OK` or `FAIL got <json> want <json>`.
+// The probe runs once. A throw inside it ends the run of the rest, and case SS0 reports the throw.
 const results = []
 let probeError = null
 let M
@@ -43,8 +41,8 @@ try {
   const deepFreeze = o => { if (o && typeof o === 'object') { Object.values(o).forEach(deepFreeze); Object.freeze(o) } return o }
   const ROOT = 'C:/repo'
 
-  // `adopted`: the roots that hold `.harness.json` (a Set, changeable mid-test). `failExists` makes
-  // fs.exists throw that many times.
+  // `adopted` is the set of roots that hold `.harness.json`, and a test may change it. `failExists`
+  // makes fs.exists throw that many times.
   function engine({ root = ROOT, adopted = new Set([ROOT]), failRoot = 0, failStatus = 0, failExists = 0 } = {}) {
     const hooks = {}
     const on = (ev, a, b) => { hooks[ev] = b ?? a; return { catch() {} } }
@@ -86,7 +84,7 @@ try {
     eq('no percentage yet: no zone', [M.zoneOf({ window: 200000 }), M.zoneOf(null), M.zoneOf({ percent: NaN })], [null, null, null])
     eq('constants match the org guide', [M.START_BELOW, M.SCOPED_UPTO, M.NO_PLAN_FROM, M.LARGE_WINDOW, M.FOLLOW_ON_PAST], [35, 60, 85, 1000000, 200000])
 
-    // the Node script is the run now; the Python forms stay accepted for a member whose scaffold still places the old script
+    // The Python forms stay accepted for a member whose scaffold still places the Python script.
     const yes = [TREE, 'python scripts/harness/harness_gates.py --tree', 'node harness_gates.mjs --tree', 'node.exe "C:/r/scripts/harness/harness_gates.mjs" --tree',
       'node --no-warnings scripts/harness/harness_gates.mjs --staged --tree', 'node scripts/harness/harness_gates.mjs --tree 2>&1 | tail -1',
       'cd /c/r && node scripts/harness/harness_gates.mjs --tree', 'python3 harness_gates.py --tree', 'py "C:/r/scripts/harness/harness_gates.py" --tree',
@@ -116,7 +114,7 @@ try {
     eq('isTreeRun: every --tree spelling', yes.map(M.isTreeRun), yes.map(() => true))
     eq('isTreeRun: nothing else', no.map(M.isTreeRun), no.map(() => false))
 
-    // ADR 0139: the PowerShell reads the module holds read-only itself.
+    // The PowerShell reads that the module holds read-only itself (ADR 0139).
     const reads = ['Get-Location', 'Get-ChildItem -Name docs | Select-Object -First 3', 'git status --short',
       "git log --oneline -3 -- 'docs/x y.md'", 'cd C:\\repo; git diff --stat', 'git -C C:\\repo\\sub show --stat HEAD',
       'Get-Content "C:\\Program Files\\x\\a.txt" -Tail 15', "Select-String -Path a.md -Pattern '^\\$x|(y)' | Out-String -Width 200",
@@ -131,13 +129,13 @@ try {
       'git add -A', 'git -c core.pager=x log', 'git -C sub -c core.pager=x log', 'git -C sub', 'git diff --output=x.txt', 'git branch new',
       'python gen.py', 'pwsh -File x.ps1', '& ./x.ps1', '[IO.File]::WriteAllText("a","b")', 'Get-Content a | Set-Content b',
       'Get-Content [ab].md', '', '   ', 42, undefined,
-      // review findings of the ADR 0139 slice: a quote of the other kind, the call operator, a bare CR, git programs
+      // a quote of the other kind, the call operator, a bare CR and git programs
       'echo "\'" $(Remove-Item x) "\'"', 'Write-Output "a\'$(Remove-Item f)\'b"', "& 'C:\\x\\build.ps1'", '& "x.exe"', "& 'x'",
       'Get-Location &', "Get-Location; & 'x.ps1'", 'Get-Location' + String.fromCharCode(13) + 'Remove-Item x',
       'Get-Location' + String.fromCharCode(0x2028) + 'Remove-Item x', 'Get-Location' + String.fromCharCode(0x85) + 'Remove-Item x',
       'git log ' + String.fromCharCode(0x2013) + '-output=x', 'git diff --ext-diff', 'git show --textconv HEAD', 'git status --% x',
       "Remove-Item'x'", 'Remove-Item"x"', '"git" status', '. ./x.ps1', 'Write-Output "a`$(rm x)"', 'Get-Content "a$x"',
-      // the bounded re-review: an operator after a leading string is an expression; git reads env values raw
+      // an operator after a leading string is an expression, and git reads env values raw
       "'C:\\x.ts'-as'IO.StreamWriter'", "gc x; 'p'-as'IO.StreamWriter'", '"p"-as"IO.StreamWriter"', "'a'\"b\"", "'a'b",
       'git diff $env:X', 'git log -p "$env:X"', 'git -C $env:R status']
     eq('isPwshReadOnly: the reads', reads.map(M.isPwshReadOnly), reads.map(() => true))
@@ -344,8 +342,7 @@ try {
 
 test('SS0 probe ran', () => { assert.equal(probeError, null, String(probeError?.stack ?? probeError)) })
 test('SS0 probe produced results (an empty list is not a pass)', () => { assert.ok(results.length > 0) })
-// Each row is a test named `SS1 <the old name>`, so the parity check of ADR 0227 decision 8 matches the name
-// behind the ID.
+// Each row is a test named `SS1 <row name>`.
 for (const [name, verdict] of results) {
   test(`SS1 ${name}`, () => { assert.equal(verdict, 'OK', verdict) })
 }

@@ -3,41 +3,48 @@
 //
 // CI has no claude CLI, so the module is driven here under plain node with a FAKE engine: a fake `on`
 // captures the hooks, a fake `$` answers process.run (git rev-parse) / session.cwd / fs.read / fs.write over an
-// in-memory map / model.complete / clock.sleep / ui.toast (a trap that counts; the module never calls it, ADR 0202), and each `next` is a stub whose result the hook must
-// hand back untouched where the module has nothing to add. What this suite proves is the contract the host
-// cannot check for us: the pure half (the prompt-path and declaration parsers, the switch parser, the two
-// stage detectors, the stage data and its cut, the side-check answer's NONE rule, the edit-guard path match, the
-// status text) is right; the review-start stage fires on a main-loop Skill call of the built-in code-review
-// (ADR 0215) and on nothing else, and a declaration of the retired review-digest stage gets a problem line that
-// names review-start; the hook set is exactly turn.start, tool.call and command.run on ywr-harness:auto, and no
-// session.append, no session.start, no classic.* and
-// no skill.prompt (the built-in guard skips those for a user-tier plugin, ADR 0175); a switch that is off, a
-// stage that is undeclared, a missing prompt file, a deny from `next`, a call with an `agentId` and a checkout
-// without git all leave the stage untouched and start no side check and never call $.model.fork; a switch that is on adds the static prompt and
-// then the side check's answer to the stage's context, one side check at a time,
-// and a NONE answer, a timeout or a rejection never costs the static prompt; an Edit / Write
-// / NotebookEdit of `.harness.json` or a declared prompt file is denied while the switch is on and passes
-// otherwise; a stage runs only with the input baseline that the typed `on` took in this session (ADR 0176): no
-// baseline, or a changed `.harness.json` or prompt file, withholds the stage with one fixed line and no toast, and
-// the stage uses the same read it hashed; `/ywr-harness:auto on|off|status` writes the state file or nothing, as
-// the argument says; the stage log (ADR 0180) gets one JSON line per detected stage while the switch is on, with each
-// outcome and side-check result, capped at 200 lines, never written or read with the switch off, and a failed write
-// or read never costs the stage; `status` prints the last line and, with no declaration, the declaration shape and
-// the harness-init hint; the subagent deny (ADR 0201) refuses a Skill call of ywr-harness:slice-close that carries an agentId, with the switch on or
-// off, and reads no file, runs no git call and shows no toast; a main-loop call of it reaches next untouched with the switch
-// on or off; no stage and no side-check answer calls $.ui.toast (ADR 0202); and the
-// entry `mods.mjs` registers these hooks beside the others. What it cannot prove - the engine's own event
-// shapes (the Skill call, the `--tree` result), that the guard lets the hooks run, that a
-// real `$.model.complete` answers the way the fake does and honours its request fields (model, effort, max tokens, timeout), that the host answers a plugin skill command through `command.run` - is `claude plugin validate`'s
-// and the live `--plugin-dir` run's (spec 0012 section 3 Mods row); `claude plugin test` stays a local habit.
+// in-memory map / model.complete / clock.sleep / ui.toast (a trap that counts, ADR 0202), and each `next` is a
+// stub whose result the hook must hand back untouched where the module has nothing to add.
+// This suite proves the contract the host cannot check for us:
+//   - The pure half is right: the prompt-path and declaration parsers, the switch parser, the two stage
+//     detectors, the stage data and its cut, the side-check answer's NONE rule, the edit-guard path match
+//     and the status text.
+//   - The review-start stage fires on a main-loop Skill call of the built-in code-review (ADR 0215) and
+//     on nothing else. A declaration of the retired review-digest stage gets a problem line that names
+//     review-start.
+//   - The hook set is exactly turn.start, tool.call and command.run on ywr-harness:auto, with no
+//     session.append, session.start, classic.* or skill.prompt (the built-in guard skips those for a
+//     user-tier plugin, ADR 0175).
+//   - A switch that is off, an undeclared stage, a missing prompt file, a deny from `next`, a call with an
+//     `agentId` and a checkout without git all leave the stage untouched, start no side check and never
+//     call $.model.fork. A switch that is on adds the static prompt and then the side check's answer to
+//     the stage's context, one side check at a time. A NONE answer, a timeout or a rejection never costs
+//     the static prompt.
+//   - An Edit, Write or NotebookEdit of `.harness.json` or a declared prompt file is denied while the
+//     switch is on and passes otherwise.
+//   - A stage runs only with the input baseline that the typed `on` took in this session (ADR 0176). No
+//     baseline, or a changed `.harness.json` or prompt file, withholds the stage with one fixed line and
+//     no toast. The stage uses the same read it hashed.
+//   - `/ywr-harness:auto on|off|status` writes the state file or nothing, as the argument says.
+//   - The stage log (ADR 0180) gets one JSON line per detected stage while the switch is on, with each
+//     outcome and side-check result, capped at 200 lines. It is never written or read with the switch
+//     off, and a failed write or read never costs the stage. `status` prints the last line and, with no
+//     declaration, the declaration shape and the harness-init hint.
+//   - The subagent deny (ADR 0201) refuses a Skill call of ywr-harness:slice-close that carries an
+//     agentId, with the switch on or off, and reads no file, runs no git call and shows no toast. A
+//     main-loop call of it reaches next untouched.
+//   - No stage and no side-check answer calls $.ui.toast (ADR 0202).
+//   - The entry `mods.mjs` registers these hooks beside the others.
+// It cannot prove the engine's own event shapes (the Skill call, the `--tree` result), that the guard
+// lets the hooks run, that a real `$.model.complete` answers as the fake does and honours its request
+// fields (model, effort, max tokens, timeout), or that the host answers a plugin skill command through
+// `command.run`. Those are `claude plugin validate`'s and the live `--plugin-dir` run's (spec 0012
+// section 3 Mods row). `claude plugin test` stays a local habit.
 //
-// Port notes. The pwsh suite wrote this file's body to a temp .mjs and ran it in a child node, then turned each
-// `name<TAB>verdict` line into a case line. Here the body is the suite itself: it imports the module under test
-// directly and each check registers one node:test case, so the child, the temp file and the node-absent SKIP are
-// gone. The four checks that carried no case ID are `K1` to `K4` + their old name, so the parity check of ADR 0227
-// decision 8 matches them. A throw outside `want()` stops the file with a stack trace and exit 1, where the old
-// probe printed it as one FAIL line; either way the run is red. Korean text is built from escapes, so this file
-// stays ASCII.
+// The suite imports the module under test directly, and each check registers one node:test case. The
+// four checks with no case ID are named `K1` to `K4` + a name, so the parity check of ADR 0227
+// decision 8 matches them. A throw outside `want()` stops the file with a stack trace and exit 1.
+// Korean text is built from escapes, so this file stays ASCII.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 let unhandled = 0
@@ -710,7 +717,7 @@ for (const [id, git] of [['TC28', 'reject'], ['TC29', 'exit'], ['TC30', 'one-lin
   eq('BL13 a withheld stage (an input changed, or no baseline) calls no $.ui.toast; the model-facing withheld line stays (ADR 0202)', [v.context, E.calls.toast.length, u.v.context, U.calls.toast.length], [[M.withheldText('ready-report', [PROMPT])], 0, [M.withheldText('ready-report', null)], 0])
 }
 {
-  // review F1: a repeated `on` says which inputs differ from the baseline it replaces
+  // a repeated `on` says which inputs differ from the baseline it replaces
   const E = fakeEngine({ files: filesOn(ALL_STATIC) })
   const first = await cmd(E, 'on')
   E.fs.set(ROOT + '/' + PROMPT, 'rewritten')
@@ -718,7 +725,7 @@ for (const [id, git] of [['TC28', 'reject'], ['TC29', 'exit'], ['TC30', 'one-lin
   const third = await cmd(E, 'on')
   eq('BL14 on: the reply says the baseline was taken; a repeated on after a change names each input that differs from the replaced baseline; one with no change names none',
     [first.text.split('\n')[1].includes('2'), first.text.split('\n')[1].includes(PROMPT), second.text.split('\n')[1].endsWith(PROMPT), HANGUL.test(second.text.split('\n')[1]), third.text.split('\n')[1] === first.text.split('\n')[1]], [true, false, true, true, true])
-  // review F1 also_at: a baseline that cannot be taken says so, and every stage stays withheld
+  // a baseline that cannot be taken says so, and every stage stays withheld
   const F = fakeEngine({ files: filesOn(ALL_STATIC) })
   const digest = globalThis.crypto.subtle.digest
   let failed
@@ -731,7 +738,7 @@ for (const [id, git] of [['TC28', 'reject'], ['TC29', 'exit'], ['TC30', 'one-lin
     [failed.text.split('\n')[1] !== M.statusText({ ...M.newState(), root: ROOT, on: true, decl: { stages: {}, problems: [] } }).split('\n')[1], failed.text.split('\n')[0].includes(K_ON), failed.context[0].includes('now ON'), after.context], [true, true, true, [M.withheldText('ready-report', null)]])
 }
 {
-  // review F6/F9: the declaration the `on` reply shows is the one it hashed, so the next stage matches it
+  // the declaration the `on` reply shows is the one it hashed, so the next stage matches it
   const E = fakeEngine({ files: filesOn(ALL_STATIC) })
   await cmd(E, 'status')   // locate first, so the stale read below is the `on` path's own `refresh` read of .harness.json
   const read = E.$.fs.read
@@ -945,7 +952,7 @@ for (const [id, git] of [['TC28', 'reject'], ['TC29', 'exit'], ['TC30', 'one-lin
 // ---------------------------------------------------------------------------------------------
 const LOG = 'C:/repo/.git/ywr-harness/auto-stages.jsonl'
 const K_LAST = '\ucd5c\uadfc stage: '   // the last-stage label of the status text
-// a case whose module call is missing (the pre-change module) fails on its own line instead of stopping the probe
+// a case whose module call is missing fails on its own line instead of stopping the probe
 const want = async (name, fn, expected) => { let got; try { got = await fn() } catch (e) { got = 'THROW ' + String(e && e.message) } eq(name, got, expected) }
 const logOf = E => String(E.fs.get(LOG) ?? '').split('\n').filter(Boolean).map(l => JSON.parse(l))
 const lineOfStage = async (files, opts, run) => {   // one engine, one stage run, the parsed log
@@ -1238,7 +1245,7 @@ eq('CD5 the close gate and the toast are gone: no export of the ADR 0198 gate (p
   [M.closeGate, M.gitOut, M.parseBranch, M.parseDefaultBranch, M.closeArgs, M.closeUnmet, M.closeDenyText, M.closeVerdict, M.closeBody, M.closeAnswer, M.CLOSE_LINE, M.CLOSE_SKILL_REL, M.CLOSE_TYPED, M.withheldToast],
   [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined])
 
-// the review stage did not change the subagent deny: a subagent's close call is still denied, and a subagent's code-review call is not
+// the review stage leaves the subagent deny alone: a subagent's close call is denied, and a subagent's code-review call is not
 {
   const E = fakeEngine({ files: filesOn(ALL_CHECK), complete: answers(ANSWER) })
   const d = await closeCall(E, { ...closeEv, agentId: 'a1' })

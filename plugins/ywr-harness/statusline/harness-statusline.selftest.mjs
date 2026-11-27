@@ -6,19 +6,14 @@
 // the status line is the one surface where a confident wrong number is read hundreds of times a day
 // without anyone re-checking it. Every absence case below exists for that.
 //
-// Payload fixtures are shaped from a live 2.1.220 payload captured 2026-07-27, not from the docs.
+// Payload fixtures are shaped from a live 2.1.220 payload, not from the docs.
 //
-// The pwsh suite named its cases `<section letter> <text>` with no case ID. Each test here is
-// `ST<n> <the old name>`, so the parity check of ADR 0227 decision 8 matches the names. Patterns are
-// pwsh -match sources (case-insensitive; see toRx in lib/selftest-lib.mjs). The pwsh suite skipped on a
-// machine with no `node` and failed on CI without it. A Node suite runs under node, so that branch is gone.
+// Patterns are regex sources matched case-insensitively (see toRx in lib/selftest-lib.mjs).
 //
-// Two ways of driving the subject, as in the pwsh suite. The stdin cases (A to G) start the script as a
-// child, the way Claude Code does. The module cases (H, I, and the placement case) call the exported
-// functions: the pwsh suite wrote a one-line script and started `node` on it for each, and the call in
-// this process reads the same function with the same arguments. The three H cases that read
-// CLAUDE_CONFIG_DIR still start a child, because a variable set in this process would leak into every
-// later case.
+// Two ways of driving the subject. The stdin cases (A to G) start the script as a child, the way
+// Claude Code does. The module cases (H, I, and the placement case) call the exported functions in this
+// process. The three H cases that read CLAUDE_CONFIG_DIR still start a child, because a variable set in
+// this process would leak into every later case.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -35,9 +30,8 @@ const fxBase = fixtureRoot('statusline-selftest')
 process.on('exit', () => removeFixtureRoot(fxBase))
 
 // A HOME with no plugin install registry, so the plugin-version segment cannot appear. Without
-// this the suite reads the developer's real ~/.claude and every exact-line assertion passes or
-// fails depending on what that machine happens to have installed — the org-guide era of this
-// suite hit exactly that, and this hermetic HOME is how it was found.
+// this the suite reads the developer's real ~/.claude, and every exact-line assertion passes or
+// fails depending on what that machine has installed.
 const hermeticHome = path.join(fxBase, 'hermetic-home')
 fs.mkdirSync(path.join(hermeticHome, '.claude'), { recursive: true })
 
@@ -52,7 +46,7 @@ function hermeticEnv() {
   return env
 }
 
-// stdout and stderr together, as `2>&1` read them.
+// stdout and stderr together, like `2>&1`.
 const combined = (r) => r.stdout + r.stderr
 
 // Each distinct payload runs once; a case that reads the same payload again reuses the result.
@@ -111,9 +105,9 @@ st('E a non-context parenthetical is preserved', () =>
     { mustMatch: [String.raw`Fable 5 \(preview\)`], noNegative: 'presence of the kept parenthetical' }))
 
 // --- W: the worktree segment (ADR 0059) -----------------------------------------------------------
-// workspace.git_worktree is a string (the linked-worktree name), doc-verified and confirmed from a
-// captured payload on 2026-08-19. The guard is still a type check: any other shape a host might
-// send must vanish, never render as "[object Object]" next to the location.
+// workspace.git_worktree is a string (the linked-worktree name), as the docs and a captured payload
+// show. The guard is still a type check: any other shape a host might send must vanish, never render
+// as "[object Object]" next to the location.
 const W = `{"model":{"display_name":"Opus 5 (1M context)","id":"claude-opus-5[1m]"},
  "effort":{"level":"xhigh"},
  "workspace":{"current_dir":"C:/Projects/ywrlabs/ywr-harness","git_worktree":"feature-xyz"},
@@ -131,7 +125,7 @@ st('W a non-string git_worktree renders no segment', () =>
 st('W a blank-string git_worktree renders no segment', () =>
   assertMatch(invokeLine('{"model":{"display_name":"Opus 5"},"workspace":{"current_dir":"C:/a/b","git_worktree":"  "}}'),
     { mustNotMatch: ['· wt'] }))
-// Control bytes in the NAME are stripped, not rendered (review 2026-08-19): a raw ESC would
+// Control bytes in the NAME are stripped, not rendered: a raw ESC would
 // start an ANSI sequence of the member's choosing mid-line, and a newline would break the one
 // line this renderer owns. Asserted on the RAW output — the ANSI-stripping invokeLine would
 // mask an injected ESC that survived. The JSON text below carries the escapes as backslash
@@ -193,10 +187,10 @@ st('G empty stdin does not crash', () => {
 // disk moves ahead of a live session; that mismatch is the "restart to apply" signal, so the
 // segment must show what this machine HAS, never what a repo or the marketplace published.
 //
-// Since ADR 0046 pluginVersion takes the CONFIG DIR itself (explicit arg -> CLAUDE_CONFIG_DIR ->
-// ~/.claude), not a home to append `.claude` to; the fixtures keep their home shape and the
-// append happens here. The explicit arg also short-circuits the env var, which is what keeps
-// these cases hermetic on a machine running under a config-dir account.
+// pluginVersion takes the CONFIG DIR itself (explicit arg -> CLAUDE_CONFIG_DIR -> ~/.claude), not a
+// home to append `.claude` to (ADR 0046). The fixtures keep their home shape and the append happens
+// here. The explicit arg also short-circuits the env var, which keeps these cases hermetic on a
+// machine running under a config-dir account.
 const invokeVer = (homeDir) => sl.pluginVersion(path.join(homeDir, '.claude')) || '<empty>'
 function newHome(name, json) {
   const h = path.join(fxBase, name)
@@ -215,8 +209,8 @@ st('H an unparseable registry does not crash the line', () => eq(invokeVer(newHo
 st('H a machine without the plugin yields nothing', () =>
   eq(invokeVer(newHome('not-installed', '{"version":2,"plugins":{"other-plugin@somewhere":[{"version":"1.0.0"}]}}')), '<empty>'))
 
-// "unknown" is a real registry state (observed live on an official-marketplace plugin): it is not
-// a version and must not render as one.
+// "unknown" is a real registry state of an official-marketplace plugin: it is not a version and
+// must not render as one.
 st('H an "unknown" version renders no segment', () =>
   eq(invokeVer(newHome('unknown-version', '{"version":2,"plugins":{"ywr-harness@ywrlabs":[{"version":"unknown"}]}}')), '<empty>'))
 
@@ -260,7 +254,7 @@ st('H an explicit dir beats CLAUDE_CONFIG_DIR', () => {
 })
 
 // A set-but-RELATIVE CLAUDE_CONFIG_DIR reads as UNMEASURED (no segment), never as a cwd-relative
-// path (review 2026-08-11, medium): a registry planted at exactly the cwd-relative spot must stay
+// path: a registry planted at exactly the cwd-relative spot must stay
 // invisible — a cwd-dependent read would make the segment flicker with wherever the renderer
 // happened to be spawned.
 const h12 = path.join(fxBase, 'cwd-trap')
@@ -269,9 +263,8 @@ fs.writeFileSync(path.join(h12, 'rel-cfg', 'plugins', 'installed_plugins.json'),
 st('H a relative CLAUDE_CONFIG_DIR is unmeasured — the cwd-planted registry stays invisible', () =>
   eq(versionChild({ ...process.env, CLAUDE_CONFIG_DIR: 'rel-cfg' }, h12), '<empty>'))
 
-// Placement, asserted by INJECTING the value rather than reading the machine's real cache. The
-// first version of this case asserted the segment was absent and failed on any machine that has a
-// guide delivered — a suite whose verdict depends on the developer's ~/.claude is not a suite.
+// Placement, asserted by INJECTING the value rather than reading the machine's real cache. A suite
+// whose verdict depends on the developer's ~/.claude is not a suite.
 const invokeRender = (json, guide) => stripAnsi(sl.render(JSON.parse(json), guide).line).trim()
 st('H the segment renders last, after the quota segments', () =>
   assertMatch(invokeRender(FULL, 'v0.14.0'), { mustMatch: [String.raw`7d 1% · ywr-harness v0\.14\.0$`], noNegative: 'the position is the claim; absence is the next case' }))
@@ -280,11 +273,10 @@ st('H the segment renders last, after the quota segments', () =>
 st('H an empty version renders no segment at all', () => assertMatch(invokeRender(FULL, ''), { mustNotMatch: ['ywr-harness v'] }))
 
 // --- J: a Fable session renders like every other model — weekly at the TAIL, never inline --------
-// v0.32.0 rendered `Fable 5(7d N%)` (ADR 0047) and it read as a Fable-scoped figure — which
-// /usage now actually shows, on a different denominator (the Team-plan Fable cap) — while the
-// payload carries only the account-wide weekly (re-measured 2.1.228: five_hour/seven_day, no
-// model-scoped key). ADR 0049 removed the inline form; these cases pin the removal so the
-// parenthetical cannot quietly return.
+// An inline `Fable 5(7d N%)` would read as a Fable-scoped figure, which /usage shows on a different
+// denominator (the Team-plan Fable cap), while the payload carries only the account-wide weekly
+// (five_hour and seven_day, no model-scoped key). ADR 0049 removed the inline form that ADR 0047 added;
+// these cases pin the removal so the parenthetical cannot quietly return.
 const FABLE = `{"model":{"display_name":"Fable 5 (1M context)","id":"claude-fable-5[1m]"},
  "effort":{"level":"xhigh"},
  "workspace":{"current_dir":"C:/Projects/ywrlabs/ywr-harness"},
@@ -313,7 +305,7 @@ st('I a config-dir account heads the title', () => eq(invokeTitle(FULL, { CLAUDE
 st('I no CLAUDE_CONFIG_DIR -> the location heads the title, unchanged', () => eq(invokeTitle(FULL, {}), 'ywrlabs/ywr-harness/Opus 5/xhigh'))
 st('I a trailing separator and forward slashes still yield the account', () => eq(invokeTitle(FULL, { CLAUDE_CONFIG_DIR: '/home/x/.claude-orcait/' }), 'claude-orcait/Opus 5/xhigh'))
 // Degenerate shapes that strip to NOTHING must fall back to the location — never a bare "/model"
-// title (review 2026-08-11: this pins tabTitle's `|| r.loc` fallback, which a `??` "modernization"
-// would silently break for exactly these values).
+// title. This pins tabTitle's `|| r.loc` fallback, which a `??` "modernization" would silently break
+// for exactly these values.
 st('I a basename that strips to nothing falls back to the location', () => eq(invokeTitle(FULL, { CLAUDE_CONFIG_DIR: '/home/x/.' }), 'ywrlabs/ywr-harness/Opus 5/xhigh'))
 st('I a whitespace-only value falls back to the location', () => eq(invokeTitle(FULL, { CLAUDE_CONFIG_DIR: '   ' }), 'ywrlabs/ywr-harness/Opus 5/xhigh'))

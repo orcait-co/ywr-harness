@@ -1,44 +1,26 @@
-// ywr-harness:report-issue — the member-side half of the upstream feedback loop (ywr-harness ADR 0064, ywr-harness spec 0013).
-// Node 22 or later, built-in modules only (ywr-harness ADR 0220).
+// ywr-harness:report-issue, the member-side half of the upstream feedback loop (ywr-harness ADR 0064, ywr-harness spec 0013).
 //
 //   node report-issue.mjs --description=<text> [--title=<t>] [--target=<dir>] [--out-dir=<dir>] [--repo=<owner/repo>]
 //   node report-issue.mjs --file --body-path=<file> [--title=<t>] [--repo=<owner/repo>]
 //
-// The `--name=value` form is the safe spelling: a value that starts with a dash (a description such as
-// "-x is broken") is refused by the argument parser in the `--name value` form.
+// Use the `--name=value` form. The parser refuses a value that starts with a dash in the
+// `--name value` form.
 //
-// Two modes, and the split IS the contract:
+// Two modes:
+//   DRAFT (default)             Writes the report to one scratch file and prints where it is and the
+//                               command that files it. Nothing is filed.
+//   FILE  (--file --body-path)  Files that file, which the member has read, as an issue on the public
+//                               dist repo. The body is never regenerated.
 //
-//   DRAFT (default)            gather the report, write it to ONE scratch file, print where it is and
-//                              the exact command that files it. Nothing is filed. The draft can make read-only
-//                              network calls: the dry run fetches the repo's own remotes, and with
-//                              toolchain drift `gh` searches the open reports for the fingerprint.
-//   FILE  (--file --body-path) file THAT file — the one the member has read — as an issue on the
-//                              public dist repo. The body is never regenerated here: what was shown
-//                              is what is filed.
+// No label is set or searched for (ywr-harness ADR 0085). The canon's inbox lists every open dist issue.
+// The body carries what ywr-harness ADR 0064 decides. It never includes diff text, because the
+// tracker is public (ywr-harness ADR 0064 option E). It never runs harness-init.
+// The refresh nudge and `init.mjs --dry-run` run as black boxes, and their output is quoted verbatim,
+// so this script owns none of their logic (ywr-harness ADR 0033, ywr-harness spec 0009).
+// A missing or unauthenticated `gh` prints NOT FILED with the body kept and the by-hand URL.
+// The script prints and the member acts (ywr-harness ADR 0012).
 //
-// No label is set, and none is searched for (ywr-harness ADR 0085): GitHub silently drops a label set at
-// creation by a filer without push access, and most dist collaborators are read-role, so a label
-// landed only for admins. The canon's session-start inbox lists EVERY open dist issue instead, and
-// the `[upstream-report]` title prefix stays as the human-readable marker.
-//
-// What the body carries is decided in ywr-harness ADR 0064: the member's description verbatim; the running
-// and registered plugin versions; `claude --version`; OS + node; the repo as owner/repo (parsed
-// from origin — NEVER the URL, which can carry credentials); the refresh-nudge hook's verdict
-// VERBATIM (a Node hook since ywr-harness ADR 0116, run with a synthetic SessionStart payload — with no node on
-// PATH the report says so instead of a verdict; it writes nothing and exits 0 by contract,
-// ywr-harness ADR 0033); `init.mjs --dry-run` output VERBATIM (writes nothing, ywr-harness spec 0009);
-// the local git history of every file the dry run would change; a fingerprint for dedupe. Both
-// readers are called as black boxes on purpose — the placement map lives in the harness-init skill and the
-// hook's header forbids a second copy, so this script owns none of that logic.
-//
-// What it never does: include diff text (the tracker is PUBLIC — ywr-harness ADR 0064 option E), run
-// harness-init, file without --file, retry a failed filing, or fall silent: `gh` absent or
-// unauthenticated is a printed NOT FILED with the body kept and the by-hand URL (ywr-harness ADR 0012's
-// shape — the script prints, the member acts).
-//
-// Exit codes: 0 = drafted / filed · 1 = usage or fatal (nothing useful produced) ·
-//             2 = NOT FILED (body kept; gh absent, unauthenticated, or the create failed)
+// Exit codes: 0 drafted or filed, 1 usage or fatal, 2 NOT FILED (body kept).
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -54,14 +36,13 @@ const DIST = 'orcait-co/ywr-harness'
 const selfPath = fileURLToPath(import.meta.url)
 const pluginRoot = path.dirname(path.dirname(path.dirname(selfPath)))
 
-// One value, one line, for every reader (harness_config.CONTROL's class plus the backtick): hook-lib's
-// inline() with no length cap — a title from the PUBLIC dist tracker (ANY account can open an issue
-// there, ywr-harness ADR 0085) cannot break the summary line or carry a terminal escape.
+// One value on one line. Any account can open an issue on the public dist tracker, so a title there
+// must not break the summary line or carry a terminal escape (ywr-harness ADR 0085).
 const one = (text) => inline(text, Infinity)
 
-// Repo-derived text is NEVER live markdown on the public tracker: every quoted block goes inside a code
-// fence one backtick longer than the longest backtick run it contains (a subject line carrying a
-// triple-backtick run cannot close the fence early), and every inline value goes through one().
+// Repo-derived text is never live markdown on the public tracker. A quoted block sits in a fence one
+// backtick longer than its longest backtick run, so a subject line cannot close the fence early.
+// Every inline value goes through one().
 function fence(text) {
   let n = 3
   for (const m of text.matchAll(/`+/g)) if (m[0].length >= n) n = m[0].length + 1
@@ -69,15 +50,13 @@ function fence(text) {
   return `${f}\n${text}\n${f}`
 }
 
-// Output lines of a finished child, the way PowerShell captured a native command: one entry per
-// line, the final empty piece after the last newline dropped.
 function lines(text) {
   const a = String(text).split(/\r?\n/)
   if (a.length && a[a.length - 1] === '') a.pop()
   return a
 }
 
-// Parsed git output goes through hook-lib's one git boundary (quotepath off, no shell, UTF-8 bytes).
+// Parsed git output goes through hook-lib's git boundary (quotepath off, no shell, UTF-8 bytes).
 function gitLines(args) {
   const r = gitRun(args)
   if (r.absent || r.status !== 0) return []
@@ -90,15 +69,14 @@ function gh(args) {
   const r = spawnSync(ghPath(), args, { encoding: 'utf8', windowsHide: true })
   return { status: r.error ? null : r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', error: r.error }
 }
-// `gh` on PATH AND authenticated. `gh auth status` exits non-zero when no account is logged in; its
-// text is not parsed — only the code.
+// `gh` on PATH and authenticated. Only the exit code of `gh auth status` counts, never its text.
 function ghUsable() {
   if (!ghPath()) return false
   return gh(['auth', 'status']).status === 0
 }
 
-// `claude --version`. On Windows an npm install puts a `claude.cmd` shim on PATH, which only a shell can
-// start; the argument is the fixed `--version`, so the shell sees no member text.
+// On Windows an npm install puts a `claude.cmd` shim on PATH, which only a shell can start. The
+// argument is the fixed `--version`, so the shell sees no member text.
 function claudeVersion() {
   const miss = 'not on PATH (a wrapper account may run it under another name — say which in the description)'
   let r
@@ -108,8 +86,7 @@ function claudeVersion() {
   } else if (process.platform === 'win32') {
     const shim = whichShim('claude')
     if (!shim) return miss
-    // cmd.exe's /s drops the outer quote pair, so the path keeps its own quotes inside it and a space in
-    // the path cannot split it.
+    // cmd.exe's /s drops the outer quote pair, so the path keeps its own quotes and a space cannot split it.
     r = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${shim}" --version"`],
       { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true })
   } else {
@@ -131,8 +108,8 @@ function whichShim(name) {
   return ''
 }
 
-// The `node` an exec-form hook would start: the host never launches a .cmd/.bat shim, so on Windows only
-// a real node.exe counts; elsewhere a regular `node` file with an execute bit.
+// The `node` an exec-form hook would start. The host never launches a .cmd or .bat shim, so on
+// Windows only a real node.exe counts. Elsewhere a regular `node` file with an execute bit counts.
 function nodeOnPath() {
   const file = process.platform === 'win32' ? 'node.exe' : 'node'
   for (let dir of String(process.env.PATH ?? '').split(path.delimiter)) {
@@ -151,7 +128,7 @@ function nodeOnPath() {
 function isFile(p) { try { return fs.statSync(p).isFile() } catch { return false } }
 function isDir(p) { try { return fs.statSync(p).isDirectory() } catch { return false } }
 
-// PowerShell's `Sort-Object -Unique` on strings: case-insensitive order and a case-insensitive unique.
+// Case-insensitive order and a case-insensitive unique.
 function sortUnique(items) {
   const out = []
   for (const s of [...items].sort((a, b) => collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0))) {
@@ -208,12 +185,11 @@ function fileMode(a) {
     return 2
   }
 
-  // The body handed to gh is the reviewed file minus its title line — written beside it so the
-  // reviewed file itself stays untouched as the member's record.
+  // gh gets the reviewed file minus its title line, written beside it. The reviewed file stays
+  // untouched as the member's record.
   const filedPath = `${bodyPath}.filed.md`
   fs.writeFileSync(filedPath, (body + '\n').replace(/\r\n/g, '\n'), 'utf8')
-  // No `-l` (ywr-harness ADR 0085): for a read-role filer GitHub drops it silently, so it never carried the
-  // report to the inbox — the inbox lists every open dist issue.
+  // No `-l` (ywr-harness ADR 0085): GitHub silently drops a label from a read-role filer.
   const r = gh(['issue', 'create', '-R', repo, '-t', fileTitle, '-F', filedPath])
   const out = [...lines(r.stdout), ...lines(r.stderr)]
   const url = out.filter(l => /^https:\/\/\S+\/issues\/\d+/.test(l)).pop()
@@ -238,7 +214,7 @@ function draftMode(a) {
   }
   let target
   try { target = fs.realpathSync.native(path.resolve(a.target)) } catch { say(`FAIL — target not found: ${a.target}`); return 1 }
-  // realpath resolves links; the shown path keeps the resolved form PowerShell's Resolve-Path gave, minus links.
+  // The realpath call only proves the target exists. The shown path keeps links unresolved.
   target = path.resolve(a.target)
   if (!isDir(target)) { say(`FAIL — target is not a directory: ${target}`); return 1 }
   let root = target
@@ -252,9 +228,10 @@ function draftMode(a) {
     if (typeof mf.version === 'string' && /\d/.test(mf.version)) runVer = `v${mf.version}`
   } catch { /* unreadable */ }
 
-  // Registered installs — the registry is self-located from this copy's path when it is a cache
-  // install (<plugins>/cache/<marketplace>/<name>/<version>, registry at <plugins>/installed_plugins.json
-  // — the refresh nudge's probe, ywr-harness ADR 0039), else the config dir's. UNDOCUMENTED file, read best-effort.
+  // Registered installs. A cache install (<plugins>/cache/<marketplace>/<name>/<version>) locates
+  // the registry at <plugins>/installed_plugins.json from its own path, as the refresh nudge's probe
+  // does (ywr-harness ADR 0039). Otherwise the config dir's registry is read. The file is
+  // undocumented, so the read is best effort.
   const registered = []
   const regPaths = []
   try {
@@ -268,7 +245,7 @@ function draftMode(a) {
   for (const rp of regPaths) {
     if (!isFile(rp)) continue
     try {
-      // Read leniently (comments, trailing commas), as the refresh nudge reads the same file.
+      // Lenient read (comments, trailing commas), as the refresh nudge reads the same file.
       const reg = parseJsonLoose(fs.readFileSync(rp, 'utf8').replace(/^﻿/, ''))
       const plugins = reg && typeof reg.plugins === 'object' && reg.plugins !== null ? reg.plugins : {}
       for (const [name, val] of Object.entries(plugins)) {
@@ -289,13 +266,12 @@ function draftMode(a) {
   const claudeVer = claudeVersion()
   const osLine = `${os.type()} ${os.release()} (${os.version()}) · node ${process.version}`
 
-  // Repo identity — owner/repo ONLY. A remote URL can embed a token (https://user:token@host/…);
-  // the URL itself is never written into the body.
+  // The repo identity is owner/repo only. A remote URL can embed a token (https://user:token@host/…),
+  // so the URL never reaches the body.
   let repoId = '(no origin remote) ' + one(path.basename(root))
   const origin = gitLines(['-C', root, 'remote', 'get-url', 'origin'])
   if (origin.length && origin[0]) {
-    // Two gates: the path shape, then GitHub's name alphabet — anything else (a backtick, a bracket,
-    // a space) is not a repo id and must not reach the body as one.
+    // Two gates: the path shape, then GitHub's name alphabet. A backtick, bracket or space is no repo id.
     let cand = ''
     const om = /[:/]([^/:\s]+)\/([^/\s]+?)(\.git)?\/?$/.exec(origin[0])
     if (om) cand = `${om[1]}/${om[2]}`
@@ -311,7 +287,7 @@ function draftMode(a) {
   const hasStamp = isFile(stampPath)
   if (hasStamp) {
     try {
-      // Bounded read, same reason as the nudge's probe: a stamp is one short token.
+      // A bounded read, as in the nudge's probe: a stamp is one short token.
       const fd = fs.openSync(stampPath, 'r')
       const buf = Buffer.alloc(64)
       let n
@@ -324,30 +300,29 @@ function draftMode(a) {
     } catch { stampDisp = '(unreadable)' }
   }
 
-  // --- scaffold drift — two existing readers, quoted verbatim, never re-implemented ----------------
+  // --- scaffold drift: two readers, quoted verbatim, never re-implemented ---------------------------
   const scaffolded = hasStamp || isDir(path.join(root, 'scripts/harness'))
   let nudgeText = '(not a scaffolded repo — no `scripts/harness/` and no `.harness-version`; the nudge and the dry run were not run)'
   let dryRunText = nudgeText
   const drifted = []
   const foreign = []
-  // The dry run can stop BEFORE comparing anything — init.mjs refuses a downgrade (repo stamp newer than
-  // this copy, ywr-harness ADR 0042) with four lines and exit 1, so an empty drifted set means UNKNOWN, not
-  // "none". Known only when init exited 0 AND printed its per-file summary line.
+  // The dry run can stop before comparing anything: init.mjs refuses a downgrade (ywr-harness ADR 0042)
+  // with exit 1. An empty drifted set then means unknown, not none. Drift is known only when init
+  // exited 0 and printed its per-file summary line.
   let driftKnown = false
   let drCode = -1
   if (scaffolded) {
     const hook = path.join(pluginRoot, 'hooks/session-start-scaffold-refresh-nudge.mjs')
     if (isFile(hook)) {
-      // The nudge runs the way the host runs it: an exec-form `node` found on PATH. With none, the host
+      // The nudge runs as the host runs it, through an exec-form `node` on PATH. Without one the host
       // could not run the hook either, so the report says that instead of a verdict.
       const nodeExe = nodeOnPath()
       if (!nodeExe) {
         nudgeText = '(the refresh nudge could not run: node is not on PATH, and the nudge is a Node hook — so no toolchain-drift verdict was read for this repo here; the dry run below is the only drift reader that ran)'
       } else {
         const payload = JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'ywr-harness-report-issue', source: 'startup', cwd: root })
-        // stdout is the verdict and is all that gets parsed: node's stderr (a NODE_OPTIONS preload's
-        // warning, a deprecation notice) is quoted only when the run failed (non-zero exit) or its
-        // stdout was not JSON — never merged into the JSON.
+        // Only stdout is parsed as the verdict. Stderr (a NODE_OPTIONS warning, a deprecation notice)
+        // is quoted only after a non-zero exit, and never merged into the JSON.
         const r = spawnSync(nodeExe, [hook], { input: payload + '\n', encoding: 'utf8', windowsHide: true })
         if (r.error) {
           nudgeText = `(hook invocation failed: ${r.error.message})`
@@ -384,10 +359,10 @@ function draftMode(a) {
       } else {
         drCode = r.status ?? -1
         const dr = [...lines(r.stdout ?? ''), ...lines(r.stderr ?? '')]
-        // Two of init.mjs's line shapes name a file that DIFFERS from its template: `~ <f> (…)`
-        // (would be refreshed / replaced) and the first-run collision refusal (ywr-harness ADR 0055). The
-        // GUARDED marker-less refusal is different — a foreign file the scaffold leaves alone and
-        // the nudge is silent on by design (ywr-harness ADR 0033) — so it is listed as foreign, not as drift.
+        // Two init.mjs line shapes name a file that differs from its template: `~ <f> (…)` and the
+        // first-run collision refusal (ywr-harness ADR 0055). The marker-less GUARDED refusal is a
+        // foreign file that the scaffold leaves alone and the nudge ignores (ywr-harness ADR 0033).
+        // It is listed as foreign, not as drift.
         for (const ln of dr) {
           let m
           if ((m = /^\s*~\s+(\S+)\s+\(/.exec(ln))) drifted.push(m[1])
@@ -412,12 +387,12 @@ function draftMode(a) {
     const lg = gitLines(['-C', root, 'log', '--oneline', '-3', '--', f])
     const st = gitLines(['-C', root, 'status', '--porcelain', '--', f])
     const note = st.length ? ' · uncommitted changes present' : ''
-    // Plain text — the whole block is rendered inside a fence, so subjects and paths stay verbatim and inert.
+    // Plain text, because the whole block sits inside a fence and stays inert.
     if (lg.length) { historyLines.push(f + note); for (const l of lg) historyLines.push(`    ${l}`) }
     else historyLines.push(f + ' — no commit touches this path (untracked or no git)' + note)
   }
 
-  // Fingerprint — repo + running version + the drifted set. A dedupe HINT (ywr-harness ADR 0064), never a block.
+  // The fingerprint covers repo, running version and drifted set. It is a dedupe hint, never a block (ywr-harness ADR 0064).
   const fpInput = `${repoId}|${runVer}|` + driftedU.join(',')
   const fingerprint = 'fb' + crypto.createHash('sha256').update(fpInput, 'utf8').digest('hex').slice(0, 10)
 
@@ -458,8 +433,8 @@ function draftMode(a) {
 
   const outDir = a['out-dir'] || os.tmpdir()
   if (!isDir(outDir)) fs.mkdirSync(outDir, { recursive: true })
-  // The name carries the second; a second draft in the same second and directory takes `-2`, `-3`, …
-  // The exclusive create ('wx') makes the claim atomic, so two concurrent runs never write one file.
+  // A second draft in the same second and directory takes `-2`, `-3`, and so on. The exclusive
+  // create ('wx') makes the claim atomic, so two concurrent runs never write one file.
   const stamp = localStamp(new Date())
   let bodyFile = ''
   for (let n = 1; !bodyFile && n <= 100; n++) {
@@ -467,7 +442,7 @@ function draftMode(a) {
     let fd
     try { fd = fs.openSync(cand, 'wx') }
     catch (e) { if (e.code === 'EEXIST') continue; throw e }
-    // A failed write removes its own claim: FILE mode files what DRAFT wrote, never a partial body.
+    // A failed write removes its own claim, so FILE mode never files a partial body.
     try { fs.writeSync(fd, bodyBytes); fs.closeSync(fd) }
     catch (e) {
       try { fs.closeSync(fd) } catch { /* the close can fail the same way the write did */ }
@@ -484,10 +459,9 @@ function draftMode(a) {
   const searchCap = 20
   if (drifted.length) {
     if (ghUsable()) {
-      // Every open dist issue, no label filter (ywr-harness ADR 0085): a read-role member's earlier report
-      // carries no label, and the quoted 12-char fingerprint is the discriminator.
-      // The author is named on every hit: without the label, ANY account's issue can carry a published
-      // fingerprint, so the member sees who filed the "similar" report before being steered to it.
+      // The search covers every open dist issue with no label filter, and the quoted fingerprint
+      // discriminates (ywr-harness ADR 0085). Every hit names its author, because any account's
+      // issue can carry a published fingerprint.
       const r = gh(['issue', 'list', '-R', repo, '--state', 'open', '-S', `"${fingerprint}"`, '--json', 'number,title,author', '--limit', String(searchCap)])
       if (r.status === 0) {
         try {
@@ -496,7 +470,7 @@ function draftMode(a) {
             const who = one(psString(x && x.author && x.author.login))
             return `#${psString(x && x.number)} ${one(psString(x && x.title))}` + (who ? ` (by ${who})` : '')
           })
-          // The search itself is capped; a full page says so — never a silent cap.
+          // The search is capped, and a full page says so.
           similar = !hits.length ? 'none' : hits.length >= searchCap ? hits.join(' · ') + ` (search capped at ${searchCap} — more may exist)` : hits.join(' · ')
         } catch (e) { similar = `NOT CHECKED (${one(e.message)})` }
       } else { similar = `NOT CHECKED (gh issue list exited ${r.status ?? 'without an exit code'})` }

@@ -1,33 +1,30 @@
-// Hooks module (Claude Mods; ywr-harness ADR 0138) — the OBSERVE-ONLY slice status line. UNREGISTERED since
-// ywr-harness ADR 0140: `mods.mjs` (the entry `hooks.json` names under `modules`) does not import it, so no line
-// shows; the file and its selftest stay for a redesign, which a new ADR must register again.
+// Hooks module (Claude Mods; ywr-harness ADR 0138): the OBSERVE-ONLY slice status line. UNREGISTERED since
+// ywr-harness ADR 0140: `mods.mjs` does not import it, so no line shows. The file and its selftest stay for a
+// redesign, which a new ADR must register.
 //
-// One line, pinned under the prompt by `$.ui.status` (one per plugin, beside the engine's notices; the
-// member's own statusline is untouched), with two halves:
+// One line, pinned under the prompt by `$.ui.status` (one per plugin; the member's own statusline is
+// untouched), with two halves:
 //
-// - the CONTEXT ZONE, from `session.measure`: the org guide's start rule (under ~35 % start freely,
-//   35–60 % only a scoped slice, over 60 % close, past ~85 % plan nothing new; in a 1M window, a
-//   follow-on phase past ~200k tokens starts in a fresh session). The higher zone wins.
-// - the `--tree` FRESHNESS of the prepared close (ywr-harness ADR 0105: the ready report's last line is what
-//   `harness_gates.mjs --tree` printed after the final edit), from `tool.call`: after a successful
-//   `--tree` run (a shell call that ENDS with it, `isTreeRun`), the distinct files under the project
-//   root an Edit / Write / NotebookEdit changed, and the Bash / PowerShell calls the engine did not mark
-//   `isReadOnly`, failed ones included, less the PowerShell reads of ywr-harness ADR 0139's list. Before the first `--tree` run there is no `--tree` half, and a
-//   reset (a /clear, a root move, a lost worker) drops it again, so a lost count never reads as "no
-//   change"; the residuals ywr-harness ADR 0138 lists are writes the module cannot see.
+// - the CONTEXT ZONE, from `session.measure`: the start rule of the org guide, "Session hygiene". The
+//   higher zone wins.
+// - the `--tree` FRESHNESS of the prepared close (ywr-harness ADR 0105), from `tool.call`: after a successful
+//   `--tree` run (a shell call that ENDS with it, `isTreeRun`), the distinct files under the project root
+//   that an Edit, Write or NotebookEdit changed, and the Bash and PowerShell calls the engine did not mark
+//   `isReadOnly`, failed ones included, less the PowerShell reads of ywr-harness ADR 0139. Before the first
+//   `--tree` run there is no `--tree` half. A reset (a /clear, a root move, a lost worker) drops it again, so a
+//   lost count never reads as "no change". The residuals of ywr-harness ADR 0138 are writes the module cannot see.
 //
-// Observe-only, by contract (ywr-harness ADR 0117's, narrowed by ywr-harness ADR 0138 to allow `$.ui.status` alone): every hook
-// hands `next` the event it received and returns what `next` resolved to; the bookkeeping runs after
-// `next`, inside try/catch, except one in-memory mark of a `--tree` run's start before `next`. It never denies, rewrites, starts a turn or writes a file, and the line
-// carries no prompt, command or file text — counts and the zone only. It runs only where the project
-// root holds `.harness.json` (the ledger's rule).
+// Observe-only (ywr-harness ADR 0117, narrowed by ywr-harness ADR 0138 to allow `$.ui.status` alone): every
+// hook hands `next` the event it received and returns what `next` resolved to. The bookkeeping runs after
+// `next`, inside try/catch, except one in-memory mark of a `--tree` run's start before `next`. The module
+// never denies, rewrites, starts a turn or writes a file. The line carries counts and the zone only, no prompt,
+// command or file text. It runs only where the project root holds `.harness.json`.
 //
-// The thresholds are constants: the org guide (claude/org-guide.md, "Session hygiene") is their source,
-// and a guide change to the zones changes them in the same slice (ywr-harness ADR 0138 Decision 7).
+// The thresholds are constants. The org guide, "Session hygiene" in claude/org-guide.md, is their source, and
+// a guide change to the zones changes them too (ywr-harness ADR 0138 Decision 7).
 //
-// The pure half (`zoneOf`, `isTreeRun`, `normPath`, `underRoot`, `createTracker`, `statusText`) is
-// exported so `slice-status.selftest.mjs` drives it under plain node with a fake engine; the engine
-// imports only `register`.
+// The pure half is exported so `slice-status.selftest.mjs` drives it under plain node with a fake engine. The
+// engine imports only `register`.
 
 export const START_BELOW = 35        // percent: under this, start freely
 export const SCOPED_UPTO = 60        // percent: 35..60 inclusive, a scoped slice only; above, close
@@ -61,8 +58,8 @@ export function zoneOf(ctx) {
 }
 
 // The head of a `--tree` run: an optional `node` with flags, then the script by any path (quoted or bare),
-// then its arguments. The older `harness_gates.py` form and its `python` / `python3` / `py` interpreter stay
-// recognised, because a member can still run a scaffold that placed the Python script.
+// then its arguments. The `harness_gates.py` form and its `python` / `python3` / `py` interpreter stay
+// recognised, because a member's repo can still hold a scaffold that placed the Python script.
 const TREE_RUN = /^(?:(?:node|python3?|py)(?:\.exe)?\s+(?:-{1,2}[A-Za-z]\S*\s+)*)?(?:"[^"]*harness_gates\.(?:mjs|py)"|'[^']*harness_gates\.(?:mjs|py)'|[^\s"']*harness_gates\.(?:mjs|py))((?:\s+\S+)*)$/
 // Redirections a `--tree` run may carry: stderr folded into stdout or discarded. Any other redirection
 // writes a file, so the run is not recognised.
@@ -80,9 +77,9 @@ const PRINTERS = new Set(['echo', 'printf', 'write-output', 'write-host'])
 const RUN_ARG = /^[\w\-.=:/]+$/
 
 // A command split into simple commands at a newline, `;`, `&&`, `||`, `&` or `|` OUTSIDE quotes, each with
-// the separator before it ('' for the first). A separator inside '…' or "…" (a commit message, an echoed
-// string) never splits; a backslash inside "…" escapes the next character; an unclosed quote runs to the
-// end. An `&` that touches a `>` (`2>&1`, `&>`) belongs to a redirection, not a separator.
+// the separator before it ('' for the first). A separator inside '…' or "…" never splits. A backslash inside
+// "…" escapes the next character. An unclosed quote runs to the end. An `&` that touches a `>` (`2>&1`,
+// `&>`) belongs to a redirection, not a separator.
 export function splitSimple(command) {
   const out = []
   let cur = ''
@@ -372,7 +369,7 @@ export function statusText(ctx, tree) {
 }
 
 // --- the engine half ---------------------------------------------------------------------------
-// Declared at the top of the file: the engine follows `$` only into such functions.
+// Plain top-level functions: the engine follows `$` only into such functions.
 
 // The project root when it holds `.harness.json`, else null; `adopted` caches the answer per root.
 async function adoptedRoot($, adopted) {

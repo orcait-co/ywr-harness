@@ -1,34 +1,24 @@
 #!/usr/bin/env node
-// JS-side gate for .claude/workflows/ — promotes the one-off parse checker that had stayed
-// hand-run, and turns the behavioral selftest from a slice-close habit into a discovered gate.
-// Both were run by hand until now, which means a session could forget them.
-//
-// Two arms, in this order:
-//   parse       every .claude/workflows/*.js compiles. `node --check` cannot do this job, and the
-//               reason is the opposite of what was once assumed (that `node --check` FAILS on the
-//               file): measured 2026-07-25 on node v24.14.0, an `export` line makes the file
-//               module-detected and NOT syntax-checked, so --check exits 0 for any content after
-//               it — including a real workflow with an unbalanced paren injected
-//               mid-file. On this class (every workflow carries `export const meta`) --check is
-//               vacuous, not noisy.
-//               So the `export` keyword is stripped and the body compiled inside an async wrapper
-//               via `new Function` — which accepts the top-level `return`/`await` a workflow
-//               script legitimately has. Compile only; nothing is executed.
+// Gate for the workflow scripts under .claude/workflows/. Two arms, in this order:
+//   parse       every .claude/workflows/*.js compiles. `node --check` cannot do this job: an
+//               `export` line makes node treat the file as a module and skip the syntax check, so
+//               --check exits 0 for any content after it. Every workflow carries
+//               `export const meta`, so --check would always pass.
+//               The `export` keyword is stripped and the body compiled inside an async wrapper
+//               through `new Function`, which accepts the top-level `return` and `await` that a
+//               workflow script has. Compile only. Nothing runs.
 //   behavioral  every .claude/workflows/*.selftest.mjs is executed and must exit 0.
 //
-// The `export const meta` anchor is asserted rather than assumed: the Workflow tool rejects a
-// script without it, and the parse transform above is anchored on it. That is one documented
-// presence check, deliberately NOT an allow-list of meta fields or a phase-shape schema — those
-// have no raw in-repo source, and inventing one would be a provenance defect: a schema nobody
-// could audit against real inputs.
+// The `export const meta` anchor is asserted: the Workflow tool rejects a script without it, and
+// the parse transform is anchored on it. The gate checks that one anchor and nothing else about
+// meta, because no in-repo source defines a meta schema to check against.
 //
-// Vacuity: zero workflow scripts, or zero selftests, FAILS. A gate reporting green over an empty
-// corpus is a vacuous pass. Counts are printed so shrinking coverage is visible, and there is no
-// flag that switches an arm off — an escape hatch here is how the behavioral arm would quietly
-// stop running.
+// Zero workflow scripts, or zero selftests, FAILS: green over an empty corpus is a vacuous pass.
+// Counts are printed so shrinking coverage is visible. No flag switches an arm off, because an
+// escape hatch is how the behavioral arm would quietly stop running.
 //
 // Usage: node scripts/workflow-gates.mjs [--root <dir>] [--dir <corpus dir>]
-// Exit 0 = green · 1 = parse failure, failing selftest, missing corpus, or vacuous corpus.
+// Exit 0 = green. Exit 1 = parse failure, failing selftest, missing corpus or vacuous corpus.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -37,10 +27,8 @@ import { spawnSync } from 'node:child_process';
 const argv = process.argv.slice(2);
 const optIdx = argv.indexOf('--root');
 const root = resolve(optIdx >= 0 && argv[optIdx + 1] ? argv[optIdx + 1] : '.');
-// The corpus directory is an option, not a constant: the plugin ships no workflow now, while a
-// consuming repo keeps its own under `.claude/workflows`. A caller whose corpus sits elsewhere
-// passes `--dir`. A fixed path would leave that corpus gated by nothing while the summary
-// still prints a green count — the exact failure the other arms of this file exist to prevent.
+// The corpus directory is an option: a caller whose corpus sits outside `.claude/workflows` passes
+// `--dir`. A fixed path would leave that corpus gated by nothing under a green count.
 const dirIdx = argv.indexOf('--dir');
 const REL = dirIdx >= 0 && argv[dirIdx + 1] ? argv[dirIdx + 1] : '.claude/workflows';
 const dir = join(root, REL);
@@ -57,8 +45,7 @@ if (!existsSync(dir)) {
   process.exit(1);
 }
 
-// Recursive on purpose: a workflow parked in a subdirectory would otherwise be gated by nothing
-// while the summary still printed a green count.
+// Recursive: a workflow in a subdirectory would otherwise be gated by nothing under a green count.
 function walk(base, prefix = '') {
   const out = [];
   for (const e of readdirSync(join(base, prefix), { withFileTypes: true })) {
@@ -70,9 +57,9 @@ function walk(base, prefix = '') {
 }
 
 const files = walk(dir).sort();
-// The exclusion mirrors the selftest filter EXACTLY, on purpose: a file named `foo.selftest.js`
-// is then parse-checked as a workflow script and fails the meta-anchor check, which tells the
-// author to rename it. A looser exclusion would leave it gated by nothing at all.
+// The exclusion mirrors the selftest filter exactly: a file named `foo.selftest.js` is parse-checked
+// as a workflow script and fails the meta-anchor check, which tells the author to rename it. A
+// looser exclusion would leave it gated by nothing.
 const scripts = files.filter((f) => f.endsWith('.js') && !f.endsWith('.selftest.mjs'));
 const selftests = files.filter((f) => f.endsWith('.selftest.mjs'));
 

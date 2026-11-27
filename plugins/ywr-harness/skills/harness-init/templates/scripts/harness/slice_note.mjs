@@ -1,33 +1,28 @@
 // In-slice decision notes (ywr-harness ADR 0172). The session appends; a compaction and /ywr-harness:slice-close read.
 //
-// A slice's reasons reach paper only at the close, which writes the handoff and the commit body; the
-// session never writes the handoff before that. A compaction between a decision and the close could
-// drop the reason with the summary. This script keeps one line per decision, as the session wrote
-// it, where neither the summary nor the work tree can touch it.
+// A compaction between a decision and the slice close can drop the reason with the summary. This
+// script keeps one line per decision where neither the summary nor the work tree can touch it.
 //
 // Usage:
 //   node slice_note.mjs add <decision|rejected|owner|fact|risk> <text...>
 //   node slice_note.mjs show [--range <a>..<b> | --all] [--max N]
 //   node slice_note.mjs --repo <dir> ...
 //
-// The journal lives under `git rev-parse --git-path` (per worktree, never tracked), so a note never moves
-// the `--tree` snapshot a ready report ends with. Each record carries the HEAD it was written at, and
-// `show` selects by HEAD. The slice starts at its base: the last commit that touched the handoff that
-// `.harness.json` declares, because every close commits the handoff. `show` takes the notes at the base
-// and at every commit after it, so a commit inside the slice keeps the earlier notes, and the next close
-// retires them with no delete step. Each note also records the base it was written under, and `show` keeps a
-// note whose base is the current one: an amend or a rebase of the slice's own commits keeps the base, so
-// their notes stay (ywr-harness ADR 0172 lists the cases that move it). Without a declared or committed
-// handoff the base is HEAD itself. The journal is append-only.
+// The journal lives under `git rev-parse --git-path` (per worktree, never tracked), so a note never
+// moves the `--tree` snapshot that a ready report ends with. Each record carries the HEAD it was
+// written at and the slice base it was written under. The base is the last commit that touched the
+// handoff that `.harness.json` declares, or HEAD when no handoff is declared or committed. `show`
+// takes the notes at the base, at every commit after it, and under the current base, so an amend or
+// a rebase of the slice's own commits keeps its notes (ywr-harness ADR 0172). The next close retires
+// them with no delete step. The journal is append-only.
 //
-// A note is the session's own claim. The SessionStart `compact` hook re-injects `show`'s output marked
-// as such, and /ywr-harness:slice-close checks each note against the tree before it keeps one: input,
-// never proof.
+// A note is the session's own claim. The SessionStart `compact` hook re-injects `show`'s output
+// marked as such, and /ywr-harness:slice-close checks each note against the tree: input, never proof.
 //
-// The journal format is one JSON object per line, keys in the order ts, head, base, kind, text, written
-// with `", "` and `": "` separators and every non-ASCII character as a `\uXXXX` escape. A reader of an
-// older writer's line and a writer read by an older reader must agree on those bytes, so `dumps` below
-// spells the format out instead of leaving it to `JSON.stringify`.
+// The journal format is one JSON object per line, keys in the order ts, head, base, kind, text,
+// with `", "` and `": "` separators and every non-ASCII character as a `\uXXXX` escape. Readers and
+// writers of other plugin versions must agree on those bytes, so `dumps` spells the format out
+// instead of leaving it to `JSON.stringify`.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,9 +31,9 @@ import * as hc from './harness_config.mjs'
 
 export const JOURNAL = 'ywr-harness/slice-notes.jsonl'
 export const KINDS = ['decision', 'rejected', 'owner', 'fact', 'risk']
-// Counted in UTF-16 code units, not code points: the host caps each hook string at 10,000 characters,
-// and an astral character (an emoji, CJK Extension B) is two units in a JavaScript string. The compact
-// hook's note count is sized from this bound, so a code-point count would let 17 notes overflow it.
+// Counted in UTF-16 code units, not code points. The host caps each hook string at 10,000
+// characters, and an astral character is two units. The compact hook sizes its note count from
+// this bound, so a code-point count would let 17 notes overflow it.
 export const MAX_TEXT = 500
 // Control, format, line/paragraph separator and lone surrogates: each can break the one-line shape
 // or hide text from the reader (a bidi override, U+2028). Hangul and every other letter pass.
@@ -154,8 +149,7 @@ export function read_notes(file) {
   if (!is_file(file)) return []
   const out = []
   // A non-fatal decode: torn bytes become a line that fails the checks below and is named, never a
-  // crash. The byte-order mark stays in the text, and a lone `\r` or a `\r\n` ends a line, as the
-  // writer's own text-mode read treats them.
+  // crash. The byte-order mark stays in the text, and a lone `\r` or a `\r\n` ends a line.
   const text = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(with_path(file, () => fs.readFileSync(file)))
     .replaceAll('\r\n', '\n').replaceAll('\r', '\n')
   const lines = text.split('\n')
@@ -238,9 +232,9 @@ export function line_for(i, rec, with_head) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The command line. It reads and refuses what the interpreter's own option parser did, with the same
-// words: an abbreviated long option, `--name=value`, a negative number as a value, `--` before a
-// value that starts with a dash, `-h`, and an exit of 2 with a usage line for a bad invocation.
+// The command line. It follows argparse's rules and wording: an abbreviated long option,
+// `--name=value`, a negative number as a value, `--` before a value that starts with a dash, `-h`,
+// and exit 2 with a usage line for a bad invocation.
 // ---------------------------------------------------------------------------------------------
 class Exit extends Error {
   constructor(code) {

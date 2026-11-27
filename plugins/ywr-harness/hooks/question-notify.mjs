@@ -1,31 +1,25 @@
-// PreToolUse and PostToolUse (matcher `AskUserQuestion`) — a Windows notification while the model waits
-// for the person's answer (ywr-harness ADR 0202). The person may be in another window while a slice runs;
-// the question waits in the terminal until someone sees it.
+// PreToolUse and PostToolUse (matcher `AskUserQuestion`): a Windows notification while the model waits
+// for the person's answer (ywr-harness ADR 0202).
 //
-// PreToolUse shows a Windows toast with `scenario="reminder"` and one system dismiss button. Such a toast
-// takes no focus and stays on screen until the person dismisses it; a toast without the scenario leaves
-// after the system's display time, about 5 seconds (measured 2026-11-13: a tray balloon left that fast).
-// PostToolUse removes the toast of the same session from the screen and from the notification list, so
-// an answered question leaves nothing behind. Each session's toast carries its own tag, a hash of
+// PreToolUse shows a toast with `scenario="reminder"` and one system dismiss button. Such a toast takes no
+// focus and stays until the person dismisses it. A toast without the scenario leaves after about 5 seconds.
+// PostToolUse removes the toast of the same session. Each session's toast carries its own tag, a hash of
 // `session_id`, so one session never removes another session's toast. A question that ends without a
 // PostToolUse event, such as one the person cancels, leaves its toast until the person dismisses it.
 //
-// The toast API is WinRT, which Windows PowerShell 5.1 reaches directly and PowerShell 7 does not, so the
-// child is `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` by absolute path, never a PATH
-// lookup. The toast names Windows PowerShell as its app, because it uses that app's registered id. The
-// child shows or removes the toast and exits; the toast was on screen 0.64 s after the hook started.
-// `hooks.json` registers both events with `async: true`, so the host does not wait for the hook: it
-// writes nothing on stdout, never decides, and the question dialog is not delayed. The hook itself waits
-// for the child, at most `CHILD_TIMEOUT_MS`.
+// The toast API is WinRT, which Windows PowerShell 5.1 reaches and PowerShell 7 does not. So the child is
+// `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` by absolute path, never a PATH lookup. The
+// toast uses the registered app id of Windows PowerShell. `hooks.json` registers both events with
+// `async: true`, so the host does not wait for the hook: the hook writes nothing on stdout, never decides,
+// and never delays the question dialog. The hook itself waits for the child, at most `CHILD_TIMEOUT_MS`.
 //
 // The question text and the tag reach the child through environment variables, never through the
-// command line, so no question text is parsed as PowerShell; the child escapes them for the toast XML.
-// The script itself travels as `-EncodedCommand`, which is UTF-16 and so keeps any non-ASCII text intact.
-// The wait is required. libuv puts a child that is not `detached` into a job that closes with node, so a
-// child the hook did not wait for died with it; a `detached` child, which has no console, never ran
-// (both measured 2026-11-13). A PostToolUse that comes before the PreToolUse child shows its toast leaves
-// that toast on screen until the person dismisses it, unless the toast shows within `CLEAR_AGAIN_S`
-// seconds: the clear child removes the tag a second time after that wait.
+// command line, so no question text is parsed as PowerShell. The child escapes them for the toast XML.
+// The script travels as `-EncodedCommand`, which is UTF-16 and keeps non-ASCII text intact.
+// The wait for the child is required. libuv puts a child that is not `detached` into a job that closes with
+// node, so a child the hook did not wait for dies with it. A `detached` child has no console and never runs.
+// A PostToolUse that comes before the PreToolUse child shows its toast would leave that toast on screen.
+// So the clear child removes the tag a second time after `CLEAR_AGAIN_S` seconds.
 //
 // Silent, with no child, when any of these holds: the platform is not Windows; the payload is not a
 // PreToolUse or PostToolUse payload of `AskUserQuestion`; `YWR_HARNESS_QUESTION_NOTIFY` is `0`, `false`,

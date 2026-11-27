@@ -1,25 +1,23 @@
-// Selftest for templates/docs/build_docs.mjs — the duplicate-id refusal and the fm_digest
-// staleness stamp (ADR 0043), including the PAIRING with scripts/verify_map.mjs's recomputation.
+// Selftest for templates/docs/build_docs.mjs: the duplicate-id refusal and the fm_digest staleness
+// stamp (ADR 0043), including the pairing with the recomputation in scripts/verify_map.mjs.
 // Usage: node --test-reporter=<file URL of ../../lib/selftest-reporter.mjs> --test-reporter-destination=stdout skills/harness-init/build-docs.selftest.mjs
 //
-// Runs the TEMPLATE copy (payload this plugin ships; byte identity with the canon's
-// docs/build_docs.mjs is enforced by manifest-gate's dogfood placement sweep), copied into a
-// fixture docs tree — the builder resolves its corpus relative to its own file, so it must sit
-// at <fixture>/docs/build_docs.mjs. No git needed anywhere in the first sections: verify_map is driven
-// with --repo and explicit files, which skips scope resolution entirely.
+// The suite runs the template copy, a payload that this plugin ships. The manifest-gate dogfood
+// placement sweep enforces its byte identity with the canon's docs/build_docs.mjs. The copy sits in
+// a fixture docs tree at <fixture>/docs/build_docs.mjs, because the builder resolves its corpus
+// relative to its own file. The first sections need no git: verify_map runs with --repo and
+// explicit files, which skips scope resolution.
 //
-// The two subtle cases are D (a BODY-only edit must NOT flip the digest — the same cry-wolf
-// class the retro's BUILD check learned expensively; its D2 case is the precedent) and the
-// lead-HTML-comment document in the base corpus, which pins that BOTH digest implementations
-// skip the comment identically. E is the pairing case proper: build with one implementation,
-// check with the other — drift in either side fails it.
+// Two cases are subtle. D asserts that a body-only edit does not flip the digest, the cry-wolf
+// rule that the retro's BUILD check shares (its D2 case). The lead-HTML-comment document in the base
+// corpus pins that both digest implementations skip the comment identically. E is the pairing case:
+// build with one implementation, check with the other, and drift on either side fails it.
 //
-// Shape of this port (ADR 0227). The pwsh suite was one script that mutated one fixture tree in a fixed
-// order, and most cases read the state the cases before them left. This port keeps that order: each
-// check awaits its own test() so a state change between two checks runs after the first check reported
-// and before the second one is computed. A case ID is the first token of a test name. The pwsh suite named
-// some cases by a bare letter (A, B, C, D, E, F, G, H, FL, BW), which is no ID; those checks are named
-// "<new ID> <exact old name>" so the parity script matches them by name.
+// The suite mutates one fixture tree in a fixed order, and most cases read the state that the cases
+// before them left (ADR 0227). Each check awaits its own test(), so a state change between two checks
+// runs after the first check reported and before the second is computed. A case ID is the first
+// token of a test name. The bare-letter groups (A to H, FL, BW) carry a number after the letter, and
+// the parity script matches the names that follow it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -44,17 +42,17 @@ const fx = fixtureRoot('build-docs-selftest')
 const j = (...p) => path.join(...p)
 const rd = (p) => readFileSync(p, 'utf8')
 const rm = (p) => rmSync(p, { recursive: true, force: true })
-// Writes UTF-8 without a BOM, creating the parent directory.
+// Writes UTF-8 without a BOM and creates the parent directory.
 const wr = (p, body) => { mkdirSync(path.dirname(p), { recursive: true }); writeFileSync(p, body) }
 const mk = (...dirs) => { for (const d of dirs) mkdirSync(d, { recursive: true }) }
-// Case-insensitive "contains", the pwsh `-match [regex]::Escape(x)` shape.
+// Case-insensitive "contains".
 const has = (s, sub) => String(s).toLowerCase().includes(String(sub).toLowerCase())
-// The pwsh `$out = & node ... 2>&1 | Out-String` shape: stdout and stderr as one text, plus the exit code.
+// Stdout and stderr as one text, plus the exit code.
 function nodeRun(args, { cwd, env } = {}) {
   const r = runNode(args, { cwd, env, input: '' })
   return { Out: r.stdout + r.stderr, Code: r.status }
 }
-// The environment with some variables replaced. On Windows the variable names ignore case, so a copy that
+// The environment with some variables replaced. On Windows the names ignore case, so a copy that
 // keeps `Path` and adds `PATH` would hand the child two spellings of one variable.
 function envWith(over) {
   const e = { ...process.env }
@@ -64,7 +62,7 @@ function envWith(over) {
   }
   return e
 }
-// Literal replace of every occurrence. A string replacement in String.replace expands `$&` and friends.
+// A literal replace of every occurrence, because a string replacement in String.replace expands `$&` and friends.
 const replaceAll = (text, find, rep) => text.split(find).join(rep)
 const group = (m, i) => (m?.[i] ?? '')
 const count = (text, sub) => text.split(sub).length - 1
@@ -72,12 +70,12 @@ const readJson = (p) => { try { return JSON.parse(rd(p)) } catch { return null }
 const hjson = (repo, v) => wr(j(repo, '.harness.json'), typeof v === 'string' ? v : JSON.stringify(v))
 const sha256 = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
 
-// One check = one test. cond is computed by the caller, so a thrown error there stops the suite loudly.
+// One check is one test. The caller computes cond, so a thrown error there stops the suite loudly.
 async function check(name, cond, detail = '') {
   await test(name, () => { assert.ok(cond, String(detail ?? '') || 'condition false') })
 }
 
-// Fixtures that each build the corpus in a fresh docs tree with the builder copied in.
+// Each fixture builds the corpus in a fresh docs tree with the builder copied in.
 function docsTree(repo, docsName = 'docs') {
   const d = j(repo, docsName)
   mk(j(d, 'adr'), j(d, 'spec'))
@@ -92,14 +90,13 @@ try {
   const build = () => nodeRun([j(docs, 'build_docs.mjs')])
   const map = () => nodeRun([verifyMap, '--repo', repo, 'x.py'])
 
-  // Base corpus. 0001 carries a lead HTML comment BEFORE the frontmatter — the onboarding shape
-  // split_frontmatter explicitly tolerates, and the edge where the two digest implementations
-  // could diverge without a pin.
+  // The base corpus. 0001 carries a lead HTML comment before the frontmatter, the onboarding shape
+  // that split_frontmatter tolerates and the edge where the two digest implementations could diverge.
   docDoc('adr/0001-first.md', '<!-- template note kept above the frontmatter -->\n---\nid: "0001"\ntype: adr\ntitle: "first"\nstatus: accepted\n---\n# 0001\nbody v1\n')
   docDoc('adr/0002-second.md', '---\nid: "0002"\ntype: adr\ntitle: "second"\nstatus: proposed\n---\n# 0002\nbody\n')
   docDoc('spec/0001-spec.md', '---\nid: "0001"\ntype: spec\ntitle: "s1"\nstatus: active\nimplements_in: ["src/app.py"]\n---\n# spec 0001\n')
 
-  // --- A: a clean corpus builds; the same id across KINDS is legal (adr:/spec: namespaces) ------
+  // --- A: a clean corpus builds, and the same id across kinds is legal (adr: and spec: namespaces) --
   const rA = build()
   await check('A1 A clean build exits 0 (adr 0001 + spec 0001 coexist)', rA.Code === 0, `exit=${rA.Code}: ${rA.Out}`)
   const idx = j(docs, 'index.json')
@@ -107,36 +104,35 @@ try {
   await check('A2 A index.json parses and counts match', json && json.counts?.adr === 2 && json.counts?.spec === 1, rA.Out)
   await check('A3 A fm_digest is stamped (64 hex)', json && /^[0-9a-f]{64}$/i.test(json.fm_digest ?? ''), `fm_digest='${json?.fm_digest}'`)
 
-  // --- B: a duplicate id WITHIN a kind refuses to build, naming both files (ADR 0043) ----------
+  // --- B: a duplicate id within a kind refuses to build and names both files (ADR 0043) ---------
   docDoc('adr/0002-rival.md', '---\nid: "0002"\ntype: adr\ntitle: "rival from a parallel branch"\nstatus: proposed\n---\n# 0002 again\n')
   const rB = build()
   await check('B1 B duplicate adr id exits non-zero', rB.Code !== 0, `exit=${rB.Code}: ${rB.Out}`)
   await check('B1b B the refusal names BOTH files', /0002-second\.md/i.test(rB.Out) && /0002-rival\.md/i.test(rB.Out), rB.Out)
   rm(j(docs, 'adr/0002-rival.md'))
 
-  // --- B2: an unreadable "document" (a DIRECTORY whose name matches the doc pattern) is a
-  // deterministic NAMED refusal, not a traceback — same principle as the duplicate-id refusal
-  // (review 2026-08-10, low). Portable: reading a directory raises an error on both
-  // Windows (EISDIR / EPERM) and Linux (EISDIR).
+  // --- B2: an unreadable "document", a directory whose name matches the doc pattern, is a named
+  // refusal and not a traceback, like the duplicate-id refusal. Reading a directory raises an error
+  // on both Windows (EISDIR or EPERM) and Linux (EISDIR).
   mk(j(docs, 'adr/0003-actually-a-dir.md'))
   const rB2 = build()
   await check('B2 an unreadable doc is a named refusal, not a traceback',
     rB2.Code !== 0 && /0003-actually-a-dir\.md/i.test(rB2.Out) && !/Traceback/i.test(rB2.Out), rB2.Out)
   rm(j(docs, 'adr/0003-actually-a-dir.md'))
 
-  // --- C: rebuild clean, then the pairing — verify_map recomputes the SAME digest ---------------
+  // --- C: rebuild clean, then the pairing: verify_map recomputes the same digest ------------------
   const rC = build()
   await check('C1 C corpus builds clean again', rC.Code === 0, rC.Out)
   const rMap = map()
   await check('C2 C verify_map sees a current index (no STALE, no missing-stamp note)',
     rMap.Code === 0 && !/index: STALE/i.test(rMap.Out) && !/no staleness stamp/i.test(rMap.Out), rMap.Out)
 
-  // --- D: a BODY-only edit must NOT read as stale — the cry-wolf pin (retro D2's principle) -----
+  // --- D: a body-only edit does not read as stale, the cry-wolf pin (the retro's D2 rule) --------
   docDoc('adr/0001-first.md', '<!-- template note kept above the frontmatter -->\n---\nid: "0001"\ntype: adr\ntitle: "first"\nstatus: accepted\n---\n# 0001\nbody v1\n\n## Addendum\nappend-only correction, frontmatter untouched\n')
   const rD = map()
   await check('D1 D a body-only edit does NOT flip the digest', !/index: STALE/i.test(rD.Out), rD.Out)
 
-  // --- E: a FRONTMATTER edit reads as stale until rebuilt, then clears ---------------------------
+  // --- E: a frontmatter edit reads as stale until rebuilt, then clears ----------------------------
   docDoc('adr/0002-second.md', '---\nid: "0002"\ntype: adr\ntitle: "second"\nstatus: accepted\n---\n# 0002\nbody\n')
   const rE = map()
   await check('E1 E a frontmatter edit reads as STALE', /index: STALE/i.test(rE.Out), rE.Out)
@@ -145,7 +141,7 @@ try {
   const rE2 = map()
   await check('E2 rebuilding clears the stale signal', !/index: STALE/i.test(rE2.Out), rE2.Out)
 
-  // --- F: a stamp-less index (pre-0043 builder) is reported, never silent ------------------------
+  // --- F: a stamp-less index is reported, never silent (ADR 0043) ---------------------------------
   const raw = readJson(idx)
   delete raw.fm_digest
   writeFileSync(idx, JSON.stringify(raw, null, 2))
@@ -153,10 +149,9 @@ try {
   await check('F1 F a missing stamp is reported (not silent, not STALE)',
     /no staleness stamp/i.test(rF.Out) && !/index: STALE/i.test(rF.Out), rF.Out)
 
-  // --- G: a relocated corpus (customized docs.index) — the digest must track the DECLARED index's
-  // siblings, never a hardcoded docs/ (review 2026-08-10, high: the hardcoding was a permanent
-  // false-STALE for exactly this supported configuration, and the default-layout cases above can
-  // never catch it).
+  // --- G: a relocated corpus (a customized docs.index). The digest tracks the siblings of the
+  // declared index, never a hardcoded docs/. A hardcoded path would read as STALE forever in this
+  // supported configuration, and the default-layout cases above can never catch it.
   const repo2 = j(fx, 'repo-moved')
   const docs2 = docsTree(repo2, 'platform-docs')
   wr(j(repo2, '.harness.json'), '{ "docs": { "index": "platform-docs/index.json" } }')
@@ -170,11 +165,11 @@ try {
   const rG2 = nodeRun([verifyMap, '--repo', repo2, 'x.py'])
   await check('G2 the relocated corpus still yields a real signal on a frontmatter edit', /index: STALE/i.test(rG2.Out), rG2.Out)
 
-  // --- H: site title resolution (ADR 0050) — the declaration is the source, env a one-off override
-  // The revert this pins (issue #43): env-only sourcing meant any caller that did not set
-  // DOCS_SITE_TITLE — harness-init re-runs, CI — rebuilt committed surfaces back to the default
-  // title. Cases A–F double as the no-declaration control: their fixture has no .harness.json
-  // anywhere up the temp tree, and their builds carry the default title.
+  // --- H: site title resolution (ADR 0050). The declaration is the source, and the env var is a
+  // one-off override. With env-only sourcing, any caller that did not set DOCS_SITE_TITLE, such as a
+  // harness-init re-run or CI, would rebuild committed surfaces with the default title.
+  // Cases A to F double as the no-declaration control: their fixture has no .harness.json anywhere
+  // up the temp tree, and their builds carry the default title.
   const repo3 = j(fx, 'repo-title')
   const docs3 = docsTree(repo3)
   wr(j(docs3, 'adr/0001-a.md'), '---\nid: "0001"\ntype: adr\ntitle: "a"\nstatus: accepted\n---\n# 0001\n')
@@ -187,30 +182,30 @@ try {
   await check('H1 H a declared docs.site_title lands in BOTH generated <title>s (no env var set)',
     rH.Code === 0 && /<title>myrepo - internal docs<\/title>/i.test(h1) && /<title>myrepo - internal docs<\/title>/i.test(h1a), `exit=${rH.Code}: ${rH.Out}`)
 
-  // H2: the env var still wins when explicitly set — it is an override, not the source.
+  // H2: the env var wins when set, because it is an override and not the source.
   const rH2 = titleBuild(envWith({ DOCS_SITE_TITLE: 'one-off override' }))
   const h2 = rd(j(docs3, 'docs.html'))
   await check('H2 DOCS_SITE_TITLE overrides the declaration when set',
     rH2.Code === 0 && /<title>one-off override<\/title>/i.test(h2), `exit=${rH2.Code}: ${rH2.Out}`)
 
-  // H3: a declaration WITHOUT site_title (or empty) falls back to the default title.
+  // H3: a declaration without site_title, or with an empty one, falls back to the default title.
   hjson(repo3, '{ "docs": { "index": "docs/index.json", "site_title": "" } }')
   const rH3 = titleBuild()
   const h3 = rd(j(docs3, 'docs.html'))
   await check('H3 an empty site_title falls back to the default',
     rH3.Code === 0 && /<title>Docs · ADR &amp; Spec<\/title>/i.test(h3), `exit=${rH3.Code}: ${rH3.Out}`)
 
-  // H4: an unreadable declaration is a REPORTED fallback, never silent and never fatal — a silent
-  // revert is the exact defect the resolution order exists to remove.
+  // H4: an unreadable declaration is a reported fallback, never silent and never fatal. A silent
+  // revert is the defect that the resolution order exists to remove.
   hjson(repo3, '{ not json')
   const rH4 = titleBuild()
   const h4 = rd(j(docs3, 'docs.html'))
   await check('H4 a malformed declaration warns, builds, and uses the default title',
     rH4.Code === 0 && /unreadable/i.test(rH4.Out) && /<title>Docs · ADR &amp; Spec<\/title>/i.test(h4), `exit=${rH4.Code}: ${rH4.Out}`)
 
-  // H5: the upward walk stops at a repo boundary (review 2026-08-12, medium): a repo WITHOUT a
-  // declaration must not silently adopt an unrelated ancestor's .harness.json title — a directory
-  // carrying .git and no declaration ends the walk at the default.
+  // H5: the upward walk stops at a repo boundary. A repo without a declaration must not adopt an
+  // unrelated ancestor's .harness.json title, so a directory with .git and no declaration ends the
+  // walk at the default.
   const outer = j(fx, 'outer-tree')
   const inner = j(outer, 'repo', 'docs')
   mk(j(inner, 'adr'), j(inner, 'spec'), j(outer, 'repo', '.git'))
@@ -221,9 +216,9 @@ try {
   const h5 = rd(j(inner, 'docs.html'))
   await check('H5 a .git boundary without a declaration stops the walk at the default',
     /<title>Docs · ADR &amp; Spec<\/title>/i.test(h5) && !/ancestor title/i.test(h5), h5.slice(0, 300))
-  // H5b control: the SAME tree minus the .git marker is a plain nested docs tree, where walking to
-  // the ancestor declaration is the intended behavior (relocated-corpus class, case G) — this pins
-  // that H5 measures the boundary, not a broken walk.
+  // H5b control: the same tree without the .git marker is a plain nested docs tree, where walking
+  // to the ancestor declaration is intended (the relocated-corpus class, case G). This pins that H5
+  // measures the boundary and not a broken walk.
   rm(j(outer, 'repo', '.git'))
   nodeRun([j(inner, 'build_docs.mjs')])
   const h5b = rd(j(inner, 'docs.html'))
@@ -231,11 +226,11 @@ try {
     /ancestor title MUST NOT leak/i.test(h5b), h5b.slice(0, 300))
 
   // --- I: the customer-corpus surface (ADR 0060) --------------------------------------------
-  // Fixture: a repo with the two-program pjems-shaped corpus + a copy of the vendored
-  // harness_config.mjs the builder imports. "xgglbsrp" carries a menu (25.x, groups to the
-  // declared 25.x label) and 3 release entries — two same-date [UAT] (dedupe + tie-break) and
-  // one older [FUT]; "batchjob" carries NO menu (falls to unkeyed_label) and one [PROD] entry
-  // (posture 완료, and a recency-group member since it still has release history).
+  // The fixture is a repo with a two-program corpus and a copy of the vendored harness_config.mjs
+  // that the builder imports. "xgglbsrp" carries a menu (25.x, which groups to the declared 25.x
+  // label) and 3 release entries: two same-date [UAT] (dedupe and tie-break) and one older [FUT].
+  // "batchjob" carries no menu (it falls to unkeyed_label) and one [PROD] entry, which gives
+  // posture 완료 and recency-group membership because it has release history.
   const repoI = j(fx, 'repo-customer')
   const docsI = j(repoI, 'docs')
   const custI = j(docsI, 'customer')
@@ -293,7 +288,7 @@ try {
   const custHtml = j(docsI, 'customer.artifact.html')
   const projMd = j(docsI, 'PROJECTS.md')
 
-  // I1: declared -> exit 0, both new surfaces exist, the 4 internal surfaces still written.
+  // I1: a declared surface exits 0, both new surfaces exist, and the 4 internal surfaces are still written.
   rm(custHtml); rm(projMd)
   const rI1 = buildI()
   await check('I1 declared customer surface builds clean', rI1.Code === 0, rI1.Out)
@@ -304,8 +299,8 @@ try {
 
   const custText = existsSync(custHtml) ? rd(custHtml) : ''
 
-  // I2: sidebar — recency group first, the declared 25.x group label present, batchjob under
-  // the unkeyed label (its own pgroup section names it and contains its progitem).
+  // I2: the sidebar has the recency group first and the declared 25.x group label, and batchjob sits
+  // under the unkeyed label (its own pgroup section names it and contains its progitem).
   const idxRecent = custText.indexOf('최근 업데이트')
   const idx25 = custText.indexOf('재무회계 (25.x)')
   await check('I2 recency group label present before the declared 25.x group',
@@ -314,14 +309,13 @@ try {
   await check('I2 batchjob sits under the unkeyed_label group',
     unkeyedSection && /data-prog="batchjob"/i.test(unkeyedSection), unkeyedSection)
 
-  // I3: the HTML chip renders the BARE <chip_field value> — `chip_suffix` belongs to PROJECTS.md's
-  // file-form listing only (I5). Measured on the pjems corpus 2026-08-27: applying the suffix to the
-  // HTML chips too changed all 350 chips against the fork's output.
+  // I3: the HTML chip renders the bare <chip_field value>. `chip_suffix` belongs to the file-form
+  // listing of PROJECTS.md only (I5).
   await check('I3 chip renders the bare xgglbsrp (no suffix in HTML)',
     /chip mono">xgglbsrp<\/span>/i.test(custText) && !/chip mono">xgglbsrp\.p<\/span>/i.test(custText), rI1.Out)
 
-  // I4: badges — the two adjacent same-date [UAT] entries dedupe to ONE badge in the rendered
-  // article; PROD renders as COMPLETE; postures match (xgglbsrp 진행 중, batchjob 완료).
+  // I4: the two adjacent same-date [UAT] entries dedupe to one badge in the rendered article, PROD
+  // renders as COMPLETE, and the postures match (xgglbsrp 진행 중, batchjob 완료).
   const xgArticle = group(/<article class="prog[^"]*" id="prog-xgglbsrp">[\s\S]*?<\/article>/.exec(custText), 0)
   const uatBadges = count(xgArticle, 'class="relstat rs-uat"')
   await check('I4 adjacent same-state UAT badges dedupe to exactly one in the article', uatBadges === 1, `count=${uatBadges}\n${xgArticle}`)
@@ -331,18 +325,16 @@ try {
   await check('I4 batchjob posture is 완료 (top entry is PROD, final)',
     /data-prog="batchjob"[\s\S]{0,400}?완료/i.test(custText), rI1.Out)
 
-  // I5: PROJECTS.md — one project (#P1), one member (xgglbsrp, chip + title), sorted.
+  // I5: PROJECTS.md has one project (#P1) and one sorted member (xgglbsrp, with chip and title).
   const projText = existsSync(projMd) ? rd(projMd) : ''
   await check('I5 PROJECTS.md names the P1 project', /## #P1/i.test(projText), projText)
   await check('I5 PROJECTS.md lists xgglbsrp with its chip + title',
     /- xgglbsrp \(`xgglbsrp\.p`\) — xgglbsrp spec/i.test(projText), projText)
 
-  // I5b: the INITIAL article is the head of the recency group — the program with the newest release
-  // entry (xgglbsrp, 2026-08-20), NOT the ASCII-first directory (batchjob) that `programs[0]` names.
-  // dist upstream-report #4 (client-pjems, 173 programs, 2026-09-04): the page opened on
-  // `FA-Posting-Description` because uppercase sorts first. Article `.on` and every sidebar
-  // `aria-current="true"` (the program sits in the recency group AND its declared group) must
-  // agree on the same id; no other program may carry either.
+  // I5b: the initial article is the head of the recency group, the program with the newest release
+  // entry (xgglbsrp, 2026-08-20), and not the ASCII-first directory (batchjob) that `programs[0]`
+  // names. Article `.on` and every sidebar `aria-current="true"` must agree on the same id, because
+  // the program sits in the recency group and in its declared group. No other program may carry either.
   const onIds = [...custText.matchAll(/<article class="prog on" id="prog-([^"]+)">/g)].map((m) => m[1])
   await check('I5b exactly one article opens, and it is the newest-release program (xgglbsrp), not the ASCII-first one',
     onIds.length === 1 && onIds[0] === 'xgglbsrp', `on-articles=${onIds.join(',')}`)
@@ -353,8 +345,8 @@ try {
   await check('I5b batchjob article is NOT opened and its sidebar item is not current',
     /<article class="prog" id="prog-batchjob">/i.test(custText) && !/data-prog="batchjob"[^>]*aria-current="true"/i.test(custText), rI1.Out)
 
-  // I5c: FALLBACK — no program has release history (both release-notes.md bodies without an entry
-  // heading) → no recency group → the initial article is programs[0] (batchjob, sort order).
+  // I5c: the fallback. No program has release history (both release-notes.md bodies lack an entry
+  // heading), so there is no recency group and the initial article is programs[0] (batchjob, sort order).
   writeIDoc('customer/xgglbsrp/release-notes.md', '---\nprogram: xgglbsrp\ntitle: "xgglbsrp release notes"\nupdated: 2026-08-20\n---\n아직 릴리즈 이력이 없습니다.\n')
   writeIDoc('customer/batchjob/release-notes.md', '---\nprogram: batchjob\ntitle: "batchjob release notes"\nupdated: 2026-08-10\n---\n아직 릴리즈 이력이 없습니다.\n')
   const rI5c = buildI()
@@ -365,9 +357,8 @@ try {
     noRelOn.length === 1 && noRelOn[0] === 'batchjob' && !/최근 업데이트/i.test(noRelText), `on-articles=${noRelOn.join(',')}`)
   await check('I5c the fallback sidebar item is batchjob and only batchjob',
     /data-prog="batchjob"[^>]*aria-current="true"/i.test(noRelText) && !/data-prog="xgglbsrp"[^>]*aria-current="true"/i.test(noRelText), rI5c.Out)
-  // Review 2026-09-04 (low): with no recency group, nothing used to be expanded, so the current
-  // item sat inside a collapsed (display:none) group. The group holding first_id must open; the
-  // other declared group stays collapsed.
+  // With no recency group, the current item must not sit inside a collapsed (display:none) group.
+  // The group that holds first_id opens, and the other declared group stays collapsed.
   const bjSection = /<section class="pgroup"><button type="button" class="pghead" aria-expanded="([^"]+)">[^<]*<span class="pgarrow">▸<\/span>배치·인터페이스·자동화[\s\S]*?<div class="pgitems([^"]*)">/.exec(noRelText)
   const xgSection = /<section class="pgroup"><button type="button" class="pghead" aria-expanded="([^"]+)">[^<]*<span class="pgarrow">▸<\/span>재무회계 \(25\.x\)[\s\S]*?<div class="pgitems([^"]*)">/.exec(noRelText)
   await check('I5c the fallback opens the group that holds the current item (aria-expanded + pgitems on)',
@@ -377,7 +368,7 @@ try {
   writeIDoc('customer/xgglbsrp/release-notes.md', rnXgBody)
   writeIDoc('customer/batchjob/release-notes.md', rnBjBody)
 
-  // I6: "customer": null -> exit 0, NO customer.artifact.html/PROJECTS.md, 4 surfaces listed.
+  // I6: "customer": null exits 0, writes no customer.artifact.html or PROJECTS.md, and lists 4 surfaces.
   rm(custHtml); rm(projMd)
   hjson(repoI, '{ "docs": { "customer": null } }')
   const rI6 = buildI()
@@ -388,7 +379,7 @@ try {
     /docs\.artifact\.html/i.test(rI6.Out) && !/customer\.artifact\.html/i.test(rI6.Out), rI6.Out)
   hjson(repoI, declFull)
 
-  // I7: a missing required file names the exact path, no traceback.
+  // I7: a missing required file names the exact path and prints no traceback.
   const ugPath = j(custI, 'xgglbsrp/user-guide.md')
   const ugBody = rd(ugPath)
   rm(ugPath)
@@ -397,7 +388,7 @@ try {
     rI7.Code !== 0 && has(rI7.Out, 'docs/customer/xgglbsrp/user-guide.md') && !/Traceback/i.test(rI7.Out), rI7.Out)
   wr(ugPath, ugBody)
 
-  // I8: program != dirname names the file and the key.
+  // I8: a program that differs from its dirname names the file and the key.
   const specPath = j(custI, 'xgglbsrp/spec.md')
   const specBody = rd(specPath)
   writeIDoc('customer/xgglbsrp/spec.md', '---\nprogram: WRONG\ntitle: "xgglbsrp spec"\nupdated: 2026-08-20\nprogram_file: xgglbsrp\nmenu: "25.15.1"\nproject: P1\n---\n# spec\nBody.\n')
@@ -406,34 +397,33 @@ try {
     rI8.Code !== 0 && has(rI8.Out, 'docs/customer/xgglbsrp/spec.md') && /program/i.test(rI8.Out), rI8.Out)
   wr(specPath, specBody)
 
-  // I9: a missing chip_field key (program_file) on spec.md exits 1.
+  // I9: a spec.md without the chip_field key (program_file) exits 1.
   writeIDoc('customer/xgglbsrp/spec.md', '---\nprogram: xgglbsrp\ntitle: "xgglbsrp spec"\nupdated: 2026-08-20\nmenu: "25.15.1"\nproject: P1\n---\n# spec\nBody.\n')
   const rI9 = buildI()
   await check('I9 a missing declared chip_field key on spec.md exits 1', rI9.Code !== 0, rI9.Out)
   wr(specPath, specBody)
 
-  // I10: a malformed block (dir escapes the repo) exits 1 and reports it as unusable.
+  // I10: a malformed block (a dir that escapes the repo) exits 1 and reports it as unusable.
   hjson(repoI, '{ "docs": { "customer": { "dir": "../x" } } }')
   const rI10 = buildI()
   await check('I10 a malformed docs.customer block exits 1 and says 사용 불가', rI10.Code !== 0 && /사용 불가/i.test(rI10.Out), rI10.Out)
   hjson(repoI, declFull)
 
-  // I11: the reader absent (scripts/harness/ renamed away) exits 1 naming its path — the
-  // refusal, not a silent 4-surface fallback. The 4 internal surfaces may already be on disk
-  // from a PRIOR successful build (main() writes them before attempting the customer surface) —
-  // this case asserts only the refusal shape, not their absence.
+  // I11: an absent reader (scripts/harness/ renamed away) exits 1 and names its path. It is a
+  // refusal, not a silent 4-surface fallback. The 4 internal surfaces may already be on disk from
+  // an earlier successful build, because main() writes them before it attempts the customer
+  // surface, so this case asserts the refusal shape only.
   const hcDir = j(repoI, 'scripts/harness')
   const hcMoved = j(repoI, 'scripts/harness-moved')
   renameSync(hcDir, hcMoved)
   const rI11 = buildI()
-  // reader_path is built with a path join, so on Windows it is backslash-separated — match
-  // either separator rather than the forward-slash form the OTHER exit messages use (those are
-  // built by plain string formatting over the DECLARED dir, never a path join).
+  // reader_path is built with a path join, so on Windows it uses backslashes. The match accepts
+  // either separator, unlike the other exit messages, which format the declared dir as a string.
   await check('I11 an absent reader exits 1 naming scripts/harness/harness_config.mjs',
     rI11.Code !== 0 && /scripts[\\/]harness[\\/]harness_config\.mjs/i.test(rI11.Out), rI11.Out)
   renameSync(hcMoved, hcDir)
 
-  // I12: the `declared` contract — an explicit "" stays blank; an absent key gets the builder's
+  // I12: the `declared` contract. An explicit "" stays blank, and an absent key gets the builder's
   // own UI default.
   hjson(repoI, { docs: { customer: { ...customerDecl, eyebrow: '' } } })
   const rI12a = buildI()
@@ -448,17 +438,16 @@ try {
   hjson(repoI, declFull)
   buildI()
 
-  // I13: _selfcheck_release_helpers() passes standalone via a node import probe.
-  // The sentinel is ASSEMBLED at runtime and the exit code is asserted too: a failing run's traceback
-  // can echo the command source, so a literal sentinel in the command matched ITSELF on a failing run —
-  // the 0.38.0 selfcheck was broken and this case read green locally while CI failed. A gate judged
-  // from the wrong observable.
+  // I13: _selfcheck_release_helpers() passes standalone through a node import probe.
+  // The sentinel is assembled at runtime and the exit code is asserted too. A failing run's
+  // traceback can echo the command source, so a literal sentinel in the command would match itself
+  // on a failing run.
   const bdUrl = pathToFileURL(j(docsI, 'build_docs.mjs')).href
   const rI13 = nodeRun(['--input-type=module', '-e', `import { _selfcheck_release_helpers } from ${JSON.stringify(bdUrl)}; _selfcheck_release_helpers(); console.log('SELF' + 'CHECK-' + 'OK')`])
   await check('I13 _selfcheck_release_helpers() passes standalone (exit 0, sentinel printed, no traceback)',
     rI13.Code === 0 && /SELFCHECK-OK/i.test(rI13.Out) && !/Traceback/i.test(rI13.Out), `exit=${rI13.Code} ${rI13.Out}`)
 
-  // I14: panels — a declared module contributes a top-level tab; a missing module exits 1.
+  // I14: a declared panel module contributes a top-level tab, and a missing module exits 1.
   const panelsDir = j(repoI, 'scripts/panels')
   mk(panelsDir)
   wr(j(panelsDir, 'demo.mjs'), "export const CSS = '.demo{color:red}'\nexport function render_panel(root) { return '<p class=\"demo\">PANEL-OK</p>' }\n")
@@ -468,9 +457,9 @@ try {
   const c14 = existsSync(custHtml) ? rd(custHtml) : ''
   await check('I14 a declared panel module renders its fragment + CSS + tab',
     rI14.Code === 0 && /PANEL-OK/i.test(c14) && /\.demo\{color:red\}/i.test(c14) && />데모</i.test(c14), rI14.Out)
-  // I14 (ADR 0061 defaults): with none of the new keys the page keeps its pre-0061 shape — docs tab
-  // first and initially selected, the panel id derived (Korean label → `panel-0`), footer label
-  // 문서 생성일 over the corpus max — the only addition being the `panel-<id>` scope class.
+  // I14 (ADR 0061 defaults): with none of the new keys the docs tab is first and initially selected,
+  // the panel id is derived (Korean label to `panel-0`), and the footer label is 문서 생성일 over the
+  // corpus max. The `panel-<id>` scope class is the only addition.
   await check('I14 no new keys → docs first + selected, derived id panel-0, default footer label (pre-0061 shape + scope class)',
     /<div class="toptabs" role="tablist"><button type="button" class="toptab" role="tab" data-top="docs" aria-selected="true">/i.test(c14)
     && /data-top="panel-0" aria-selected="false">데모<\/button>/i.test(c14)
@@ -483,17 +472,17 @@ try {
     rI14b.Code !== 0 && has(rI14b.Out, 'scripts/panels/missing.mjs'), rI14b.Out)
   hjson(repoI, declFull)
 
-  // I15: generic markdown fixes, asserted on the base fixture's own docs.html — a hard-wrapped
-  // list item renders as ONE <li>, a ```diff fence colors a + line, a table is tblwrap-ped.
+  // I15: generic markdown rules, asserted on the base fixture's own docs.html. A hard-wrapped list
+  // item renders as one <li>, a ```diff fence colors a + line, and a table gets a tblwrap.
   buildI()
   const docsHtml = rd(j(docsI, 'docs.html'))
   const liCount = count(docsHtml, '<li>item one continued on a hard-wrapped line</li>')
   await check('I15 a hard-wrapped list item renders as ONE <li>', liCount === 1, docsHtml)
   await check('I15 a ```diff fence colors the + line', /<span class="d-add">\+added line<\/span>/i.test(docsHtml), docsHtml)
   await check('I15 a table is wrapped in tblwrap', /<div class="tblwrap"><table>/i.test(docsHtml), docsHtml)
-  // I15 negatives (review 2026-08-27, low): the continuation rule is CommonMark's lazy continuation
-  // for INDENTED lines only — a non-indented paragraph, a table, and a heading that directly follow
-  // a list item must NOT be swallowed into the <li>.
+  // I15 negatives: the continuation rule is CommonMark's lazy continuation for indented lines only.
+  // A non-indented paragraph, a table and a heading that directly follow a list item must not be
+  // swallowed into the <li>.
   await check('I15n a NON-indented line after a list item stays a separate paragraph',
     /<li>item two<\/li>/i.test(docsHtml) && /<p>Plain paragraph right after the list without a blank line<\/p>/i.test(docsHtml), docsHtml)
   await check('I15n a table directly after a list item is not swallowed',
@@ -501,10 +490,9 @@ try {
   await check('I15n a heading directly after a list item is not swallowed',
     /<li>item four<\/li>/i.test(docsHtml) && /<h2>Heading right after a list<\/h2>/i.test(docsHtml), docsHtml)
 
-  // I16: a STALE vendored reader (present, importable, but predating ADR 0060 — no customer_decl,
-  // no cfg["customer"]) is the real pjems state when the declaration is filled before harness-init
-  // re-runs. It must be a named exit, never a KeyError traceback (review 2026-08-27, high —
-  // reproduced with the pre-0060 reader).
+  // I16: a stale vendored reader, present and importable but without customer_decl and
+  // cfg["customer"] (ADR 0060), is the real state when a repo fills the declaration before
+  // harness-init re-runs. It must be a named exit, never an uncaught exception trace.
   const hcReal = j(repoI, 'scripts/harness')
   renameSync(hcReal, j(repoI, 'scripts/harness-real'))
   mk(hcReal)
@@ -513,30 +501,30 @@ try {
   const rI16 = buildI()
   await check('I16 a stale reader (no customer support) exits 1 naming it as 구버전, no traceback',
     rI16.Code !== 0 && /구버전/i.test(rI16.Out) && /harness_config\.mjs/i.test(rI16.Out) && !/Traceback/i.test(rI16.Out), rI16.Out)
-  // I17: write order — a refused customer build must not leave the 4 internal surfaces freshly
-  // written next to a stale customer page (review 2026-08-27, medium): index.json was deleted above
-  // and the refusal fired, so it must still be absent.
+  // I17: write order. A refused customer build must not leave the 4 internal surfaces freshly
+  // written next to a stale customer page. index.json was deleted above and the refusal fired, so
+  // it must still be absent.
   await check('I17 a refused customer build writes NO surface at all (index.json stays absent)',
     !existsSync(j(docsI, 'index.json')), 'index.json was written before the customer refusal')
   rm(hcReal)
   renameSync(j(repoI, 'scripts/harness-real'), hcReal)
 
-  // I14c: a panel module whose render_panel() RAISES is a named exit, not a traceback (review
-  // 2026-08-27, medium — the import was guarded, the call was not).
+  // I14c: a panel module whose render_panel() raises is a named exit, not a traceback. The guard
+  // covers the call as well as the import.
   wr(j(panelsDir, 'boom.mjs'), "export function render_panel(root) { throw new Error('boom') }\n")
   hjson(repoI, panelDecl([{ module: 'scripts/panels/boom.mjs', label: '붐' }]))
   const rI14c = buildI()
   await check('I14c a raising render_panel() exits 1 naming the module, no traceback',
     rI14c.Code !== 0 && /render_panel/i.test(rI14c.Out) && has(rI14c.Out, 'scripts') && /boom/i.test(rI14c.Out) && !/Traceback/i.test(rI14c.Out), rI14c.Out)
 
-  // I19: ADR 0061 — the declaration keys that replace pjems's inline DOM surgery. `first` is
-  // declared before-docs with an id, TAB_CHIPS and an UPDATED newer than the corpus; `demo` keeps
-  // its unscoped `.demo{}` rule. Expect: tab order first → docs → demo; `first` is the initial tab
-  // (default_tab) with its chips; the docs panel is NOT `on`; each panel container carries
-  // `panel-<id>`; the footer reads the declared label + the panel's newer date. `leak` reuses the
-  // canon classes `.mono` / `.chip.on` with no panel-owned class in the selector (the pjems leak) →
-  // warned; its `.panel-leak .chip` and `.own .clip` rules (scoped by a panel-owned class), its own
-  // `.pf-x`, and demo's own `.demo` are NOT (unique names leak into nothing).
+  // I19: the declaration keys of ADR 0061. `first` is declared before-docs with an id, TAB_CHIPS and
+  // an UPDATED newer than the corpus. `demo` keeps its unscoped `.demo{}` rule. The expected result:
+  // tab order first, docs, demo. `first` is the initial tab (default_tab) with its chips, and the
+  // docs panel is not `on`. Each panel container carries `panel-<id>`. The footer reads the declared
+  // label and the panel's newer date. `leak` reuses the canon classes `.mono` and `.chip.on` with no
+  // panel-owned class in the selector, which draws a warning. Its `.panel-leak .chip` and `.own .clip`
+  // rules (scoped by a panel-owned class), its own `.pf-x`, and demo's own `.demo` draw none,
+  // because unique names leak into nothing.
   wr(j(panelsDir, 'first.mjs'),
     "export const UPDATED = '2026-09-01'\nexport const TAB_CHIPS = ['칩A', '칩<B>']\nexport const CSS = '.panel-first .pf{color:blue}'\nexport function render_panel(root) { return '<p class=\"pf\">FIRST-OK</p>' }\n")
   wr(j(panelsDir, 'leak.mjs'), `export const CSS = "/* .clip in a comment */ .mono{color:red} .chip.on{x:y} .panel-leak .chip{color:blue} .own .clip{x:y} .pf-x{background:url(a.png)} a[href$='.clip']{x:y} [data-k='.tblwrap'] b{x:y}"
@@ -568,15 +556,15 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     && has(rI19.Out, "'.chip.on'") && !has(rI19.Out, "'.panel-leak .chip'")
     && !has(rI19.Out, "'.demo'") && !/pf-x/i.test(rI19.Out) && !/clip/i.test(rI19.Out) && !/tblwrap/i.test(rI19.Out)
     && count(rI19.Out, '[경고] 패널 CSS') === 2, rI19.Out)
-  // I19c (review 2026-08-27, medium): the builder's OWN id fallback — the path a pre-0061 reader leaves
-  // it on (entries without `id`) — must not hand two panels one data-top: labels "Env"/"env" both
-  // slugify to `env`, so the second takes the first free panel-<n>. Direct call, like I13.
+  // I19c: the builder's own id fallback, which entries without `id` use, must not hand two panels
+  // one data-top. The labels "Env" and "env" both slugify to `env`, so the second takes the first
+  // free panel-<n>. This is a direct call, like I13.
   const repoIFwd = repoI.replace(/\\/g, '/')
   const rI19c = nodeRun(['--input-type=module', '-e',
     `import { _load_panels } from ${JSON.stringify(bdUrl)}; const ps = await _load_panels({ panels: [{ module: 'scripts/panels/demo.mjs', label: 'Env' }, { module: 'scripts/panels/demo.mjs', label: 'env' }, { module: 'scripts/panels/demo.mjs', label: '데모' }] }, ${JSON.stringify(repoIFwd)}); console.log('IDS=' + ps.map(p => p.id).join(','))`])
   await check('I19c builder fallback ids (no reader id) stay unique: env, panel-1, panel-2',
     rI19c.Code === 0 && /IDS=env,panel-1,panel-2/i.test(rI19c.Out), rI19c.Out)
-  // I19b: a malformed UPDATED is a named refusal (the module's contract, like a non-str CSS).
+  // I19b: a malformed UPDATED is a named refusal, as the module contract says, like a CSS that is not a string.
   wr(j(panelsDir, 'baddate.mjs'), "export const UPDATED = '2026/09/01'\nexport function render_panel(root) { return '<p>x</p>' }\n")
   hjson(repoI, panelDecl([{ module: 'scripts/panels/baddate.mjs', label: '날짜' }]))
   const rI19b = buildI()
@@ -587,9 +575,9 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   await check('I18 the fixture builds clean again after the failure cases (all 6 surfaces)',
     rFinal.Code === 0 && existsSync(j(docsI, 'index.json')) && existsSync(custHtml), rFinal.Out)
 
-  // --- CK: --check mode (ADR 0074) — same corpus assembly as a normal build, compare-only, and
-  // the check_docs.mjs wrapper that runs it with no consumer-side mirror of the builder. A fresh,
-  // minimal fixture (no customer declaration) keeps the 4-surface set the cases below reason about.
+  // --- CK: --check mode (ADR 0074). It assembles the corpus as a normal build does and only compares.
+  // The check_docs.mjs wrapper runs it, with no consumer-side mirror of the builder. A fresh, minimal
+  // fixture without a customer declaration keeps the 4-surface set that the cases below reason about.
   const repoCK = j(fx, 'repo-check')
   const docsCK = docsTree(repoCK)
   const writeCKDoc = (rel, body) => wr(j(docsCK, rel), body)
@@ -599,13 +587,13 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   writeCKDoc('adr/0001-a.md', '---\nid: "0001"\ntype: adr\ntitle: "a"\nstatus: accepted\n---\n# 0001\nbody\n')
   buildCK()
 
-  // CK1: a clean corpus checks clean — exit 0, the OK summary line.
+  // CK1: a clean corpus checks clean with exit 0 and the OK summary line.
   const rCK1 = checkCK()
   await check('CK1 a clean corpus checks clean (exit 0, OK summary)',
     rCK1.Code === 0 && /\[check\] OK - /i.test(rCK1.Out) && /surface\(s\) match/i.test(rCK1.Out), rCK1.Out)
 
-  // CK2: drift is reported and the check writes NOTHING. Mutation anchor: if the write loop ran
-  // on the check path instead of only comparing, hashAfter would differ from hashBefore here.
+  // CK2: drift is reported and the check writes nothing. Mutation anchor: if the write loop ran on
+  // the check path instead of only comparing, hashAfter would differ from hashBefore here.
   const idxCK = j(docsCK, 'index.json')
   appendFileSync(idxCK, 'x')
   const hashBefore = sha256(idxCK)
@@ -620,32 +608,31 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     && /\[check\] OK\s+docs\/docs\.artifact\.html/i.test(rCK2.Out), rCK2.Out)
   await check('CK2 the summary line words the failing count as "differ or are missing" (DRIFT + MISSING share one wording)',
     /differ or are missing/i.test(rCK2.Out), rCK2.Out)
-  buildCK() // restore index.json to a clean state
+  buildCK() // restores index.json to a clean state
 
-  // CK3: an ABSENT OPTIONAL surface (docs.html — the templates' gitignore does not track it, so
-  // the canon itself commits only index.json/INDEX.md, ADR 0003) is reported but does not fail
-  // the check. Control for CK3b: a REQUIRED surface missing DOES fail.
+  // CK3: an absent optional surface is reported and does not fail the check. docs.html is optional,
+  // because the template gitignore does not track it and the canon commits only index.json and
+  // INDEX.md (ADR 0003). This is the control for CK3b, where a missing required surface fails.
   rm(j(docsCK, 'docs.html'))
   const rCK3 = checkCK()
   await check('CK3 an absent OPTIONAL generated surface is ABSENT, not a failure (exit 0)',
     rCK3.Code === 0 && /\[check\] ABSENT\s+docs\/docs\.html/i.test(rCK3.Out), rCK3.Out)
-  buildCK() // restore docs.html
+  buildCK() // restores docs.html
 
-  // CK3b: docs/index.json is REQUIRED (the docs-as-code contract commits it — docs.yml and every
-  // consumer rely on it, the scaffold's gitignore template does not ignore it) — its absence is
-  // MISSING and FAILS the check (exit 1), unlike CK3's gitignored OPTIONAL docs.html control
-  // (Finding 6). Mutation anchor: treating every absent surface as ABSENT (today's pre-fix
-  // behavior) flips this case to exit 0.
+  // CK3b: docs/index.json is required. The docs-as-code contract commits it, every consumer relies
+  // on it, and the scaffold gitignore template does not ignore it. Its absence is MISSING and fails
+  // the check with exit 1, unlike the optional docs.html of CK3. Mutation anchor: treating every
+  // absent surface as ABSENT flips this case to exit 0.
   rm(idxCK)
   const rCK3b = checkCK()
   await check('CK3b a missing REQUIRED docs/index.json is MISSING and fails the check (exit 1)',
     rCK3b.Code === 1 && /\[check\] MISSING\s+docs\/index\.json \(required surface not present\)/i.test(rCK3b.Out), rCK3b.Out)
   await check('CK3b the summary line words the failing count as "differ or are missing"',
     /differ or are missing/i.test(rCK3b.Out), rCK3b.Out)
-  buildCK() // restore index.json
+  buildCK() // restores index.json
 
-  // CK4: a core.autocrlf checkout (paired CRLF line endings, bytes otherwise identical) is NOT
-  // drift. Mutation anchor: removing the CR normalization on the check path flips this to DRIFT.
+  // CK4: a core.autocrlf checkout, with paired CRLF line endings and otherwise identical bytes, is
+  // not drift. Mutation anchor: removing the CR normalization on the check path flips this to DRIFT.
   const indexMdCK = j(docsCK, 'INDEX.md')
   const indexMdText = rd(indexMdCK)
   writeFileSync(indexMdCK, indexMdText.replace(/\n/g, '\r\n'))
@@ -654,10 +641,10 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     rCK4.Code === 0 && !/DRIFT/i.test(rCK4.Out), rCK4.Out)
   writeFileSync(indexMdCK, indexMdText)
 
-  // CK4b: a LONE 0x0D (appended at end of file, so it is not followed by 0x0A) must also fold —
-  // init.mjs/manifest-gate.mjs's ADR 0033 rule drops EVERY 0x0D verbatim, paired or not, and the
-  // check must match that rule rather than a narrower CRLF-pair-only fold (Finding 7). Mutation
-  // anchor: a pair-only fold leaves this trailing byte in place and flips the case to DRIFT.
+  // CK4b: a lone 0x0D, appended at the end of the file with no 0x0A after it, must also fold. The
+  // ADR 0033 rule of init.mjs and manifest-gate.mjs drops every 0x0D, paired or not, and the check
+  // matches it. Mutation anchor: a pair-only fold leaves this trailing byte in place and flips the
+  // case to DRIFT.
   const indexMdBytesCK = readFileSync(indexMdCK)
   writeFileSync(indexMdCK, Buffer.concat([indexMdBytesCK, Buffer.from([0x0d])]))
   const rCK4b = checkCK()
@@ -665,17 +652,17 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     rCK4b.Code === 0 && !/DRIFT/i.test(rCK4b.Out), rCK4b.Out)
   writeFileSync(indexMdCK, indexMdBytesCK)
 
-  // CK5: --check together with --customer is refused — docs/customer.html embeds the current date
-  // and can never be byte-checked. Exit 2, distinct from drift's exit 1.
+  // CK5: --check together with --customer is refused, because docs/customer.html embeds the current
+  // date and can never be byte-checked. The exit is 2, distinct from drift's exit 1.
   const rCK5 = nodeRun([j(docsCK, 'build_docs.mjs'), '--check', '--customer'])
   await check('CK5 --check --customer is refused with exit 2 (not 1 — 1 means drift)',
     rCK5.Code === 2 && /customer/i.test(rCK5.Out), rCK5.Out)
 
-  // CK7: a duplicate ADR id makes the SHARED assembly (_assemble(), the same one the build path
-  // uses) refuse before any surface comparison happens — REFUSED (exit 2), never DRIFT: the corpus
-  // defect cannot be fixed by regenerating, so a caller that reads exit 1 as "rebuild and re-run"
-  // must not loop on it (Finding 1/4). Mutation anchor: letting _assemble()'s SystemExit propagate
-  // uncaught would exit 1 with a raw Korean message on stderr instead of this ASCII exit-2 report.
+  // CK7: a duplicate ADR id makes the shared assembly, assemble(), which the build path also uses,
+  // refuse before any surface comparison. The verdict is REFUSED (exit 2), never DRIFT. Regenerating
+  // cannot fix the corpus defect, so a caller that reads exit 1 as "rebuild and re-run" must not
+  // loop on it. Mutation anchor: letting the SystemExit of assemble() propagate uncaught would exit 1
+  // with a raw Korean message on stderr instead of this ASCII exit-2 report.
   writeCKDoc('adr/0002-rival.md', '---\nid: "0001"\ntype: adr\ntitle: "rival"\nstatus: proposed\n---\n# rival\n')
   const rCK7 = checkCK()
   const ck7Ascii = [...Buffer.from(rCK7.Out, 'utf8')].every((b) => b < 0x80)
@@ -683,9 +670,9 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     rCK7.Code === 2 && /\[check\] REFUSED/i.test(rCK7.Out) && /\[check\]\s+builder:/i.test(rCK7.Out) && ck7Ascii, rCK7.Out)
   rm(j(docsCK, 'adr/0002-rival.md'))
 
-  // CK9: argument handling. An unknown argument is refused with exit 2 BEFORE
-  // anything is written: index.json is removed first, so a build that ran past the typo would
-  // recreate it. A malformed or second date, and a --version without a value, are refused the same way.
+  // CK9: argument handling. An unknown argument is refused with exit 2 before anything is written.
+  // index.json is removed first, so a build that ran past the typo would recreate it. A malformed or
+  // second date, and a --version without a value, are refused the same way.
   rm(idxCK)
   const rCK9 = nodeRun([j(docsCK, 'build_docs.mjs'), '--chek'])
   await check('CK9 an unknown flag (--chek) exits 2, names it and writes nothing',
@@ -697,37 +684,37 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   }
   await check('CK9 a malformed date, a second date and a --version without a value each exit 2 and write nothing',
     ck9Bad.length === 0, ck9Bad.join('\n'))
-  // CK9 control + restore: the date an older wrapper still passes is accepted and ignored (a full build).
+  // CK9 control and restore: the date that an older wrapper passes is accepted and ignored, as a full build.
   const rCK9d = nodeRun([j(docsCK, 'build_docs.mjs'), '2026-01-01'])
   await check('CK9 a single YYYY-MM-DD argument still builds (exit 0, index.json written)',
     rCK9d.Code === 0 && existsSync(idxCK), rCK9d.Out)
 
   // CK10: a bare integer in related_spec (D8) must not crash the shared assembly. The fixture index
-  // is stale for the new ADR, so a clean assembly reports DRIFT (exit 1); the crash was REFUSED +
-  // TypeError (exit 2).
+  // is stale for the new ADR, so a clean assembly reports DRIFT (exit 1). A crash would show as
+  // REFUSED with a TypeError (exit 2).
   writeCKDoc('adr/0003-rel.md', '---\nid: "0003"\ntype: adr\ntitle: "rel"\nstatus: accepted\nrelated_spec: [10]\n---\n# rel\n')
   const rCK10 = checkCK()
   await check('CK10 related_spec: [10] assembles (DRIFT against the stale index, no REFUSED, no TypeError)',
     rCK10.Code === 1 && /\[check\] DRIFT/i.test(rCK10.Out) && !/REFUSED|TypeError|Traceback/i.test(rCK10.Out), rCK10.Out)
   rm(j(docsCK, 'adr/0003-rel.md'))
 
-  // CK8: an empty corpus (no frontmatter'd .md anywhere in adr/ or spec/) is the same REFUSED
-  // class as CK7 — exit 2, ASCII-only, never DRIFT (a caller must not try to "fix" this by
-  // re-running the same regeneration that produced nothing to compare).
+  // CK8: an empty corpus, with no .md that has frontmatter in adr/ or spec/, is the same REFUSED
+  // class as CK7: exit 2, ASCII only, never DRIFT. A caller must not try to fix it by re-running a
+  // regeneration that produced nothing to compare.
   renameSync(j(docsCK, 'adr/0001-a.md'), j(docsCK, 'adr/0001-a.md.bak'))
   const rCK8 = checkCK()
   const ck8Ascii = [...Buffer.from(rCK8.Out, 'utf8')].every((b) => b < 0x80)
   await check('CK8 an empty corpus makes the assembly refuse: exit 2, REFUSED, pure ASCII stdout',
     rCK8.Code === 2 && /\[check\] REFUSED/i.test(rCK8.Out) && ck8Ascii, rCK8.Out)
   renameSync(j(docsCK, 'adr/0001-a.md.bak'), j(docsCK, 'adr/0001-a.md'))
-  buildCK() // restore a clean build after the empty-corpus fixture
+  buildCK() // restores a clean build after the empty-corpus fixture
 
-  // CK6: the check_docs.mjs wrapper — no args runs the check; a flag is a usage refusal; path
-  // arguments are triggers that run the same full check (ADR 0094 — the docs groups declare it
-  // `files: true` so pre-commit runs it on a staged ADR/spec).
-  // Mutation anchor: a wrapper that treats a path as a refusal (the pre-0094 `if sys.argv[1:]`), that
-  // reads only argv[1], or that lets a path narrow or skip the check turns CK6d/CK6e/CK6f red — CK6f
-  // is the multi-path shape the hook actually sends (a flag AFTER a path must still refuse).
+  // CK6: the check_docs.mjs wrapper. No args runs the check, a flag is a usage refusal, and path
+  // arguments are triggers that run the same full check (ADR 0094). The docs groups declare it
+  // `files: true`, so pre-commit runs it on a staged ADR or spec.
+  // Mutation anchor: a wrapper that treats a path as a refusal, reads only argv[1], or lets a path
+  // narrow or skip the check turns CK6d, CK6e and CK6f red. CK6f is the multi-path shape that the
+  // hook sends, where a flag after a path must still refuse.
   copyFileSync(checkDocsTemplate, j(docsCK, 'check_docs.mjs'))
   const wrapCK = (...a) => nodeRun([j(docsCK, 'check_docs.mjs'), ...a])
   const rCK6a = wrapCK()
@@ -756,15 +743,16 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   await check('CK6 wrapper with a flag after a path: exit 2 (every argument is inspected, not argv[1])',
     rCK6h.Code === 2, rCK6h.Out)
 
-  // --- SL: the STE-lite gate (ADR 0128) — check_docs.mjs with path arguments reads each passed spec
-  // and NEW ADR against HEAD, selects the changed sections, and checks R5 (sentence length) and R3
-  // (claims in parentheses). A git fixture with the vendored harness_config.mjs, because the gate
-  // takes its diff through git_run() and its mode through load(). Each case edits the committed
-  // tree, runs the gate from the fixture root with the relative paths pre-commit sends, and resets.
-  // Mutation anchors: a gate that checks only the changed lines turns SL3 green-for-the-wrong-reason
-  // red (the old long sentence must be named); one that checks a records section turns SL1 and SL4
-  // red; a fence reader that takes an inline ```` ```diff ```` span for a fence loses the
-  // headings after §1 and turns SL3 red; a gate that blocks without the declaration turns SL7 red.
+  // --- SL: the STE-lite gate (ADR 0128). check_docs.mjs with path arguments reads each passed spec
+  // and new ADR against HEAD, selects the changed sections, and checks R5 (sentence length) and R3
+  // (claims in parentheses). The fixture is a git repo with the vendored harness_config.mjs,
+  // because the gate takes its diff through git_run() and its mode through load(). Each case edits
+  // the committed tree, runs the gate from the fixture root with the relative paths that pre-commit
+  // sends, and resets.
+  // Mutation anchors: a gate that checks only the changed lines turns SL3 red, because the old long
+  // sentence must be named. A gate that checks a records section turns SL1 and SL4 red. A fence
+  // reader that takes an inline ```` ```diff ```` span for a fence loses the headings after §1 and
+  // turns SL3 red. A gate that blocks without the declaration turns SL7 red.
   const repoSL = j(fx, 'repo-ste')
   const docsSL = j(repoSL, 'docs')
   mk(j(docsSL, 'adr'), j(docsSL, 'spec'), j(repoSL, 'scripts/harness'))
@@ -773,14 +761,14 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   copyFileSync(harnessConfigSrc, j(repoSL, 'scripts/harness/harness_config.mjs'))
   copyFileSync(harnessGitSrc, j(repoSL, 'scripts/harness/harness_git.mjs'))
   const long = 'This sentence is deliberately long so that it runs past the limit of twenty five words that the rule sets for every descriptive sentence in a spec.'
-  // ADR 0208: the base spec holds one unchanged placeholder (in section 2), so SL18 can prove that
-  // the check reads changed lines only. U+2026, U+2014 and the curly quotes are built, never typed:
-  // a typed one in a fixture would be read as content of this file by any gate that scans the file.
+  // The base spec holds one unchanged placeholder in section 2 (ADR 0208), so SL18 can prove that the
+  // check reads changed lines only. U+2026, U+2014 and the curly quotes are built, never typed,
+  // because a gate that scans this file would read a typed one as content of the file.
   const dots = String.fromCharCode(0x2026)
   const em = String.fromCharCode(0x2014)
   const lq = String.fromCharCode(0x201c)
   const rq = String.fromCharCode(0x201d)
-  // The inline span on line 14 is two backticks around a three-backtick "diff" word: an inline span, not a fence.
+  // The inline span on line 14 is two backticks around a three-backtick "diff" word. It is an inline span, not a fence.
   const slSpec = [
     '---', 'id: "0001"', 'type: spec', 'title: "s"', 'status: active', '---',
     '# SPEC 0001. S',
@@ -820,7 +808,7 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     '| d0 | 0.0.9 | older group |',
   ].join('\n')
   const writeSL = (rel, body) => wr(j(repoSL, rel), body)
-  // Every fixture git call carries the same -c pins as the pwsh suite: no autocrlf rewrite on checkout.
+  // Every fixture git call pins core.autocrlf=false, so a checkout rewrites no line ending.
   const slGit = (...args) => git_run(repoSL, ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false', ...args])
   const checkSL = (...args) => nodeRun(['docs/check_docs.mjs', ...args], { cwd: repoSL })
   const resetSL = () => {
@@ -844,7 +832,7 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     writeFileSync(specSL, replaceAll(t, find, replace))
   }
 
-  // SL1: a short new sentence in §1 passes, and the change notes are a records section: not checked.
+  // SL1: a short new sentence in §1 passes, and the change notes are a records section, which is not checked.
   editSL('A short sentence stands here.', 'A short sentence stands here.\nAnother short one.')
   editSL('## 3. Change notes\n\n', '## 3. Change notes\n\n- A short new note.\n')
   const rSL1 = checkSL('docs/spec/0001-s.md')
@@ -858,10 +846,10 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   await check('SL2 R5 sentence, R5 step (> 20) and R3 claim are each reported',
     /R5 docs\/spec\/0001-s\.md:\d+ 27 words > 25/i.test(rSL2.Out) && /R5 docs\/spec\/0001-s\.md:\d+ 21 words > 20/i.test(rSL2.Out)
     && /R3 docs\/spec\/0001-s\.md:\d+ claim in parentheses: "\(which is a claim\)"/i.test(rSL2.Out), rSL2.Out)
-  // SL7: no declaration — the same findings are advice: exit 0 and the line that names the key.
+  // SL7: with no declaration the same findings are advice, with exit 0 and the line that names the key.
   await check('SL7 undeclared: ADVISORY, exit 0, the docs.ste_lite line printed',
     rSL2.Code === 0 && /\[ste-lite\] ADVISORY - 3 finding/i.test(rSL2.Out) && /ste_lite.: true/i.test(rSL2.Out), rSL2.Out)
-  // SL8: declared — the same tree blocks with exit 1.
+  // SL8: with the declaration the same tree blocks with exit 1.
   writeSL('.harness.json', '{"docs": {"ste_lite": true}}')
   const rSL8 = checkSL('docs/spec/0001-s.md')
   await check('SL8 declared docs.ste_lite: true: FAIL, exit 1',
@@ -875,7 +863,7 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     /2\. Old \(whole\)/i.test(rSL3.Out) && /R5 docs\/spec\/0001-s\.md:20 27 words/i.test(rSL3.Out) && !/1\. Clean/i.test(rSL3.Out), rSL3.Out)
   resetSL()
 
-  // SL4: a records section is not checked at all (owner 2026-10-09): a long new row passes too.
+  // SL4: a records section is not checked at all, so a long new row passes too.
   editSL('## 3. Change notes\n\n', `## 3. Change notes\n\n- ${long}\n`)
   const rSL4 = checkSL('docs/spec/0001-s.md')
   await check('SL4 records section: a new long row is not checked (exit 0, no finding)',
@@ -897,9 +885,9 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     /R5 docs\/adr\/0002-b\.md:9 /i.test(rSL6.Out) && !/0001-a\.md/i.test(rSL6.Out) && /ADVISORY - 1 finding/i.test(rSL6.Out), rSL6.Out)
   resetSL()
 
-  // SL9 (review 2026-10-09): a table whose row groups are blank-separated, as spec 0014 §7 writes
-  // them, in a checked section. A new group's first row is a data row, not a header; the reference
-  // forms `(record run #N, manifest X.Y.Z)` pass R3; a real claim in that row is flagged.
+  // SL9: a table whose row groups are blank-separated, as spec 0014 §7 writes them, in a checked
+  // section. A new group's first row is a data row, not a header. The reference forms
+  // `(record run #N, manifest X.Y.Z)` pass R3, and a real claim in that row is flagged.
   editSL('| d0 | 0.0.9 | older group |', '| d2 | 0.2.0 (record run #3, manifest 0.2.0) | short note |\n\n| d0 | 0.0.9 | older group |')
   const rSL9 = checkSL('docs/spec/0001-s.md')
   await check('SL9 a new table group in the eval-row reference form passes R3',
@@ -911,8 +899,8 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     /R3 docs\/spec\/0001-s\.md:\d+ claim in parentheses: "\(that hides a claim\)"/i.test(rSL9b.Out) && /ADVISORY - 1 finding/i.test(rSL9b.Out), rSL9b.Out)
   resetSL()
 
-  // SL10 (review, medium): removing a whole section selects nothing, and a new section appended with
-  // its leading blank line selects only itself — never the untouched section above it.
+  // SL10: removing a whole section selects nothing, and a new section appended with its leading
+  // blank line selects only itself, never the untouched section above it.
   {
     const t = rd(specSL)
     const cut = t.indexOf('## 4. Verbatim')
@@ -929,8 +917,8 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     /6\. New \(whole\)/i.test(rSL10b.Out) && !/5\. Table/i.test(rSL10b.Out) && /OK - 1 section/i.test(rSL10b.Out), rSL10b.Out)
   resetSL()
 
-  // SL11 (review, medium): a .harness.json below the git top level. The HEAD lookup must read the
-  // path from that root (`HEAD:./<rel>`), or every spec reads as new and is checked whole.
+  // SL11: a .harness.json below the git top level. The HEAD lookup must read the path from that root
+  // (`HEAD:./<rel>`), or every spec reads as new and is checked whole.
   const repoN = j(fx, 'repo-ste-nested')
   const svc = j(repoN, 'svc')
   mk(j(svc, 'docs/spec'), j(svc, 'docs/adr'), j(svc, 'scripts/harness'))
@@ -952,15 +940,15 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   await check('SL11 a .harness.json below the git root: only the changed section is checked (exit 0)',
     rSL11.Code === 0 && /1\. Clean \(whole\)/i.test(rSL11.Out) && !/2\. Old/i.test(rSL11.Out) && /OK - 1 section/i.test(rSL11.Out), rSL11.Out)
 
-  // SL12 (review, low): advisory mode never blocks. A missing harness_config.mjs prints NOT CHECKED
-  // and exits 0; a non-boolean docs.ste_lite prints a WARN line and stays advisory.
+  // SL12: advisory mode never blocks. A missing harness_config.mjs prints NOT CHECKED and exits 0,
+  // and a non-boolean docs.ste_lite prints a WARN line and stays advisory.
   editSL('Old short sentence.', 'Old short sentence, edited.')
   const hcSL = j(repoSL, 'scripts/harness/harness_config.mjs')
   renameSync(hcSL, `${hcSL}.off`)
   let rSL12
   try { rSL12 = checkSL('docs/spec/0001-s.md') } finally { renameSync(`${hcSL}.off`, hcSL) }
-  // ADR 0208 (owner answer 2026-11-16): the placeholder check never passes a file unread. With no
-  // harness_config.mjs it reads every line, so the base fixture's UNCHANGED placeholder now fails the run.
+  // The placeholder check never passes a file unread (ADR 0208). With no harness_config.mjs it reads
+  // every line, so the base fixture's unchanged placeholder fails the run.
   await check('SL12 harness_config.mjs missing: STE-lite NOT CHECKED; the placeholder check reads the whole file and fails on the unchanged base placeholder (exit 1)',
     rSL12.Code === 1 && /\[ste-lite\] NOT CHECKED/i.test(rSL12.Out) && /\[placeholder\] WHOLE FILES \(scripts\/harness\/harness_config\.mjs unusable/i.test(rSL12.Out)
     && /\[placeholder\] FAIL - 1 finding/i.test(rSL12.Out) && !/\[placeholder\] NOT CHECKED/i.test(rSL12.Out), rSL12.Out)
@@ -972,10 +960,10 @@ export function render_panel(root) { return '<p>LEAK</p>' }
 
   // SL13 (ADR 0170): R8 flags an em dash, a joining semicolon, "(s)" and "and/or" in a changed
   // section, one line per kind. A semicolon inside parentheses (an R3 reference list), an entity's
-  // semicolon, an em dash in a code span, a table cell that holds only an em dash and a bare URL pass;
-  // the em dash entity is flagged. The forms sit in table rows of their own, because a unit reports
-  // each kind once: in the paragraph a miscount would hide. Mutation anchors: a gate that counts any
-  // passing form, or misses the entity, turns the count of 5 red (proven by injected faults, slice 167).
+  // semicolon, an em dash in a code span, a table cell that holds only an em dash, and a bare URL
+  // pass. The em dash entity is flagged. The forms sit in table rows of their own, because a unit
+  // reports each kind once, and in the paragraph a miscount would hide. Mutation anchors: a gate
+  // that counts any passing form, or misses the entity, turns the count of 5 red.
   editSL('A short sentence stands here.', `A short sentence ${em} with a dash. One clause; another clause. Each file(s) and/or dir passes.`)
   editSL('| d1 | 0.1.0 | an old row |', `| d1 | 0.1.0 | an old row |\n| d4 | ${em} | a \`code ${em} span\` row (ADR 1; spec 2) &amp; more |\n| d5 | https://h/a;b/and/or | y &mdash; z |`)
   const rSL13 = checkSL('docs/spec/0001-s.md')
@@ -986,11 +974,11 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     && /ADVISORY - 5 finding/i.test(rSL13.Out), rSL13.Out)
   resetSL()
 
-  // SL13b (ADR 0188, dist #14): a cell that holds only an em dash entity is the empty-cell mark too, and
-  // a semicolon inside a closed bracket pair or closed double quotes (straight or curly) joins no
+  // SL13b (ADR 0188): a cell that holds only an em dash entity is the empty-cell mark too, and a
+  // semicolon inside a closed bracket pair or closed double quotes (straight or curly) joins no
   // clauses. An unclosed inch mark guards nothing (d8), and it never pairs with a later real quote
   // (d9). Only the innermost bracket pair guards, so the outer semicolon of d10 reports. Mutation
-  // anchors: the old U+2014-only exemption adds two findings (d6), a guard that skips an unclosed
+  // anchors: an exemption for U+2014 alone adds two findings (d6), a guard that skips an unclosed
   // quote drops d8, a quote that opens after a digit drops d9, and a greedy bracket pattern drops d10.
   editSL('| d1 | 0.1.0 | an old row |', `| d1 | 0.1.0 | an old row |\n| d6 | &mdash; | &#8212; |\n| d7 | "one; two" and [a; b] and ${lq}c; d${rq} | x |\n| d8 | a 3" mark; then more | y |\n| d9 | a 3" pipe; then run "make" | y |\n| d10 | [a; [b] c] | y |`)
   const rSL13b = checkSL('docs/spec/0001-s.md')
@@ -999,9 +987,9 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     && /R8 docs\/spec\/0001-s\.md:\d+ joining semicolon: "\[a; \[b\] c\]/i.test(rSL13b.Out) && /ADVISORY - 3 finding/i.test(rSL13b.Out), rSL13b.Out)
   resetSL()
 
-  // SL14 (ADR 0170): a declared word is an R7 finding with its replacement, in any case; inside a code
-  // span and inside a longer word it passes (the second paragraph would add a finding). SL14b: a bad
-  // map warns and drops the whole map, a string docs.ste_marks warns, and both stay advisory.
+  // SL14 (ADR 0170): a declared word is an R7 finding with its replacement, in any case. Inside a
+  // code span or a longer word it passes, and the second paragraph would add a finding otherwise.
+  // SL14b: a bad map warns and drops the whole map, a string docs.ste_marks warns, and both stay advisory.
   editSL('A short sentence stands here.', 'A short sentence stands here VIA a path. The `via` span passes.\n\nA viable trivia line.')
   writeSL('.harness.json', '{"docs": {"ste_words": {"via": "through"}}}')
   const rSL14 = checkSL('docs/spec/0001-s.md')
@@ -1014,8 +1002,8 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     && !/R7 docs\//i.test(rSL14b.Out) && /OK - 1 section/i.test(rSL14b.Out), rSL14b.Out)
   resetSL()
 
-  // SL14c (dist #14): a "//" key in docs.ste_words is a comment, as in the other sections, never a word
-  // to flag. Mutation anchor: reading the key as a word adds an R7 finding on the " // " in the text.
+  // SL14c: a "//" key in docs.ste_words is a comment, as in the other sections, never a word to
+  // flag. Mutation anchor: reading the key as a word adds an R7 finding on the " // " in the text.
   editSL('A short sentence stands here.', 'A short sentence // stands here VIA a path.')
   writeSL('.harness.json', '{"docs": {"ste_words": {"//": "a comment key", "via": "through"}}}')
   const rSL14c = checkSL('docs/spec/0001-s.md')
@@ -1024,8 +1012,8 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   resetSL()
 
   // SL15 (ADR 0170): a new ADR with one option, and one with no options heading, are each a finding.
-  // SL6 above holds the passing control: its ADR records two options and reports only its R5 line.
-  // The two-item "Adoption plan" section above the options must not count: the heading match takes
+  // SL6 above is the passing control: its ADR records two options and reports only its R5 line.
+  // The two-item "Adoption plan" section above the options must not count. The heading match takes
   // whole words, so a substring match would pass ADR 0003 here.
   writeSL('docs/adr/0003-c.md', '---\nid: "0003"\ntype: adr\ntitle: "c"\nstatus: accepted\n---\n# 0003. C\n\nShort.\n\n## Adoption plan\n\n- Step one.\n- Step two.\n\n## Options\n\n| Option | Verdict |\n|---|---|\n| A | Adopted |\n')
   writeSL('docs/adr/0004-d.md', '---\nid: "0004"\ntype: adr\ntitle: "d"\nstatus: accepted\n---\n# 0004. D\n\nShort.\n')
@@ -1035,9 +1023,9 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     && /ADVISORY - 2 finding/i.test(rSL15.Out), rSL15.Out)
   resetSL()
 
-  // SL16 (ADR 0170): two keys. The scaffold seed declares docs.ste_lite only, so an R8 finding stays
-  // advice there (exit 0, the ste_marks line printed) and an R5 finding still blocks; docs.ste_marks
-  // alone blocks R8 and leaves R5 as advice. Mutation anchor: one shared switch turns SL16 red.
+  // SL16 (ADR 0170): two keys. The scaffold seed declares docs.ste_lite only, so there an R8 finding
+  // stays advice, with exit 0 and the ste_marks line printed, and an R5 finding still blocks.
+  // docs.ste_marks alone blocks R8 and leaves R5 as advice. Mutation anchor: one shared switch turns SL16 red.
   editSL('A short sentence stands here.', `A short sentence ${em} with a dash.`)
   writeSL('.harness.json', '{"docs": {"ste_lite": true}}')
   const rSL16 = checkSL('docs/spec/0001-s.md')
@@ -1058,12 +1046,12 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     rSL16d.Code === 1 && /\[ste-lite\] FAIL - 2 finding/i.test(rSL16d.Out) && !/advisory:/i.test(rSL16d.Out), rSL16d.Out)
   resetSL()
 
-  // SL17 (dist issue #13): the corpus seed that harness-init places is a NEW ADR in a scaffolded
-  // repo's first commit, so the gate checks it whole there. It must pass under both keys, or the
-  // seed blocks every fresh repo's first commit. The shipped template bytes are checked, with only
-  // the id renumbered past the fixture's ADR 0001. The index is rebuilt first, so the exit code is
-  // the whole check's verdict, as pre-commit reads it. Mutation anchor: the v0.70.0 seed text (16
-  // findings: R3, R5 and R8) turns SL17 red.
+  // SL17: the corpus seed that harness-init places is a new ADR in a scaffolded repo's first commit,
+  // so the gate checks it whole there. It must pass under both keys, or the seed blocks every fresh
+  // repo's first commit. The shipped template bytes are checked, with only the id renumbered past
+  // the fixture's ADR 0001. The index is rebuilt first, so the exit code is the whole check's
+  // verdict, as pre-commit reads it. Mutation anchor: a seed text with findings under R3, R5 or R8
+  // turns SL17 red.
   const seedSL = rd(j(here, 'templates/docs/adr/0001-adopt-docs-as-code.md'))
   if (!seedSL.includes('id: "0001"')) throw new Error('SL17 fixture: the seed ADR has no id: "0001" line')
   writeSL('docs/adr/0002-adopt-docs-as-code.md', replaceAll(seedSL, 'id: "0001"', 'id: "0002"'))
@@ -1077,13 +1065,13 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   resetSL()
 
   // SL18 (ADR 0208): the placeholder check reads the same files and changed lines as STE-lite and
-  // fails under no key. The base spec holds an unchanged placeholder in section 2 (never reported).
-  // Changed lines: a bare `<none | U+2026>` fails; the same span in a code span, `<met | not met>`
-  // (accepted: it holds no U+2026), an HTML comment and a plain tag pass. SL18b: a records section is
-  // read, a verbatim block is exempt, and docs.ste_lite: false gates nothing. SL18c: a new ADR is read
-  // and a changed accepted ADR is skipped. Mutation anchors: a reader that skips records sections drops
-  // SL18b, one that reads code spans or the verbatim block adds a finding to SL18 or SL18b, and one
-  // that reads unchanged lines reports two in SL18.
+  // fails under no key. The base spec holds an unchanged placeholder in section 2, which is never
+  // reported. On changed lines a bare `<none | U+2026>` fails. The same span in a code span,
+  // `<met | not met>` (accepted, because it holds no U+2026), an HTML comment and a plain tag pass.
+  // SL18b: a records section is read, a verbatim block is exempt, and docs.ste_lite: false gates
+  // nothing. SL18c: a new ADR is read and a changed accepted ADR is skipped. Mutation anchors: a
+  // reader that skips records sections drops SL18b, one that reads code spans or the verbatim block
+  // adds a finding to SL18 or SL18b, and one that reads unchanged lines reports two in SL18.
   editSL('A short sentence stands here.', `A short sentence stands here.\nAdd <none | ${dots}> here.\n\nCode \`<none | ${dots}>\` span.\n\nNot placeholders: <met | not met>, <!-- <done | ${dots}> --> and <b>x</b>.`)
   const rSL18 = checkSL('docs/spec/0001-s.md')
   const sl18n = count(rSL18.Out, '[placeholder] docs/spec/')
@@ -1111,12 +1099,12 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     && !/0001-a\.md/i.test(rSL18c.Out), rSL18c.Out)
   resetSL()
 
-  // --- FL: every YAML list shape a spec is written in indexes as the SAME list (dist issue #6) ----
-  // The builder read only the one-line `[a, b]` form: a block list landed in index.json as null and a
-  // multi-line flow list as the STRING "[" — and verify_map then crashed on the null (TypeError,
-  // exit 1, CI's verify step red) and iterated the "[" into an empty mapping, silently. Each shape is
-  // followed by another key so a parser that swallows past the list's end fails here too; FL3 is
-  // the one-line control (it carries the ']'-in-an-item path the retro parser used to truncate).
+  // --- FL: every YAML list shape that a spec uses indexes as the same list --------------------------
+  // A builder that reads only the one-line `[a, b]` form leaves a block list as null in index.json
+  // and a multi-line flow list as the string "[". verify_map then crashes on the null (TypeError,
+  // exit 1) and iterates the "[" into an empty mapping, silently. Each shape is followed by another
+  // key, so a parser that swallows past the list's end fails here too. FL3 is the one-line control,
+  // and it carries the ']'-in-an-item path that a naive parser truncates.
   const repoFL = j(fx, 'repo-lists')
   const docsFL = docsTree(repoFL)
   const writeFLSpec = (id, lists) => wr(j(docsFL, `spec/${id}-s.md`), `---\nid: "${id}"\ntype: spec\ntitle: "s${id}"\nstatus: active\n${lists}\ntags: [x]\n---\n# ${id}\n`)
@@ -1124,21 +1112,21 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   writeFLSpec('0002', 'implements_in: [\n  "src/a.py",\n  src/b.py,   # trailing comma\n]')
   writeFLSpec('0003', 'implements_in: ["app/api/auth/[...nextauth]/route.ts", "src/c.py"]')
   writeFLSpec('0004', 'implements_in:   # compact block, a comment line between items\n- src/a.py\n\n# between\n- src/b.py')
-  // FL6-FL9 pin the rules that keep a list from swallowing or truncating (review 2026-09-23). FL6: a
-  // last item ending in ']' with the list's ']' on the next line — the old close rule (first line
-  // ending in ']') cut it to 'app/[slug'. FL7: the column-0 key guard — a list left open before the
-  // next key and a stray ']' after it; without the guard `note: kept` is swallowed into the list.
-  // FL8: a comment-only value is null (it indexed as the comment's text, '# TBD'). FL9: a '['-led
-  // title that is not a list keeps every key after it (the bracket balance closes it on its own line).
+  // FL6 to FL9 pin the rules that keep a list from swallowing or truncating. FL6: a last item ending
+  // in ']' with the list's ']' on the next line. A close rule that stops at the first line ending in
+  // ']' would cut it to 'app/[slug'. FL7: the column-0 key guard, for a list left open before the
+  // next key and a stray ']' after it. Without the guard `note: kept` is swallowed into the list.
+  // FL8: a comment-only value is null, not the comment's text '# TBD'. FL9: a title that starts with
+  // '[' and is no list keeps every key after it, because the bracket balance closes it on its own line.
   writeFLSpec('0006', 'implements_in: [\n  src/a.py,\n  app/[slug]\n]')
   writeFLSpec('0007', 'implements_in: [\n  "src/a.py",\nnote: kept\n]')
   writeFLSpec('0008', 'implements_in:   # TBD — nothing owned yet\nsuperseded_by:   # none')
   wr(j(docsFL, 'spec/0009-s.md'), '---\nid: "0009"\ntype: spec\ntitle: [WIP] gate layer\nstatus: draft\nimplements_in: [src/w.py]\ntags: [x]\n---\n# 0009\n')
-  // FL11-FL16: backslash escapes in a double-quoted scalar and the
-  // link-scheme filter, on the SAME build as the list shapes above. 0010 carries: a title with \" and
-  // \\; a flow list and a block list whose items carry \"; \n (stays two characters — only \" and \\
-  // are unescaped); an unterminated `"C:\dir\"` (keeps the old reading); and a body whose links use
-  // a plain scheme, a tab-split scheme, a leading control character, data: and vbscript:.
+  // FL11 to FL16: backslash escapes in a double-quoted scalar and the link-scheme filter, on the
+  // same build as the list shapes above. 0010 carries a title with \" and \\, a flow list and a block
+  // list whose items carry \", and \n, which stays two characters because only \" and \\ are
+  // unescaped. It also carries an unterminated `"C:\dir\"`, which keeps its literal reading, and a
+  // body whose links use a plain scheme, a tab-split scheme, a leading control character, data: and vbscript:.
   const flTab = '\t'
   const flCtl = String.fromCharCode(1)
   // String.raw keeps every backslash as written.
@@ -1158,7 +1146,7 @@ tags: [x]
 # 0010
 [js](javascript:x) [tab](java${flTab}script:x) [ctl](${flCtl}javascript:x) [data](data:text/html,x) [vb](VBScript:x) [ok](https://example.com/p#q)`
   wr(j(docsFL, 'spec/0010-s.md'), fl10)
-  // 0001 ADR: a bare integer in related_spec (D8) — the builder joined the list as strings.
+  // The 0001 ADR holds a bare integer in related_spec (D8), which the builder must join as text.
   wr(j(docsFL, 'adr/0001-r.md'), '---\nid: "0001"\ntype: adr\ntitle: "r"\nstatus: accepted\nrelated_spec: [10]\nrelated_adr: [2]\n---\n# 0001\n')
   const rFL = nodeRun([j(docsFL, 'build_docs.mjs')])
   const flCode = rFL.Code
@@ -1209,28 +1197,29 @@ tags: [x]
   const flIdxMd = rd(j(docsFL, 'INDEX.md'))
   await check('FL17 a bare integer in related_spec builds and lists as text in INDEX.md (was a TypeError)',
     flCode === 0 && /0001-r\.md\)[^\n]*\| 10 \|/i.test(flIdxMd), `exit=${flCode}: ${rFL.Out}`)
-  // FL5: the consumer the null crashed — verify_map over the index this builder wrote now maps the
-  // changed file to every spec that lists it, whatever shape the spec used.
+  // FL5: the consumer that a null would crash. verify_map over the index that this builder wrote
+  // maps the changed file to every spec that lists it, whatever list shape the spec used.
   const rFL5 = nodeRun([verifyMap, '--repo', repoFL, 'src/b.py'])
   await check('FL5 verify_map maps src/b.py to the block, flow and compact specs (exit 0, no traceback)',
     rFL5.Code === 0 && !/Traceback/i.test(rFL5.Out) && /spec 0001 /i.test(rFL5.Out) && /spec 0002 /i.test(rFL5.Out)
     && /spec 0004 /i.test(rFL5.Out) && !/spec 0003 /i.test(rFL5.Out), `exit=${rFL5.Code}: ${rFL5.Out}`)
-  // FL10: the comment-only spec reaches verify_map as null — its warning must name a remedy that
-  // clears it (`[]`), because a rebuild reproduces the null; the comment text never reaches it.
+  // FL10: the comment-only spec reaches verify_map as null. Its warning must name a remedy that
+  // clears it (`[]`), because a rebuild reproduces the null. The comment text never reaches it.
   await check('FL10 verify_map warns the comment-only spec as null and names the [] remedy',
     /spec 0008: implements_in in the index is null/i.test(rFL5.Out) && /or \[\] for a spec that owns nothing yet/i.test(rFL5.Out) && !/# TBD/i.test(rFL5.Out), rFL5.Out)
 
-  // --- NR: the `narrows` relation (ywr-harness ADR 0196) — an ADR names the ADRs it narrows, the
-  // builder derives the reverse line. NR1, NR2 and NR3 read ONE corpus from ONE build: every builder
-  // run is a process start, and this suite must not get slower for them. The corpus:
-  //   0001 accepted  — the target of 0002 (in force), 0003 (superseded) and 0007 (rejected)
-  //   0002 accepted  — narrows [1] as an int
-  //   0003 superseded — narrows ["0004", 1]: digit string and int, both out of every reverse list
-  //   0004 accepted  — named only by the superseded 0003, so it must stay plain
-  //   0005 accepted  — a hand-written narrowed_by, which the builder ignores
-  //   0006 accepted  — narrows: [] (nothing)
-  //   0007 rejected  — narrows [1], the third status that leaves the reverse list
-  //   spec 0001      — narrows [1], ignored: a spec has no accepted decision to narrow
+  // --- NR: the `narrows` relation (ywr-harness ADR 0196). An ADR names the ADRs it narrows, and the
+  // builder derives the reverse line. NR1, NR2 and NR3 read one corpus from one build, because every
+  // builder run is a process start. The corpus:
+  //   0001 accepted   the target of 0002 (in force), 0003 (superseded), 0007 (rejected) and 0008 (deprecated)
+  //   0002 accepted   narrows [1] as an int
+  //   0003 superseded narrows ["0004", 1]: digit string and int, both out of every reverse list
+  //   0004 accepted   named only by the superseded 0003, so it stays plain
+  //   0005 accepted   a hand-written narrowed_by, which the builder ignores
+  //   0006 accepted   narrows: [] (nothing)
+  //   0007 rejected   narrows [1], a second status that leaves the reverse list
+  //   0008 deprecated narrows [1, 1], a third status that leaves the reverse list
+  //   spec 0001       narrows [1], ignored, because a spec has no accepted decision to narrow
   const repoNR = j(fx, 'repo-narrows')
   const docsNR = docsTree(repoNR)
   const writeNRDoc = (rel, body) => wr(j(docsNR, rel), body)
@@ -1253,9 +1242,9 @@ tags: [x]
   const getNRRow = (num) => indexNR.split('\n').find((l) => new RegExp(`^\\| \\[${num}\\]`, 'i').test(l))
   const nr = (node, key) => arr(jsonNR?.graph?.[node]?.[key]).join(',')
 
-  // NR1: the narrowing ADR carries `narrows`, the named ADR carries the derived `narrowed_by`, the
-  // INDEX.md status cell and the docs.html meta panel show both directions. Mutation anchor: a builder
-  // that never derives the reverse relation, or never writes the graph keys, turns this red.
+  // NR1: the narrowing ADR carries `narrows`, the named ADR carries the derived `narrowed_by`, and
+  // the INDEX.md status cell and the docs.html meta panel show both directions. Mutation anchor: a
+  // builder that never derives the reverse relation, or never writes the graph keys, turns this red.
   await check('NR1 the corpus with narrows builds (exit 0)', rNR.Code === 0 && jsonNR, rNR.Out)
   await check('NR1 graph adr:0002 holds narrows [1], placed after superseded_by',
     getNRKeys('adr:0002') === 'related_adr,related_spec,superseded_by,narrows' && nr('adr:0002', 'narrows') === '1', `keys=${getNRKeys('adr:0002')}`)
@@ -1285,11 +1274,10 @@ tags: [x]
     htmlNR.includes('<b>좁힘</b> <a href="#adr-0004">#4</a>, <a href="#adr-0001">#1</a>'), 'the 0003 narrows row is not linked as #4, #1')
 
   // NR3: nothing appears without a non-empty narrows. 0005 (hand-written narrowed_by), 0006
-  // (`narrows: []`) and the spec (narrows [1]) keep exactly the legacy keys, no row carries "narrowed
-  // by" but 0001's, and docs.html holds four narrows rows (0002, 0003, 0007, 0008) and one reverse row (0001).
-  // The byte identity with the previous builder on a corpus without the key is proved once, outside
-  // this suite, against HEAD's committed index. Mutation anchor: reading narrowed_by from the
-  // frontmatter, or reading narrows on a spec, adds a key or a row here.
+  // (`narrows: []`) and the spec (narrows [1]) keep exactly the base keys. No row carries "narrowed
+  // by" except 0001's, and docs.html holds four narrows rows (0002, 0003, 0007, 0008) and one
+  // reverse row (0001). Mutation anchor: reading narrowed_by from the frontmatter, or reading
+  // narrows on a spec, adds a key or a row here.
   await check('NR3 0005 (hand-written narrowed_by) and 0006 (narrows: []) hold exactly the legacy graph keys',
     getNRKeys('adr:0005') === 'related_adr,related_spec,superseded_by' && getNRKeys('adr:0006') === 'related_adr,related_spec,superseded_by',
     `0005=${getNRKeys('adr:0005')} 0006=${getNRKeys('adr:0006')}`)
@@ -1300,13 +1288,13 @@ tags: [x]
     count(htmlNR, '<b>좁힘</b>') === 4 && count(htmlNR, '<b>좁혀짐</b>') === 1,
     `narrows=${count(htmlNR, '<b>좁힘</b>')} reverse=${count(htmlNR, '<b>좁혀짐</b>')}`)
 
-  // NR4: a wrong `narrows` value is a refusal that names the file and the value. One fixture, one file
-  // rewritten per run; the first kind runs as a normal build (non-zero exit), the other three through
-  // --check (exit 2, the REFUSED line), so each kind costs one process start. The message is Korean:
-  // the build run matches the file name and the value only. The --check output is ASCII (Korean as
-  // \uXXXX escapes), so those runs also match a word that only their kind's message holds. That tells
-  // a non-number item from an unknown number. Mutation anchor: dropping any of the four checks in
-  // _resolve_narrows turns that kind's case red.
+  // NR4: a wrong `narrows` value is a refusal that names the file and the value. One fixture has one
+  // file rewritten per run. The first kind runs as a normal build (non-zero exit), and the other
+  // three run through --check (exit 2, the REFUSED line), so each kind costs one process start. The
+  // message is Korean, so the build run matches the file name and the value only. The --check output
+  // is ASCII (Korean as \uXXXX escapes), so those runs also match a word that only their kind's
+  // message holds. That tells a non-number item from an unknown number. Mutation anchor: dropping
+  // any of the four checks in resolve_narrows turns that kind's case red.
   const getNREscaped = (word) => [...word].map((c) => (c.charCodeAt(0) >= 128 ? `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}` : c)).join('')
   const checkNR = () => nodeRun([j(docsNR, 'build_docs.mjs'), '--check'])
   writeNRAdr('0002', 'accepted', 'narrows: [99]\n')
@@ -1327,10 +1315,8 @@ tags: [x]
     rNR4d.Code === 2 && /\[check\] REFUSED/i.test(rNR4d.Out) && /0002-x\.md/i.test(rNR4d.Out) && /x7/i.test(rNR4d.Out) && rNR4d.Out.includes(getNREscaped('번호가 아닙')), rNR4d.Out)
 
   // --- PY1: no shipped docs or scaffold script is Python (ywr-harness ADR 0223) -------------------------
-  // The case held the Python 3.9 floor of the shipped modules (a module that annotates with `X | Y` needs
-  // `from __future__ import annotations`). Those modules are Node files now, so it holds the property that
-  // replaced the floor: no `.py` ships under templates/docs or templates/scripts/harness, where a member's
-  // repo would run it. The control file proves the scan sees a `.py` where one is.
+  // No `.py` ships under templates/docs or templates/scripts/harness, where a member's repo would
+  // run it (ADR 0223). The control file proves that the scan sees a `.py` where one is.
   const pyControlDir = j(fx, 'py-control')
   wr(j(pyControlDir, 'control.py'), 'print(1)\n')
   const pyScanDirs = [j(here, 'templates/docs'), j(here, 'templates/scripts/harness'), j(here, '../../scripts')]
@@ -1343,10 +1329,8 @@ tags: [x]
     pyControlSeen === 1 && pyShipped.length === 0, `shipped python: ${pyShipped.join(', ')}`)
 
   // --- BW: the docs wrapper templates/docs/build.mjs (ADR 0220) ---------------------------------------
-  // The wrapper runs the builder with this Node and hands the builder's exit code back unchanged. It is
-  // run from a fixture docs tree like the builder above, as a node child with stdout and stderr read as UTF-8.
-  // The pwsh suite skipped the group when node was absent (and failed it on CI). This suite runs on node,
-  // so that branch cannot occur and is not ported.
+  // The wrapper runs the builder with this Node and hands the builder's exit code back unchanged. It
+  // runs from a fixture docs tree like the builder above, as a node child with stdout and stderr read as UTF-8.
   const bwDocs = j(fx, 'bw', 'docs')
   mk(j(bwDocs, 'adr'), j(bwDocs, 'spec'))
   copyFileSync(j(here, 'templates/docs/build.mjs'), j(bwDocs, 'build.mjs'))
@@ -1357,21 +1341,22 @@ tags: [x]
   const rBW1 = wrapper()
   await check('BW1 a clean corpus builds through the wrapper: exit 0 and index.json exists',
     rBW1.Code === 0 && existsSync(j(bwDocs, 'index.json')), `exit=${rBW1.Code} out=${rBW1.Out}`)
-  // The pin lives in the wrapper: an inherited cp1252 stdout encoding would otherwise kill the builder's own
-  // output after index.json is written. The pin is on the child only, never on the caller.
+  // A Python encoding variable in the environment does not reach a Node builder, so it must not
+  // break the build. The wrapper sets no encoding pin.
   rm(j(bwDocs, 'index.json'))
   const rBW2 = wrapper({ PYTHONIOENCODING: 'cp1252', PYTHONUTF8: '0' })
   await check('BW2 an inherited cp1252 PYTHONIOENCODING does not break the build (the wrapper pins UTF-8)',
     rBW2.Code === 0 && existsSync(j(bwDocs, 'index.json')), `exit=${rBW2.Code} out=${rBW2.Out}`)
-  // The builder's exit code is handed back unchanged: a duplicate id is a deterministic build failure, and a wrapper
-  // that turned it into 0 would remove the gate on exactly the path a person runs.
+  // The builder's exit code is handed back unchanged. A duplicate id is a deterministic build failure
+  // (ADR 0043), and a wrapper that turned it into 0 would remove the gate on the path a person runs.
   wr(j(bwDocs, 'adr/0002-rival.md'), '---\nid: "0001"\ntype: adr\ntitle: "rival"\nstatus: proposed\n---\n# 0001 again\n')
   const bwDirect = nodeRun([j(bwDocs, 'build_docs.mjs')])
   const rBW3 = wrapper()
   await check('BW3 the builder exit code passes through unchanged (a duplicate id is non-zero, equal to the direct run)',
     bwDirect.Code !== 0 && rBW3.Code === bwDirect.Code, `direct=${bwDirect.Code} wrapper=${rBW3.Code} out=${rBW3.Out}`)
   rm(j(bwDocs, 'adr/0002-rival.md'))
-  // No python on PATH: the wrapper builds anyway, because the builder is Node. PATH is an empty directory; node is started by its full path.
+  // With no python on PATH the wrapper still builds, because the builder is Node. PATH is an empty
+  // directory, and node starts by its full path.
   const bwEmpty = j(fx, 'bw-empty-path')
   mk(bwEmpty)
   rm(j(bwDocs, 'index.json'))

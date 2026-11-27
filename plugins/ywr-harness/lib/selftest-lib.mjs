@@ -1,4 +1,4 @@
-// Shared helpers of the Node suites (ADR 0227 decision 5), the assertion core of every suite (spec 0008 §3.9).
+// Shared helpers of the Node suites (ADR 0227 decision 5), the assertion core of every suite (spec 0008 §3.3, §3.9).
 // A suite imports what it needs:
 //   import { fixtureRoot, removeFixtureRoot, runNode, matchFailures, assertMatch } from '../lib/selftest-lib.mjs'
 // A helper joins this file on its second copy.
@@ -52,7 +52,7 @@ export function removeFixtureRoot(...paths) {
     if (typeof p !== 'string' || !p.trim()) continue
     if (!isFixturePath(p)) { console.log(`WARN [fixture]: removeFixtureRoot refused '${p}': not inside ${tmpdir()}`); continue }
     if (keepFixture()) { console.log(`KEEP [fixture]: ${p} (YWR_SELFTEST_KEEP_FIXTURE set — remove it yourself)`); continue }
-    // Windows can hold a file of a just-ended child for a moment; four retries, 1 s apart at most.
+    // Windows can hold a file of a just-ended child for a moment; four retries with linear backoff, 1 s at most.
     try { rmSync(p, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 }) } catch (e) {
       console.log(`WARN [fixture]: could not remove '${p}': ${e.message}`)
     }
@@ -64,9 +64,9 @@ export function removeFixtureRoot(...paths) {
 // names on the volume, or the path is its own alias. git never reports a short name, so a case that hands a
 // program the alias proves that its path compare reads both spellings as one folder. The GitHub Windows
 // runner's TEMP is a short name. The path holds no double quote and no percent sign (cmd reads both).
-// cmd prints an internal command in the console code page, which garbles a non-ASCII name, and `chcp 65001`
-// does not reach the pipe. `/u` makes it print UTF-16LE. An alias counts only when it names the same real
-// folder, so any other print reads as no alias and the case skips.
+// cmd prints in the console code page, which garbles a non-ASCII name, and `chcp 65001` does not reach the
+// pipe, so `/u` makes it print UTF-16LE. An alias counts only when it names the same real folder. Any other
+// print reads as no alias and the case skips.
 export function shortAlias(p) {
   if (process.platform !== 'win32') return ''
   const line = `/u /d /s /c "for %I in ("${p}") do @echo %~sI"`
@@ -104,15 +104,13 @@ export function matchFailures(text, { mustMatch = [], mustNotMatch = [], noNegat
   return fails
 }
 
-// A string pattern is a regex source with the semantics of the pwsh -match operand, so a ported pattern
-// keeps its verdict: it matches case-insensitively, and a leading inline flag group such as `(?-i)` or
-// `(?m)` sets the flags. JavaScript before Node 23 has no inline flag groups, so this function reads the
-// leading group and strips it. A flag group later in the pattern stays and fails to compile, loudly. A
-// RegExp is used as given.
-// Two more .NET rules carry over. The pattern compiles without the `u` flag, so an identity escape such as
-// `\-` or `\'` that .NET accepts compiles here too. Without `(?m)`, a final `$` also matches before one
-// final newline, as the .NET `$` does. A `$` inside an alternation keeps the JavaScript meaning, so a port
-// writes such a pattern with `(?m)` or with `\n?$` in each branch.
+// A string pattern is a regex source with the semantics of the .NET -match operand: it matches
+// case-insensitively, and a leading inline flag group such as `(?-i)` or `(?m)` sets the flags. JavaScript
+// before Node 23 has no inline flag groups, so this function reads the leading group and strips it. A flag
+// group later in the pattern stays and fails to compile, loudly. A RegExp is used as given.
+// The pattern compiles without the `u` flag, so an identity escape such as `\-` or `\'` compiles. Without
+// `(?m)`, a final `$` also matches before one final newline, as the .NET `$` does. A `$` inside an
+// alternation keeps the JavaScript meaning, so write such a pattern with `(?m)` or with `\n?$` in each branch.
 export function toRx(p) {
   if (p instanceof RegExp) return p
   let src = String(p)

@@ -1,12 +1,11 @@
 // Self-test for agent-model-warn.mjs (ADR 0086; spec 0006 §3.2).
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout hooks/agent-model-warn.selftest.mjs
 //
-// Fixture provenance: the payload shape is the RAW hooks reference read 2026-09-23 — PreToolUse
-// carries `tool_name` + `tool_input`, the Agent tool's `tool_input` is {prompt, description,
-// subagent_type, model} with `model` optional. The E-cases add `effort` (Claude Code 2.1.292; ADR
-// 0127): a headless probe's PreToolUse payload carried it as {description, subagent_type, model,
-// effort, run_in_background}, exactly as the call gave it. An invented shape is how config-change-audit stayed
-// green while inert, so the speaking cases use exactly the documented fields.
+// Fixture provenance: the payload shape is the raw hooks reference. PreToolUse carries `tool_name` and
+// `tool_input`. The Agent tool's `tool_input` is {prompt, description, subagent_type, model} with `model`
+// optional. The E-cases add `effort` (ADR 0127): a PreToolUse payload carries it as {description,
+// subagent_type, model, effort, run_in_background}, exactly as the call gave it. An invented shape keeps a
+// hook green while inert, so the speaking cases use exactly the documented fields.
 //
 // The four contract negatives every speaking case carries, in the wrapper so no case can forget them:
 //   - the raw output never contains `permissionDecision`, `updatedInput` or a top-level `decision`
@@ -21,11 +20,10 @@
 // Case S1: an OMITTED model is byte-silent — there is no per-call override to name. For an unpinned type
 // (general-purpose) that means the session model is inherited; the hook does not police that (ADR 0108).
 //
-// Port notes (ADR 0227). Every case ID of the pwsh suite is the first token of a test name. The only cases
-// the pwsh suite named without an ID are the META cases; each is `AM<n> META: <what it proves>`. Patterns are
-// pwsh -match sources (case-insensitive; see toRx in lib/selftest-lib.mjs). Every special character of the
-// class under test (CR/LF, NEL, LS, PS) is built from a code point, and the JSON escape of one is written
-// split in two, because escape text for those can materialize as the literal character through an editor.
+// A test name starts with its case ID. The META cases are `AM<n> META: <what it proves>`. Patterns are .NET
+// -match sources (case-insensitive; see toRx in lib/selftest-lib.mjs). Every special character of the class
+// under test (CR/LF, NEL, LS, PS) is built from a code point, and the JSON escape of one is written split in
+// two, because escape text for those can materialize as the literal character through an editor.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -41,7 +39,7 @@ const LF = ch(10), CR = ch(13)
 const BSU = '\\' + 'u'                       // the two characters that start a JSON unicode escape
 const esc = s => s.replace(/[\\*+?|{[()^$.#\s]/g, '\\$&')   // regex.Escape of .NET, for the characters a path or id carries
 
-// stdin as pwsh piped it: the text plus one newline. stdout and stderr together, as `2>&1` read them.
+// stdin is the text plus one newline. The output is stdout and stderr together.
 function invokeHook(stdin) {
   const r = spawnSync(process.execPath, [hook], { input: Buffer.from(stdin + '\n', 'utf8'), windowsHide: true })
   return { out: (r.stdout?.toString('utf8') ?? '') + (r.stderr?.toString('utf8') ?? ''), exit: r.status }
@@ -87,21 +85,21 @@ function assertSilent({ out, exit }) {
   assert.deepEqual(f, [], f.join(' · '))
 }
 
-// the harness rule (ADR 0109; the org guide carried it until v1.19, ADR 0144): implementation/research workers sonnet in every session via
-// ywr-harness:worker, mechanical work haiku, no ywr-harness agent pin on opus or fable; the slice-close review is
-// /code-review on the session model and its fix-check legs run on ywr-harness:worker (ADR 0215)
+// The harness rule (ADR 0109): implementation and research workers run on sonnet in every session via
+// ywr-harness:worker, mechanical work on haiku, and no ywr-harness agent pin uses opus or fable. The slice-close
+// review is /code-review on the session model, and its fix-check legs run on ywr-harness:worker (ADR 0215).
 const warnCore = [String.raw`\[hook:agent-model\]`, 'ywr-harness rule: implementation', 'ywr-harness 규칙: 구현', 'description', 'demonstrably', "implementation and research workers run on 'sonnet' in every session",
   "subagent_type 'ywr-harness:worker' with NO per-call model", String.raw`No ywr-harness agent pin uses opus or fable\.`, 'The slice-close review is the built-in /code-review on the session model, and its fix-check legs run on ywr-harness:worker', "mechanical work runs on 'haiku'",
   '구현·조사 워커는 어느 세션이든 sonnet', '호출별 model 없이 ywr-harness:worker 를', '에이전트 고정값은 어느 것도 opus·fable 을 쓰지 않습니다', 'slice close 의 리뷰는 세션 모델로 도는 /code-review 이고, 그 fix check 는 ywr-harness:worker 가 맡습니다', 'cannot see the session model', 'overrides a pinned agent', 'Nothing was blocked',
-  // the rules the removed decision numbers used to stand for, stated on both surfaces; ultracode
-  // no longer lifts a pin, and both surfaces say so (ADR 0108)
+  // Rules that both surfaces state in prose instead of decision numbers. Ultracode lifts no pin, and
+  // both surfaces say so (ADR 0108).
   'ultracode 가 켜져 있어도 이 고정은 그대로', 'Ultracode does not lift these pins', '판단할 수 없어 차단하지 않았습니다', 'judge the stated reason']
 
-// W1. the dist #5 shape: general-purpose + explicit opus alias -> warns on both surfaces
+// W1. general-purpose + explicit opus alias -> warns on both surfaces
 test('W1 explicit opus alias warns (systemMessage + additionalContext)', () => {
   assertWarn(invokeHook(newPayload({ subagent_type: 'general-purpose', model: 'opus', description: 'find endpoints', prompt: 'Find all API endpoints' })),
     ["모델을 'opus' 로 명시", 'subagent_type: general-purpose', "requested model 'opus'", ...warnCore],
-    ['SCHEMA DRIFT', 'worker-opus', 'Org guide', '조직 가이드', 'on an Opus session', 'Opus 세션', 'Opus at effort low', 'review stages included', '리뷰 단계까지'])   // the retired review rules (ADR 0197, ADR 0215) stay out
+    ['SCHEMA DRIFT', 'worker-opus', 'Org guide', '조직 가이드', 'on an Opus session', 'Opus 세션', 'Opus at effort low', 'review stages included', '리뷰 단계까지'])   // the retired review rules stay out (ADR 0215)
 })
 
 // W2. a full model id names the family too
@@ -135,7 +133,7 @@ test('W6 effort xhigh does not suppress the warning', () => {
     ["'opus'"], ['SCHEMA DRIFT'])
 })
 
-// W7. UTF-8 BOM prefixed stdin still parses (the config-change-audit 07-23 class)
+// W7. UTF-8 BOM prefixed stdin still parses
 test('W7 BOM-prefixed stdin still warns', () => {
   assertWarn(invokeHook(ch(0xfeff) + newPayload({ subagent_type: 'general-purpose', model: 'opus', description: 'd', prompt: 'p' })),
     ["'opus'"], ['SCHEMA DRIFT'])
@@ -165,7 +163,7 @@ test('W8b U+2028/U+2029/U+0085 in model and subagent_type flatten to spaces on b
     ['[' + ch(0x85, 0x2028, 0x2029) + ']'])
 })
 
-// W10. PSCustomObject member access and `-ne` are case-insensitive in the original; the port keeps both.
+// W10. The hook reads keys and compares names case-insensitively, as PowerShell member access and `-ne` do.
 //      (a) event and tool NAMES in another case still warn
 test("W10a lowercase tool_name 'agent' and hook_event_name 'pretooluse' still warn", () => {
   assertWarn(invokeHook(newPayload({ subagent_type: 'general-purpose', model: 'opus', description: 'd', prompt: 'p' }, { tool: 'agent', event: 'pretooluse' })),
@@ -178,7 +176,7 @@ test('W10b case-drifted keys (Tool_Name, Tool_Input, Model, Subagent_Type) still
 })
 //      (c) subagent_type goes through PowerShell's [string] cast: true -> True, a number -> its digits
 test('W10c subagent_type true renders as True (PowerShell [string])', () => {
-  // (?-i): the match check reads patterns case-insensitively, like the pwsh assertion core.
+  // (?-i): the match check reads patterns case-insensitively unless a pattern turns that off.
   assertWarn(invokeHook('{"hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"subagent_type":true,"model":"opus"}}'),
     [String.raw`(?-i)subagent_type: True\)`, "(?-i)subagent_type 'True'"], ['SCHEMA DRIFT', String.raw`\(unset\)`])
 })
@@ -235,7 +233,7 @@ const effortCore = [String.raw`\[hook:agent-model\]`, "effort 를 '", 'Ultracode
   'ywr-harness rule: worker effort', 'ywr-harness 규칙은 워커 effort', '기계적 작업은 low, 검증 절차는 medium, 구현·조사는 high 입니다', 'mechanical work low, a verification procedure medium, implementation and research high',
   "never 'xhigh' or 'max'", 'xhigh·max 는 쓰지 않습니다', 'deep-work session levels']
 
-// E1. effort xhigh alone (model sonnet, as in the probe) speaks on both channels and names the effort
+// E1. effort xhigh alone (model sonnet) speaks on both channels and names the effort
 test('E1 effort xhigh alone warns (systemMessage + additionalContext)', () => {
   assertWarn(invokeHook(newPayload({ description: 'probe two', subagent_type: 'general-purpose', model: 'sonnet', effort: 'xhigh', run_in_background: false })),
     ["effort 를 'xhigh' 로 지정", 'subagent_type: general-purpose', String.raw`set effort 'xhigh' \(subagent_type 'general-purpose'\)`, ...effortCore],
@@ -274,7 +272,7 @@ test('E5b the combined call has one banner tag and the shared trailer once per s
   try {
     const j = JSON.parse(e5.out.trim())
     for (const [name, text] of [['systemMessage', str(j.systemMessage)], ['additionalContext', str(j.hookSpecificOutput?.additionalContext)]]) {
-      // [regex]::Matches is case-sensitive: no `i` flag here.
+      // Case-sensitive count: no `i` flag here.
       const n = (text.match(/Nothing was blocked|판단할 수 없어 차단하지 않았습니다|Ultracode does not lift|ultracode 가 켜져/g) ?? []).length
       if (name === 'systemMessage' && ((text.match(/\[hook:agent-model\]/g) ?? []).length !== 1)) one.push('systemMessage carries more than one banner tag')
       if (n !== 2) one.push(`${name} carries the shared trailer ${n} times (want its 2 sentences once)`)
@@ -329,8 +327,8 @@ test('D1b absent tool_input reports SCHEMA DRIFT', () => {
 })
 
 // D1c. ANTI-VACUITY on the OTHER documented field: the runtime calls this script only on the `Agent`
-//      matcher, so a payload with no usable `tool_name` is a renamed or dropped field (the tool was
-//      once `Task`), not "another tool" — silence there would leave the hook inert on every spawn.
+//      matcher, so a payload with no usable `tool_name` is a renamed or dropped field (the tool's old
+//      name was `Task`), not "another tool" — silence there would leave the hook inert on every spawn.
 //      Only a present, different name (S4) is silent.
 test('D1c absent tool_name reports SCHEMA DRIFT, never silence', () => {
   assertWarn(invokeHook('{"hook_event_name":"PreToolUse","tool_input":{"subagent_type":"general-purpose","model":"opus"}}'),

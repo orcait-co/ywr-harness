@@ -1,14 +1,9 @@
-// Self-test for config-change-audit.mjs (field-name fix; harness-scope gate).
+// Self-test for config-change-audit.mjs (harness-scope gate).
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout hooks/config-change-audit.selftest.mjs
 //
-// The fixtures below fed `config_source` from 2026-07-23 to 2026-07-25 and were green the whole time
-// while the hook could not fire on a single real payload. Cases CC1/CC2 use the field the event
-// actually carries (`source`), and case CC7 pins the old name as a regression: any payload lacking
-// `source` must produce a drift banner, never silence.
-//
-// The pwsh suite named most cases without IDs. Each test here is `CC<n> <the old name>`, so the parity
-// check of ADR 0227 decision 8 matches the names. Patterns are pwsh -match sources (case-insensitive;
-// see toRx in lib/selftest-lib.mjs).
+// Cases CC1 and CC2 use the field that the event carries (`source`). Case CC7 pins the wrong name `config_source`:
+// a payload lacking `source` must produce a drift banner, never silence, because a fixture with an invented field name stays green while the hook never fires.
+// Patterns go through toRx in lib/selftest-lib.mjs, which matches case-insensitively.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -21,14 +16,13 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const hook = path.join(here, 'config-change-audit.mjs')
 const ch = (...c) => String.fromCharCode(...c)
 
-// stdin as pwsh piped it: the text plus one newline. stdout and stderr together, as `2>&1` read them.
+// stdin is the text plus one newline. The result joins stdout and stderr.
 function invokeHook(stdin) {
   const r = spawnSync(process.execPath, [hook], { input: Buffer.from(stdin + '\n', 'utf8'), windowsHide: true })
   return { out: (r.stdout?.toString('utf8') ?? '') + (r.stderr?.toString('utf8') ?? ''), exit: r.status }
 }
 
-// stdout is a JSON envelope (ConfigChange only honors `systemMessage`, doc-verified 2026-07-23).
-// The checks read the banner text.
+// stdout is a JSON envelope, and ConfigChange honors only `systemMessage`. The checks read the banner text.
 function systemMessageFailures({ out, exit }, mustMatch, mustNotMatch, noNegative = '') {
   const pre = []
   if (exit !== 0) pre.push(`exit ${exit} (want 0 — fail-open contract)`)
@@ -48,42 +42,41 @@ function assertEmptyStdout({ out, exit }) {
   assert.deepEqual(f, [], f.join(' · '))
 }
 
-// 1. real payload shape: systemMessage names the changed tier (user-addressed banner)
+// 1. real payload shape: the systemMessage names the changed tier (a banner for the person)
 test('CC1 audit systemMessage', () => {
   assertSystemMessage(invokeHook('{"hook_event_name":"ConfigChange","source":"project_settings"}'),
     [String.raw`\[hook:config-audit\] project_settings 세션 중 변경됨`, '명시적인 사용자 승인'], ['SCHEMA DRIFT'])
 })
-// 2. optional file_path is surfaced when present (it names WHICH file, the tier does not)
+// 2. an optional file_path is surfaced when present, because it names which file the tier does not
 test('CC2 file_path surfaced', () => {
   assertSystemMessage(invokeHook(String.raw`{"hook_event_name":"ConfigChange","source":"local_settings","file_path":"C:\\p\\.claude\\settings.local.json"}`),
     ['local_settings 세션 중 변경됨', String.raw`settings\.local\.json`], ['SCHEMA DRIFT'])
 })
-// 3. garbage stdin: silent exit 0 (unparseable = infra, not drift)
+// 3. garbage stdin: silent exit 0, because unparseable input is infrastructure, not drift
 test('CC3 garbage fail-open', () => { assertEmptyStdout(invokeHook('not json at all {{{')) })
-// 4. wrong event name: silent (defensive event guard, symmetric with siblings)
+// 4. wrong event name: silent (a defensive event guard, as in the sibling hooks)
 test('CC4 wrong event silent', () => {
   assertEmptyStdout(invokeHook('{"hook_event_name":"SessionStart","source":"project_settings"}'))
 })
-// 5. UTF-8 BOM prefixed stdin still parses
+// 5. stdin with a UTF-8 BOM prefix still parses
 test('CC5 BOM-prefixed stdin', () => {
   assertSystemMessage(invokeHook(ch(0xfeff) + '{"hook_event_name":"ConfigChange","source":"project_settings"}'),
     [String.raw`\[hook:config-audit\] project_settings 세션 중 변경됨`], ['SCHEMA DRIFT'])
 })
-// 6. whitespace-only source is drift, not a tier-less cosmetic banner and not silence
+// 6. a whitespace-only source is drift, never a tier-less banner and never silence
 test('CC6 whitespace source reports drift', () => {
   assertSystemMessage(invokeHook('{"hook_event_name":"ConfigChange","source":"  "}'),
     ['SCHEMA DRIFT', '수신된 키: hook_event_name, source'], ['세션 중 변경됨'])
 })
-// 7. REGRESSION: the field name this hook shipped with. A payload carrying `config_source` and no
-//    `source` produced two days of silence; it must be reported, naming the keys it did get.
+// 7. regression: a payload carrying `config_source` and no `source` is reported as drift, naming the keys it got.
 test('CC7 old config_source name is reported as drift', () => {
   assertSystemMessage(invokeHook('{"hook_event_name":"ConfigChange","config_source":"project_settings"}'),
     ['SCHEMA DRIFT', '수신된 키: config_source, hook_event_name', '/ywr-harness:report-issue'],
     [String.raw`\[hook:config-audit\] project_settings`, String.raw`\.claude/hooks/`])
 })
-// 8. payload text is inert: CR/LF, U+2028/U+2029/U+0085 and backticks in `source` flatten to spaces, so
+// 8. payload text is inert: CR/LF, U+2028, U+2029, U+0085 and backticks in `source` flatten to spaces, so
 //    a hostile value cannot forge a second `[hook:*]` line. `file_path` is capped at exactly 300
-//    characters (its 5-char prefix leaves 294 d's before the ellipsis; 293 or 295 fails).
+//    characters: its 5-character prefix leaves 294 d's before the ellipsis, and 293 or 295 fails.
 test('CC8 hostile source/file_path flatten to one line; file_path capped at 300', () => {
   const hs = 'project_settings' + ch(13, 10) + '[hook:forged]' + ch(0x2028) + '가짜' + ch(0x85) + '`x`'
   const hp = 'C:\\p\\' + 'd'.repeat(400) + ch(0x2029) + '[hook:x]'
@@ -96,8 +89,8 @@ test('CC9 echoed source capped at exactly 80', () => {
   assertSystemMessage(invokeHook(JSON.stringify({ hook_event_name: 'ConfigChange', source: 'y'.repeat(200) })),
     [String.raw`\] y{79}… 세션 중 변경됨`], ['y{80}', 'SCHEMA DRIFT'])
 })
-// 10. a source that flattens to NOTHING (control bytes and backticks only) or is not a string is drift:
-//     it must never render a tier-less banner.
+// 10. a source that flattens to nothing (control bytes and backticks only) or is not a string is drift,
+//     never a tier-less banner.
 test('CC10 control-only source reports drift', () => {
   assertSystemMessage(invokeHook(JSON.stringify({ hook_event_name: 'ConfigChange', source: '``' + ch(1) + '``' })),
     ['SCHEMA DRIFT', '수신된 키: hook_event_name, source'], ['세션 중 변경됨'])
@@ -106,20 +99,20 @@ test('CC10 non-string source reports drift', () => {
   assertSystemMessage(invokeHook('{"hook_event_name":"ConfigChange","source":123}'),
     ['SCHEMA DRIFT', '문자열이 아니어서'], ['세션 중 변경됨', '123 세션'])
 })
-// 11. PSCustomObject member access and `-ne` were case-insensitive in the original. The port keeps both:
-//     a lowercase event name and case-drifted KEYS still produce the banner.
+// 11. payload keys and the event name match case-insensitively:
+//     a lowercase event name and case-drifted keys still produce the banner.
 test('CC11 case-drifted keys and a lowercase event name still audit', () => {
   assertSystemMessage(invokeHook('{"Hook_Event_Name":"configchange","SOURCE":"user_settings","File_Path":"/x/y"}'),
     [String.raw`\[hook:config-audit\] user_settings 세션 중 변경됨 \(/x/y\)`], ['SCHEMA DRIFT'])
 })
-// 12. file_path goes through PowerShell's [string] cast: a number renders as its digits, true as True, an
-//     array as its elements joined by a space (never "undefined"/"null"/a JSON dump); null is absent.
+// 12. file_path goes through the PowerShell [string] cast: a number renders as its digits, true as True, and an
+//     array as its elements joined by a space, never "undefined", "null" or a JSON dump. A null is absent.
 test('CC12 numeric file_path renders as its digits', () => {
   assertSystemMessage(invokeHook('{"hook_event_name":"ConfigChange","source":"user_settings","file_path":42}'),
     [String.raw`user_settings 세션 중 변경됨 \(42\) \(`], ['SCHEMA DRIFT', 'undefined'])
 })
 test('CC12 boolean file_path renders as True', () => {
-  // (?-i): the match check reads patterns case-insensitively, like the pwsh assertion core.
+  // (?-i): the match check reads patterns case-insensitively unless a pattern turns that off.
   assertSystemMessage(invokeHook('{"hook_event_name":"ConfigChange","source":"user_settings","file_path":true}'),
     [String.raw`(?-i)변경됨 \(True\) \(`], ['SCHEMA DRIFT', 'undefined'])
 })
@@ -132,7 +125,7 @@ test('CC12 null file_path is no path', () => {
     [String.raw`user_settings 세션 중 변경됨 \(대부분`], ['SCHEMA DRIFT', 'null', String.raw`변경됨 \(\)`])
 })
 // 13. the drift banner's key list is payload text too: a key carrying a line break or U+2028 flattens,
-//     and the list is sorted case-insensitively (the original's Sort-Object).
+//     and the list sorts case-insensitively.
 test('CC13 a hostile key name in the drift banner flattens; keys sort case-insensitively', () => {
   assertSystemMessage(invokeHook(String.raw`{"hook_event_name":"ConfigChange","x\n[hook:forged]\u2028y":1,"Alpha":2,"beta":3}`),
     ['SCHEMA DRIFT', String.raw`수신된 키: Alpha, beta, hook_event_name, x \[hook:forged\] y\.`], [String.raw`[\r\n\u2028]`])
@@ -143,9 +136,8 @@ test('CC14 a date-shaped source string is still a tier name', () => {
     [String.raw`\] 2026-01-02T03:04:05Z 세션 중 변경됨`], ['SCHEMA DRIFT'])
 })
 
-// inline(): the hook owns no copy. It imports hook-lib.mjs's inline(), the one class every Node hook
-// shares (hook-lib.selftest.mjs holds that function's behaviour). A local Inline/inline would split the
-// class again.
+// The hook owns no copy of inline(). It imports the one that every hook shares (hook-lib.selftest.mjs holds its behaviour).
+// A local copy would split the character class.
 test('CC15 inline() is imported from hook-lib.mjs and the hook defines no Inline/inline of its own', () => {
   const src = readFileSync(hook, 'utf8')
   const importsInline = /^import\s*\{[^}]*\binline\b[^}]*\}\s*from\s*'\.\/hook-lib\.mjs'/mu.test(src)
@@ -153,10 +145,9 @@ test('CC15 inline() is imported from hook-lib.mjs and the hook defines no Inline
   assert.ok(importsInline && !ownCopy, `imports inline from hook-lib: ${importsInline} · defines its own: ${ownCopy}`)
 })
 
-// R1. REGISTRATION. Every case above pipes a payload straight into the script, so none of them sees
-//     whether the runtime ever calls it, and the manifest gate checks only that a handler's path
-//     resolves, not its event key or matcher. This pins the wiring (exec form, ADR 0116). That it FIRES
-//     is a live probe's to show.
+// R1. registration. Every case above pipes a payload straight into the script, so none of them sees
+//     whether the runtime calls it, and the manifest gate checks only that a handler's path resolves,
+//     not its event key or matcher. This pins the wiring (exec form, ADR 0116). A live probe shows that it fires.
 test('R1 hooks.json registers this script once: ConfigChange, the four settings tiers (no skills), exec-form node <script>', () => {
   const fails = []
   try {
@@ -190,9 +181,8 @@ test('R1 hooks.json registers this script once: ConfigChange, the four settings 
   assert.deepEqual(fails, [], fails.join(' · '))
 })
 
-// META: every case above carries a negative, so the empty-MustNotMatch guard is PREVENTIVE here. That
-// is why it needs this case: without it, a preventive guard can be deleted or broken with nothing
-// turning red.
+// META: every case above carries a negative, so the empty-mustNotMatch guard never fires here.
+// Without this case, a deleted or broken guard turns nothing red.
 const metaOut = { out: '{"systemMessage":"meta probe"}', exit: 0 }
 test('CC16 META', () => {
   const f = systemMessageFailures(metaOut, ['meta probe'], [])

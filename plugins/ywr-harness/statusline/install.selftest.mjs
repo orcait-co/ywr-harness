@@ -1,21 +1,15 @@
-// Selftest for install.mjs — it writes into the USER's global settings.json, which is the most
-// valuable file this plugin touches anywhere. Every branch is enumerated, and the two that matter
-// most are the ones a happy-path check never reaches: an unrelated key must survive the rewrite,
-// and an existing statusLine belonging to someone else must not be clobbered.
+// Selftest for install.mjs. It writes into the user's global settings.json, so two cases matter
+// most: an unrelated key survives the rewrite, and another tool's statusLine is never clobbered.
 // Usage: node --test-reporter=<file URL of ../lib/selftest-reporter.mjs> --test-reporter-destination=stdout statusline/install.selftest.mjs
 //
 // --claude-dir points every case at a fixture, so the real ~/.claude is never involved.
 //
-// The pwsh suite named most cases `<section letter> <text>` with no case ID. Each such test here is
-// `SI<n> <the old name>`, so the parity check of ADR 0227 decision 8 matches the names. The cases C2 and
-// F2 already carried an ID and keep it. Patterns are pwsh -match sources (case-insensitive; see toRx in
-// lib/selftest-lib.mjs). The pwsh suite mapped its old -DryRun and -ClaudeDir switch names to the Node
-// flags; this suite passes the Node flags.
+// Test names read `SI<n> <text>`, and the parity check matches them (ADR 0227 decision 8).
+// Patterns are case-insensitive regex sources (toRx in lib/selftest-lib.mjs).
 //
-// Some cases continue from the state that an earlier section left in the same fixture directory (B
-// re-runs the install of A, C edits the copy that B left). Each of those sections names the earlier
-// one it needs through `lazy`, so a case never reads a state that no step made, and the order of the
-// tests does not matter for correctness.
+// Some cases continue from the state that an earlier section left in the same fixture directory.
+// Each such section names the earlier one through `lazy`, so a case never reads a state that no
+// step made and the test order does not matter.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -31,7 +25,7 @@ const SCRIPT = 'harness-statusline.js'
 const fxBase = fixtureRoot('statusline-install-selftest')
 process.on('exit', () => removeFixtureRoot(fxBase))
 
-// stdout and stderr together, as `2>&1` read them. `env` and `cwd` are for the cases that set CLAUDE_CONFIG_DIR.
+// Stdout and stderr joined. `env` and `cwd` are for the cases that set CLAUDE_CONFIG_DIR.
 function invokeInstall(dir, extra = [], opts = {}) {
   const r = runNode([install, '--claude-dir', dir, ...extra], opts)
   return { out: r.stdout + r.stderr, code: r.status }
@@ -56,7 +50,7 @@ const envWith = (name, value) => ({ ...process.env, [name]: value })
 
 let n = 0
 const si = (name, fn) => test(`SI${++n} ${name}`, fn)
-// pwsh $null -eq x: an absent key and a null value are the same state.
+// An absent key and a null value are the same state.
 const assertAbsent = (v, label) => assert.ok(v === undefined || v === null, `${label}=${v}`)
 
 // --- A: empty dir — script placed, statusLine written -------------------------------------------
@@ -92,9 +86,9 @@ si('C the refreshed copy is byte-identical to canon', () => {
 })
 
 // --- C2: a REORDERED installed copy is refreshed too --------------------------------------------
-// Same length, same bytes, two lines swapped: a set compare (Compare-Object over byte arrays) read it
-// unchanged (2026-09-28). The swap is on the BYTES (a text round trip could drop a BOM and change the
-// length for an unrelated reason) and needs two distinct lines, asserted so the case cannot go vacuous.
+// Same length, same bytes, two lines swapped: an order-blind compare would read it as unchanged.
+// The swap works on bytes, because a text round trip could drop a BOM and change the length.
+// It needs two distinct lines, and the first case asserts them so this one cannot go vacuous.
 const e0 = canon.indexOf(10)
 const e1 = e0 >= 0 ? canon.indexOf(10, e0 + 1) : -1
 const rC2 = lazy(() => {
@@ -157,8 +151,8 @@ si('F the file is left exactly as it was', () => { rF(); assert.equal(fs.readFil
 si('F the manual fix is printed', () => assertMatch(rF().out, { mustMatch: ['statusLine'], noNegative: 'presence of the manual snippet' }))
 
 // --- F2: settings.json that parses but is not an object — the same refusal, never a raw error ----
-// `[]` and `null` used to come back from ConvertFrom-Json as $null, `"x"` as a string: none can carry a key.
-// Each used to die in a raw PowerShell error with no manual snippet. Bytes are compared, not text.
+// `[]`, `null` and `"x"` parse but cannot carry a key. Each must print the manual snippet, not a raw error.
+// Bytes are compared, not text.
 for (const [dirName, text] of [['f2-array', '[]'], ['f2-null', 'null'], ['f2-string', '"x"']]) {
   const f2Dir = newDir(dirName)
   const f2Path = settingsPath(f2Dir)
@@ -190,9 +184,9 @@ si('G dry run wrote no script', () => assert.ok((rG(), !fs.existsSync(path.join(
 si('G dry run wrote no settings', () => assert.ok((rG(), !fs.existsSync(settingsPath(g))), 'settings.json was written'))
 
 // --- J: a refreshInterval on OUR OWN block is kept, never added (ADR 0122) ----------------------
-// Installs wired v0.37.0–v0.62.1 carry `refreshInterval: 30`; a member may have tuned it. The script
-// cannot tell the two apart, so a present value — any value — survives every re-run and is named in
-// the output; an absent one is never added back (the add-if-absent upgrade path of ADR 0059 is gone).
+// Older installs carry `refreshInterval: 30` and a member may have tuned it. The script cannot tell
+// the two apart, so any present value survives every re-run and is named in the output. An absent
+// one is never added back.
 const k = newDir('kept-interval')
 const kSettings = settingsPath(k)
 const rewriteK = (mutate) => {
@@ -202,7 +196,7 @@ const rewriteK = (mutate) => {
 }
 const kStep1 = lazy(() => {
   invokeInstall(k)
-  rewriteK((m) => { m.statusLine.refreshInterval = 30; m.keepMe = 'yes' })   // an install wired by v0.37.0–v0.62.1; keepMe is an unrelated key
+  rewriteK((m) => { m.statusLine.refreshInterval = 30; m.keepMe = 'yes' })   // an older install wired the interval; keepMe is an unrelated key
   const run = invokeInstall(k)
   return { run, settings: getSettings(k) }
 })
@@ -212,7 +206,7 @@ si('J the kept interval is named, with the way out', () =>
 si('J the command wiring is untouched', () =>
   assertMatch(String(kStep1().settings.statusLine?.command), { mustMatch: [String.raw`harness-statusline\.js`], noNegative: 'presence of the wired command' }))
 si('J unrelated keys survive the re-run', () => assert.equal(kStep1().settings.keepMe, 'yes', 'keepMe lost'))
-// A member-tuned value survives too — any value.
+// A member-tuned value survives too.
 const kStep2 = lazy(() => {
   kStep1()
   rewriteK((m) => { m.statusLine.refreshInterval = 5 })
@@ -237,16 +231,15 @@ si('J neither run mentions refreshInterval when there is none', () => {
 })
 
 // --- H: the DEFAULT target follows CLAUDE_CONFIG_DIR (ADR 0046) ----------------------------------
-// No --claude-dir. The env var is the scope a multi-account session runs under; a default that
-// ignored it installed into a directory that session never reads — silently. The real ~/.claude
-// stays uninvolved: the env var points every no-flag run at a fixture.
+// No --claude-dir. The env var is the scope a multi-account session runs under, and a default that
+// ignored it would install into a directory that session never reads. The env var points every
+// no-flag run at a fixture, so the real ~/.claude stays uninvolved.
 const h = newDir('config-dir-default')
 const i = newDir('explicit-beats-env')
 const hStep = lazy(() => {
   const env = envWith('CLAUDE_CONFIG_DIR', h)
   const noFlag = invokeNoFlag({ env })
-  // An explicit --claude-dir still wins over the env var — every fixture-pointed case in this
-  // suite depends on exactly that precedence.
+  // An explicit --claude-dir wins over the env var, and every fixture-pointed case depends on it.
   const explicit = invokeInstall(i, [], { env })
   return { noFlag, explicit }
 })
@@ -266,14 +259,14 @@ si('H explicit-dir wiring does not point at the env dir', () => {
 })
 
 // --- I: a malformed CLAUDE_CONFIG_DIR is REFUSED, never resolved against the cwd -----------------
-// (review 2026-08-11, medium) A relative or blank-but-set value — an unexpanded '$HOME/.claude', a
-// stray './cfg' — would land the install wherever the script was run FROM, silently. Refusal is
-// loud, names the value, and writes nothing; an explicit --claude-dir stays trusted verbatim.
+// A relative or blank-but-set value, such as an unexpanded '$HOME/.claude' or a stray './cfg',
+// would install wherever the script ran FROM. The refusal names the value and writes nothing.
+// An explicit --claude-dir stays trusted verbatim.
 const j = newDir('explicit-under-bad-env')
 const iStep = lazy(() => {
   const env = envWith('CLAUDE_CONFIG_DIR', 'not-absolute\\cfg')
   const refused = invokeNoFlag({ env, cwd: fxBase })
-  // Explicit dir under the same malformed env: must still install (trusted verbatim).
+  // An explicit dir under the same malformed env still installs.
   const explicit = invokeInstall(j, [], { env })
   return { refused, explicit }
 })

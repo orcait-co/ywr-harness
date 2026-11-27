@@ -1,4 +1,4 @@
-// Slice retro gate — a zero-token deterministic retrospective, run from `post-commit`.
+// Slice retro gate: a zero-token deterministic retrospective, run from `post-commit`.
 //
 // Seven checks, plus SIZE, which reports an in-scope file that crosses 1,000 lines in the checked
 // range (ywr-harness ADR 0171). Everything repo-specific comes from `.harness.json`.
@@ -6,35 +6,32 @@
 // ## Why Node and not POSIX sh
 //
 // A portable gate has to read its scope from the declaration, and sh cannot parse JSON. Node is
-// already required by the plugin hooks, so every member machine has it, and it avoids a
-// Git-Bash-on-Windows dependency, which produced false-green selftests (ywr-harness ADR 0220).
+// already required by the plugin hooks, so every member machine has it. It also avoids a
+// Git-Bash-on-Windows dependency, which produced vacuous selftest passes (ywr-harness fact 26).
 //
 // ## Contract
 //
-// ADVISORY. Exits 0, prints nothing when clean, and never blocks a commit — post-commit rather
-// than pre-commit precisely so a finding prompts a follow-up docs commit instead of standing between
+// ADVISORY. Exits 0, prints nothing when clean, and never blocks a commit. It runs at post-commit
+// rather than pre-commit so a finding prompts a follow-up docs commit instead of standing between
 // the author and their own history. The one exception: a git failure prints a
-// `[slice-retro] FAILED` line and exits 1 — silence there would be a false clean retro
-// (ywr-harness ADR 0041; the hook's `|| true` keeps the commit untouched).
+// `[slice-retro] FAILED` line and exits 1, because silence there would be a false clean retro
+// (ywr-harness ADR 0041). The hook's `|| true` keeps the commit untouched.
 //
 //   node harness_retro.mjs                  # the commit just made (HEAD); a merge commit
 //                                           # resolves as HEAD^1..HEAD (first-parent, ywr-harness ADR 0043)
-//   node harness_retro.mjs main~3..HEAD     # a whole slice — absorbs mid-slice false positives
+//   node harness_retro.mjs main~3..HEAD     # a whole slice, which absorbs mid-slice false positives
 //   node harness_retro.mjs --coverage       # full unowned / dead-mapping / large-file audit
 //   node harness_retro.mjs --delegations    # the delegation ledger's report (ywr-harness ADR 0120/0171)
 //   SLICE_RETRO=0 git commit ...            # skip once
 //
 // A check whose declaration is empty is DISABLED, and the disablement is reported under --coverage.
-// Per-commit silence therefore means "no finding among the ENABLED checks" — it cannot distinguish
-// a clean commit from a disabled check, and it does not try: repeating a deliberate disablement
-// (a repo with no dependency manifest declares none, truthfully) on every commit is the noise that gets a
-// hook turned off. The distinction lives where the audit runs: `--coverage` names every disabled
-// check, and the slice close runs it (the spec-debt ledger), so an unconfigured repo is visible
-// once per slice rather than never.
+// Per-commit silence therefore means "no finding among the ENABLED checks". It cannot tell a clean
+// commit from a disabled check, because repeating a deliberate disablement on every commit is the
+// noise that gets a hook turned off. `--coverage` names every disabled check, and the slice close runs it, so an unconfigured
+// repo is visible once per slice rather than never.
 //
-// Port notes. Stdout is buffered and written once at the end (a piped stdout is never cut by an
-// early exit, and stdout lines follow the stderr lines as they did under a piped Python run).
-// Printed values are echoed raw, as the stdout of this gate always was: it is a human display and
+// Stdout is buffered and written once at the end, so a piped stdout is never cut by an early exit
+// and stdout lines follow the stderr lines. Printed values are echoed raw. It is a human display and
 // no machine parser reads it (the CI step only logs it). `hc.warn` escapes the stderr channel.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -44,14 +41,15 @@ import * as hc from './harness_config.mjs'
 
 hc.pin_utf8()
 
-// Python's `\s` for a str pattern, built from numbers so that no source line holds a raw
-// separator character. JavaScript's own `\s` differs at U+001C-U+001F, U+0085 and U+FEFF.
+// Declared patterns keep their Python regex meaning (ywr-harness ADR 0223). This is Python's `\s`, built
+// from numbers so that no source line holds a raw separator character. JavaScript's own `\s` differs at
+// U+001C-U+001F, U+0085 and U+FEFF.
 const PY_WS = '\\t\\n\\v\\f\\r\\x1c-\\x1f ' + String.fromCharCode(0x85, 0xa0, 0x1680) +
   String.fromCharCode(0x2000) + '-' + String.fromCharCode(0x200a) +
   String.fromCharCode(0x2028, 0x2029, 0x202f, 0x205f, 0x3000)
 
-// Python's `$` also matches before one trailing newline; the lookahead keeps that reading.
-// Python's `.` excludes only `\n`, JavaScript's also `\r`, U+2028 and U+2029, so `[^\n]` stands for it.
+// Python's `$` also matches before one trailing newline, and the lookahead keeps that reading.
+// Python's `.` excludes only `\n`, and JavaScript's also `\r`, U+2028 and U+2029, so `[^\n]` stands for it.
 export const SPEC_RX = /^docs\/spec\/[0-9][^\n]*\.md(?=\n?$)/
 export const ADR_RX = /^docs\/adr\/[0-9][^\n]*\.md(?=\n?$)/
 export const DOCS_RX = /^docs\/(adr|spec)\/[0-9][^\n]*\.md(?=\n?$)/
@@ -59,7 +57,7 @@ export const DOCS_RX = /^docs\/(adr|spec)\/[0-9][^\n]*\.md(?=\n?$)/
 // --- Output ------------------------------------------------------------------------------------
 const OUT = []
 
-/** `print(line)`: queued, written by `flush_out`. @param {string} line */
+/** Queues one stdout line for `flush_out`. @param {string} line */
 function out(line) {
   OUT.push(line)
 }
@@ -69,11 +67,11 @@ function flush_out() {
   OUT.length = 0
 }
 
-// --- Python-semantics helpers local to this gate -------------------------------------------------
+// --- Helpers local to this gate ------------------------------------------------------------------
 const OS_ERROR_NAMES = new Set(['OSError', 'FileNotFoundError', 'PermissionError', 'NotADirectoryError',
   'IsADirectoryError', 'FileExistsError'])
 
-/** Whether `e` is what Python names an `OSError`: a Node fs error or one tagged with an OSError subclass name. */
+/** Whether `e` is an OS error: a Node fs error, or one tagged with an OSError subclass name. */
 function is_oserr(e) {
   return !!e && (typeof e.code === 'string' || OS_ERROR_NAMES.has(e.name))
 }
@@ -94,17 +92,17 @@ const STRERROR = {
   EMFILE: 'Too many open files',
 }
 
-/** `e.strerror or type(e).__name__` of a Python OSError. */
+/** The OS message of an error, else its type name. */
 function strerror(e) {
   if (e && typeof e.code === 'string' && Object.hasOwn(STRERROR, e.code)) return STRERROR[e.code]
   return hc._oserr(e).name || 'OSError'
 }
 
 /**
- * A declared pattern with Python's `.` and `$`: `.` matches every character but a line feed
- * (JavaScript's also refuses a carriage return, U+2028 and U+2029, so a path holding one would fall
- * out of scope), and `$` also matches before one trailing line feed. Escapes and character classes
- * pass through unchanged.
+ * A declared pattern with the `.` and `$` of a Python regex (ywr-harness ADR 0223): `.` matches every
+ * character but a line feed (JavaScript's also refuses a carriage return, U+2028 and U+2029, so a path
+ * holding one would fall out of scope), and `$` also matches before one trailing line feed. Escapes
+ * and character classes pass through unchanged.
  * @param {string} src
  * @returns {string}
  */
@@ -129,7 +127,7 @@ function py_dot(src) {
   return res
 }
 
-/** `str.split(sep, maxsplit)`: the last piece keeps the rest, which `String.split`'s limit drops. */
+/** Splits at most `maxsplit` times. The last piece keeps the rest, which `String.split`'s limit drops. */
 function split_n(s, sep, maxsplit) {
   const parts = []
   let at = 0
@@ -145,12 +143,12 @@ function split_n(s, sep, maxsplit) {
 
 const WS_RUN = new RegExp('[' + PY_WS + ']+')
 
-/** `str.split()` with no argument: runs of Python whitespace, no empty items. */
+/** Splits on runs of the whitespace class above, with no empty items. */
 function py_split(s) {
   return s.split(WS_RUN).filter((x) => x !== '')
 }
 
-/** `str.strip(ch)` for a single character. */
+/** Strips every leading and trailing `ch`, a single character. */
 function strip_char(s, ch) {
   let a = 0
   let b = s.length
@@ -159,14 +157,14 @@ function strip_char(s, ch) {
   return s.slice(a, b)
 }
 
-/** `f"{n:,}"` for an integer. @param {number} n */
+/** An integer with a comma between each group of three digits. @param {number} n */
 function fmt_int(n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
 }
 
 /**
- * `f"{ms / 1000:.1f}"` for a whole number of milliseconds. `toFixed` rounds an exact tie up where
- * Python rounds it to even; a tie at one decimal is only exact for a quarter second (250, 750, ...).
+ * Seconds with one decimal for a whole number of milliseconds. An exact tie rounds to even, where
+ * `toFixed` rounds it up. A tie at one decimal is only exact for a quarter second (250, 750, ...).
  * @param {number} ms
  */
 function fmt_secs(ms) {
@@ -194,7 +192,7 @@ function exists(p) {
   try { return fs.existsSync(p) } catch { return false }
 }
 
-/** `Path.resolve()`: symlinks resolved, a missing tail kept as given. */
+/** An absolute path with symlinks resolved. A missing tail stays as given. */
 function realpath(p) {
   let cur = path.resolve(p)
   const tail = []
@@ -212,16 +210,16 @@ function realpath(p) {
 }
 
 /**
- * One git call through `hc.git_run` — THE boundary. Both pipes are bytes and the output is decoded
- * once as UTF-8 with backslashreplace: a text-mode pipe on Windows translates newlines and decodes
- * with the console codepage. quotepath off: git would otherwise C-quote non-ASCII paths as octal
- * escapes, which no anchored pattern matches. Color off: a user's `color.grep=always` would put ESC
- * codes before each `git grep` path (`hc.GIT_PINS`).
+ * One git call through `hc.git_run`, the one git boundary. Both pipes are bytes and the output is
+ * decoded once as UTF-8 with backslashreplace, because a text-mode pipe on Windows translates newlines
+ * and decodes with the console codepage. quotepath is off, because git would otherwise C-quote
+ * non-ASCII paths as octal escapes, which no anchored pattern matches. Color is off, because a user's
+ * `color.grep=always` would put ESC codes before each `git grep` path (`hc.GIT_PINS`).
  * A non-zero exit THROWS, except the exits a caller names in `ok_exits` as a semantic answer
  * (`rev-parse -q --verify` exit 1 = absent), which read as empty output. Never 128: git exits 128
  * for EVERY fatal error (a missing object, a bad rev, a corrupt pack), so no caller can read it
  * as an answer. Reading every failure as empty output would make a failing `git diff`
- * indistinguishable from a commit that changed nothing — a false clean retro. `main` turns the
+ * indistinguishable from a commit that changed nothing, a false clean retro. `main` turns the
  * throw into the ywr-harness ADR 0041 `FAILED` marker.
  * @param {string} root @param {string[]} args @param {number[]} [ok_exits]
  * @returns {string}
@@ -236,7 +234,7 @@ export function git(root, args, ok_exits = []) {
 }
 
 /**
- * Parse `diff --name-status -z`: a status field, then ONE path — two for R/C (old, new).
+ * Parse `diff --name-status -z`: a status field, then one path, or two for R/C (old, new).
  * NUL-framed (ywr-harness ADR 0077): a path carrying U+2028, NEL or a tab stays one path.
  * @param {string} raw
  * @returns {Array<[string, string[]]>}
@@ -258,20 +256,19 @@ export function name_status_z(raw) {
 }
 
 // The docs builder's frontmatter list grammar (docs/build_docs.mjs parse_frontmatter,
-// ywr-harness spec 0001 §3), mirrored for the one key this gate reads. A SECOND parser by
-// necessity — the retro runs on the committed sources, not on an index that may not be rebuilt
-// yet — so it is held to the builder by a pairing case (the ywr-harness canon's harness_retro.selftest.mjs G4) instead of
-// by hope: two parsers of one field that disagree (a block list, an item containing ']', a
-// multi-line flow list) give two different ownership maps.
+// ywr-harness spec 0001 §3), mirrored for the one key this gate reads. It is a second parser
+// by necessity, because the retro runs on the committed sources, not on an index that may not be
+// rebuilt yet. A pairing test holds it to the builder: two parsers of one field that disagree
+// (a block list, an item containing ']', a multi-line flow list) give two different ownership maps.
 const FM_KEY_RE = new RegExp('^([A-Za-z0-9_]+)[' + PY_WS + ']*:[' + PY_WS + ']*([^\\n]*)$')
 const FM_ITEM_RE = /^[ \t]*-(?:[ \t]+([^\n]*))?$/
 const COMMENT_RE = new RegExp('(?:^|[' + PY_WS + '])#')
 
 /**
- * The builder's inline-comment rule: only a '#' AFTER whitespace starts a comment — or a '#'
+ * The builder's inline-comment rule: only a '#' after whitespace starts a comment, or a '#'
  * that starts the text, since every caller passes a stripped value or a line and `key:   # x`
  * lost its whitespace to `FM_KEY_RE`. A greedy `[...]` match would instead reach into the
- * comment — the shipped spec template's `implements_in: [ ]   # ... (예: ["docs/build_docs.mjs"])`
+ * comment. The spec template's `implements_in: [ ]   # ... (예: ["docs/build_docs.mjs"])`
  * would then map a file to the template, and `[0-9]*.md` below does scan 0000-template.md.
  * @param {string} v
  * @returns {string}
@@ -283,9 +280,9 @@ export function _cut_comment(v) {
 
 /**
  * The builder's flow-list bracket balance (`_flow_depth`, kept character for character): '['
- * +1, ']' -1, not counted inside a quoted item (a quote at an item's head up to the same quote —
- * what the item rule reads as quoted); a mid-item quote (`it's.md`) is not a quote. An unquoted
- * `app/[slug]` item is balanced, so it neither opens nor closes a list.
+ * is +1 and ']' is -1. Neither counts inside a quoted item (a quote at an item's head up to the
+ * same quote, which is what the item rule reads as quoted). A mid-item quote (`it's.md`) is not a
+ * quote. An unquoted `app/[slug]` item is balanced, so it neither opens nor closes a list.
  * @param {string} text
  * @returns {number}
  */
@@ -312,7 +309,7 @@ export function _flow_depth(text) {
 
 const INT_RX = /^-?\p{Nd}+$/u
 
-/** The value of one Unicode decimal digit: Python's `int()` reads them all. */
+/** The value of one Unicode decimal digit. The builder reads every script's digits as integers. */
 function digit_value(ch) {
   const c = ch.codePointAt(0)
   if (c < 128) return c - 48
@@ -321,7 +318,7 @@ function digit_value(ch) {
   return (c - base) % 10
 }
 
-/** `int(text)` of a string that matched `INT_RX`. */
+/** The integer value of a string that matched `INT_RX`. */
 function py_int(text) {
   const neg = text.startsWith('-')
   let n = 0
@@ -330,9 +327,10 @@ function py_int(text) {
 }
 
 /**
- * The builder's item rule (`_parse_item`): blank → null (skipped); quotes stripped; an
- * UNQUOTED pure integer becomes a number, as the builder indexes it — verify_map then skips it as a
- * non-path, and `spec_map` drops it the same way, so the two consumers agree on who owns what.
+ * The builder's item rule (`_parse_item`): a blank item gives null (skipped), and quotes are
+ * stripped. An unquoted pure integer becomes a number, as the builder indexes it. verify_map then
+ * skips it as a non-path, and `spec_map` drops it the same way, so the two consumers agree on who
+ * owns what.
  * @param {string} text
  * @returns {string|number|null}
  */
@@ -345,8 +343,8 @@ export function _item(text) {
 }
 
 /**
- * `[a, b]` → items, split on ',' exactly as the builder splits; an item may contain ']'
- * (Next.js `app/api/auth/[...nextauth]/route.ts`), which a lazy `\[(.*?)\]` truncated.
+ * `[a, b]` gives items, split on ',' exactly as the builder splits. An item may contain ']'
+ * (Next.js `app/api/auth/[...nextauth]/route.ts`), which a lazy `\[(.*?)\]` would truncate.
  * @param {string} v
  * @returns {Array<string|number>}
  */
@@ -391,7 +389,7 @@ export function implements_in(block) {
       if (_flow_depth(head) > 0) {
         const parts = [head]
         for (const s of block.slice(i + 1)) {
-          if (FM_KEY_RE.test(s)) break // never closed — the builder falls back to the key line's own reading
+          if (FM_KEY_RE.test(s)) break // never closed: the builder falls back to the key line's own reading
           const seg = _cut_comment(s)
           if (seg) {
             parts.push(seg)
@@ -425,7 +423,7 @@ export function spec_map(root) {
   let names = []
   if (is_dir(dir)) {
     try {
-      // `Path.glob("[0-9]*.md")`: case-insensitive on Windows, and `*` also matches a line break.
+      // The glob `[0-9]*.md` is case-insensitive on Windows, and `*` also matches a line break.
       const rx = new RegExp('^[0-9][\\s\\S]*\\.md$', process.platform === 'win32' ? 'i' : '')
       names = fs.readdirSync(dir).filter((n) => rx.test(n))
     } catch (e) {
@@ -438,14 +436,14 @@ export function spec_map(root) {
     const rel = hc.norm('docs/spec/' + name)
     let text
     try {
-      // Text mode folds every line break to `\n`, as Python's `read_text` does.
+      // Every line break folds to `\n`, as the builder reads a file in text mode.
       text = fs.readFileSync(path.join(dir, name)).toString('utf8').replace(/\r\n?/g, '\n')
     } catch (e) {
       if (!is_oserr(e)) throw e
       continue
     }
     // The builder's block rule (`hc.fm_block`): a leading HTML comment is skipped, as the
-    // index does — a looser parse here would miss such a spec.
+    // index does. A looser parse here would miss such a spec.
     const block = (hc.fm_block(text) || '').split('\n')
     for (const p of implements_in(block)) {
       if (typeof p === 'string' && p) res.push([rel, hc.norm(p)])
@@ -466,12 +464,12 @@ export function unowned(files, scope, owned, ign) {
  * The frontmatter block of <path> at <rev>, by build_docs.mjs's rule (`hc.fm_block`: a leading
  * HTML comment skipped, the block closed by a line whose strip() is `---`).
  *
- * Keyed to frontmatter and NOT to file content, which is the single subtlest thing in this gate.
- * Both committed outputs are frontmatter-derived — the builder drops `_`-prefixed keys before
- * writing index.json, and docs.html (the one output embedding the body) is gitignored — so a
- * body-only edit provably produces no delta to regenerate. An append-only ADR addendum is exactly
- * that shape and is the normal way to correct a committed record, so keying on "source changed"
- * cried wolf on a recurring class whose only answer was to rebuild and confirm no delta by hand.
+ * Keyed to frontmatter and NOT to file content, which is the subtlest rule in this gate.
+ * Both committed outputs are frontmatter-derived: the builder drops `_`-prefixed keys before
+ * writing index.json, and docs.html (the one output embedding the body) is gitignored. A
+ * body-only edit therefore produces no delta to regenerate. An append-only ADR addendum has that
+ * shape and is the normal way to correct a committed record, so keying on "source changed"
+ * would warn on a recurring class whose only answer is to rebuild and confirm no delta by hand.
  * @param {string} root @param {string} rev @param {string} p
  * @returns {string}
  */
@@ -479,22 +477,22 @@ export function frontmatter_at(root, rev, p) {
   // Absence is asked structurally, not read off an exit code: `git show rev:path` exits 128 both
   // for an absent path and for every other fatal (a missing object in a shallow clone, a bad
   // rev), and its message is translated under a non-English locale. `ls-tree` answers an absent
-  // path with empty output and exit 0; any failure throws to main's FAILED marker. Absent is
-  // treated by the caller as a difference — the conservative side for BUILD.
+  // path with empty output and exit 0, and any failure throws to main's FAILED marker. The
+  // caller treats absent as a difference, the conservative side for BUILD.
   if (!git(root, ['--literal-pathspecs', 'ls-tree', '-z', rev, '--', p])) return ''
   const blob = git(root, ['show', `${rev}:${p}`])
-  if (!blob) return '' // absent at that rev — the caller treats it as a difference
+  if (!blob) return '' // absent at that rev: the caller treats it as a difference
   const block = hc.fm_block(blob)
-  if (block === null) return '<no-frontmatter>' // builder skips it entirely; a constant, never the body
+  if (block === null) return '<no-frontmatter>' // the builder skips it entirely: a constant, never the body
   return block
 }
 
 /**
- * `frontmatter_at` for many [rev, path] pairs, read in ONE `git cat-file --batch` call: each git
+ * `frontmatter_at` for many [rev, path] pairs, read in one `git cat-file --batch` call: each git
  * start costs tens of milliseconds on Windows, and a slice can touch dozens of docs. A path that
  * cannot travel on the batch's input, one with a line feed or a carriage return, goes through
- * `frontmatter_at`, and so does an
- * object that is no blob or that git reports `missing`, so each reads exactly as before.
+ * `frontmatter_at`. So does an object that is no blob or that git reports `missing`, so each
+ * reads the same as a single call.
  * @param {string} root @param {Array<[string, string]>} sides
  * @returns {string[]}
  */
@@ -509,7 +507,7 @@ export function frontmatters_at(root, sides) {
     // `missing` is an absent path or a missing object: frontmatter_at tells them apart and throws
     // for the second. An M change has both sides, so this second read is rare.
     if (o === null || o.type !== 'blob') return frontmatter_at(root, rev, p)
-    if (o.text === '') return '' // an empty file reads as `git show` read it
+    if (o.text === '') return '' // an empty file reads as `git show` reads it
     const block = hc.fm_block(o.text)
     return block === null ? '<no-frontmatter>' : block
   })
@@ -532,20 +530,19 @@ export function commit_bodies(raw) {
 }
 
 /**
- * (changes, subjects, pre, post). `changes` is [(status, [paths])] — rename lines carry two.
+ * (changes, subjects, pre, post). `changes` is [(status, [paths])], and a rename line carries two paths.
  *
  * A merge commit is a RANGE in disguise (ywr-harness ADR 0043): `diff-tree` without `-m` prints
  * NOTHING for one, so treating it as a plain commit would run every check over an empty change
- * set — a merge concluded with `git commit` would fire post-commit and pass silently having
- * checked nothing. First-parent semantics (`HEAD^1..HEAD`): everything this merge landed on the line of
- * history, subjects included. Root and ordinary commits keep the diff-tree path unchanged.
+ * set. A merge concluded with `git commit` would fire post-commit and pass silently having
+ * checked nothing. The merge reads first-parent semantics (`HEAD^1..HEAD`): everything this merge
+ * landed on the line of history, subjects included. Root and ordinary commits use the diff-tree path.
  *
- * The scope is DELIBERATELY relative to the first parent — "what arrived on the line the
- * committer stood on". An octopus merge is fully covered by that range (the tree diff and the
- * subject log both include every non-first leg — the ywr-harness canon's selftest case L3 measures it). A foxtrot
- * merge (first parent = the topic side) therefore reports the OTHER line's changes; that is
- * the stated semantics of an advisory gate, named rather than special-cased: parent order is
- * what the committer's own `git merge` produced.
+ * The scope is deliberately relative to the first parent: "what arrived on the line the
+ * committer stood on". That range fully covers an octopus merge (the tree diff and the
+ * subject log both include every non-first leg). A foxtrot merge (first parent is the topic side)
+ * therefore reports the other line's changes. That is the stated semantics of an advisory gate,
+ * named rather than special-cased: parent order is what the committer's own `git merge` produced.
  * @param {string} root @param {string|null} rev_range
  * @returns {[Array<[string, string[]]>, string[], string, string]}
  */
@@ -560,7 +557,7 @@ export function resolve_range(root, rev_range) {
   if (rev_range) {
     raw = git(root, ['diff', '--name-status', '-z', '-M', rev_range])
     // `git log <rev>` lists the whole history behind <rev>, while `git diff <rev>` covers the
-    // commits after it: a bare revision reads its messages over `<rev>..HEAD`, the span its diff covers.
+    // commits after it. A bare revision reads its messages over `<rev>..HEAD`, the span its diff covers.
     bodies = commit_bodies(git(root, ['log', LOG_BODY_FMT, rev_range.includes('..') ? rev_range : `${rev_range}..HEAD`]))
     if (rev_range.includes('...')) {
       const [a, b] = split_n(rev_range, '...', 1)
@@ -718,9 +715,9 @@ export function build_findings(root, cfg, warns, rev_range) {
   const last = (c) => c[1][c[1].length - 1]
   const files = changes.map(last) // last field = current path
   // A rename can TRIGGER a check but never SATISFY one. `added` (triggers: MIGRATION, UNMAPPED)
-  // keeps renames — a file moved into a scope is new to it, the conservative reading for an
+  // keeps renames, because a file moved into a scope is new to it, the conservative reading for an
   // advisory gate. The suppressors take the strict sets: a renamed ADR is not a new decision,
-  // and a spec moved without an edit — or deleted — updated nothing. Loose sets would let a
+  // and a spec that moved without an edit, or was deleted, updated nothing. Loose sets would let a
   // renamed old ADR silence DEP and a deleted spec silence MIGRATION. BUILD below applies
   // the same "never suppress on what was not checked" rule. Only A counts as new: git reports
   // C only under -C, which neither diff here passes.
@@ -738,8 +735,8 @@ export function build_findings(root, cfg, warns, rev_range) {
 
   const f = []
 
-  // 1) DEP — a dependency manifest moved with no new ADR in scope. Lockfile-only changes are a
-  //    version bump, not a decision, and are deliberately not matched by the declaration.
+  // 1) DEP: a dependency manifest moved with no new ADR in scope. Lockfile-only changes are a
+  //    version bump, not a decision, and the declaration deliberately does not match them.
   if (deps.length && files.some((x) => hc.any_match(deps, x))) {
     if (!new_files.some((x) => ADR_RX.test(x))) {
       f.push('DEP: dependency manifest changed, no new ADR in scope — a new dependency or ' +
@@ -747,7 +744,7 @@ export function build_findings(root, cfg, warns, rev_range) {
     }
   }
 
-  // 2) MIGRATION — a schema migration added with no living spec touched.
+  // 2) MIGRATION: a schema migration added with no living spec touched.
   if (migs.length && added.some((x) => hc.any_match(migs, x))) {
     if (!edited.some((x) => SPEC_RX.test(x))) {
       f.push('MIGRATION: migration added, no spec updated — check which living spec covers ' +
@@ -755,7 +752,7 @@ export function build_findings(root, cfg, warns, rev_range) {
     }
   }
 
-  // 3) SPEC — a changed file is some spec's implements_in, but that spec was not updated.
+  // 3) SPEC: a changed file is some spec's implements_in, but that spec was not updated.
   //    A directory entry counts for every changed file below it (ywr-harness ADR 0104).
   const stale = new Set(pairs.filter(([s, p]) => !fileset.has(s) && [...fileset].some((x) => hc.owns(p, x))).map(([s]) => s))
   for (const sp of hc._sorted(stale)) {
@@ -763,8 +760,8 @@ export function build_findings(root, cfg, warns, rev_range) {
            'verify it still matches')
   }
 
-  // 4) BUILD — doc FRONTMATTER changed but the index was not regenerated. Matched on ANY path
-  //    field, not just the last: a rename OUT of docs/ drops an entry from the index, and keying
+  // 4) BUILD: doc frontmatter changed but the index was not regenerated. Matched on any path
+  //    field, not just the last: a rename out of docs/ drops an entry from the index, and keying
   //    on the final path alone would miss it.
   //    A changed index answers the check, so it reads no frontmatter then. The first difference
   //    decides it, so a non-M change reads none either.
@@ -773,7 +770,7 @@ export function build_findings(root, cfg, warns, rev_range) {
   if (doc_changes.length && !fileset.has(index_rel)) {
     let need = false
     if (!pre || !hc.py_strip(git(root, ['rev-parse', '-q', '--verify', `${pre}^{commit}`], [1]))) {
-      need = true // no comparable endpoint — do not suppress what cannot be checked
+      need = true // no comparable endpoint: do not suppress what cannot be checked
     } else if (doc_changes.some(([st]) => !st.startsWith('M'))) {
       need = true // add/delete/rename/copy changes the entry set or its path field
     } else {
@@ -789,7 +786,7 @@ export function build_findings(root, cfg, warns, rev_range) {
     }
   }
 
-  // 5) FEAT — a feat commit with no docs change at all. Coarse on purpose: the backstop for
+  // 5) FEAT: a feat commit with no docs change at all. Coarse on purpose, as the backstop for
   //    everything the structural checks cannot see.
   if (subjects.some((s) => s.startsWith('feat'))) {
     if (!files.some((x) => x.startsWith('docs/'))) {
@@ -798,7 +795,7 @@ export function build_findings(root, cfg, warns, rev_range) {
     }
   }
 
-  // 6) UNMAPPED — a NEWLY ADDED in-scope file no spec owns. Added-files-only is the same adoption
+  // 6) UNMAPPED: a newly added in-scope file no spec owns. Added-files-only is the same adoption
   //    strategy as staged-only lint: new code is owned from day one and the legacy baseline does
   //    not spam every commit.
   for (const x of unowned(added, scope, owned, ign)) {
@@ -806,13 +803,13 @@ export function build_findings(root, cfg, warns, rev_range) {
            `write the missing spec, or add it to ${cfg.retro_ignore_file}`)
   }
 
-  // 7) DEADMAP — an implements_in entry pointing at a file that no longer exists.
+  // 7) DEADMAP: an implements_in entry pointing at a file that no longer exists.
   for (const [sp, p] of dead_pairs(root, pairs)) {
     f.push(`DEADMAP: ${sp} maps ${p} which does not exist — renamed or deleted; fix implements_in`)
   }
 
-  // 8) SIZE — an in-scope file that CROSSES the limit in this range (ywr-harness ADR 0171). Crossing-only is
-  //    the UNMAPPED adoption strategy again: new growth reports once, the baseline stays out of
+  // 8) SIZE: an in-scope file that crosses the limit in this range (ywr-harness ADR 0171). Crossing-only is
+  //    the UNMAPPED adoption strategy again: new growth reports once, and the baseline stays out of
   //    each commit and lives under --coverage. A deleted file never reports, and a rename that git
   //    detects counts its old path's lines before (ywr-harness ADR 0188). A range with no
   //    start (a bare rev, `..X`) has no before count to compare, so it skips the check.
@@ -828,8 +825,8 @@ export function build_findings(root, cfg, warns, rev_range) {
 }
 
 /**
- * The distinct (spec, path) pairs whose file is missing, sorted by code point. `Path / p` keeps an
- * absolute `p` as it is, which `path.resolve` reads the same way.
+ * The distinct (spec, path) pairs whose file is missing, sorted by code point. `path.resolve` keeps an
+ * absolute `p` as it is.
  * @param {string} root @param {Array<[string, string]>} pairs
  * @returns {Array<[string, string]>}
  */
@@ -891,7 +888,7 @@ export function _coverage_body(root, cfg, warns, has_head) {
       out(`-- unowned files: none (${in_scope.length} in scope, all owned or ignored)`)
     }
     // SIZE's baseline (ywr-harness ADR 0171): the files the per-commit check will never report again. One
-    // git call over HEAD; the scope filter runs here, so the argv stays short.
+    // git call over HEAD, and the scope filter runs here, so the argv stays short.
     let big = []
     if (has_head) {
       big = [...counts_at(root, 'HEAD', [], SIZE_LIMIT)].filter(([x]) => hc.any_match(scope, x))
@@ -907,16 +904,16 @@ export function _coverage_body(root, cfg, warns, has_head) {
   return 0
 }
 
-// The delegation ledger (ywr-harness ADR 0117/0118) — the slot files the plugin's hooks module writes.
-// Read only, on request (ywr-harness ADR 0120): the ledger is session-scoped, the per-commit run is
-// commit-scoped.
+// The delegation ledger (ywr-harness ADR 0117/0118): the slot files the plugin's hooks module writes.
+// Read only, on request (ywr-harness ADR 0120), because the ledger is session-scoped and the per-commit
+// run is commit-scoped.
 export const LEDGER_DIR = ['.claude', 'telemetry', 'delegations']
 export const SLOT_RX = /^slot-[0-9]{2}\.json(?=\n?$)/
 export const LEDGER_SCHEMA = 2
 export const TOKENS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']
 // `teammate` is read, not written: an `agent-tool` loop whose spawn row says `teammate: true` (an
-// agent-team teammate raises `agent.spawn` from Claude Code 2.1.289). `workflow` is a Workflow `agent()`
-// worker's loop from Claude Code 2.1.292 (ywr-harness ADR 0126); `unspawned` is the same worker on
+// agent-team teammate raises `agent.spawn` from Claude Code 2.1.289). `workflow` is the loop of a Workflow
+// `agent()` worker from Claude Code 2.1.292 (ywr-harness ADR 0126). `unspawned` is the same worker on
 // 2.1.287-2.1.291.
 export const KIND_ORDER = new Map([['main', 0], ['agent-tool', 1], ['teammate', 2], ['workflow', 3], ['unspawned', 4]])
 export const SPAWNED = ['agent-tool', 'teammate', 'workflow']
@@ -938,8 +935,8 @@ export function _names(v) {
 
 /**
  * A spawn row's string field: the string, null when absent or null, "?" for an empty string or
- * any other JSON type. A row key must be hashable and the row sort compares strings only, so a list
- * or a number there would raise a traceback; "?" names the row and is truthy, so a malformed field
+ * any other JSON type. A row key must be a string and the row sort compares strings only, so a list
+ * or a number there would crash the report. "?" names the row and is truthy, so a malformed field
  * never counts as an inherit (an empty `model_param` must not read as "no model given").
  * @param {*} v @returns {string|null}
  */
@@ -980,8 +977,7 @@ export function read_slots(d) {
     }
     let doc
     try {
-      // Fatal decoding and a kept byte-order mark: Python's strict UTF-8 read fails on an invalid
-      // byte and `json.loads` fails on U+FEFF, and both read as "not JSON" here.
+      // Fatal decoding and a kept byte-order mark: an invalid byte or a U+FEFF both read as "not JSON".
       doc = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buf))
     } catch {
       skipped.push(`${name} (not JSON — a write in flight or a partial file)`)
@@ -1055,7 +1051,7 @@ export function delegations(root, warns) {
   const [docs, skipped] = read_slots(d)
 
   // Sessions across files: ywr-harness ADR 0118's LRU residual can split one session over two slots. A null id
-  // is grouped per file — every id-less session writes the same header, so the id joins nothing.
+  // is grouped per file, because every id-less session writes the same header and the id joins nothing.
   const sessions = new Map()
   for (const [name, doc] of docs) {
     const sid = g(doc, 'session_id')
@@ -1075,7 +1071,7 @@ export function delegations(root, warns) {
   out(`-- ${rel}: ${docs.length} slot file(s), ${sessions.size} session(s), ${n_loops} loop(s)`)
   const d6 = { on_main: 0, same_effort: 0, sessions: 0, evicted: 0, no_main: 0, wf: 0, wf_inherit: 0, wf_sessions: 0 }
   const dropped = { loops: 0, steps: 0 }
-  // `reverse=True` keeps the original order of equal keys; the sort is stable, so reversing the comparison does too.
+  // Newest first. The sort is stable, so reversing the comparison keeps the original order of equal keys.
   const ordered = [...sessions].sort((a, b) => hc._cmp(b[1].updated, a[1].updated))
   for (const [key, s] of ordered) {
     const mains = s.loops.filter(([lp]) => g(lp, 'loop') === 'main').map(([lp]) => lp)
@@ -1113,7 +1109,7 @@ export function delegations(root, warns) {
       agg.loops += 1
       // ywr-harness ADR 0147 counts resumes on the spawn row, and a loop carries the row as it stood
       // when the loop ended: an agent resumed twice leaves loops that read 0, 1 and 2. The count of
-      // an agent is therefore the MAXIMUM over its loops, never the sum, credited once per session.
+      // an agent is therefore the maximum over its loops, never the sum, credited once per session.
       // A loop with no string agent id cannot be matched to another, so it adds its own value.
       const n_res = _count(g(spawn, 'resumes'))
       const aid = g(lp, 'agent_id')
@@ -1132,9 +1128,8 @@ export function delegations(root, warns) {
       dropped.steps += _count(g(lp, 'steps_dropped'))
       if (kind === 'workflow') {
         // ywr-harness ADR 0126: no `model_param` on a workflow spawn row means the `agent()` call gave no
-        // model. With no agent type named (`workflow-subagent`, measured) the worker ran on the
-        // session's model — a fact, not a heuristic. A named type may pin its own model, so it
-        // is never counted.
+        // model. With no agent type named (`workflow-subagent`) the worker ran on the session's model.
+        // That is a fact, not a heuristic. A named type may pin its own model, so it is never counted.
         wf += 1
         wf_inherit += mparam || stype !== WF_TYPE ? 0 : 1
         continue
@@ -1152,7 +1147,7 @@ export function delegations(root, warns) {
         same += main_efforts.size && same_efforts ? 1 : 0
       }
     }
-    // One map per session credits each agent's maximum to ONE row, the row of the loop that holds it.
+    // One map per session credits each agent's maximum to one row, the row of the loop that holds it.
     // Per-row maxima would count an agent twice when its loops land in two rows (a model or effort
     // that changed between runs).
     for (const [n_res, rks] of agent_max.values()) rows.get(rks).agg.resumes += n_res
@@ -1203,9 +1198,9 @@ export function delegations(root, warns) {
 }
 
 // --- Command line --------------------------------------------------------------------------------
-// The argument grammar of the Python original (argparse): long options may be abbreviated to a
-// unique prefix, `--opt=value` and `--opt value` both work, `--` ends the options, a negative
-// number is a positional, and a usage error prints the usage and exits 2.
+// The argument grammar follows argparse: long options may be abbreviated to a unique prefix,
+// `--opt=value` and `--opt value` both work, `--` ends the options, a negative number is a
+// positional, and a usage error prints the usage and exits 2.
 const PROG = 'harness_retro.mjs'
 const USAGE = `usage: ${PROG} [-h] [--repo REPO] [--coverage] [--delegations]\n` +
   `${' '.repeat(8 + PROG.length)}[range]`
@@ -1218,8 +1213,8 @@ const OPTIONS = [
   { flags: ['--repo'], dest: 'repo', takes: true },
   { flags: ['--coverage'], dest: 'coverage', takes: false },
   { flags: ['--delegations'], dest: 'delegations', takes: false },
-  // Accepted and ignored. A commit-msg hook that an older scaffold placed still calls this mode, and an
-  // unknown flag would make that hook refuse every message holding the word "confirmed" (ywr-harness ADR 0215).
+  // Accepted and ignored. A commit-msg hook that an earlier scaffold version placed still calls this mode, and
+  // an unknown flag would make that hook refuse every message holding the word "confirmed" (ywr-harness ADR 0215).
   { flags: ['--class-message'], dest: 'class_message', takes: true },
 ]
 const OPTION_STRINGS = OPTIONS.flatMap((o) => o.flags.map((flag) => [flag, o]))
@@ -1227,15 +1222,15 @@ const NEGATIVE_NUMBER = /^-(?:\d+|\d*\.\d+)$/
 
 class UsageError extends Error {}
 
-/** Exits through `usage_error`: the usage, then `prog: error: message`, on stderr, with exit code 2. */
+/** Writes the usage, then `prog: error: message`, to stderr and returns exit code 2. */
 function usage_error(message) {
   process.stderr.write(`${USAGE}\n${PROG}: error: ${message}\n`)
   return 2
 }
 
 /**
- * How one argument reads, as argparse's `_parse_optional` classifies it: a positional (null), a
- * recognised option, or an unknown option-like string.
+ * How one argument reads, classified as argparse does: a positional (null), a recognised option,
+ * or an unknown option-like string.
  * @param {string} arg
  * @returns {null | {opt: Object|null, flag: string, explicit: string|null}}
  */
@@ -1298,7 +1293,7 @@ function parse_args(argv) {
     if (!t.opt) { extras.push(t.text); continue }
     const names = t.opt.flags.join('/')
     if (t.opt.dest === 'help') {
-      // `-hx` still shows the help, as argparse does; a long form or an `=` form takes no value.
+      // `-hx` still shows the help, as in argparse. A long form or an `=` form takes no value.
       if (t.explicit !== null && (t.flag === '--help' || t.text.includes('='))) {
         throw new UsageError(`argument ${names}: ignored explicit argument '${t.explicit}'`)
       }
@@ -1361,16 +1356,16 @@ export function main(argv) {
     findings = build_findings(root, cfg, warns, args.range)
   } catch (e) {
     if (is_cpe(e)) {
-      // The one non-zero exit (ywr-harness ADR 0041; the gate emitter's scope path works the same
-      // way): an empty retro reads as "clean", so a git failure must print a marker, never silence. The
-      // post-commit hook calls this with `|| true`, so the commit is untouched either way.
+      // The one non-zero exit (ywr-harness ADR 0041). An empty retro reads as "clean", so a git
+      // failure must print a marker, never silence. The post-commit hook calls this with `|| true`,
+      // so the commit is untouched either way.
       process.stderr.write(`git failed: ${hc.py_strip(e.stderr || '')}\n`)
       out(`[slice-retro] FAILED — git ${e.cmd.slice(1 + hc.GIT_PINS.length).join(' ')} exited ` +
           `${e.returncode}; NO retro check ran. This is not a clean retro (ywr-harness ADR 0041).`)
       return 1
     }
     if (is_oserr(e)) {
-      // git itself could not start (not on PATH — a hook environment with a stripped PATH):
+      // git itself could not start (not on PATH, as in a hook environment with a stripped PATH):
       // the same marker, never a raw stack trace.
       process.stderr.write(`git failed to start: ${e.message}\n`)
       out('[slice-retro] FAILED — git could not be run; NO retro check ran. This is not a clean ' +
