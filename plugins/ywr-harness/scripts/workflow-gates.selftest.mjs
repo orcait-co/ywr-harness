@@ -11,7 +11,7 @@
 // The plugin ships no workflow of its own (ywr-harness ADR 0215), so no live corpus arm exists.
 //
 // The pwsh suite named most cases with a letter and no ID. Each test here is `WG<n> <the old name>`, so the
-// parity check of ADR 0227 decision 8 matches the names. The M1 to M3 names already had an ID and keep it.
+// parity check of ADR 0227 decision 8 matches the names.
 // Patterns are pwsh -match sources (case-insensitive; see toRx in lib/selftest-lib.mjs).
 //
 // The fixtures below use .claude/workflows, the default corpus path of a consuming repo, and the
@@ -19,20 +19,15 @@
 // unnoticed in consumers.
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync, lstatSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { fixtureRoot, removeFixtureRoot, runNode, matchFailures } from '../lib/selftest-lib.mjs'
-import { which_on_path } from './harness_git.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const gate = path.join(here, 'workflow-gates.mjs')
-const libPs1 = path.join(here, '../lib/selftest-lib.ps1')
 
-// A suite that runs under node needs no absent-node branch of its own: the pwsh suite guarded its own
-// child `node` start with Resolve-NodeVerdict (ADR 0116), a function of lib/selftest-lib.ps1 that
-// the Node hooks' suites shared. Cases M1 to M3 below still pin that function, by running the real one.
+// The suite runs under node, so it has no absent-node branch (ywr-harness ADR 0231).
 
 const fxBase = fixtureRoot('workflow-gates-selftest')
 after(() => removeFixtureRoot(fxBase))
@@ -178,52 +173,6 @@ test('WG9 I nested file is gated', () => {
   mkdirSync(path.join(fxNested, '.claude/workflows/sub'), { recursive: true })
   writeFileSync(path.join(fxNested, '.claude/workflows/sub/deep.js'), broken)
   assertCase(invokeGate(fxNested), 1, ['FAIL — \\.claude/workflows/sub/deep\\.js: SyntaxError'], ['green —'])
-})
-
-// M1-M3 node-dependency branches, called directly so all three are exercised without a child
-// process of the gate: absent+CI must FAIL (the gate silently stopped running), absent+local must SKIP
-// with a reason, present must run. The function is the pwsh one of lib/selftest-lib.ps1, so one pwsh
-// child dot-sources the real file and prints the three verdicts. Without pwsh the three cases SKIP,
-// with a reason, and the pwsh runners still run them.
-// pwsh on a Windows box can be a Microsoft Store app execution alias: a reparse point that stat cannot read and
-// CreateProcess starts, so which_on_path skips it. The alias is accepted by its link entry on PATH.
-function resolvePwsh() {
-  const exe = which_on_path('pwsh')
-  if (exe || process.platform !== 'win32') return exe
-  for (let dir of String(process.env.PATH ?? '').split(path.delimiter)) {
-    dir = dir.trim().replace(/^"(.*)"$/u, '$1')
-    if (!dir || !path.isAbsolute(dir)) continue
-    const p = path.join(dir, 'pwsh.exe')
-    try { if (lstatSync(p).isSymbolicLink()) return p } catch { /* absent: keep looking */ }
-  }
-  return ''
-}
-const verdictProbe = (() => {
-  const pwsh = resolvePwsh()
-  if (!pwsh) return { error: 'pwsh not found on PATH — the lib function it pins is pwsh code (reported, not silent)' }
-  const script = `. '${libPs1.replace(/'/gu, "''")}'; ` +
-    'foreach ($c in @(@($false, $true), @($false, $false), @($true, $true))) { ' +
-    '$v = Resolve-NodeVerdict $c[0] $c[1]; "$($v.Verdict)|$([bool]$v.Message)" }'
-  const r = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-    { encoding: 'utf8', windowsHide: true })
-  const lines = (r.stdout ?? '').split(/\r?\n/u).filter(Boolean)
-  if (r.status !== 0 || lines.length !== 3) return { error: `the pwsh probe gave exit ${r.status} and ${lines.length} line(s): ${r.stderr ?? ''}` }
-  return { lines }
-})()
-const verdicts = [
-  { name: 'M1 node absent on CI fails', verdict: 'fail' },
-  { name: 'M2 node absent locally skips', verdict: 'skip' },
-  { name: 'M3 node present runs', verdict: 'run' },
-]
-verdicts.forEach((m, i) => {
-  test(m.name, (t) => {
-    if (verdictProbe.error && /not found/iu.test(verdictProbe.error)) { t.skip(verdictProbe.error); return }
-    assert.ok(!verdictProbe.error, verdictProbe.error)
-    const [verdict, hasMessage] = verdictProbe.lines[i].split('|')
-    assert.equal(verdict, m.verdict, `verdict '${verdict}' (expected '${m.verdict}')`)
-    // A non-run verdict with no reason is a silent skip, the thing being prevented.
-    if (verdict !== 'run') assert.equal(hasMessage, 'True', 'non-run verdict with no reason — a silent skip is the thing being prevented')
-  })
 })
 
 // META — the empty-MustNotMatch guard must fire through this file's wrapper, and on the guard

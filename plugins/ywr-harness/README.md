@@ -357,8 +357,8 @@ CI, calls it only when the plugin ships a `workflows/` directory, and the plugin
 A repo runs it on its own workflows. CI invokes `scripts/resolve-base.sh` (CI diff-range base
 resolution — since ADR 0043 vendored by the scaffold as `scripts/harness/resolve-base.sh` and
 invoked by the vendored workflow to resolve the PR base once, `MODE=blocking`).
-`lib/selftest-lib.ps1` is the shared assertion core the selftests dot-source — dot-source it,
-do not run it.
+`lib/selftest-lib.mjs` is the shared assertion core the selftests import, and `lib/selftest-runner.mjs`
+is the suite engine of both runners (ADR 0231) — import them, do not run them.
 
 ## Prerequisites
 
@@ -367,36 +367,35 @@ do not run it.
   `report-issue`), the status line installer, `manifest-gate.mjs` and the
   workflow corpus gate `scripts/workflow-gates.mjs`. Absent `node`: those hooks cannot
   start on a member machine — the host reports a hook error and never a blocked call, since no
-  hook can block; the suites report a skip locally and a hard failure on CI, where they must
-  actually run.
-- `pwsh` (PowerShell 7+) — only the plugin's own selftests below, which a member never runs. No hook or
-  skill script runs on it, so the prerequisite check does not name it (ADR 0220).
+  hook can block; the selftest runner is itself a Node program, so it does not start without `node`.
+- `pwsh` (PowerShell 7+) — only a few of the plugin's own selftests, which a member never runs: they start a
+  pwsh fake or parse a generated PowerShell script. The selftest runners are Node programs (ADR 0231), and
+  no hook or skill script runs on pwsh, so the prerequisite check does not name it (ADR 0220).
 - `python` — no script of the plugin runs it since 0.85.0 (ADR 0223). A repository that took an older scaffold keeps its
   `scripts/harness/*.py` files; `/ywr-harness:harness-init` names each one with a `retired:` line and never deletes it.
 
 The prerequisite check (`hooks/prerequisites.mjs`, above) names `node` when it is missing
 or too old at each session start, and `/ywr-harness:setup` installs it on your command.
 
-Hooks run wherever the session runs; the gates and selftests are also exercised on Linux pwsh,
+Hooks run wherever the session runs; the gates and selftests are also exercised on Linux,
 so nothing here may assume Windows.
 
 ## Gates
 
-`selftest.ps1` is the single entry point — the manifest/wiring gate, the workflow corpus gate (one line
-here, because the plugin ships no workflow), then every shipped PowerShell selftest:
+`selftest.mjs` is the single entry point — the manifest/wiring gate, the workflow corpus gate (one line
+here, because the plugin ships no workflow), then every shipped `*.selftest.mjs`, each as its own `node` child:
 
 ```
-pwsh -NoProfile -File ./selftest.ps1
+node ./selftest.mjs
 ```
 
-The two gates run first; the suites then run side by side (`-Jobs N`, default the CPU count
-capped at 8; `-Jobs 1` runs them one at a time). Each finished suite prints one `done` line, then
+The two gates run first; the suites then run side by side (`--jobs=N`, default the CPU count
+capped at 8; `--jobs=1` runs them one at a time). Each finished suite prints one `done` line, then
 the results come back in discovery order: a failed suite in full, a passing suite as one line
-plus any `SKIP` lines. `-Full` prints every suite's whole output. To iterate on one component,
-run its own `*.selftest.ps1` directly.
+plus any `SKIP` lines. `--full` prints every suite's whole output. To iterate on one component,
+run its own `*.selftest.mjs` with `node`.
 
-`manifest-gate.mjs` is deterministic and CLI-free; it is Node with built-ins only (ADR 0141), and the
-runner fails it when `node` is not on PATH. It fails on the defects with distribution
+`manifest-gate.mjs` is deterministic and CLI-free; it is Node with built-ins only (ADR 0141). It fails on the defects with distribution
 blast radius: `version` missing (omitted `version` falls back to the git commit SHA, so every
 commit ships as a new version to every consumer), a hook path that does not resolve, a
 regression from exec form to shell form where a path placeholder is used, and a release-notes
@@ -451,12 +450,12 @@ pass count: both would otherwise be a gate judged from the wrong observable.
 CI runs the same entry point on both OSes (ADR 0071), on different triggers since ADR 0080. The
 Linux run is the script gate `harness-gates.yml` executes on `ubuntu-latest` on every push to
 main and every pull request (the gate of record, ADR 0024). `.github/workflows/plugin.yml` runs
-it on `windows-latest` as a 4-shard matrix (`selftest.ps1 -Shard i/N` — the runner deals the
+it on `windows-latest` as a 4-shard matrix (`node selftest.mjs --shard=i/N` — the runner deals the
 discovered suites round-robin, so the shards partition the set by construction and no suite
 list lives in the yaml) on the release tag (`ywr-harness--v*`), on a change to its own yaml and on dispatch — never
 on a pull request and not on a plain `plugins/**` push to main, where the Windows evidence is the owner's local run of the same entry
 point before the slice closes. Both OSes matter: hooks run on member machines (Windows) while a
-consuming repo's gates run on Linux, and the same `.ps1` serves both.
+consuming repo's gates run on Linux, and the same runner serves both.
 
 A consuming repo's CI cannot reach these scripts through the plugin — `${CLAUDE_PLUGIN_ROOT}`
 is substituted when Claude Code spawns a hook, not in an arbitrary CI step. So the scaffold
@@ -473,9 +472,9 @@ uncovered files. Nothing is excluded from that count but the selftests themselve
 the runner, the gate, or the shared lib would narrow the population without saying so, which
 is how a partial count comes to read as full coverage.
 
-Currently uncovered: `selftest-lib.ps1` (its selftest exists in `ywr-platform` and has not been
-ported), `harness_config.mjs` and `harness_git.mjs` (exercised only through the scripts that import them),
-`lib/runner-signal.ps1` and `hooks/mods.mjs`. The gate's own `UNCOVERED` line is the list of record. `resolve-base.sh` left this list with ADR 0043 — its selftest is ported
+Currently uncovered: `harness_config.mjs`, `harness_git.mjs` and `placement.mjs` (exercised only through the
+scripts that import them), `hooks/mods.mjs`, and the runner helpers `lib/selftest-glob.mjs`, `lib/selftest-lib.mjs`,
+`lib/selftest-reporter.mjs` and `lib/selftest-runner.mjs` (exercised only through the runners). The gate's own `UNCOVERED` line is the list of record. `resolve-base.sh` left this list with ADR 0043 — its selftest is ported
 hermetic (fixture repos, all ten cases deterministic on every platform).
 
 The count reads `template-payload-excluded=N` separately for files under `templates/` — payload

@@ -12,6 +12,10 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.87.0 — 2026-11-28
+
+- 하네스 자체 selftest 실행기를 Node 로 옮겼습니다. `plugins/ywr-harness/selftest.mjs` 와 `scripts/canon-selftest.mjs` 가 PowerShell 실행기 `selftest.ps1`, `canon-selftest.ps1` 을 대신하며, 하네스 repo 에는 PowerShell 파일이 남지 않습니다 (ywr-harness ADR 0231). 하네스 개발용 변경이라 멤버 repo 의 게이트와 사용 방법은 달라지지 않습니다.
+
 ## v0.86.1 — 2026-11-28
 
 - Windows 에서 저장소를 8.3 짧은 이름이 섞인 경로(예: `C:\Users\RUNNER~1\...`)로 지정해 `/ywr-harness:harness-init` 을 실행하면, git 이 알려 주는 긴 경로와 글자가 달라 "저장소 루트가 아님"으로 판단하고 `core.hooksPath` 를 설정하지 않던 문제를 고쳤습니다. 이제 두 경로를 실제 경로로 풀어 비교합니다.

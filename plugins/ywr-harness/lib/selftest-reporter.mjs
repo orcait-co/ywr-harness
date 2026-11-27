@@ -1,6 +1,5 @@
-// The one reporter of the Node suites (ADR 0227 decision 2). It prints the line shape of
-// lib/selftest-lib.ps1, so both pwsh runners, the read-set audit and the parity script count PASS lines
-// and read signal lines the same way for a pwsh suite and a Node suite:
+// The one reporter of the Node suites (ADR 0227 decision 2). Both runners, the read-set audit and the parity
+// script count PASS lines and read signal lines by this line shape:
 //   PASS [<test name>]
 //   FAIL [<test name>]: <first line of the error message>, then the rest of the message, indented
 //   SKIP [<test name>]: <reason>
@@ -28,10 +27,9 @@ function failText(details) {
   return [head, ...tail]
 }
 
-// node-selftest.mjs counts the PASS, FAIL and SKIP lines of a `node --test` run. A suite that prints a child
-// run's `FAIL [x]` line at column 0 would change those counts. So when YWR_SELFTEST_STDOUT_INDENT is set, the
-// suite's own forwarded output gets that indent and never starts a counted line. A direct run has no
-// forwarded output: the suite writes to stdout itself.
+// A reader that counts the PASS, FAIL and SKIP lines of a `node --test` run would count a child run's `FAIL [x]`
+// line at column 0. So when YWR_SELFTEST_STDOUT_INDENT is set, the suite's own forwarded output gets that indent
+// and never starts a counted line. A direct run has no forwarded output: the suite writes to stdout itself.
 const INDENT = process.env.YWR_SELFTEST_STDOUT_INDENT ?? ''
 const indent = (msg) => (INDENT ? String(msg).replace(/^(?=.)/gmu, INDENT) : msg)
 

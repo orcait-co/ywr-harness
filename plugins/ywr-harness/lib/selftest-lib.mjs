@@ -1,8 +1,7 @@
-// Shared helpers of the Node suites (ADR 0227 decision 5), the Node side of lib/selftest-lib.ps1.
+// Shared helpers of the Node suites (ADR 0227 decision 5), the assertion core of every suite (spec 0008 §3.9).
 // A suite imports what it needs:
 //   import { fixtureRoot, removeFixtureRoot, runNode, matchFailures, assertMatch } from '../lib/selftest-lib.mjs'
-// The pwsh core grew one helper per measured duplicate. This file starts with the three that every
-// ported suite needs, and a helper joins it on its second copy.
+// A helper joins this file on its second copy.
 
 import { mkdirSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir, availableParallelism } from 'node:os'

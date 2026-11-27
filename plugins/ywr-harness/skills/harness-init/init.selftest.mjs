@@ -251,9 +251,8 @@ function getHooksPath(repo) {
 }
 const hooksLine = (run) => run.out.split('\n').filter((l) => m(l, R`\bhooks:`)).join(' ')
 
-// --- pwsh, for the one subject that is still PowerShell ------------------------------------------------
-// lib/selftest-lib.ps1 (Invoke-ScriptArgv, Invoke-ScriptInRunspace) is the subject of the Z0 and Z0f lib cases.
-// It stays a .ps1, so those cases start it under pwsh. A Microsoft Store install puts pwsh on PATH only as an
+// --- pwsh, for the one case that needs a PowerShell process ---------------------------------------------
+// Case T6 holds a file open from pwsh. A Microsoft Store install puts pwsh on PATH only as an
 // app execution alias: a reparse point under WindowsApps that stat cannot read (EACCES) and CreateProcess
 // starts. which_on_path skips it, so on Windows such an alias `pwsh.exe` is accepted by its link entry.
 function resolvePwsh() {
@@ -268,7 +267,7 @@ function resolvePwsh() {
   return ''
 }
 const PWSH = resolvePwsh()
-const NO_PWSH = PWSH ? false : 'pwsh absent (reported, not silent) — the subject of these cases is a .ps1'
+const NO_PWSH = PWSH ? false : 'pwsh absent (reported, not silent) — case T6 holds the file open from a pwsh process'
 const psq = (s) => `'${String(s).replace(/'/gu, "''")}'`
 
 // ======================================================================================================
@@ -335,98 +334,6 @@ for (const bad of ['0', '601', 'ten', '1.5']) {
   })
 }
 
-// The lib's .ps1 runner keeps its own contract (the Z0 thrower, missing-script and binding cases below run it
-// directly, with .ps1 fixtures, exactly as before) — the pwsh suites outside this one still start scripts by it.
-// One pwsh child dot-sources lib/selftest-lib.ps1 and runs every lib case of this suite, so the pwsh start is
-// paid once. The cases and their results travel as JSON files; the driver holds no assertion.
-const libDriver = String.raw`param([string]$Spec, [string]$Out, [string]$Lib)
-$ErrorActionPreference = 'Stop'
-. $Lib
-$rows = foreach ($c in (Get-Content -LiteralPath $Spec -Raw | ConvertFrom-Json)) {
-    $r = if ($c.kind -eq 'runspace') {
-        $a = @{}
-        foreach ($p in $c.args.PSObject.Properties) { $a[$p.Name] = $p.Value }
-        Invoke-ScriptInRunspace -Path $c.path -Arguments $a
-    } else {
-        Invoke-ScriptArgv $c.path ([string[]]@($c.argv))
-    }
-    [pscustomobject]@{ id = $c.id; code = [int]$r.Code; aborted = [bool]$r.Aborted; out = [string]$r.Out }
-}
-[IO.File]::WriteAllText($Out, (ConvertTo-Json -InputObject @($rows) -Depth 4), [Text.UTF8Encoding]::new($false))
-`
-const foldCases = [
-  { id: 'f1', name: "'-Target -Word' binds -Word as the value", argv: ['-Target', '-Word'], file: 'folder', rx: R`T=\[-Word\] Ti=\[\] D=False` },
-  { id: 'f2', name: "unique prefixes bind: '-Ti x -Dr'", argv: ['-Ti', 'x', '-Dr'], file: 'folder', rx: R`T=\[\] Ti=\[x\] D=True` },
-  { id: 'f3', name: "'-D' binds -DryRun: the script's own parameter wins over the common -Debug", argv: ['-D'], file: 'folder', rx: R`T=\[\] Ti=\[\] D=True` },
-  { id: 'f4', name: "'-Target -DryRun' aborts: a parameter name is never a value", argv: ['-Target', '-DryRun'], file: 'folder', rx: "missing an argument for parameter 'Target'" },
-  { id: 'f5', name: "a dangling '-Target' aborts", argv: ['-Target'], file: 'folder', rx: "missing an argument for parameter 'Target'" },
-  { id: 'f6', name: "'-T' (Target, Title) aborts as ambiguous", argv: ['-T', 'x'], file: 'folder', rx: "'-T' is ambiguous: Target, Title" },
-  { id: 'f7', name: "'-Title -T' aborts: an ambiguous name is never a value", argv: ['-Title', '-T'], file: 'folder', rx: "missing an argument for parameter 'Title'" },
-  { id: 'f8', name: 'a positional token aborts (a stated limit)', argv: ['x'], file: 'folder', rx: "'x' names no parameter" },
-  { id: 'f9', name: 'an unparseable script aborts', argv: ['-Target', 'x'], file: 'broken', rx: 'parameter metadata unreadable' },
-]
-const libRun = section(async () => {
-  const fx = (n) => path.join(fxBase, n)
-  write(fx('thrower.ps1'), "param([string]$Target)\nthrow 'boom from the fixture'")
-  write(fx('binder.ps1'), '[CmdletBinding()] param([string]$Target)\nWrite-Host ran\nexit 0')
-  write(fx('folder.ps1'), '[CmdletBinding()] param([string]$Target, [string]$Title, [switch]$DryRun)\nWrite-Host "T=[$Target] Ti=[$Title] D=$DryRun"\nexit 0')
-  write(fx('broken.ps1'), 'param([string]$Target')
-  const cases = [
-    { id: 'z0', kind: 'argv', path: fx('thrower.ps1'), argv: ['-Target', fxBase] },
-    { id: 'z0m', kind: 'argv', path: fx('no-such-init.mjs'), argv: ['-Target', fxBase] },
-    // Straight to the runspace: the argv fold would refuse '-Targett' first, and this case pins the runspace's own binding.
-    { id: 'z0b', kind: 'runspace', path: fx('binder.ps1'), args: { Targett: fxBase } },
-    ...foldCases.map((c) => ({ id: c.id, kind: 'argv', path: fx(`${c.file}.ps1`), argv: c.argv })),
-    { id: 'z0g', kind: 'argv', path: fx('binder.ps1'), argv: ['-Target', fxBase] },
-  ]
-  write(fx('lib-cases.json'), JSON.stringify(cases))
-  write(fx('lib-driver.ps1'), libDriver)
-  await acquire()
-  let r
-  try {
-    r = await new Promise((resolve) => {
-      let so = '', se = ''
-      const child = spawn(PWSH, ['-NoProfile', '-NonInteractive', '-File', fx('lib-driver.ps1'), '-Spec', fx('lib-cases.json'), '-Out', fx('lib-results.json'), '-Lib', path.join(pluginRoot, 'lib', 'selftest-lib.ps1')], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-      child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8')
-      child.stdout.on('data', (d) => { so += d })
-      child.stderr.on('data', (d) => { se += d })
-      child.on('error', (e) => resolve({ status: null, stdout: so, stderr: `${se}${e.message}` }))
-      child.on('close', (status) => resolve({ status, stdout: so, stderr: se }))
-    })
-  } finally { release() }
-  if (r.status !== 0 || !isFile(fx('lib-results.json'))) throw new Error(`lib driver failed (exit ${r.status}): ${r.stdout}${r.stderr}`)
-  return Object.fromEntries(JSON.parse(read(fx('lib-results.json'))).map((x) => [x.id, x]))
-}, { enabled: Boolean(PWSH) })
-T('Z0 a terminating error is an abort (code -1), not an exit code', () => {
-  const r = libRun().z0
-  ok(r.code === -1 && r.aborted, `code=${r.code} aborted=${r.aborted}`)
-}, { skip: NO_PWSH })
-T('Z0 a terminating error keeps its message', () => ok(m(libRun().z0.out, 'boom from the fixture'), libRun().z0.out), { skip: NO_PWSH })
-T('Z0 a missing script is an abort (code -1), not an exit code', () => {
-  const r = libRun().z0m
-  ok(r.code === -1 && r.aborted && m(r.out, 'script not found'), `code=${r.code} out=${r.out}`)
-}, { skip: NO_PWSH })
-// A [CmdletBinding()] script: a mistyped argument name at a call site is a binding failure — the
-// script never runs. A child exited 1 there, which cases G/H/S1 would have accepted as "refused as
-// required"; the runner must report an abort instead (re-review 2026-09-02, high).
-T('Z0 a parameter-binding failure is an abort (code -1), never an exit code', () => {
-  const r = libRun().z0b
-  ok(r.code === -1 && r.aborted && m(r.out, 'Targett'), `code=${r.code} aborted=${r.aborted} out=${r.out}`)
-}, { skip: NO_PWSH })
-// Z0f — the lib's argv fold (Invoke-ScriptArgv, O93) binds the way a `pwsh -File` child binds, measured 2026-10-16:
-// a dash-shaped value is a value, a real parameter name is a name, a dangling or ambiguous name aborts.
-for (const fc of foldCases) {
-  T(`Z0f fold: ${fc.name}`, () => {
-    const r = libRun()[fc.id]
-    const wantRun = fc.rx.startsWith('T=')
-    const okf = wantRun ? r.code === 0 && !r.aborted : r.code === -1 && r.aborted
-    ok(okf && m(r.out, fc.rx), `code=${r.code} aborted=${r.aborted} out=${r.out}`)
-  }, { skip: NO_PWSH })
-}
-T('Z0 the same script with the right argument name runs and exits 0', () => {
-  const r = libRun().z0g
-  ok(r.code === 0 && !r.aborted && m(r.out, 'ran'), `code=${r.code} out=${r.out}`)
-}, { skip: NO_PWSH })
 // Code is the child's exit code; init.mjs sets it once, on its last statement — pin that statement so a trailing
 // edit that drops it fails here by name.
 const lastStmt = srcCode.at(-1).line

@@ -424,7 +424,7 @@ const canonRefRun = lazyP(() => withTree(pluginFx, async (dir) => {
   writeFileSync(p2(pyc, 'x.cpython-312.pyc'), 'compiled spec 0012 text')
   appendFileSync(p2(dir, 'hooks/decision-prompts.mjs'), '// bare ADR 0175 here; prefixed ywr-harness ADR 0175 there\n')
   appendFileSync(p2(dir, 'skills/verify/SKILL.md'), '\nSee spec 0008 for the gate.\n')
-  for (const skip of ['README.md', 'lib/selftest-lib.ps1', 'hooks/hook-lib.selftest.mjs']) {
+  for (const skip of ['README.md', 'lib/selftest-lib.mjs', 'hooks/hook-lib.selftest.mjs']) {
     appendFileSync(p2(dir, skip), '\n# canon-only: ADR 0175, fact 12\n')
   }
   const cl = p2(dir, 'CHANGELOG.md')
@@ -634,7 +634,7 @@ mg('audit-paths-selects-the-surface', () => {
   const apIn = ['REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-start.md',
     'workflows/fixture-flow.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\\verify\\SKILL.md',
     'hooks/hooks.json', 'hooks/slice-status.test.ts', 'hooks/x.selftest.mjs', 'scripts/slice_note.py', 'CHANGELOG.md', 'README.md',
-    'skills/harness-init/init.mjs', 'lib/selftest-lib.ps1', 'agents/sub/deep.md']
+    'skills/harness-init/init.mjs', 'lib/selftest-lib.mjs', 'agents/sub/deep.md']
   const apWant = ['REVIEW.md', 'agents/mech.md', 'skills/slice-close/reference.md', 'skills/harness-init/templates/docs/prompts/review-start.md',
     'workflows/fixture-flow.js', 'hooks/decision-prompts.mjs', 'evals/case/graders/g.md', 'SKILLS/X/Y.MD', 'skills\\verify\\SKILL.md']
   const r = runNode([p2(src, 'manifest-gate.mjs'), '--audit-paths'], { env: childEnv(), input: apIn.map((x) => `${x}\0`).join('') })

@@ -28,12 +28,12 @@
 // that runs the suite. The `node absent` skip of the pwsh suite has no case here: the suite is running on node.
 //
 // Speed (O207). The scenarios share no repo, no folder and no state beyond the dependencies named in GROUPS,
-// and each spends its time waiting on child processes. A `before` hook runs each group in its own worker
+// and each spends its time waiting on child processes. The first test runs each group in its own worker
 // thread of this same file, a few at a time, and every test then reads the stored result as before. A worker
 // thread runs the same synchronous scenario code, so the code of a scenario is unchanged, and each retro run
 // stays a child process. A seed repo is built once and copied with fs.cpSync into each fixture repo that
 // declares the same config, instead of `git init`, `git add` and `git commit` per repo.
-import { test, after, before } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -67,7 +67,8 @@ function gitOnPath(envPath) {
 }
 const skip = gitOnPath(process.env.PATH) ? false : 'git absent (reported, not silent)'
 // A worker thread loads this file only for its scenarios: it registers no test.
-const t = (name, fn) => { if (isMainThread) test(name, { skip }, fn) }
+// Each test awaits the one scenario run first (see `ready` below).
+const t = (name, fn) => { if (isMainThread) test(name, { skip }, async (...a) => { await ready(); return fn(...a) }) }
 const has = (s, p) => toRx(p).test(s)
 const ok = (cond, detail) => assert.ok(cond, String(detail))
 const blank = (s) => !String(s).trim()
@@ -124,7 +125,7 @@ const spec = (id, files) => `---\nid: "${id}"\ntype: spec\ntitle: "s${id}"\nstat
 const adr = (id, extra = '', body = '') => `---\nid: "${id}"\ntype: adr\n${extra}---\n# ${id}\n${body}`
 
 // A scenario runs once. In a worker thread it runs on first use, so a scenario that needs an earlier one calls
-// it. In the main thread it reads the result that its worker stored (see the `before` hook below). A throw in
+// it. In the main thread it reads the result that its worker stored (see `ready` below). A throw in
 // the setup fails every test of the scenario with that cause.
 const scenarios = new Map()
 function lazy(name, fn) {
@@ -143,6 +144,30 @@ function lazy(name, fn) {
   } : get
 }
 const stored = new Map()
+// The scenarios run once, on the first test's await, not in a root `before` hook: Node 22.0.0 starts the tests
+// without awaiting an async root hook. The first test starts after this module has evaluated.
+let readyRun = null
+function ready() {
+  readyRun ??= (async () => {
+    if (skip) return
+    const grouped = GROUPS.flat()
+    const missing = [...scenarios.keys()].filter((n) => !grouped.includes(n))
+    const twice = grouped.filter((n, i) => grouped.indexOf(n) !== i)
+    const unknown = grouped.filter((n) => !scenarios.has(n))
+    if (missing.length || twice.length || unknown.length) {
+      throw new Error(`scenario groups: in no group [${missing}], in two [${twice}], unknown [${unknown}]`)
+    }
+    const seeds = { cfg: seedRepo(path.join(fxBase, 'seed-cfg'), CFG) }
+    const queue = [...GROUPS]
+    const lanes = Array.from({ length: Math.min(POOL, queue.length) }, async () => {
+      for (let names = queue.shift(); names; names = queue.shift()) {
+        for (const [n, r] of Object.entries(await runGroup(names, seeds))) stored.set(n, r)
+      }
+    })
+    await Promise.all(lanes)
+  })()
+  return readyRun
+}
 // A small child script: a function with no free variables, written to a file and run by `node` with its
 // arguments. The pwsh suite wrote the same scripts as text.
 function runChild(name, fn, args) {
@@ -1301,26 +1326,7 @@ function runGroup(names, seeds) {
   })
 }
 
-if (isMainThread) {
-  before(async () => {
-    if (skip) return
-    const grouped = GROUPS.flat()
-    const missing = [...scenarios.keys()].filter((n) => !grouped.includes(n))
-    const twice = grouped.filter((n, i) => grouped.indexOf(n) !== i)
-    const unknown = grouped.filter((n) => !scenarios.has(n))
-    if (missing.length || twice.length || unknown.length) {
-      throw new Error(`scenario groups: in no group [${missing}], in two [${twice}], unknown [${unknown}]`)
-    }
-    const seeds = { cfg: seedRepo(path.join(fxBase, 'seed-cfg'), CFG) }
-    const queue = [...GROUPS]
-    const lanes = Array.from({ length: Math.min(POOL, queue.length) }, async () => {
-      for (let names = queue.shift(); names; names = queue.shift()) {
-        for (const [n, r] of Object.entries(await runGroup(names, seeds))) stored.set(n, r)
-      }
-    })
-    await Promise.all(lanes)
-  })
-} else {
+if (!isMainThread) {
   for (const name of workerData.names) { try { scenarios.get(name).run() } catch { /* the stored state carries the error */ } }
   parentPort.postMessage(Object.fromEntries(workerData.names.map((n) => [n, scenarios.get(n).state()])))
 }

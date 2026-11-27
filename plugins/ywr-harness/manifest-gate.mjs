@@ -461,7 +461,7 @@ async function main() {
   // keep the rule above. The top CHANGELOG entry is in scope too: the version-announce hook injects
   // the entry of the loaded version, and the check above holds the top entry to plugin.json.
   {
-    const skipTopFiles = ['README.md', 'NOTICE', 'CHANGELOG.md', 'manifest-gate.mjs', 'selftest.ps1',
+    const skipTopFiles = ['README.md', 'NOTICE', 'CHANGELOG.md', 'manifest-gate.mjs', 'selftest.mjs',
       'selftest-reads.json', 'tsconfig.json']
     const skipTopDirs = ['lib', 'evals', '.claude-plugin']
     const rtFiles = []

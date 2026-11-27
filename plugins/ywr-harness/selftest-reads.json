@@ -1,7 +1,7 @@
 {
-  "//": "ADR 0157, spec 0008 §3.4. The read set of each plugin suite: the files whose content can change its verdict. `selftest.ps1 -Changed` runs a suite when a changed file matches one of its globs. Under-declaring is the defect (a broken suite is skipped locally until CI or the next full run); over-declaring only costs time. A suite always reads itself. Globs: plugin-relative, `/`-separated, ordinal; `*` stays in one segment, `**` crosses segments; a leading `/` is repo-root-relative (checked only when the plugin is nested in its repo). The runner fails the run when a suite has no entry, a glob matches no file, or a plugin file is claimed by no suite, by no `full` glob and by no `none` glob.",
+  "//": "ADR 0157, spec 0008 §3.4. The read set of each plugin suite: the files whose content can change its verdict. `selftest.mjs --changed` runs a suite when a changed file matches one of its globs. Under-declaring is the defect (a broken suite is skipped locally until CI or the next full run); over-declaring only costs time. A suite always reads itself. Globs: plugin-relative, `/`-separated, ordinal; `*` stays in one segment, `**` crosses segments; a leading `/` is repo-root-relative (checked only when the plugin is nested in its repo). The runner fails the run when a suite has no entry, a glob matches no file, or a plugin file is claimed by no suite, by no `full` glob and by no `none` glob.",
   "full": [
-    "selftest.ps1",
+    "selftest.mjs",
     "selftest-reads.json",
     "lib/**"
   ],
@@ -42,10 +42,8 @@
     "hooks/slice-status.selftest.mjs": ["hooks/slice-status.mjs", "hooks/mods.mjs", "hooks/delegation-ledger.mjs", "hooks/prerequisites.mjs", "hooks/decision-prompts.mjs"],
     "//manifest-gate.selftest.mjs": "Its fixtures copy the whole tree, and its control cases need the unmutated copy green under manifest-gate.mjs. The runner's real-tree manifest gate run, which every run makes first, stands in for that whole-tree half: `real_tree` below names its files. The canon's docs/adr/ file names feed that half too (stubbed so the copy's citations resolve; ADRs are append-only). The globs here are the files whose literals its cases mutate or assert on.",
     "manifest-gate.selftest.mjs": ["manifest-gate.mjs", "hooks/hook-lib.mjs", "scripts/harness_git.mjs", ".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/mods.mjs", "hooks/session-start-version-announce.mjs", "skills/verify/SKILL.md", "skills/update/SKILL.md", "skills/harness-init/placement.mjs", "skills/harness-init/templates/githooks/**", "skills/harness-init/templates/scripts/harness/**", "scripts/harness_config.mjs", "evals/**"],
-    "//selftest.selftest.ps1": "It reads selftest.ps1 (a full input). Its F2 case asserts that no suite sits under a templates/ directory.",
-    "selftest.selftest.ps1": ["selftest.ps1", "skills/harness-init/templates/**"],
-    "//node-selftest.selftest.mjs": "It copies node-selftest.mjs and lib/selftest-reporter.mjs into its fixtures (ADR 0227). The reporter and lib/selftest-lib.mjs sit under the full glob lib/**, so a change to either runs every suite.",
-    "node-selftest.selftest.mjs": ["node-selftest.mjs"],
+    "//selftest.selftest.mjs": "It copies selftest.mjs (a full input), its lib files and scripts/harness_git.mjs into fixtures (ADR 0227, ADR 0229). The lib files sit under the full glob lib/**, so a change to one runs every suite. Its F2 case asserts that no suite sits under a templates/ directory.",
+    "selftest.selftest.mjs": ["selftest.mjs", "scripts/harness_git.mjs", "skills/harness-init/templates/**"],
     "scripts/slice_note.selftest.mjs": ["scripts/slice_note.mjs", "scripts/harness_config.mjs", "scripts/harness_git.mjs"],
     "scripts/harness_gates.selftest.mjs": ["scripts/harness_gates.mjs", "scripts/harness_config.mjs", "scripts/harness_git.mjs", "scripts/verify_map.mjs", "skills/harness-init/placement.mjs", "skills/harness-init/templates/.github/workflows/harness-gates.yml", "skills/harness-init/templates/harness.json"],
     "scripts/harness_retro.selftest.mjs": ["scripts/harness_retro.mjs", "scripts/harness_config.mjs", "scripts/harness_git.mjs", "skills/harness-init/templates/docs/spec/0000-template.md", "skills/harness-init/templates/docs/build_docs.mjs"],
