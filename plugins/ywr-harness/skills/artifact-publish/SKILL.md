@@ -83,11 +83,6 @@ twice between publishes is the ordinary case, and only the search tells which st
 - No match anywhere in the history → a hand edit or a publish from another tree. Stop and report;
   publishing over it is the member's decision, not a step.
 
-A repo may have its own reason to decline even when the page differs. ywr-harness's onboarding
-page changes at EVERY release by construction (release notes + version strings), and its owner
-publishes it only on a direct request (ywr-harness ADR 0224). So in that repo, run this skill for
-the onboarding page only when the owner asks for it.
-
 Then show the member, per item: the title, the target URL, the source path, the check result
 (passed / not declared), and live → new (the two commits). Ask ONE question: publish / stop.
 Nothing has left the machine yet. On stop, print what remains so the member can come back.

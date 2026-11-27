@@ -15,7 +15,7 @@ repo does not have, that rule does not apply — do not invent an equivalent.
 - **Find the decisions before you change them.** Where the repo keeps a docs-as-code corpus
   (`docs/index.json`), query it — Grep it, never Read it whole. Decision records are
   append-only: reversing one means writing a NEW record, never editing the old.
-- **Advisor checkpoint.** You do not settle architecture or trade-off decisions alone. When you
+- **Decision checkpoint.** You do not settle architecture or trade-off decisions alone. When you
   hit one, stop and return a structured open question — context · options · recommendation — and
   let the orchestrator answer.
 - **Deterministic gates before review** (org guide). Run the gates *this repo declares* against
