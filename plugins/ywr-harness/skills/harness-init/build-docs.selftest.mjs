@@ -823,9 +823,18 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   nodeRun([j(docsSL, 'build_docs.mjs')])
   rm(j(docsSL, 'docs.html')); rm(j(docsSL, 'docs.artifact.html'))
   writeSL('.gitignore', 'docs/docs.html\ndocs/docs.artifact.html\n__pycache__/\n')
+  // guide.md sits outside docs/ for the docs.ste_files cases (ADR 0237). Its section 2 holds an old R3 claim and a declared R7 word.
+  const guideBase = '# Guide\n\n## 1. Clean\n\nA short sentence stands here.\n\n## 2. Old\n\nOld text with via inside.\n\nOld claim (a parenthesized claim here) stays.\n'
+  writeSL('guide.md', guideBase)
   slGit('add', '-A')
   slGit('commit', '-qm', 'base')
   const specSL = j(repoSL, 'docs/spec/0001-s.md')
+  const guideSL = j(repoSL, 'guide.md')
+  const editGuide = (find, replace) => {
+    const g = rd(guideSL)
+    if (!g.includes(find)) throw new Error(`SL fixture: '${find}' not found in guide.md`)
+    writeFileSync(guideSL, replaceAll(g, find, replace))
+  }
   const editSL = (find, replace) => {
     const t = rd(specSL)
     if (!t.includes(find)) throw new Error(`SL fixture: '${find}' not found`)
@@ -1097,6 +1106,64 @@ export function render_panel(root) { return '<p>LEAK</p>' }
   await check('SL18c a new ADR is read (line 9, NO KEY SET) and a changed accepted ADR is skipped',
     sl18cn === 1 && /\[placeholder\] docs\/adr\/0005-e\.md:9 unfilled skeleton placeholder: "<NO KEY SET: judge from --all>"/i.test(rSL18c.Out)
     && !/0001-a\.md/i.test(rSL18c.Out), rSL18c.Out)
+  resetSL()
+
+  // SL19 (ADR 0237): a file that docs.ste_files lists is read like a spec with R3, R5 and R8 only. The
+  // same file undeclared is ignored. Mutation anchors: a gate that reads the undeclared file turns
+  // SL19b red, one that passes the R7 words turns SL19c red, one that reads a whole file turns SL19c red
+  // (section 2 is unchanged in SL19).
+  const declSL = (extra = {}) => writeSL('.harness.json', JSON.stringify({ docs: { ste_lite: true, ste_marks: true,
+    ste_words: { via: 'through' }, ste_files: ['guide.md'], ...extra } }))
+  editGuide('A short sentence stands here.', `A short sentence ${em} with a dash VIA a path.`)
+  declSL()
+  const rSL19 = checkSL('guide.md')
+  await check('SL19 a declared file: an R8 finding in the changed section blocks (FAIL - 1, exit 1); no R7 word finding; the unchanged section 2 is not read',
+    rSL19.Code === 1 && /\[ste-lite\] FAIL - 1 finding/i.test(rSL19.Out) && /\[ste-lite\]\s+R8 guide\.md:5 em dash/i.test(rSL19.Out)
+    && /guide\.md 1\. Clean \(whole\)/i.test(rSL19.Out) && !/R7 /i.test(rSL19.Out) && !/2\. Old/i.test(rSL19.Out), rSL19.Out)
+  writeSL('.harness.json', JSON.stringify({ docs: { ste_lite: true, ste_marks: true, ste_words: { via: 'through' } } }))
+  const rSL19b = checkSL('guide.md')
+  await check('SL19b the same file undeclared: ignored (exit 0, the no spec or ADR line, the file never named)',
+    rSL19b.Code === 0 && /\[ste-lite\] OK - no spec or ADR of this docs tree among the passed paths/i.test(rSL19b.Out) && !/guide\.md/i.test(rSL19b.Out.replace(/\[placeholder\][^\n]*/g, '')), rSL19b.Out)
+  resetSL()
+
+  editGuide('Old text with via inside.', 'Old text with via inside, edited.')
+  declSL()
+  const rSL19c = checkSL('guide.md')
+  await check('SL19c a changed section 2 is read whole: the old R3 claim fails and the declared R7 word is not flagged (FAIL - 1, exit 1)',
+    rSL19c.Code === 1 && /\[ste-lite\] FAIL - 1 finding/i.test(rSL19c.Out) && /\[ste-lite\]\s+R3 guide\.md:11 claim in parentheses/i.test(rSL19c.Out)
+    && !/R7 /i.test(rSL19c.Out) && !/1\. Clean/i.test(rSL19c.Out), rSL19c.Out)
+  resetSL()
+
+  editGuide('A short sentence stands here.', 'A short sentence stands here.\n\nAnother short one.')
+  editSL('A short sentence stands here.', 'A short sentence stands here.\nAnother short one.')
+  declSL()
+  const rSL19d = checkSL('guide.md')
+  const rSL19d2 = checkSL('guide.md', 'docs/spec/0001-s.md')
+  await check('SL19d a clean declared file passes without ", R7 words"; with a spec in the run the summary names R7 words',
+    rSL19d.Code === 0 && /\[ste-lite\] OK - 1 section\(s\) in 1 file\(s\) pass R3, R5, R8\r?\n/i.test(rSL19d.Out)
+    && rSL19d2.Code === 0 && /\[ste-lite\] OK - 2 section\(s\) in 2 file\(s\) pass R3, R5, R8, R7 words\r?\n/i.test(rSL19d2.Out), rSL19d.Out + rSL19d2.Out)
+  resetSL()
+
+  editGuide('A short sentence stands here.', `A short sentence ${em} with a dash.`)
+  declSL({ ste_marks: false })
+  const rSL19e = checkSL('guide.md')
+  await check('SL19e a declared file follows the mode keys: an R8 finding is advice under docs.ste_lite alone (ADVISORY, exit 0)',
+    rSL19e.Code === 0 && /\[ste-lite\] ADVISORY - 1 finding/i.test(rSL19e.Out) && /ste_marks.: true/i.test(rSL19e.Out), rSL19e.Out)
+  resetSL()
+
+  // SL20 (ADR 0237): docs.ste_files reader. A bad entry drops alone with a WARN line that names its index and
+  // never echoes its value; a duplicate and a ./ or backslash spelling read as one entry; a non-array drops the key.
+  editGuide('A short sentence stands here.', `A short sentence ${em} with a dash.`)
+  declSL({ ste_files: ['guide.md', '../x.md', '/abs.md', 'C:/x.md', 'notes.txt', 3, 'a;b.md', '//guide.md', './guide.md', '.\\guide.md'] })
+  const rSL20 = checkSL('guide.md')
+  await check('SL20 a bad entry drops with its own WARN line (seven lines, none echoes a value); the valid spellings of guide.md still declare it (FAIL, exit 1)',
+    count(rSL20.Out, '[ste-lite] WARN docs.ste_files: entry ') === 7 && !/abs\.md|a;b/i.test(rSL20.Out)
+    && rSL20.Code === 1 && /\[ste-lite\]\s+R8 guide\.md:5 em dash/i.test(rSL20.Out) && count(rSL20.Out, 'R8 guide.md') === 1, rSL20.Out)
+  declSL({ ste_files: 'guide.md' })
+  const rSL20b = checkSL('guide.md')
+  await check('SL20b a non-array docs.ste_files warns once and declares nothing (exit 0, the no spec or ADR line)',
+    rSL20b.Code === 0 && count(rSL20b.Out, '[ste-lite] WARN docs.ste_files: expected an array') === 1
+    && /\[ste-lite\] OK - no spec or ADR of this docs tree among the passed paths/i.test(rSL20b.Out) && !/R8 /i.test(rSL20b.Out), rSL20b.Out)
   resetSL()
 
   // --- FL: every YAML list shape that a spec uses indexes as the same list --------------------------

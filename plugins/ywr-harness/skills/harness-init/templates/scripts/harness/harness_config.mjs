@@ -1400,6 +1400,9 @@ export function load(root) {
   // Declared R7 words (ywr-harness ADR 0170): word → replacement. The STE-lite gate flags each listed word
   // in a checked section. Display text, never a command (ywr-harness ADR 0012); one bad entry drops the map.
   cfg.ste_words = {}
+  // Declared STE-lite files (ywr-harness ADR 0237): repo-relative .md paths that the gate reads like a spec.
+  // Display text, never a command (ywr-harness ADR 0012); a bad entry drops alone.
+  cfg.ste_files = []
 
   const file = path.join(root, '.harness.json')
   if (!fs.existsSync(file)) {
@@ -1463,6 +1466,20 @@ export function load(root) {
     const got = _is_dict(words) ? 'an empty or non-string entry' : _type_name(words)
     warns.push('docs.ste_words: expected an object of non-empty word-to-replacement strings, ' +
                `got ${got} — the R7 word check is off`)
+  }
+  const files = _get(docs, 'ste_files')
+  if (Array.isArray(files)) {
+    files.forEach((entry, i) => {
+      const v = typeof entry === 'string' ? norm(entry).replace(/^(\.\/)+/, '') : ''
+      if (!v.endsWith('.md') || UNSAFE.test(v) || /[\x00-\x1f\x7f]/.test(v) || v.startsWith('/') || /^[A-Za-z]:/.test(v)) {
+        warns.push(`docs.ste_files: entry ${i} is not a repo-relative .md path — dropped`)
+      } else if (!cfg.ste_files.includes(v)) {
+        cfg.ste_files.push(v)
+      }
+    })
+  } else if (files !== null) {
+    warns.push(`docs.ste_files: expected an array of repo-relative .md paths, got ${_type_name(files)} — ` +
+               'no declared file is checked')
   }
 
   const ver = _section(raw, 'verify', warns)

@@ -12,6 +12,11 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.89.0 — 2026-11-28
+
+- 새 선택 키 `.harness.json` 의 `docs.ste_files` 를 추가했습니다. 여기에 Markdown 파일 경로를 적으면 `docs/check_docs.mjs` 가 그 파일을 spec 처럼 읽고, 바뀐 섹션을 통째로 STE-lite 규칙 R3, R5, R8 로 검사합니다. R7 단어와 선택지 수는 spec 과 ADR 에만 적용됩니다.
+- 이 키를 선언하지 않은 repo 는 동작이 달라지지 않습니다. 다만 `docs/check_docs.mjs`, `docs/README.md`, `scripts/harness/harness_config.mjs` 가 바뀌어, 업데이트 뒤 세션 시작 때 scaffold 갱신 안내가 뜰 수 있습니다. 다음 `/ywr-harness:harness-init` 재실행 때 함께 갱신되면 사라집니다.
+
 ## v0.88.1 — 2026-11-28
 
 - `docs/prompts/review-start.md` 템플릿이 `/code-review` 를 백그라운드에서 기다리라는 지시를 대화형 세션에만 적용하도록 고쳤습니다. 이미 이 파일이 있는 멤버 repo 는 그대로 두며, 새로 놓이는 파일에만 반영됩니다.

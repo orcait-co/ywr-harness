@@ -87,16 +87,19 @@ Each document type follows its own set of writing rules. People read these docum
 browser translator. A model reads some of them in every session. The rules balance the two
 readers. ywr-harness ADR 0125 records the reasons.
 
-| Rule | Handoff | CLAUDE.md, org guide | New ADR, changed spec section |
-|---|---|---|---|
-| R1. Define each abbreviation, ID or label at its first use, or name the document that defines it | Yes | Yes | Yes |
-| R2. Name the subject of each sentence | Yes | No | Yes |
-| R3. Put no claim inside parentheses; a short reference such as "(ADR 0123)" is allowed | No | Yes | Yes |
-| R4. Put one fact in each sentence | No | Yes | Yes |
-| R5. Write 25 words or fewer in a descriptive sentence and 20 or fewer in a procedure step | No | No | Yes |
-| R6. Use the active voice | No | No | Yes |
-| R7. Use one word for one meaning | No | No | Yes |
-| R8. Use no em dash, no semicolon that joins two clauses, no `(s)` and no `and/or` | No | No | Yes |
+| Rule | Handoff | CLAUDE.md, org guide | New ADR, changed spec section | File in `docs.ste_files` |
+|---|---|---|---|---|
+| R1. Define each abbreviation, ID or label at its first use, or name the document that defines it | Yes | Yes | Yes | Yes |
+| R2. Name the subject of each sentence | Yes | No | Yes | No |
+| R3. Put no claim inside parentheses; a short reference such as "(ADR 0123)" is allowed | No | Yes | Yes | Yes |
+| R4. Put one fact in each sentence | No | Yes | Yes | Yes |
+| R5. Write 25 words or fewer in a descriptive sentence and 20 or fewer in a procedure step | No | No | Yes | Yes |
+| R6. Use the active voice | No | No | Yes | No |
+| R7. Use one word for one meaning | No | No | Yes | No |
+| R8. Use no em dash, no semicolon that joins two clauses, no `(s)` and no `and/or` | No | No | Yes | Yes |
+
+A file that `docs.ste_files` lists follows the last column, also when another column names it. So an org
+guide in that list follows R5 and R8 too.
 
 STE-lite is R1 to R8. It takes the writing rules of ASD-STE100 and leaves out its dictionary.
 ASD-STE100 is Simplified Technical English, a controlled language for aerospace maintenance
@@ -126,3 +129,5 @@ can map a word to the one word this repo uses for that meaning, such as
 counts the options of each new ADR. It reads the first level-2 heading that holds the word
 "option", "alternative", "선택지" or "대안". It flags fewer than two entries, or no such heading. These checks block a commit only
 when `.harness.json` declares `"docs": {"ste_marks": true}`. Otherwise they print as advice.
+
+The gate also reads each file that `.harness.json` `docs.ste_files` lists, when a run passes that file. It checks each changed section of the file whole, with R3, R5 and R8 only, as ywr-harness ADR 0237 records. It applies no R7 word and no option count to that file. The two keys `docs.ste_lite` and `docs.ste_marks` decide whether its findings block. The gate never checks an unlisted file outside `docs/spec` and `docs/adr`.

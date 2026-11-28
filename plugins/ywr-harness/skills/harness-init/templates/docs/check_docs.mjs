@@ -17,6 +17,7 @@
 // that `.harness.json` `docs.ste_words` maps to a replacement. A new ADR must record at least two options.
 // R8, R7 and the option count block only under `docs.ste_marks: true`. Findings fail the run only under
 // `docs.ste_lite: true`, and otherwise print as advice.
+// A passed file that `.harness.json` `docs.ste_files` lists gets R3, R5 and R8 (ywr-harness ADR 0237).
 // A records section is not checked, because nobody rewrites a ledger row. A heading that names change notes
 // or a ledger, or one with `<!-- ste-lite: records -->`, is a records section.
 // `<!-- ste-lite: verbatim -->` on its own line exempts the next block, so text that a script reads stays
@@ -630,6 +631,11 @@ function _pick(here, paths) {
   })
 }
 
+/** The passed existing .md files that are not in `picked`: candidates for `docs.ste_files` (ywr-harness ADR 0237). */
+function _others(paths, picked) {
+  return paths.map(resolve_path).filter((p) => p.endsWith('.md') && is_file(p) && !picked.some((q) => same_path(p, q)))
+}
+
 // Blank each code span and HTML comment, keeping every newline so line numbers hold.
 function _mask(text) {
   const blank = (m) => m.replace(/[^\n]/gu, ' ')
@@ -749,13 +755,25 @@ async function placeholders(here, paths) {
 async function ste_lite(here, paths) {
   here = resolve_path(here)
   const picked = _pick(here, paths)
-  if (!picked.length) {
+  const others = _others(paths, picked)
+  if (!picked.length && !others.length) {
     out('[ste-lite] OK - no spec or ADR of this docs tree among the passed paths')
     return 0
   }
   const { hc, error, reader } = await import_hc(here)
   if (hc === null) {
-    if (!reader_missing(error, reader)) throw error
+    const missing = reader_missing(error, reader)
+    if (!picked.length) {
+      if (missing) { // no reader, so no declared file: the same line as a run without any .md path
+        out('[ste-lite] OK - no spec or ADR of this docs tree among the passed paths')
+        return 0
+      }
+      // A broken reader stops no commit that passes no spec or ADR, but the run says what it skipped.
+      out(`[ste-lite] NOT CHECKED (scripts/harness/harness_config.mjs failed to load: ${_ascii(String(error && error.name))})` +
+          '; docs.ste_files is unreadable, so no listed file was checked and the gate does not block')
+      return 0
+    }
+    if (!missing) throw error
     // The mode is unreadable, so the gate cannot block.
     out('[ste-lite] NOT CHECKED (scripts/harness/harness_config.mjs missing - re-run ' +
         '/ywr-harness:harness-init); the gate did not run and does not block')
@@ -763,10 +781,15 @@ async function ste_lite(here, paths) {
   }
   const root = hc.find_repo_root(here)
   const [cfg, warns] = hc.load(root)
+  const declared = others.filter((p) => (cfg.ste_files || []).some((d) => same_path(p, resolve_path(path.join(root, d)))))
+  const mode_warns = picked.length || declared.length
+    ? ['docs.ste_lite', 'docs.ste_marks', 'docs.ste_words', 'docs.ste_files'] : ['docs.ste_files']
   for (const w of warns) {
-    if (w.startsWith('docs.ste_lite') || w.startsWith('docs.ste_marks') || w.startsWith('docs.ste_words')) {
-      out(`[ste-lite] WARN ${_ascii(w)}`)
-    }
+    if (mode_warns.some((k) => w.startsWith(k))) out(`[ste-lite] WARN ${_ascii(w)}`)
+  }
+  if (!picked.length && !declared.length) {
+    out('[ste-lite] OK - no spec or ADR of this docs tree among the passed paths')
+    return 0
   }
   // Two keys (ywr-harness ADR 0170): R3 and R5 block under docs.ste_lite, which the scaffold seed declares.
   // R8, the R7 words and the option count block only under docs.ste_marks, which it does not.
@@ -779,8 +802,10 @@ async function ste_lite(here, paths) {
   let sections = 0
   let files = 0
   let adrs = 0
-  for (const p of picked) {
+  let spec_files = 0
+  for (const p of [...picked, ...declared]) {
     const arg = p
+    const is_declared = !picked.includes(p)
     let rel
     let changed
     try {
@@ -793,9 +818,11 @@ async function ste_lite(here, paths) {
           (blocking ? '' : '; advisory mode, so the gate does not block'))
       return blocking ? 1 : 0
     }
-    const is_adr = same_path(path.dirname(p), path.join(here, 'adr'))
+    const is_adr = !is_declared && same_path(path.dirname(p), path.join(here, 'adr'))
     if (is_adr && changed !== null) continue // an accepted ADR is append-only: never rewritten
-    const [n, f, m] = _check_file(p, rel, changed, o, hc_words(cfg), is_adr)
+    // A declared file gets R3, R5 and R8 only: no R7 words and no option count (ywr-harness ADR 0237).
+    const [n, f, m] = _check_file(p, rel, changed, o, is_declared ? {} : hc_words(cfg), is_adr)
+    if (!is_declared) spec_files += 1
     if (is_adr) adrs += 1
     if (n || f || m) files += 1
     sections += n
@@ -809,7 +836,7 @@ async function ste_lite(here, paths) {
   }
   if (!findings && !marked) {
     out(`[ste-lite] OK - ${sections} section(s) in ${files} file(s) pass R3, R5, R8` +
-        (Object.keys(hc_words(cfg)).length ? ', R7 words' : '') +
+        (spec_files && Object.keys(hc_words(cfg)).length ? ', R7 words' : '') +
         (adrs ? ' and the ADR option count' : ''))
     return 0
   }
