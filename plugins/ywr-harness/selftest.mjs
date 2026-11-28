@@ -345,6 +345,8 @@ async function main() {
   }
 
   // --- the two gates -----------------------------------------------------------------------------------------
+  // A gate leads its own process group off Windows, so a signal ends its tree only through this handler (spec 0008 §3.1).
+  installSignalCleanup('selftest')
   const gate = path.join(pluginDir, 'manifest-gate.mjs')
   if (!fs.existsSync(gate)) {
     fail('manifest-gate.mjs missing (the wiring gate is not optional)')
@@ -367,7 +369,6 @@ async function main() {
   }
 
   // --- the suites (spec 0008 §3.1) ---------------------------------------------------------------------------
-  installSignalCleanup('selftest')
   say(`--- suites: ${work.length} selected, jobs=${jobs}, start order: ${ordered.note} — one 'done' line per suite as it finishes (completion order)`, 'cyan')
   const outerJobs = Math.min(jobs, work.length)
   const t0 = performance.now()

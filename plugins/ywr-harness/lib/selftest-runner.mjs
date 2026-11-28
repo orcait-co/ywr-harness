@@ -28,7 +28,7 @@ export function sayLine(line) { say(line, /^FAIL/u.test(line) ? 'red' : /^(SKIP|
 const live = new Set()
 const systemExe = (name) => path.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', name)
 
-// Windows: taskkill /T. Elsewhere the detached suite leads its own process group.
+// Windows: taskkill /T. Elsewhere the detached gate or suite leads its own process group.
 export function killTree(child) {
   if (!child.pid) return
   if (WIN) {
@@ -39,12 +39,12 @@ export function killTree(child) {
   try { process.kill(-child.pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch { /* gone already */ } }
 }
 
-// A detached suite outlives a killed runner, so the handler ends every live tree first (spec 0008 §3.1).
+// A detached gate or suite outlives a killed runner, so the handler ends every live tree first (spec 0008 §3.1).
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']
 export function installSignalCleanup(name) {
   const onSignal = (sig) => {
     for (const s of SIGNALS) process.removeAllListeners(s)
-    process.stderr.write(`${name}: stopped by ${sig}; ending the running suites\n`)
+    process.stderr.write(`${name}: stopped by ${sig}; ending the running child processes\n`)
     for (const c of live) killTree(c)
     process.kill(process.pid, WIN ? 'SIGTERM' : sig)
   }

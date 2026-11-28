@@ -428,6 +428,33 @@ test('G10 a held pipe after exit: the suite is ok with its own line and a held-p
       g10.eof && g10.h && !g10.alive && "the grandchild was gone at end-of-file, so the case proves nothing about the caller's pipe"].filter(Boolean) })
 })
 
+// G11 runs off Windows only: there process.kill runs no signal handler (spec 0008 §5).
+test('G11 a signal while a gate runs ends the gate, and the runner names the signal', { skip: process.platform === 'win32' ? 'Windows: process.kill runs no signal handler; the Linux parity run covers G11' : false }, async () => {
+  const dir = tree({ name: 'gate-signal', suites: { 'a.selftest.mjs': passing('A') } })
+  const portFile = path.join(dir, 'gate.port')
+  write(dir, 'manifest-gate.mjs', `import fs from 'node:fs'
+import net from 'node:net'
+const s = net.createServer(() => {})
+s.listen(0, '127.0.0.1', () => { fs.writeFileSync(${JSON.stringify(portFile)}, process.pid + ' ' + s.address().port) })
+setTimeout(() => {}, 300000)
+`)
+  const child = spawn(process.execPath, [path.join(dir, 'selftest.mjs'), '--jobs=1'], { env: childEnv(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  let out = ''
+  for (const s of [child.stdout, child.stderr]) { s.setEncoding('utf8'); s.on('data', (d) => { out += d }) }
+  const exitP = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })))
+  let h = null
+  for (let i = 0; i < 1200 && !h; i++) { h = readHolder(portFile); if (!h) await sleep(50) }
+  if (!h) { child.kill('SIGKILL'); assert.fail(`the stub gate never wrote its port in 60 s\n${out}`) }
+  child.kill('SIGTERM')
+  const timer = setTimeout(() => child.kill('SIGKILL'), 30000)
+  const ended = await exitP
+  clearTimeout(timer)
+  let gateAlive = true
+  for (let i = 0; i < 100 && gateAlive; i++) { gateAlive = await portAlive(h.port); if (gateAlive) await sleep(100) }
+  assert.ok(ended.signal === 'SIGTERM' && /selftest: stopped by SIGTERM; ending the running child processes/u.test(out) && !gateAlive && !/--- suites:/u.test(out),
+    `runner exit=${ended.code} signal=${ended.signal} · gate alive 10 s after the runner ended=${gateAlive}\n${out}`)
+})
+
 // --- H. the read-set map and --changed (ADR 0157) ----------------------------------------------------------------
 // A git fixture in the canon shape: the runner sits in plug/, so the / globs are live. Real runs: H3, H12, H12b, H17.
 const selDir = tree({

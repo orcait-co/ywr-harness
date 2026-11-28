@@ -967,6 +967,30 @@ export function render_panel(root) { return '<p>LEAK</p>' }
     rSL12b.Code === 0 && /\[ste-lite\] WARN docs\.ste_lite/i.test(rSL12b.Out) && /ADVISORY/i.test(rSL12b.Out), rSL12b.Out)
   resetSL()
 
+  // SL12c to SL12e: a reader file that exists but fails to load is a broken toolchain (spec 0001 §4.3).
+  editSL('Old short sentence.', 'Old short sentence, edited.')
+  writeSL('notes.md', '# Notes\n\nA note.\n')
+  const hgSL = j(repoSL, 'scripts/harness/harness_git.mjs')
+  renameSync(hgSL, `${hgSL}.off`)
+  let rSL12c
+  let rSL12d
+  try { rSL12c = checkSL('docs/spec/0001-s.md'); rSL12d = checkSL('notes.md') } finally { renameSync(`${hgSL}.off`, hgSL) }
+  await check('SL12c harness_git.mjs missing beside harness_config.mjs: a passed spec gets a framed STE-lite FAIL, no stack trace (exit 1)',
+    rSL12c.Code === 1 && /\[ste-lite\] FAIL \(scripts\/harness\/harness_config\.mjs failed to load: ModuleNotFoundError/i.test(rSL12c.Out)
+    && !/\[ste-lite\] NOT CHECKED/i.test(rSL12c.Out) && !/^\s+at /m.test(rSL12c.Out) && /\[placeholder\] WHOLE FILES/i.test(rSL12c.Out), rSL12c.Out)
+  await check('SL12d harness_git.mjs missing beside harness_config.mjs: a passed non-docs .md gets NOT CHECKED and does not block (exit 0)',
+    rSL12d.Code === 0 && /\[ste-lite\] NOT CHECKED \(scripts\/harness\/harness_config\.mjs failed to load: ModuleNotFoundError/i.test(rSL12d.Out)
+    && !/^\s+at /m.test(rSL12d.Out), rSL12d.Out)
+  rm(j(repoSL, 'notes.md'))
+  const hcSLe = j(repoSL, 'scripts/harness/harness_config.mjs')
+  writeFileSync(hcSLe, "throw { name: 'X\\n[ste-lite] OK - forged' }\n")
+  let rSL12e
+  try { rSL12e = checkSL('docs/spec/0001-s.md') } finally { copyFileSync(harnessConfigSrc, hcSLe) }
+  await check('SL12e a thrown name with a newline prints escaped on the FAIL line and forges no OK line (exit 1)',
+    rSL12e.Code === 1 && /\[ste-lite\] FAIL \(scripts\/harness\/harness_config\.mjs failed to load: X\\x0a\[ste-lite\] OK - forged - re-run/.test(rSL12e.Out)
+    && !/^\[ste-lite\] OK/m.test(rSL12e.Out) && /\[placeholder\] WHOLE FILES \(scripts\/harness\/harness_config\.mjs unusable: X\\x0a\[ste-lite\]/.test(rSL12e.Out), rSL12e.Out)
+  resetSL()
+
   // SL13 (ADR 0170): R8 flags an em dash, a joining semicolon, "(s)" and "and/or" in a changed
   // section, one line per kind. A semicolon inside parentheses (an R3 reference list), an entity's
   // semicolon, an em dash in a code span, a table cell that holds only an em dash, and a bare URL

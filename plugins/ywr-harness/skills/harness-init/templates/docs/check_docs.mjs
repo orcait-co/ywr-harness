@@ -689,7 +689,9 @@ async function import_hc(here) {
 // broken toolchain, not a repo without the reader, and it must not pass as one.
 const reader_missing = (error, reader) => error_name(error) === 'ModuleNotFoundError' && !fs.existsSync(reader)
 
-const error_name = (e) => (e && e.code === 'ERR_MODULE_NOT_FOUND' ? 'ModuleNotFoundError' : (e && e.name) || 'Error')
+// A thrown value names itself, so a control character in it is escaped before it reaches a printed line.
+const error_name = (e) => _ascii(e && e.code === 'ERR_MODULE_NOT_FOUND' ? 'ModuleNotFoundError' : String((e && e.name) || 'Error'))
+  .replace(/[\u0000-\u001f\u007f]/gu, (ch) => '\\x' + ch.charCodeAt(0).toString(16).padStart(2, '0'))
 
 /**
  * Run the placeholder check (ywr-harness ADR 0208) over the passed paths. Returns 1 when a finding fails
@@ -769,11 +771,16 @@ async function ste_lite(here, paths) {
         return 0
       }
       // A broken reader stops no commit that passes no spec or ADR, but the run says what it skipped.
-      out(`[ste-lite] NOT CHECKED (scripts/harness/harness_config.mjs failed to load: ${_ascii(String(error && error.name))})` +
+      out(`[ste-lite] NOT CHECKED (scripts/harness/harness_config.mjs failed to load: ${error_name(error)})` +
           '; docs.ste_files is unreadable, so no listed file was checked and the gate does not block')
       return 0
     }
-    if (!missing) throw error
+    if (!missing) {
+      // A reader that is present but fails to load is a broken toolchain, so a passed spec or ADR blocks.
+      out(`[ste-lite] FAIL (scripts/harness/harness_config.mjs failed to load: ${error_name(error)} - re-run ` +
+          '/ywr-harness:harness-init); a spec or ADR was passed and no line of it was checked')
+      return 1
+    }
     // The mode is unreadable, so the gate cannot block.
     out('[ste-lite] NOT CHECKED (scripts/harness/harness_config.mjs missing - re-run ' +
         '/ywr-harness:harness-init); the gate did not run and does not block')
