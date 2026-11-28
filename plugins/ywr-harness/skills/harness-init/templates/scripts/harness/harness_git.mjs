@@ -3,7 +3,7 @@
 // `scripts/harness/harness_git.mjs`, where no plugin exists, so it imports nothing but `node:` modules.
 //
 // Every git call whose output is parsed goes through `git_run`, `git_lines`, `git_paths`, `git_objects`,
-// `git_result` or `git_result_async`. The pins, the UTF-8 decode and the NUL framing live here and nowhere else. Why:
+// `git_result`, `git_result_async` or `git_prefetch`. The pins, the UTF-8 decode and the NUL framing live here and nowhere else. Why:
 //   - The argv is an array and no shell runs, so a repo-supplied value is never re-split or expanded.
 //   - Both pipes are bytes. A text-mode pipe would translate newlines on Windows and turn a
 //     newline-separated `--stdin` list into `path\r`, which no exact-name ignore rule matches.
@@ -229,6 +229,14 @@ function _spawn_error(name, message, props = {}) {
  * @returns {{status: number, stdout: string, stderr: string, cmd: string[]}}
  */
 export function git_result(root, args, { stdin = null, env = null } = {}) {
+  if ((stdin === null || stdin === undefined) && (env === null || env === undefined) && _kept.size) {
+    const key = _prefetch_key(root, args)
+    const kept = _kept.get(key)
+    if (kept) {
+      _kept.delete(key)
+      return { ...kept }
+    }
+  }
   const r = _spawn(root, args, stdin === null || stdin === undefined ? undefined : Buffer.from(stdin, 'utf8'), env)
   return {
     status: r.status,
@@ -287,6 +295,50 @@ export function git_result_async(root, args, { stdin = null, env = null } = {}) 
     child.stdin.on('error', () => { /* git exited before it read stdin: the exit code is the answer */ })
     child.stdin.end(stdin === null || stdin === undefined ? undefined : Buffer.from(stdin, 'utf8'))
   })
+}
+
+// Prefetched results, each kept for ONE later identical `git_result` call (ywr-harness ADR 0236).
+const _kept = new Map()
+
+function _prefetch_key(root, args) {
+  return JSON.stringify([path.resolve(root), args])
+}
+
+/**
+ * Start several independent git reads together, at most `PREFETCH_JOBS` at once, each through
+ * `git_result_async`, and keep
+ * each result for one later `git_result` call with the same root and arguments and no `stdin` or
+ * `env` (ywr-harness ADR 0236). Only an entry point calls it, before its synchronous code runs: a read
+ * that the run then makes takes the kept result and starts no git. A read that cannot start keeps
+ * nothing, so the later call starts git and throws its own error.
+ * @param {string} root working directory of every command
+ * @param {string[][]} argsList git arguments of each read, without the pins
+ * @returns {Promise<Array<{status: number, stdout: string, stderr: string, cmd: string[]}|null>>}
+ *   each result in the order of `argsList`, `null` for a read that could not start
+ */
+export async function git_prefetch(root, argsList) {
+  const res = new Array(argsList.length).fill(null)
+  let next = 0
+  const slot = async () => {
+    while (next < argsList.length) {
+      const i = next++
+      try {
+        const r = await git_result_async(root, argsList[i])
+        _kept.set(_prefetch_key(root, argsList[i]), r)
+        res[i] = r
+      } catch { /* nothing kept: the later call starts git and throws its own error */ }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(PREFETCH_JOBS, argsList.length) }, slot))
+  return res
+}
+
+/** At most this many prefetched git commands run at once, so a long per-file list cannot flood the machine. */
+export const PREFETCH_JOBS = 8
+
+/** The number of prefetched results that no `git_result` call took yet (ywr-harness ADR 0236). */
+export function git_prefetch_pending() {
+  return _kept.size
 }
 
 /**

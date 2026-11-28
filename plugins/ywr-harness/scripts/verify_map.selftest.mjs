@@ -14,8 +14,9 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { fixtureRoot, removeFixtureRoot, runNode, toRx } from '../lib/selftest-lib.mjs'
 import { git_result } from './harness_git.mjs'
 
@@ -405,4 +406,54 @@ t('P3 an all-owned change set does not read the register (no register warning, n
 t('P3 an absent register exempts nothing: the file is listed, no count line, no warning', () => {
   const o = P().r3b.out
   ok(has(after1(o, 'unmapped product files') ?? '', String.raw`copies/one\.py`) && !has(o, 'exempt by the ignore register') && !has(o, 'slice-retro-ignore'), o)
+})
+
+
+// --- PF: prefetch + main takes every read it prefetched (ywr-harness ADR 0236) --------------------------------------
+// prefetch reads the repo of the working directory, and only for no argument or `--range <rev>`. The script exports
+// no main, so each case runs it twice. The first child calls prefetch alone and prints how many reads it kept. The
+// second child runs the script as an entry point, with a preload that prints the count which no read took, from the
+// same harness_git.mjs instance that the script uses, when the process ends. A kept result is taken only by main, so
+// a count of 0 after the entry run shows that main made each read that prefetch started.
+const PF = lazy(() => {
+  const pf = newRepo('prefetch', GOOD_CFG, GOOD_INDEX)
+  const keepScript = path.join(fxBase, 'prefetch-kept.mjs')
+  const keepChild = async (scriptsDir, root, ...argv) => {
+    const path = (await import('node:path')).default
+    const { pathToFileURL } = await import('node:url')
+    const m = await import(pathToFileURL(path.join(scriptsDir, 'verify_map.mjs')).href)
+    const g = await import(pathToFileURL(path.join(scriptsDir, 'harness_git.mjs')).href)
+    process.chdir(root)
+    await m.prefetch(argv)
+    process.stderr.write(`PF kept ${g.git_prefetch_pending()}\n`)
+  }
+  fs.writeFileSync(keepScript, `await (${keepChild.toString()})(...process.argv.slice(2))\n`)
+  const preload = path.join(fxBase, 'prefetch-left.mjs')
+  fs.writeFileSync(preload, `import { git_prefetch_pending } from ${JSON.stringify(pathToFileURL(path.join(here, 'harness_git.mjs')).href)}\nprocess.on('exit', () => process.stderr.write(\`PF left \${git_prefetch_pending()}\n\`))\n`)
+  const spawnNode = (args, opts) => new Promise((resolve) => {
+    const c = spawn(process.execPath, args, { ...opts, windowsHide: true })
+    let text = ''
+    c.stdout.setEncoding('utf8'); c.stderr.setEncoding('utf8')
+    c.stdout.on('data', (d) => { text += d }); c.stderr.on('data', (d) => { text += d })
+    c.on('close', () => resolve(text))
+  })
+  const run = async (...argv) => {
+    const [kept, left] = await Promise.all([
+      spawnNode([keepScript, here, pf, ...argv]),
+      spawnNode(['--import', pathToFileURL(preload).href, mapper, ...argv], { cwd: pf }),
+    ])
+    return { kept, left }
+  }
+  // One commit, then an untracked owned file: no argument sees the untracked file, and `--range HEAD~1` sees both.
+  changed(pf, 'apps/api/app/other.py')
+  git(pf, ['add', '-A'])
+  git(pf, ['commit', '-q', '-m', 'second'])
+  changed(pf, 'apps/api/app/pipeline.py')
+  return Promise.all([run(), run('--range', 'HEAD~1')]).then(([none, range]) => ({ none, range }))
+})
+t('PF1 no argument: prefetch keeps its two scope reads, and the entry run takes both and still maps the owned file', async () => {
+  const { none } = await PF(); ok(has(none.kept, 'PF kept 2') && has(none.left, 'PF left 0') && has(none.left, 'spec 0001 — Pipeline'), `${none.kept}${none.left}`)
+})
+t('PF2 --range <rev>: prefetch keeps its three scope reads, and the entry run takes all three', async () => {
+  const { range } = await PF(); ok(has(range.kept, 'PF kept 3') && has(range.left, 'PF left 0') && has(range.left, 'spec 0001 — Pipeline'), `${range.kept}${range.left}`)
 })

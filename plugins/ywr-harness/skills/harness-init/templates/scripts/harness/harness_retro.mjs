@@ -1386,6 +1386,29 @@ export function main(argv) {
   return 0
 }
 
+/**
+ * Starts the independent git reads of `resolve_range` at the same time, before the synchronous `main`
+ * takes them (ywr-harness ADR 0236): the name-status diff, the commit bodies and the parent probes.
+ * On a merge commit the three non-merge reads stay untaken until the process exits. Any failure
+ * here only costs the overlap: `main` starts each read itself.
+ * @param {string[]} argv
+ * @returns {Promise<void>}
+ */
+export async function prefetch(argv) {
+  try {
+    const parsed = parse_args(argv)
+    const args = parsed.args
+    if (parsed.help || !args || args.class_message !== null || args.coverage || args.delegations) return
+    if (process.env.SLICE_RETRO === '0') return
+    const root = args.repo ? realpath(args.repo) : hc.find_repo_root(process.cwd())
+    const r = args.range
+    await hc.git_prefetch(root, r
+      ? [['diff', '--name-status', '-z', '-M', r], ['log', LOG_BODY_FMT, r.includes('..') ? r : `${r}..HEAD`]]
+      : [['rev-parse', '-q', '--verify', 'HEAD^2'], ['diff-tree', '-z', '--no-commit-id', '--name-status', '-r', '-M', '--root', 'HEAD'],
+          ['log', '-1', LOG_BODY_FMT, 'HEAD'], ['rev-parse', '-q', '--verify', 'HEAD^']])
+  } catch { /* the overlap is lost, and main starts every read itself */ }
+}
+
 /** True when node runs this file itself, not when another module imports it. */
 function is_main() {
   try {
@@ -1396,6 +1419,7 @@ function is_main() {
 }
 
 if (is_main()) {
+  await prefetch(process.argv.slice(2))
   try {
     process.exitCode = main(process.argv.slice(2))
   } finally {

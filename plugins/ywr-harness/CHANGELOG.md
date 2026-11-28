@@ -12,6 +12,12 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.88.0 — 2026-11-28
+
+- 커밋마다 도는 하네스 스크립트가 서로 의존하지 않는 git 읽기를 한꺼번에 실행합니다 (ywr-harness ADR 0236). 이 저장소의 Windows 측정에서 gate emitter 는 약 0.51초에서 0.29초로, 커밋 후 retro 는 약 0.37초에서 0.25초로 줄었습니다. 출력은 그대로라 멤버 repo 의 게이트와 사용 방법은 달라지지 않습니다.
+- `scripts/harness/` 의 vendored 스크립트(`harness_git.mjs`, `harness_config.mjs`, `harness_gates.mjs`, `harness_retro.mjs`, `verify_map.mjs`)가 바뀌었습니다. 그래서 업데이트 뒤 세션 시작 때 scaffold 갱신 안내가 뜹니다. 다음 `/ywr-harness:harness-init` 재실행 때 함께 갱신되면 사라집니다.
+- 세션 시작의 git hook 연결 확인도 git 읽기 두 개를 동시에 실행해 조금 빨라졌습니다.
+
 ## v0.87.3 — 2026-11-28
 
 - `/ywr-harness:artifact-publish` 안내문에서 하네스 repo에만 해당하던 온보딩 페이지 문단을 뺐습니다. 멤버 repo에서 이 skill이 하는 일은 같습니다.

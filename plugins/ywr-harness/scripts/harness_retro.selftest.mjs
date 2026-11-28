@@ -19,7 +19,7 @@
 // ledger feeds DL6). A scenario that needs an earlier repo calls that scenario, and the two share one worker
 // group (see GROUPS). A throw in a scenario fails every test of it with that cause.
 //
-// Each of the three small child scripts of D7, D8 and G4 is a function whose source is written to a file and
+// Each of the small child scripts of D7, D8, D10, D11 and G4 is a function whose source is written to a file and
 // run by `node`, so the child keeps its own process and its own module cache. The suite runs the retro with the
 // node that runs the suite.
 //
@@ -359,6 +359,107 @@ t('D8 a CR-ended path reads its own blob, an absent non-ASCII path is null, and 
   const rej = process.platform === 'win32' ? 'NotADirectoryError' : 'FileNotFoundError'
   const want = `{"fm":["id: carriage","id: plain"],"absent":[null],"refused":"ValueError","same":[true,true],"rejected":"${rej}"}`
   const { out } = D8(); ok(out.trim() === want, `want ${want}, got ${out}`)
+})
+
+// D10: git_prefetch keeps each result for ONE later identical git_result call (ywr-harness ADR 0236). Every step
+// is a state the later call could get wrong: a result served twice (b, after a new commit moves HEAD), a result
+// served to a call that has stdin, env, other arguments (c), a failed start that keeps nothing (d), and a list
+// longer than the job cap (e). Each answer prints as one JSON line, and the want line below is what the contract gives.
+const D10 = lazy('D10', () => {
+  const d10 = newRepo('prefetch-kept', CFG)
+  const missing = path.join(fxBase, 'prefetch-no-such-dir')
+  const out = runChild('prefetch-kept', async (scriptsDir, root, gone) => {
+    const path = (await import('node:path')).default
+    const { pathToFileURL } = await import('node:url')
+    const g = await import(pathToFileURL(path.join(scriptsDir, 'harness_git.mjs')).href)
+    const pick = (r) => JSON.stringify([r.status, r.stdout, r.stderr, r.cmd])
+    const head = ['rev-parse', 'HEAD']
+    const bad = ['rev-parse', '--verify', 'no-such-ref']
+    const pending = () => g.git_prefetch_pending()
+    const res = {}
+    // a: the kept result is what a fresh call gives (status, stdout, stderr and cmd), and the count goes 1 → 0 per read.
+    const fresh = [g.git_result(root, head), g.git_result(root, bad)]
+    const got = await g.git_prefetch(root, [head, bad])
+    const kept = pending()
+    const taken = [g.git_result(root, head), g.git_result(root, bad)]
+    res.a = [kept, pending(), got.every((r, i) => pick(r) === pick(fresh[i])), taken.every((r, i) => pick(r) === pick(fresh[i])), fresh[1].stderr !== '']
+    // b: a second identical call starts git again. A new commit moves HEAD, so a result served twice would be the old one.
+    g.git_result(root, ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', 'commit', '-q', '--allow-empty', '-m', 'd10: move HEAD'])
+    const moved = g.git_result(root, head)
+    res.b = [moved.stdout !== taken[0].stdout, moved.stdout === g.git_result(root, ['log', '-1', '--format=%H']).stdout, pending()]
+    // c: a call with stdin or env, other arguments, never takes the kept result. An equivalent spelling of the root does.
+    await g.git_prefetch(root, [head])
+    g.git_result(root, head, { stdin: '' })
+    g.git_result(root, head, { env: { YWR_D10_PROBE: '1' } })
+    g.git_result(root, ['rev-parse', '--verify', 'HEAD'])
+    const still = pending()
+    const same = g.git_result(`${root}${path.sep}.`, head)
+    res.c = [still, pending(), same.stdout === moved.stdout]
+    // d: a root that does not exist keeps nothing, and the sync call throws the error it throws without a prefetch.
+    const nameOf = (f) => { try { f(); return 'no error' } catch (e) { return e.name } }
+    const without = nameOf(() => g.git_result(gone, head))
+    await g.git_prefetch(root, [head])
+    const miss = await g.git_prefetch(gone, [head])
+    const afterMiss = pending()
+    g.git_result(root, head)
+    res.d = [JSON.stringify(miss), afterMiss, pending(), without, nameOf(() => g.git_result(gone, head))]
+    // e: more reads than the job cap all resolve and are all kept, and each is taken once, in order.
+    const many = Array.from({ length: 12 }, (_, i) => ['rev-parse', `--short=${i + 4}`, 'HEAD'])
+    const all = await g.git_prefetch(root, many)
+    const keptAll = pending()
+    const back = many.map((a) => g.git_result(root, a))
+    res.e = [g.PREFETCH_JOBS, all.every((r) => r && r.status === 0), keptAll, pending(), back.every((r, i) => pick(r) === pick(all[i]) && r.stdout.trim().length >= i + 4)]
+    console.log(JSON.stringify(res))
+  }, [here, d10, missing])
+  return { out, rej: process.platform === 'win32' ? 'NotADirectoryError' : 'FileNotFoundError' }
+})
+t('D10 a prefetched read gives the next identical git_result what a fresh call gives, and the count goes 1 → 0', () => {
+  const { out } = D10(); ok(has(out, String.raw`"a":\[2,0,true,true,true\]`), out)
+})
+t('D10 a second identical call after the take starts git again (a new commit changes its answer)', () => {
+  const { out } = D10(); ok(has(out, String.raw`"b":\[true,true,0\]`), out)
+})
+t('D10 a call with stdin or env, or other arguments, never takes a kept result; an equivalent root spelling does', () => {
+  const { out } = D10(); ok(has(out, String.raw`"c":\[1,0,true\]`), out)
+})
+t('D10 a prefetch on a missing root resolves null, keeps nothing, and the later call throws the error it throws without one', () => {
+  const { out, rej } = D10(); ok(out.includes(`"d":["[null]",1,0,"${rej}","${rej}"]`), `${rej}: ${out}`)
+})
+t('D10 twelve reads, past the cap of eight, all resolve and are all kept', () => {
+  const { out } = D10(); ok(has(out, String.raw`"e":\[8,true,12,0,true\]`), out)
+})
+
+// D11: harness_retro prefetch + main takes every read it prefetched, for no argument (a normal non-merge commit) and
+// for a range (ywr-harness ADR 0236). The child imports the script, so its own harness_git.mjs instance holds the count.
+// Only main takes a kept result, so a count of 0 after a count above 0 shows that main made each prefetched read.
+const D11 = lazy('D11', () => {
+  const d11 = newRepo('prefetch-retro', CFG)
+  writeF(d11, 'one.txt', 'x\n')
+  commit(d11, 'chore: one')
+  writeF(d11, 'two.txt', 'y\n')
+  commit(d11, 'chore: two')
+  const out = runChild('prefetch-retro', async (scriptsDir, root) => {
+    const path = (await import('node:path')).default
+    const { pathToFileURL } = await import('node:url')
+    const m = await import(pathToFileURL(path.join(scriptsDir, 'harness_retro.mjs')).href)
+    const g = await import(pathToFileURL(path.join(scriptsDir, 'harness_git.mjs')).href)
+    delete process.env.SLICE_RETRO
+    const res = {}
+    for (const [name, argv] of [['plain', ['--repo', root]], ['range', ['--repo', root, 'HEAD~2..HEAD']]]) {
+      await m.prefetch(argv)
+      const before = g.git_prefetch_pending()
+      const code = m.main(argv)
+      res[name] = [before > 0, g.git_prefetch_pending(), code]
+    }
+    console.log(JSON.stringify(res))
+  }, [here, d11])
+  return { out }
+})
+t('D11 retro with no argument takes every read it prefetched', () => {
+  const { out } = D11(); ok(has(out, String.raw`"plain":\[true,0,0\]`), out)
+})
+t('D11 retro with a range takes every read it prefetched', () => {
+  const { out } = D11(); ok(has(out, String.raw`"range":\[true,0,0\]`), out)
 })
 
 // D3: a rename OUT of docs/ drops an index entry, so it must fire even though the final path is
@@ -1313,6 +1414,7 @@ t('DL6 control: SLICE_RETRO=0 still silences --coverage', () => { const { rc } =
 const GROUPS = [
   ['G', 'I', 'K', 'SZ6'], ['L'], ['F'], ['SZ1'], ['D'], ['P', 'Q'], ['E', 'CL'], ['B'], ['S'], ['SZ3'], ['R'],
   ['J'], ['C'], ['A'], ['O'], ['SZ5'],
+  ['D10'], ['D11'],
   ['G4', 'H', 'N', 'D3', 'D7', 'D8', 'DL1', 'DL2', 'DL3', 'DL4', 'DL5', 'DL6', 'DL7', 'DL8', 'DL9'],
 ]
 const POOL = innerJobs(6, 1)

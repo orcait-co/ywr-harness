@@ -20,7 +20,7 @@
 // drains and the exit code stays 0.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdin, parseJson, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, driftKeys, markerAbove } from './hook-lib.mjs'
+import { readStdin, parseJson, isObject, getProp, psString, ieq, netTrim, inline, emit, gitRun, gitPrefetch, driftKeys, markerAbove } from './hook-lib.mjs'
 
 // Every failure, such as a root that does not exist on this platform or an illegal path, reads as "not there".
 function isDir(p) {
@@ -40,16 +40,20 @@ function drift(payload) {
   emit({ systemMessage: `[hook:githooks-nudge] SCHEMA DRIFT — SessionStart 페이로드에 'cwd' 필드가 없어, 이 클론의 git 훅이 연결되어 있는지 확인할 수 없습니다. 수신된 키: ${keys}. 페이로드 형식을 다시 확인하고 hooks/session-start-githooks-nudge.mjs을 수정하세요 (ywr-harness ADR 0029).` })
 }
 
-function main(payload) {
+async function main(payload) {
   const cwd = netTrim(psString(getProp(payload, 'cwd')))
   if (!cwd) return drift(payload)
   // No `.githooks/` from cwd upward: nothing to say, and no git starts.
   if (!markerAbove(cwd, '.githooks')) return
+  // The root read and the clone's config read start at once (ywr-harness ADR 0236). Both name the same repo.
+  const topArgs = ['-C', cwd, 'rev-parse', '--show-toplevel']
+  const cfgArgs = ['-C', cwd, 'config', '--local', '--get', 'core.hooksPath']
+  await gitPrefetch([topArgs, cfgArgs])
 
   // Resolve the work tree root from cwd so a subdirectory session finds the repo. A failed
   // resolution (not a work tree, vanished cwd) is silent. With no git, `.githooks/` at the cwd
   // marks a repo that expects hooks, so the verdict is reported as UNKNOWN, never passed silently.
-  const top = git(['-C', cwd, 'rev-parse', '--show-toplevel'])
+  const top = git(topArgs)
   if (top.absent) {
     if (isDir(path.join(cwd, '.githooks'))) {
       emit({ systemMessage: '[hook:githooks-nudge] .githooks/ 는 있지만 이 환경에서 git을 실행할 수 없어, 이 클론에 core.hooksPath가 연결되어 있는지는 UNKNOWN, 확인되지 않았습니다.' })
@@ -67,7 +71,7 @@ function main(payload) {
   // Any non-empty value, wired or foreign, is silent. Only a clean unset verdict nudges, and
   // exit 1 is git's not-found code. Any other outcome is UNKNOWN, reported as such and never
   // turned into a nudge. That covers a non-0/non-1 exit and an empty value at exit 0.
-  const cfg = git(['-C', root, 'config', '--local', '--get', 'core.hooksPath'])
+  const cfg = git(cfgArgs)
   const cfgExit = cfg.status === null ? -1 : cfg.status
   if (firstLine(cfg.text)) return
   if (cfgExit !== 1) {
@@ -83,5 +87,5 @@ function main(payload) {
 
 try {
   const payload = parseJson(readStdin())
-  if (isObject(payload) && ieq(psString(getProp(payload, 'hook_event_name')), 'SessionStart')) main(payload)
+  if (isObject(payload) && ieq(psString(getProp(payload, 'hook_event_name')), 'SessionStart')) await main(payload)
 } catch { /* fail-open: a hook defect is never a blocked session */ }

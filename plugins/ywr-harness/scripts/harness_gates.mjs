@@ -1092,6 +1092,50 @@ function _parse_args(argv) {
 // one call site that the proof needs goes through this object.
 export const ops = { changed_lines }
 
+/**
+ * Starts the independent git reads of this run at the same time, before the synchronous `main`
+ * takes them (ywr-harness ADR 0236). It prefetches only reads that `main` makes on its current path.
+ * The trailer reads wait for a scope read that names a file, because an empty per-slice scope prints
+ * no trailer. Any failure here only costs the overlap: `main` starts each read itself.
+ * @param {string[]} [argv]
+ * @returns {Promise<void>}
+ */
+export async function prefetch(argv = process.argv.slice(2)) {
+  try {
+    const args = _parse_args(argv)
+    if (args.help) return
+    const root = args.repo ? _resolve(args.repo) : hc.find_repo_root(process.cwd())
+    if (args.tree) {
+      await hc.git_prefetch(root, [['rev-parse', '--verify', '--quiet', 'HEAD'], ['rev-parse', '--git-path', 'index']])
+      return
+    }
+    const [cfg] = hc.load(root)
+    const trailer = []
+    if (_is_dir(path.join(root, '.githooks'))) {
+      trailer.push(['config', '--show-scope', '--path', '--get', 'core.hooksPath'],
+        ['config', '--local', '--path', '--get', 'core.hooksPath'])
+    }
+    trailer.push(['ls-files', '--others', '--ignored', '--exclude-standard', '-z'],
+      ['ls-files', '-z', '--', '.gitignore', ':(glob)**/.gitignore'])
+    const first = []
+    if (!cfg.artifacts.malformed && cfg.artifacts.items.length) first.push(['remote', 'get-url', 'origin'])
+    const untracked = ['ls-files', '-z', '--others', '--exclude-standard']
+    if (args.all_files) {
+      await hc.git_prefetch(root, [...first, ['ls-files', '-z'], untracked, ...trailer])
+      return
+    }
+    if (args.files.length) {
+      await hc.git_prefetch(root, [...first, ...trailer])
+      return
+    }
+    const scope = [['diff', '-z', '--name-only', 'HEAD'], untracked]
+    if (args.rev_range) scope.unshift(['diff', '-z', '--name-only', args.rev_range])
+    const got = await hc.git_prefetch(root, [...scope, ...first])
+    const named = got.slice(0, scope.length).some((r) => r && r.status === 0 && r.stdout.split('\0').some((p) => py_strip(p)))
+    if (named) await hc.git_prefetch(root, trailer)
+  } catch { /* the overlap is lost, and main starts every read itself */ }
+}
+
 /** The whole run. Returns the exit code, never exits.
  * @param {string[]} [argv] the command-line arguments after the script name
  * @returns {number} */
@@ -1497,4 +1541,7 @@ const _is_entry = (() => {
     return false
   }
 })()
-if (_is_entry) process.exitCode = main()
+if (_is_entry) {
+  await prefetch()
+  process.exitCode = main()
+}

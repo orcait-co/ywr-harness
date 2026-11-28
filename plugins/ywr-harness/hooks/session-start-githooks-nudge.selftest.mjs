@@ -95,15 +95,17 @@ const plain = mk(path.join(fx, 'plain-dir'))                  // no repo, no .gi
 const unknownDir = path.join(fx, 'unknown-dir')               // no repo, WITH .githooks (no-git branch)
 mk(path.join(unknownDir, '.githooks'))
 
-// A `node -r` preload wraps spawnSync and logs each git call, so a case observes that no git ran.
+// A `node -r` preload wraps spawnSync and spawn and logs each git start, so a case observes that no git ran.
 const spyLog = path.join(fx, 'git-spy.log')
 const spyPre = path.join(fx, 'git-spy.cjs')
 fs.writeFileSync(spyPre, `const cp = require('node:child_process'), fs = require('node:fs'), path = require('node:path')
-const real = cp.spawnSync
-cp.spawnSync = function (cmd) {
-  const base = path.basename(String(cmd)).toLowerCase()
-  if (base === 'git' || base === 'git.exe') fs.appendFileSync(process.env.YWR_SPY_LOG, 'git\\n')
-  return real.apply(this, arguments)
+const isGit = (cmd) => ['git', 'git.exe'].includes(path.basename(String(cmd)).toLowerCase())
+for (const name of ['spawnSync', 'spawn']) {
+  const real = cp[name]
+  cp[name] = function (cmd) {
+    if (isGit(cmd)) fs.appendFileSync(process.env.YWR_SPY_LOG, 'git\\n')
+    return real.apply(this, arguments)
+  }
 }
 `)
 function invokeSpied(cwd) {
@@ -205,7 +207,8 @@ test('GN11 6a3 a path carrying U+2028, U+0085 (and a C0 off Windows) is echoed f
 // other call to the real binary. The case tests the hook's exit-code branch, not git.
 // A Node hook launches `git` by exec, which runs real executables only and never a .cmd or .ps1
 // shim on PATH, so the stand-in is a `node -r` preload that wraps child_process.spawnSync. A
-// `git ... config ...` call answers exit 3 with no output.
+// `git ... config ...` call answers exit 3 with no output. Its async start throws, so the prefetch
+// keeps nothing and the synchronous read meets the stand-in (ADR 0236).
 gtest('GN12 unreadable config reports UNKNOWN, not a nudge', () => {
   const failConfig = path.join(fx, 'git-fail-config.cjs')
   fs.writeFileSync(failConfig, `const cp = require('node:child_process')
@@ -217,6 +220,12 @@ cp.spawnSync = function (cmd, args) {
     return { status: 3, signal: null, pid: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), output: [null, Buffer.alloc(0), Buffer.alloc(0)] }
   }
   return real.apply(this, arguments)
+}
+const realSpawn = cp.spawn
+cp.spawn = function (cmd, args) {
+  const base = require('node:path').basename(String(cmd)).toLowerCase()
+  if ((base === 'git' || base === 'git.exe') && Array.isArray(args) && args.includes('config')) throw new Error('config start refused by the stand-in')
+  return realSpawn.apply(this, arguments)
 }
 `)
   // 'repo-unwired' proves that rev-parse still reached the real git.

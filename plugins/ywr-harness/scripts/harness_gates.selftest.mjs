@@ -2919,6 +2919,64 @@ bash '${anW}/resolve.sh'
   const apLayer = lines(rAP.Out).filter((l) => m(l, P`review\.harness_layer: not a valid regex`))
   check('AP2 a bad review.critical regex over three changed files warns once, and so does a bad harness_layer regex', apCrit.length === 1 && apLayer.length === 1, `critical: ${apCrit.length} layer: ${apLayer.length}\n${rAP.Out}`)
   })
+  section('PF', [], async () => {
+  // --- PF: prefetch + main takes every read it prefetched (ywr-harness ADR 0236) ---------------------------------
+  // Each run is a child that imports harness_gates.mjs and harness_git.mjs by file URL, so the count it prints comes from
+  // the git module instance that the script uses. A kept result is taken only by `main`, so a count of 0 after `main`
+  // shows that `main` made each read that `prefetch` started. The count before `main` is the number of reads that
+  // `prefetch` kept for this run. The fixture has a declared artifact and an origin (the `remote get-url` read),
+  // a `.githooks/` folder (the two hooksPath reads), and one tracked-then-changed and one untracked file (the scope
+  // names a file, so the trailer reads run). The same argv runs again with no prefetch, and the stdout must match byte for byte.
+  const cfgPF = `{
+  "review": { "canon": "REVIEW.md", "docs_only": [], "harness_layer": [], "critical": [] },
+  "artifacts": { "readme": "README.md", "items": [ { "url": "https://claude.ai/code/artifact/AbCdEf12-3456-7890-abcd-ef1234567890", "title": "prefetch-gates · docs" } ] },
+  "groups": [ { "name": "py", "match": "^src/", "cwd": "", "strip_prefix": "", "gates": [] } ]
+}`
+  const repoPF = newRepo('prefetch-gates', cfgPF, ['.githooks/pre-commit', 'src/x.py'])
+  fixtureCommit(repoPF, 'add files')
+  gitq(repoPF, ['remote', 'add', 'origin', 'https://example.invalid/acme/prefetch-gates.git'])
+  put(repoPF, 'src/x.py', 'changed')
+  put(repoPF, 'src/y.py', 'untracked')
+  const bodyPF = async (scriptsDir, mode, ...argv) => {
+    const path = (await import('node:path')).default
+    const { pathToFileURL } = await import('node:url')
+    const m = await import(pathToFileURL(path.join(scriptsDir, 'harness_gates.mjs')).href)
+    const g = await import(pathToFileURL(path.join(scriptsDir, 'harness_git.mjs')).href)
+    if (mode === 'prefetch') await m.prefetch(argv)
+    const before = g.git_prefetch_pending()
+    const code = m.main(argv)
+    process.stderr.write(`PFG ${JSON.stringify([before, g.git_prefetch_pending(), code])}\n`)
+  }
+  const childPF = put(fx, 'prefetch-gates-child.mjs', `await (${bodyPF.toString()})(...process.argv.slice(2))\n`)
+  const spawnPF = (args) => new Promise((resolve) => {
+    const c = spawn(process.execPath, args, { env: childEnv(), windowsHide: true })
+    let so = ''; let se = ''
+    c.stdout.setEncoding('utf8'); c.stderr.setEncoding('utf8')
+    c.stdout.on('data', (d) => { so += d }); c.stderr.on('data', (d) => { se += d })
+    c.on('close', (code) => resolve({ status: code, stdout: so, stderr: se }))
+  })
+  const runPF = async (mode, argv) => {
+    const r = await spawnPF([childPF, here, mode, '--repo', repoPF, ...argv])
+    const hit = /^PFG (\[.*\])$/mu.exec(r.stderr)
+    return { out: r.stdout, err: r.stderr, got: hit ? JSON.parse(hit[1]) : null }
+  }
+  const [plain, plainP, range, rangeP, tree, treeP] = await Promise.all([
+    runPF('plain', []), runPF('prefetch', []), runPF('plain', ['--range', 'HEAD~1..HEAD']), runPF('prefetch', ['--range', 'HEAD~1..HEAD']),
+    runPF('plain', ['--tree']), runPF('prefetch', ['--tree']),
+  ])
+  const gotOf = (r) => JSON.stringify(r.got)
+  check('PF1 no argument: prefetch keeps 7 reads (origin, two scope reads, two hooksPath reads, two ignore reads) and main takes all 7',
+    gotOf(plainP) === '[7,0,0]' && gotOf(plain) === '[0,0,0]', `plain ${gotOf(plain)} prefetch ${gotOf(plainP)}\n${plainP.err}`)
+  check('PF1 no argument: the run reaches the artifact, hooks and trailer lines, and its stdout equals the run with no prefetch',
+    plainP.out === plain.out && m(plainP.out, P`(?m)^artifact: ok — README\.md|^artifact: VIOLATION`) && m(plainP.out, P`(?m)^hooks: `) && m(plainP.out, P`(?m)^gates:`),
+    `prefetch:\n${plainP.out}\nplain:\n${plain.out}`)
+  check('PF2 --range HEAD~1..HEAD: prefetch keeps 8 reads and main takes all 8, and the stdout equals the run with no prefetch',
+    gotOf(rangeP) === '[8,0,0]' && gotOf(range) === '[0,0,0]' && rangeP.out === range.out && m(rangeP.out, P`(?m)^hooks: `),
+    `plain ${gotOf(range)} prefetch ${gotOf(rangeP)}\n${rangeP.err}\nprefetch:\n${rangeP.out}\nplain:\n${range.out}`)
+  check('PF3 --tree: prefetch keeps 2 reads (HEAD and the index path) and main takes both, and the stdout equals the run with no prefetch',
+    gotOf(treeP) === '[2,0,0]' && gotOf(tree) === '[0,0,0]' && treeP.out === tree.out && m(treeP.out, P`(?m)^tree: [0-9a-f]+ · HEAD [0-9a-f]+`),
+    `plain ${gotOf(tree)} prefetch ${gotOf(treeP)}\n${treeP.err}\nprefetch:\n${treeP.out}\nplain:\n${tree.out}`)
+  })
   section('RUN', ['A', 'I', 'J', 'S2', 'Y1', 'Y2'], async () => {
   // --- RUN: the in-process runner prints what a child prints (ADR 0160) ----------------------------
   // Last on purpose: a state leak from any earlier driver run would show here. Each repo runs as a real

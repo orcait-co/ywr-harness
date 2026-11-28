@@ -10,7 +10,7 @@
 // A hook returns and lets Node end naturally.
 import fs from 'node:fs'
 import path from 'node:path'
-import { git_result, which_on_path } from '../scripts/harness_git.mjs'
+import { git_result, git_prefetch, which_on_path } from '../scripts/harness_git.mjs'
 
 /**
  * The first launchable `name` on PATH, as an absolute path, or '' (ywr-harness ADR 0220 decision 9
@@ -18,6 +18,11 @@ import { git_result, which_on_path } from '../scripts/harness_git.mjs'
  * rule that finds git.
  */
 export const whichOnPath = which_on_path
+
+/** Starts independent git reads at once from the cwd, for the next identical gitRun calls (ywr-harness ADR 0236). */
+export function gitPrefetch(argsList) {
+  return git_prefetch(process.cwd(), argsList)
+}
 
 /**
  * One git call at the parse boundary (ywr-harness ADR 0223), run through `harness_git.mjs`:

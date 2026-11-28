@@ -434,7 +434,29 @@ function is_entry() {
   }
 }
 
+/**
+ * Starts the scope reads of `changed_files` at the same time, before the synchronous `main` takes
+ * them (ywr-harness ADR 0236). It reads only no argument and `--range <rev>`, because `parse_args`
+ * prints help and usage text. Any failure here only costs the overlap.
+ * @param {string[]} argv
+ * @returns {Promise<void>}
+ */
+export async function prefetch(argv) {
+  try {
+    let range = null
+    if (argv.length === 2 && argv[0] === '--range' && !argv[1].startsWith('-')) range = argv[1]
+    else if (argv.length) return
+    const root = hc.find_repo_root(process.cwd())
+    const [cfg] = hc.load(root)
+    if (!fs.existsSync(path.join(root, cfg.index))) return
+    const scope = [['diff', '-z', '--name-only', 'HEAD'], ['ls-files', '-z', '--others', '--exclude-standard']]
+    if (range) scope.unshift(['diff', '-z', '--name-only', range])
+    await hc.git_prefetch(root, scope)
+  } catch { /* the overlap is lost, and main starts every read itself */ }
+}
+
 if (is_entry()) {
+  await prefetch(process.argv.slice(2))
   try {
     process.exitCode = main(process.argv.slice(2))
   } catch (e) {

@@ -568,8 +568,23 @@ async function main() {
   // aside (ADR 0033's fold). Canon shape only; no tag => unreleased, said so, never silent. A
   // tag-less shallow clone reads the same line, which is why the fetch-depth-0 script gate
   // (harness-gates.yml) is the enforcing CI leg.
-  // harness:git-boundary PATH lookup only: whichOnPath is hook-lib's re-export of harness_git's which_on_path, and every git call of this gate goes through hook-lib's gitRun, which runs git_result
+  // harness:git-boundary PATH lookup only: whichOnPath is hook-lib's re-export of harness_git's which_on_path, and every git call of this gate goes through hook-lib's gitRun, which runs git_result, or its gitPrefetch, which runs git_prefetch
   const gitExe = whichOnPath('git')
+  // The git reads of the checks below start at once, and each gitRun takes its kept result (ADR 0236).
+  if (inTree && gitExe) {
+    const reads = [lib.gitPrefetch([['-C', repoRoot, 'rev-parse', '--is-inside-work-tree'],
+      ['-C', repoRoot, 'ls-files', '-z', '-t', '--cached', '--others', '--exclude-standard']])]
+    const ver = mfOk ? psString(prop(mf, 'version')) : ''
+    if (/^[0-9]+\.[0-9]+\.[0-9]+$/u.test(ver)) {
+      // The tag diff reads run only when the tag exists, as in the lockstep check below.
+      const tag = `ywr-harness--v${ver}`
+      reads.push(lib.gitPrefetch([['-C', repoRoot, 'rev-parse', '--verify', '--quiet', `refs/tags/${tag}^{commit}`]])
+        .then(([r]) => r && r.status === 0 && lib.gitPrefetch([
+          ['-C', repoRoot, 'diff', '--name-only', '-z', '--ignore-cr-at-eol', tag, '--', 'plugins/ywr-harness'],
+          ['-C', repoRoot, 'ls-files', '-z', '--others', '--exclude-standard', '--', 'plugins/ywr-harness']])))
+    }
+    await Promise.all(reads)
+  }
   // Both memoized: the lockstep, ADR-reference, stack and git-boundary checks share one probe and one
   // listing (ADR 0158: a new check starts no new process). `-t` tags each path: `?` marks an untracked,
   // not ignored file, which the stack and git-boundary checks read and the ADR-reference check skips.
@@ -611,8 +626,11 @@ async function main() {
           // --name-only's list. Each candidate is re-asked with --quiet, which does: exit 0 = identical
           // once CR is ignored (dropped); any other exit keeps the file, so a failed check reads as
           // moved, never as identical. The pathspec is literal, so a glob-shaped name is itself.
-          const changed = diff.text.split('\0').filter(f => f.trim())
-            .filter(f => gitRun(['-C', repoRoot, 'diff', '--quiet', '--ignore-cr-at-eol', relTag, '--', `:(literal)${f}`]).status !== 0)
+          // The per-file checks start at once (ADR 0236).
+          const quiet = (f) => ['-C', repoRoot, 'diff', '--quiet', '--ignore-cr-at-eol', relTag, '--', `:(literal)${f}`]
+          const listed = diff.text.split('\0').filter(f => f.trim())
+          await lib.gitPrefetch(listed.map(quiet))
+          const changed = listed.filter(f => gitRun(quiet(f)).status !== 0)
           const untracked = others.text.split('\0').filter(f => f.trim())
           const moved = [...new Set([...changed, ...untracked])].sort(compare)
           if (moved.length) {
