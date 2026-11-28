@@ -22,14 +22,20 @@ const target = path.join(here, 'resolve-base.sh').replace(/\\/gu, '/')
 
 // A missing interpreter is a skip with a reason off CI and a failure on CI: a gate that silently stopped running is not a pass.
 // sh is on PATH on the ubuntu runner and in the parity container. On Windows it ships with Git, off PATH,
-// so the lookup resolves it beside git.exe (<git>\cmd\..\bin\sh.exe).
+// so the lookup walks up from git's folder to the Git root that holds `sh.exe` (spec 0008 §3.12).
 function findSh() {
   const onPath = which_on_path('sh')
   if (onPath) return onPath
   const git = which_on_path('git')
-  if (!git) return ''
-  const cand = path.join(path.dirname(path.dirname(git)), 'bin', 'sh.exe')
-  return existsSync(cand) ? cand : ''
+  let dir = git ? path.dirname(git) : ''
+  for (let n = 0; n < 3 && dir && dir !== path.dirname(dir); n++) {
+    for (const rel of ['usr\\bin\\sh.exe', 'bin\\sh.exe']) {
+      const cand = path.join(dir, rel)
+      if (existsSync(cand)) return cand
+    }
+    dir = path.dirname(dir)
+  }
+  return ''
 }
 const gitAbsent = git_absent()
 const sh = gitAbsent ? '' : findSh()

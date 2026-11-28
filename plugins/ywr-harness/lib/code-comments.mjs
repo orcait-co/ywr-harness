@@ -155,12 +155,16 @@ export function jsSegments(text) {
 export function shSegments(text) {
   const segs = []
   const n = text.length
-  let i = 0, codeStart = 0, error = null, arith = 0
+  let i = 0, codeStart = 0, error = null, arith = 0, arithStart = 0, arithDollar = false
   const heredocs = []
   const push = (kind, start, end) => { if (end > start) segs.push({ kind, start, end }) }
+  // A command `((` can be arithmetic or nested subshells, and only a `((` that closes on its line reads safely
+  // as arithmetic, so any other one is reported (spec 0008 §3.11).
+  const unreadable = () => ({ what: '`((` block', end: 'the lexer cannot read as arithmetic', start: arithStart })
   if (text.startsWith('#!')) { const eol = text.indexOf('\n'); i = eol < 0 ? n : eol }
   while (i < n) {
     const c = text[i]
+    if (c === '\n' && arith > 0 && !arithDollar) { error = error || unreadable(); arith = 0 }
     if (c === '\n' && heredocs.length) {
       // Each pending heredoc body runs up to its delimiter line.
       push('code', codeStart, i + 1)
@@ -190,10 +194,13 @@ export function shSegments(text) {
       continue
     }
     // `<<` inside an arithmetic `((...))` is a shift, never a heredoc.
-    if (c === '(' && text[i + 1] === '(') { arith++; i += 2; continue }
+    if (c === '(' && text[i + 1] === '(') {
+      if (arith === 0) { arithStart = i; arithDollar = text[i - 1] === '$' }
+      arith++; i += 2; continue
+    }
     if (c === ')' && text[i + 1] === ')' && arith > 0) { arith--; i += 2; continue }
     if (c === '<' && text[i + 1] === '<' && text[i + 2] !== '<' && arith === 0) {
-      const m = /^<<(-?)\s*(['"]?)([A-Za-z_][\w]*)\2/u.exec(text.slice(i, i + 80))
+      const m = /^<<(-?)\s*(?:\\|(['"]?))([A-Za-z_][\w]*)\2/u.exec(text.slice(i, i + 80))
       if (m) { heredocs.push({ word: m[3], strip: m[1] === '-' }); i += m[0].length; continue }
     }
     if (c === '#') {
@@ -210,6 +217,7 @@ export function shSegments(text) {
     i++
   }
   push('code', codeStart, n)
+  if (arith > 0) error = error || unreadable()
   return { segs, error }
 }
 
@@ -218,7 +226,7 @@ function scan(text, kind) {
 }
 
 // The comment text of a file, one entry per physical line: { line, text }. `error` is set when a
-// construct never closes, with its 1-based line. The lines after it may be split wrongly, so a gate
+// construct never closes or cannot be read, with its 1-based line and an optional `end` clause. The lines after it may be split wrongly, so a gate
 // reports them as NOT CHECKED, never as passed.
 export function commentLines(text, kind) {
   const { segs, error } = scan(text, kind)
@@ -229,7 +237,7 @@ export function commentLines(text, kind) {
     const first = lineAt(starts, s.start)
     text.slice(s.start, s.end).split('\n').forEach((t, k) => out.push({ line: first + k, text: t.replace(/\r$/u, '') }))
   }
-  return { lines: out, error: error ? { what: error.what, line: lineAt(starts, error.start) } : null }
+  return { lines: out, error: error ? { what: error.what, end: error.end, line: lineAt(starts, error.start) } : null }
 }
 
 // The text with every comment removed and code whitespace folded: a run that holds a line break

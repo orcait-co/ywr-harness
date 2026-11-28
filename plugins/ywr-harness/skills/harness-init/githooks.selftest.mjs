@@ -56,6 +56,18 @@ let shPath = ''
 let shExtraPath = []
 let skipAll = false
 let preFail = null
+// git sits in `<root>\cmd`, `<root>\bin` or `<root>\mingw64\bin` by the shell's PATH, so the walk goes up from
+// git's folder to the first one that holds a shell this suite can run (spec 0008 §3.12).
+const SHELL_RELS = ['usr\\bin\\sh.exe', 'bin\\sh.exe', 'usr\\bin\\bash.exe', 'bin\\bash.exe']
+function findGitRoot() {
+  let dir = gitLauncher ? path.dirname(gitLauncher) : ''
+  for (let n = 0; n < 3 && dir && dir !== path.dirname(dir); n++) {
+    if (SHELL_RELS.some((rel) => isFile(path.join(dir, rel)))) return dir
+    dir = path.dirname(dir)
+  }
+  return ''
+}
+const gitRoot = win ? findGitRoot() : ''
 function findPosixShell() {
   if (!win) return which_on_path('sh') || which_on_path('bash')
   // GIT'S OWN sh, resolved from the git executable, not whatever `sh`/`bash` PATH happens to
@@ -63,9 +75,8 @@ function findPosixShell() {
   // different filesystem namespace (/mnt/c, not /c), so every case would fail with "No such file or
   // directory" on a path that exists. It is also the wrong interpreter to measure with:
   // git runs a hook through its own bundled sh, so that is what this suite must run.
-  if (gitLauncher) {
-    const gitRoot = path.dirname(path.dirname(gitLauncher))
-    for (const rel of ['usr\\bin\\sh.exe', 'bin\\sh.exe', 'usr\\bin\\bash.exe', 'bin\\bash.exe']) {
+  if (gitRoot) {
+    for (const rel of SHELL_RELS) {
       const p = path.join(gitRoot, rel)
       if (isFile(p)) return p
     }
@@ -93,7 +104,6 @@ if (!preFail && !skipAll) {
   // bails early and exits 0, which several assertions read as success). Reproducing git's PATH is
   // what makes this suite measure the hook instead of the launcher.
   if (win) {
-    const gitRoot = path.dirname(path.dirname(gitLauncher))
     for (const d of ['usr\\bin', 'bin', 'mingw64\\bin']) {
       const p = path.join(gitRoot, d)
       if (isDir(p)) shExtraPath.push(p)
@@ -107,8 +117,8 @@ if (!preFail && !skipAll) {
 }
 if (!preFail && !skipAll && win) {
   // The suite makes hundreds of git calls (fixture builds plus the hooks' own), so they use the worker
-  // binary, not the cmd\git.exe launcher (ADR 0111). This runs after the resolutions above, which read
-  // git's root from the launcher's path and need the launcher's layout. Every PATH this suite builds
+  // binary, not the cmd\git.exe launcher (ADR 0111). This runs after the resolutions above, which walk up
+  // from the launcher's folder to git's root. Every PATH this suite builds
   // starts from the then-current PATH, so the worker dir rides along; P5 REPLACES the PATH outright,
   // so it never sees it.
   const real = _real_git(gitLauncher)

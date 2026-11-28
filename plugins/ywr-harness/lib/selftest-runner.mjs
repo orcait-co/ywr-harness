@@ -166,6 +166,7 @@ export function runGate(file, args, { limitSec }) {
       exited = true
       exitCode = code ?? 128 + (os.constants.signals[signal] ?? 0)
       clearTimeout(timers.limit)
+      if (done) { live.delete(child); return } // a timed-out gate is already judged, so no grace timer holds the runner (spec 0008 §3.7)
       if (open === 0) { finish(exitCode); return }
       timers.grace = setTimeout(() => finish(exitCode, `WARN [runner] ${name} exited, but a process it started still held its output pipe ${graceMs / 1000} s later; its exit code is the verdict`), graceMs)
     })

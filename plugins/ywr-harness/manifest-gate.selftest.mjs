@@ -1084,6 +1084,9 @@ adrCase('comment-history-batch-names-each-site', async () => {
     'tools/githooks/c7': lf(['#!/usr/bin/env bash', '# O79 bash hook']),
     'tools/githooks/c4': lf(['not a script', '# O78']),
     'scripts/c5.mjs': lf(['const a = 1', '/* never closed', '// O99']),
+    'scripts/c8.sh': lf(['#!/bin/sh', 'cat <<\\EOF', '# O61 in an escaped heredoc', 'EOF', '# O62 after it']),
+    'scripts/c9.sh': lf(['#!/bin/sh', '((cd x; ls) | cat)', '# O63 after it']),
+    'scripts/c10.sh': lf(['#!/bin/sh', 'y=$((1 +', '  2))', 'cat <<EOF', '# O64 in a heredoc', 'EOF', '# O65 after it']),
   }
   const g = await adrRun('comment-history', files, { 'scripts/c6.mjs': lf(['// slice 1']) })
   const want = ["code comment: scripts/c1\\.mjs:1 names 'slice 12'", "code comment: scripts/c1\\.mjs:4 names 'O123'",
@@ -1093,8 +1096,12 @@ adrCase('comment-history-batch-names-each-site', async () => {
     "code comment: tools/githooks/c3:2 names 'O77'", "code comment: tools/githooks/c7:2 names 'O79'",
     "code comment: scripts/c5\\.mjs:3 names 'O99'",
     'code comments: scripts/c5\\.mjs:2 opens a block comment that never closes',
-    "code comment: scripts/c6\\.mjs:1 \\(untracked\\) names 'slice 1'"]
-  const spare = ['c1\\.mjs:[2356] ', 'c2\\.sh:([135789]) ', 'c2\\.sh:\\d+ opens', 'githooks/c4', 'PASS  code comments']
+    "code comment: scripts/c6\\.mjs:1 \\(untracked\\) names 'slice 1'",
+    "code comment: scripts/c8\\.sh:5 names 'O62'", "code comment: scripts/c9\\.sh:3 names 'O63'",
+    'code comments: scripts/c9\\.sh:2 opens a `\\(\\(` block that the lexer cannot read as arithmetic',
+    "code comment: scripts/c10\\.sh:7 names 'O65'"]
+  const spare = ['c1\\.mjs:[2356] ', 'c2\\.sh:([135789]) ', 'c2\\.sh:\\d+ opens', 'githooks/c4', 'PASS  code comments',
+    'c8\\.sh:[1-4] ', 'c8\\.sh:\\d+ opens', 'c10\\.sh:[1-6] ', 'c10\\.sh:\\d+ opens']
   const missing = want.filter((x) => !m(g.out, x))
   const wrong = spare.filter((x) => m(g.out, x))
   assert.ok(g.rc === 1 && missing.length === 0 && wrong.length === 0, `exit=${g.rc} missing=[${missing.join(' | ')}] wrongly-named=[${wrong.join(' | ')}]\n${g.out}`)

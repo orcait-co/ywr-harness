@@ -92,8 +92,8 @@ Nothing has left the machine yet. On stop, print what remains so the member can 
 For each confirmed item, publish `source` to its declared `url` with the Artifact tool. The
 tool refuses a republish until THIS conversation has Read the live version, and the order
 matters: a fetch placed BEFORE the first refusal counts for nothing (ywr-harness fact 43).
-`read_file` never satisfied the precondition (ywr-harness fact 43); nobody measured whether the §3
-`read` with `path` does, so follow what each refusal asks, never that guess. The sequence,
+Nobody measured whether the §3 `read` with `path` satisfies the precondition, so follow what each
+refusal asks, never that guess. The sequence,
 as measured on Claude Code 2.1.296 and 2.1.332 (ywr-harness fact 138):
 
 1. `Artifact publish` of `source` to `url`. It is REFUSED — the contract, not an error. On 2.1.296

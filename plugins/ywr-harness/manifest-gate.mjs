@@ -1156,7 +1156,7 @@ async function main() {
           }
         }
         if (error) {
-          bad(`code comments: ${rel}:${error.line}${tag} opens a ${error.what} that never closes — the lines after it are NOT CHECKED, not passed`)
+          bad(`code comments: ${rel}:${error.line}${tag} opens a ${error.what} that ${error.end ?? 'never closes'} — the lines after it are NOT CHECKED, not passed`)
           histBad++
         }
       }

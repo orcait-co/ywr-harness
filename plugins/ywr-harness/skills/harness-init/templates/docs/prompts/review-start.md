@@ -1,7 +1,7 @@
 # Stage prompt: review-start
 
-The slice review started: `/code-review` runs in the background (ywr-harness ADR 0215). Wait for its task notification
-before you edit anything, then dispose of its findings under the harness rules.
+The slice review started. In an interactive session `/code-review` runs in the background (ywr-harness ADR 0215): wait
+for its task notification before you edit anything. Then dispose of its findings under the harness rules.
 
 - Record the level and the item count. When the count equals a known cap (10 in a `claude -p` run, 32 in the findings
   tool), the record says that the cap can hide findings.
