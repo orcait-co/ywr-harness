@@ -83,7 +83,7 @@ STAGED=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACM
 # holds the floor.
 NODE=$(command -v node 2>/dev/null)
 if [ -z "$NODE" ]; then
-    echo "[harness] SKIP pre-commit gates — no node on PATH (reported, not silent). CI still gates this commit."
+    echo "[harness] SKIP pre-commit gates — no node on PATH (reported, not silent). CI gates this commit unless its push skips CI."
     exit 0
 fi
 
@@ -91,7 +91,7 @@ fi
 # this hook would report as "no gate matched": a silent false pass.
 if ! command -v awk >/dev/null 2>&1; then
     echo "[harness] SKIP pre-commit gates — no awk on PATH, so the emitter's output cannot be parsed"
-    echo "[harness]   (reported, not silent — an unparsed emitter would look like 'no gates matched'). CI still gates this commit."
+    echo "[harness]   (reported, not silent — an unparsed emitter would look like 'no gates matched'). CI gates this commit unless its push skips CI."
     exit 0
 fi
 
@@ -155,7 +155,7 @@ MATCHED_GROUPS=$(printf '%s\n' "$OUT" | awk '
 # advisory (ywr-harness ADR 0041).
 UNGROUPED_N=$(printf '%s\n' "$OUT" | sed -n 's/^ungrouped (\([0-9][0-9]*\) file.*/\1/p' | head -n 1)
 if [ -n "$UNGROUPED_N" ]; then
-    echo "[harness] pre-commit: $UNGROUPED_N staged file(s) matched NO declared group — CI's harness-gates run FAILS on ungrouped files (not blocked here; add a groups entry to .harness.json)."
+    echo "[harness] pre-commit: $UNGROUPED_N staged file(s) matched NO declared group — CI's harness-gates run FAILS on ungrouped files unless the push skips CI (not blocked here; add a groups entry to .harness.json)."
 fi
 
 if [ -z "$CMDS" ]; then
@@ -199,7 +199,7 @@ for c in $CMDS; do
     r=$1
     if [ "$1" = "cd" ] && [ "$3" = "&&" ]; then r=$4; fi
     if ! command -v "$r" >/dev/null 2>&1; then
-        echo "[harness]   SKIP (runner '$r' not on PATH — reported, not silent; CI still gates this commit): $c"
+        echo "[harness]   SKIP (runner '$r' not on PATH — reported, not silent; CI gates this commit unless its push skips CI): $c"
         SKIPPED=$((SKIPPED + 1))
         continue
     fi
@@ -219,7 +219,7 @@ if [ "$DEFERRED" -gt 0 ]; then
     echo "[harness]   $DEFERRED whole-program gate(s) NOT run here — deferred to CI (reported, not silent)."
 fi
 if [ "$SKIPPED" -gt 0 ]; then
-    echo "[harness]   $SKIPPED gate(s) SKIPPED — runner not on PATH here (reported, not silent); CI still gates this commit."
+    echo "[harness]   $SKIPPED gate(s) SKIPPED — runner not on PATH here (reported, not silent); CI gates this commit unless its push skips CI."
 fi
 
 if [ $FAILED -ne 0 ]; then
@@ -229,7 +229,7 @@ if [ $FAILED -ne 0 ]; then
 fi
 
 if [ "$SKIPPED" -gt 0 ]; then
-    echo "[harness] pre-commit: $RAN gate(s) passed, $SKIPPED SKIPPED (runner not on PATH) — skipped is not passed; CI still gates this commit."
+    echo "[harness] pre-commit: $RAN gate(s) passed, $SKIPPED SKIPPED (runner not on PATH) — skipped is not passed; CI gates this commit unless its push skips CI."
     exit 0
 fi
 

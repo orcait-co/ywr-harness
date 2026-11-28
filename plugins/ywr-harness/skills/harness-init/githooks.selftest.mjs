@@ -384,9 +384,9 @@ T('GH4 D the escape hatch is stated', async () => { const x = (await rD()); asse
 // a runner which exists and fails still blocks.
 const rD2 = stubRun('pc-missing-runner', 'print("  [g] 1 file(s)")\nprint("    ywr-no-such-runner check app.py")\nprint("    true")')
 T('D2 a missing runner does not block the commit', async () => { const x = (await rD2()); assert.ok(x.code === 0, ec(x)) })
-T('D2 the skip names the runner and says CI still gates', async () => {
+T('D2 the skip names the runner and says CI gates unless the push skips CI', async () => {
   const x = (await rD2())
-  assert.ok(M(x.out, r`SKIP \(runner 'ywr-no-such-runner' not on PATH`) && M(x.out, r`reported, not silent; CI still gates this commit\): ywr-no-such-runner check app\.py`), x.out)
+  assert.ok(M(x.out, r`SKIP \(runner 'ywr-no-such-runner' not on PATH`) && M(x.out, r`reported, not silent; CI gates this commit unless its push skips CI\): ywr-no-such-runner check app\.py`), x.out)
 })
 T('D2 a missing runner is not reported as a FAIL', async () => { const x = (await rD2()); assert.ok(!M(x.out, r`FAIL \(`) && !M(x.out, 'gates FAILED'), x.out) })
 T('D2 the loop continues past the skip', async () => { const x = (await rD2()); assert.ok(M(x.out, r`\$ true`), x.out) })

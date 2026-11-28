@@ -12,6 +12,10 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.89.2 — 2026-11-28
+
+- pre-commit 훅의 안내 문구가 바뀌었습니다. 게이트를 건너뛸 때의 "CI still gates this commit" 은 이제 "CI gates this commit unless its push skips CI" 로 나옵니다. 어느 그룹에도 속하지 않은 파일을 알릴 때도 같은 조건을 붙입니다. skip-ci 표시가 붙은 push 는 CI 를 돌리지 않기 때문입니다. 게이트 동작은 그대로입니다. 이 파일이 바뀌어 업데이트 뒤 세션 시작 때 scaffold 갱신 안내가 뜰 수 있습니다. 다음 `/ywr-harness:harness-init` 재실행 때 함께 갱신되면 사라집니다.
+
 ## v0.89.1 — 2026-11-28
 
 - `docs/check_docs.mjs` 가 `scripts/harness/harness_config.mjs` 는 있는데 그 파일을 불러오지 못할 때(예: 그 파일이 불러오는 `harness_git.mjs` 가 없을 때), Node 스택 트레이스 대신 `[ste-lite] FAIL (...failed to load...)` 한 줄을 출력합니다. spec 이나 ADR 을 넘긴 커밋을 막는 동작은 그대로입니다. 이 파일이 바뀌어 업데이트 뒤 세션 시작 때 scaffold 갱신 안내가 뜰 수 있습니다. 다음 `/ywr-harness:harness-init` 재실행 때 함께 갱신되면 사라집니다.
