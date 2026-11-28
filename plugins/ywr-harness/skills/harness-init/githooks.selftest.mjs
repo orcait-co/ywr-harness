@@ -429,7 +429,7 @@ T('GH5 E and it is not mistaken for a command', async () => { const x = (await r
 const rE5 = stubRun('pc-ungrouped', [
   'print("  [g] 1 file(s)")',
   'print("    true")',
-  `print("ungrouped (1 file(s) — no declared group matched, so NO deterministic gate covers them; CI's harness-gates run FAILS on this — add a groups entry to .harness.json):")`,
+  `print("ungrouped (1 file(s) — no declared group matched, so NO deterministic gate covers them; CI's harness-gates run FAILS on this, and a push that skips CI only defers that failure — add a groups entry to .harness.json):")`,
   'print("  weird.rb")',
 ].join('\n'))
 T('E5 an ungrouped file is named as a CI failure at commit time', async () => { const x = (await rE5()); assert.ok(M(x.out, r`1 staged file\(s\) matched NO declared group`), x.out) })

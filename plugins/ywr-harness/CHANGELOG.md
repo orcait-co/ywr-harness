@@ -12,6 +12,12 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.89.3 — 2026-11-28
+
+- 어느 그룹에도 속하지 않은 파일을 알리는 줄이 이제 "CI's harness-gates run FAILS on this, and a push that skips CI only defers that failure" 로 나옵니다. 게이트 출력과 pre-commit 훅 모두 같습니다. 0.89.2 의 "unless the push skips CI" 는 skip-ci push 로 실패를 피할 수 있는 것처럼 읽혔습니다. 실제로는 다음 push 런이 전체 트리를 검사하므로 같은 파일에서 실패합니다. 게이트 동작은 그대로입니다. 이 파일이 바뀌어 업데이트 뒤 세션 시작 때 scaffold 갱신 안내가 뜰 수 있습니다. 다음 `/ywr-harness:harness-init` 재실행 때 함께 갱신되면 사라집니다.
+- `.githooks/` 가 연결되지 않은 클론에서 세션 시작 훅이 모델에게 주는 안내도 "CI gates the content at its next run, and a push that skips CI only defers that run" 으로 바뀌었습니다. 화면에 보이는 한국어 안내는 바뀌지 않았습니다.
+- `worker` 에이전트 설명은 이제 Workflow 경로를 "사용자가 workflow 사용에 동의했을 때" 쓰라고 말합니다. 본문은 fan-out 을 orchestrator 의 몫이라고만 하고 Workflow 경로를 지목하지 않습니다. Claude Code 의 Workflow 도구는 사용자의 명시적인 동의가 있어야 실행되기 때문입니다.
+
 ## v0.89.2 — 2026-11-28
 
 - pre-commit 훅의 안내 문구가 바뀌었습니다. 게이트를 건너뛸 때의 "CI still gates this commit" 은 이제 "CI gates this commit unless its push skips CI" 로 나옵니다. 어느 그룹에도 속하지 않은 파일을 알릴 때도 같은 조건을 붙입니다. skip-ci 표시가 붙은 push 는 CI 를 돌리지 않기 때문입니다. 게이트 동작은 그대로입니다. 이 파일이 바뀌어 업데이트 뒤 세션 시작 때 scaffold 갱신 안내가 뜰 수 있습니다. 다음 `/ywr-harness:harness-init` 재실행 때 함께 갱신되면 사라집니다.

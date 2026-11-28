@@ -155,7 +155,7 @@ MATCHED_GROUPS=$(printf '%s\n' "$OUT" | awk '
 # advisory (ywr-harness ADR 0041).
 UNGROUPED_N=$(printf '%s\n' "$OUT" | sed -n 's/^ungrouped (\([0-9][0-9]*\) file.*/\1/p' | head -n 1)
 if [ -n "$UNGROUPED_N" ]; then
-    echo "[harness] pre-commit: $UNGROUPED_N staged file(s) matched NO declared group — CI's harness-gates run FAILS on ungrouped files unless the push skips CI (not blocked here; add a groups entry to .harness.json)."
+    echo "[harness] pre-commit: $UNGROUPED_N staged file(s) matched NO declared group — CI's harness-gates run FAILS on ungrouped files, and a push that skips CI only defers that (not blocked here; add a groups entry to .harness.json)."
 fi
 
 if [ -z "$CMDS" ]; then

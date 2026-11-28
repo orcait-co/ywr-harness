@@ -1363,7 +1363,7 @@ export function main(argv = process.argv.slice(2)) {
     // while every local run stays advisory (ywr-harness ADR 0041), so without the tail a repo reads as
     // passing until its first CI run (ywr-harness ADR 0062).
     hc.say(`ungrouped (${ungrouped.length} file(s) — no declared group matched, so NO deterministic gate covers them; ` +
-           "CI's harness-gates run FAILS on this — add a groups entry to .harness.json):")
+           "CI's harness-gates run FAILS on this, and a push that skips CI only defers that failure — add a groups entry to .harness.json):")
     for (const f of ungrouped) hc.say(`  ${f}`)
   }
 

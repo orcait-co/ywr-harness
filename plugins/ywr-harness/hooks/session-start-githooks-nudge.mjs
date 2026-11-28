@@ -81,7 +81,7 @@ async function main(payload) {
 
   const cmd = 'git config core.hooksPath .githooks'
   const sys = `[hook:githooks-nudge] ${rootShow} 에는 .githooks/ 가 있지만 이 클론의 core.hooksPath가 UNSET입니다 — 이 환경에서는 어떤 git 훅도 실행되지 않습니다 (pre-commit 게이트, pre-push secret scan). 연결하려면: ${cmd} — 또는 조건부로 연결하는 /ywr-harness:harness-init을 다시 실행하세요 (ywr-harness ADR 0015). 아무것도 변경되지 않았습니다; 이 훅은 제안만 합니다 (ywr-harness ADR 0029).`
-  const ctx = `The repo at ${rootShow} ships .githooks/ (pre-commit gates, pre-push secret scan) but this clone's core.hooksPath is unset, so none of it runs locally; CI still gates the content, so the cost is feedback latency (ywr-harness ADR 0015). When the work turns commit-shaped, offer the user the wiring one-liner: ${cmd}. Do not run it unasked — this surface is suggest-only (ywr-harness ADR 0029).`
+  const ctx = `The repo at ${rootShow} ships .githooks/ (pre-commit gates, pre-push secret scan) but this clone's core.hooksPath is unset, so none of it runs locally; CI gates the content at its next run, and a push that skips CI only defers that run, so the cost is feedback latency (ywr-harness ADR 0015). When the work turns commit-shaped, offer the user the wiring one-liner: ${cmd}. Do not run it unasked — this surface is suggest-only (ywr-harness ADR 0029).`
   emit({ systemMessage: sys, hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } })
 }
 

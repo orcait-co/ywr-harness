@@ -558,6 +558,7 @@ async function body() {
   g('C ungrouped files reported', m(rC.Out, P`ungrouped \(1 file`), rC.Out)
   g('C ungrouped file named', m(rC.Out, P`weird/thing\.rb`), rC.Out)
   g('C says no gate covers them', m(rC.Out, 'NO deterministic gate covers them'), rC.Out)
+  g('C says a skip-ci push only defers the CI failure', m(rC.Out, 'FAILS on this, and a push that skips CI only defers that failure'), rC.Out)
   })
   section('D', [], async () => {
   // --- D: tier — docs-only earns skip ------------------------------------------------------------

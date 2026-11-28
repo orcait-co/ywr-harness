@@ -136,7 +136,7 @@ gtest('GN1 unwired clone nudges', () => {
   assertNudge(invokeHook(payload({ cwd: unwired })),
     [String.raw`\[hook:githooks-nudge\]`, 'repo-unwired', 'core\\.hooksPath가 UNSET',
       String.raw`git config core\.hooksPath \.githooks`, '/ywr-harness:harness-init',
-      'feedback latency', 'Do not run it unasked', '제안만 합니다'],
+      'a push that skips CI only defers that run', 'feedback latency', 'Do not run it unasked', '제안만 합니다'],
     ['SCHEMA DRIFT', 'UNKNOWN'])
 })
 
