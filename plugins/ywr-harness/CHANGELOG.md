@@ -12,6 +12,10 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.89.4 — 2026-11-28
+
+- 플러그인 동작은 바뀌지 않았습니다. 플러그인 안의 테스트 두 개가 pwsh 7 대신 Windows에 기본으로 들어 있는 Windows PowerShell 5.1을 씁니다. 질문 알림 토스트 스크립트의 문법 검사와, `harness-init`의 잠긴 파일 처리 검사입니다. 이 두 검사는 Windows에서만 돕니다. 하네스는 이제 테스트에도 pwsh 7이 필요 없습니다 (ywr-harness ADR 0240).
+
 ## v0.89.3 — 2026-11-28
 
 - 어느 그룹에도 속하지 않은 파일을 알리는 줄이 이제 "CI's harness-gates run FAILS on this, and a push that skips CI only defers that failure" 로 나옵니다. 게이트 출력과 pre-commit 훅 모두 같습니다. 0.89.2 의 "unless the push skips CI" 는 skip-ci push 로 실패를 피할 수 있는 것처럼 읽혔습니다. 실제로는 다음 push 런이 전체 트리를 검사하므로 같은 파일에서 실패합니다. 게이트 동작은 그대로입니다. 이 파일이 바뀌어 업데이트 뒤 세션 시작 때 scaffold 갱신 안내가 뜰 수 있습니다. 다음 `/ywr-harness:harness-init` 재실행 때 함께 갱신되면 사라집니다.

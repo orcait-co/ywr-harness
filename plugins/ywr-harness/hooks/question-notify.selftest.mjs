@@ -22,9 +22,11 @@
 //     silence (an opt-out, a wrong tool, bad stdin) uses the second root, so a deleted check shows as a logged
 //     call: against an empty root that case would pass with the check gone. The root and the log path reach
 //     the preload through variables set on the child's environment only.
-// The one pwsh child that this suite starts only parses the two child scripts (cases S1 and S2) and shows
-// nothing: `Parser.ParseInput` reads text and runs none of it. It needs pwsh on PATH. A missing pwsh fails
-// S1 and S2 with a stated reason, never passes them.
+// The one PowerShell child that this suite starts only parses the two child scripts (cases S1p and S2p) and
+// shows nothing: `Parser.ParseInput` reads text and runs none of it. The hook's own `powershellExe()` names
+// the binary, so the parse runs on the Windows PowerShell 5.1 that the hook starts (ADR 0240). On Windows a
+// missing powershell.exe fails S1p and S2p with a stated reason, never passes them. On another host S1p and
+// S2p skip, because the toast runs on Windows only. The text checks of S1 and S2 run on every host.
 //
 // Line-break and control characters are built from char codes here, never spelled in the file, because an
 // escape in an editor can land as the literal character. The node program that drives the pure half is a
@@ -38,6 +40,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { fixtureRoot, removeFixtureRoot } from '../lib/selftest-lib.mjs'
+import { powershellExe } from './question-notify.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const hook = path.join(here, 'question-notify.mjs')
@@ -489,18 +492,25 @@ addCase('G1 every show result: title <= TITLE_MAX, text <= TEXT_MAX, no control,
   return f
 })
 
-// S. the child's scripts and their encoding. The parse check is one pwsh child, started once: it only reads text.
+// S. the child's scripts and their encoding. The parse check is one Windows PowerShell 5.1 child, started once: it only reads text.
+// 5.1 reads a script file without a BOM as the ANSI code page, so the parse script and its input stay ASCII (ADR 0240).
+const WINDOWS = process.platform === 'win32'
+const PARSE_SKIP = WINDOWS ? false : 'the toast runs on Windows only (ADR 0240)'
+const addParseCase = (name, fn) => test(name, { skip: PARSE_SKIP }, () => {
+  const f = fn().filter(Boolean)
+  assert.deepEqual(f, [], f.join(' · '))
+})
 let parsedMemo = null
 function parseErrors(texts) {
   if (parsedMemo) return parsedMemo
   const inPath = path.join(fx, 'parse-in.json')
   const outPath = path.join(fx, 'parse-out.json')
   const psPath = path.join(fx, 'parse.ps1')
-  fs.writeFileSync(inPath, JSON.stringify(texts), 'utf8')
+  fs.writeFileSync(inPath, JSON.stringify(texts).replace(/[^\x00-\x7f]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')), 'utf8')
   fs.writeFileSync(psPath, [
     'param([string]$In, [string]$Out)',
     '$ErrorActionPreference = "Stop"',
-    '$texts = @(Get-Content -LiteralPath $In -Raw -Encoding utf8 | ConvertFrom-Json)',
+    '$texts = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($In, [Text.UTF8Encoding]::new($false)))',
     '$rows = foreach ($t in $texts) {',
     '    $errs = $null',
     '    [void][Management.Automation.Language.Parser]::ParseInput([string]$t, [ref]$null, [ref]$errs)',
@@ -508,18 +518,21 @@ function parseErrors(texts) {
     '}',
     '[IO.File]::WriteAllText($Out, (ConvertTo-Json -InputObject @($rows) -Compress), [Text.UTF8Encoding]::new($false))',
   ].join('\n'), 'utf8')
-  const r = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-File', psPath, inPath, outPath], { encoding: 'utf8', windowsHide: true, timeout: 60000 })
+  const exe = powershellExe(process.env)
+  const r = exe
+    ? spawnSync(exe, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath, inPath, outPath], { encoding: 'utf8', windowsHide: true, timeout: 60000 })
+    : { error: { code: 'ENOENT' } }
   let rows = null
   try { rows = JSON.parse(fs.readFileSync(outPath, 'utf8')) } catch { /* reported below */ }
   if (!Array.isArray(rows) || rows.length !== texts.length) {
-    const why = r.error?.code === 'ENOENT' ? 'pwsh not found on PATH' : `pwsh exit ${r.status}: ${String(r.stderr ?? '').trim().split('\n')[0]}`
+    const why = r.error?.code === 'ENOENT' ? 'powershell.exe not found under SystemRoot' : `powershell.exe exit ${r.status}: ${String(r.stderr ?? '').trim().split('\n')[0]}`
     parsedMemo = texts.map(() => [`the PowerShell parse check could not run (${why})`])
   } else parsedMemo = rows.map(x => (x.Count ? x.Messages.split(' | ') : []))
   return parsedMemo
 }
 const envRefs = text => [...new Set([...text.matchAll(/\$env:[A-Za-z0-9_]+/g)].map(m => m[0]))].sort()
 const count = (text, rx) => [...text.matchAll(rx)].length
-addCase('S1 script(show): reads title, text and tag from $env: only; XML-escapes them; scenario reminder, system dismiss; parses', () => {
+addCase('S1 script(show): reads title, text and tag from $env: only; XML-escapes them; scenario reminder, system dismiss', () => {
   const c = need().consts
   const showS = String(pure.show)
   const wantShowRefs = sortCs([`$env:${c.TAG_VAR}`, `$env:${c.TEXT_VAR}`, `$env:${c.TITLE_VAR}`])
@@ -532,10 +545,9 @@ addCase('S1 script(show): reads title, text and tag from $env: only; XML-escapes
   if (!showS.includes(c.APP_ID)) f.push('show does not use APP_ID')
   if (!showS.includes(c.GROUP)) f.push('show does not set the GROUP')
   if (showS.includes('History.Remove')) f.push('show carries History.Remove')
-  for (const e of parseErrors([showS, String(pure.clear)])[0]) f.push(`show script does not parse: ${e}`)
   return f
 })
-addCase('S2 script(clear): reads the tag from $env: only, calls History.Remove with tag, group and app id; no toast XML; parses', () => {
+addCase('S2 script(clear): reads the tag from $env: only, calls History.Remove with tag, group and app id; no toast XML', () => {
   const c = need().consts
   const clearS = String(pure.clear)
   const f = []
@@ -544,8 +556,15 @@ addCase('S2 script(clear): reads the tag from $env: only, calls History.Remove w
   if (!clearS.includes(c.APP_ID)) f.push('clear does not use APP_ID')
   if (!clearS.includes(c.GROUP)) f.push('clear does not use the GROUP')
   if (/scenario|LoadXml|CreateToastNotifier/i.test(clearS)) f.push('clear carries toast-show code')
-  for (const e of parseErrors([String(pure.show), clearS])[1]) f.push(`clear script does not parse: ${e}`)
   return f
+})
+addParseCase('S1p script(show) parses under the Windows PowerShell that the hook starts', () => {
+  need()
+  return parseErrors([String(pure.show), String(pure.clear)])[0].map(e => `show script does not parse: ${e}`)
+})
+addParseCase('S2p script(clear) parses under the Windows PowerShell that the hook starts', () => {
+  need()
+  return parseErrors([String(pure.show), String(pure.clear)])[1].map(e => `clear script does not parse: ${e}`)
 })
 // S2b. a PostToolUse that comes before the show child has shown its toast would leave that toast: the clear child
 //      removes the tag, waits CLEAR_AGAIN_S, and removes it again (and the show script waits for nothing)

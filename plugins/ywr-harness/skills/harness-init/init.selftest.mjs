@@ -249,23 +249,18 @@ function getHooksPath(repo) {
 }
 const hooksLine = (run) => run.out.split('\n').filter((l) => m(l, R`\bhooks:`)).join(' ')
 
-// --- pwsh, for the one case that needs a PowerShell process ---------------------------------------------
-// Case T6 holds a file open from pwsh, because Node cannot open a file without sharing. A Microsoft Store install puts pwsh on PATH only as an
-// app execution alias: a reparse point under WindowsApps that stat cannot read (EACCES) and CreateProcess
-// starts. which_on_path skips it, so on Windows such an alias `pwsh.exe` is accepted by its link entry.
-function resolvePwsh() {
-  const exe = which_on_path('pwsh')
-  if (exe || !WIN) return exe
-  for (let dir of String(process.env.PATH ?? '').split(path.delimiter)) {
-    dir = dir.trim().replace(/^"(.*)"$/u, '$1')
-    if (!dir || !path.isAbsolute(dir)) continue
-    const p = path.join(dir, 'pwsh.exe')
-    try { if (fs.lstatSync(p).isSymbolicLink()) return p } catch { /* absent: keep looking */ }
-  }
-  return ''
+// --- Windows PowerShell 5.1, for the one case that needs a process that holds a file open -------------------
+// Case T6 holds a file open from PowerShell, because Node cannot open a file without sharing. Windows ships
+// 5.1, so the case starts it by absolute path under SystemRoot and never looks on PATH (ADR 0240).
+function resolveWinPowerShell() {
+  if (!WIN) return ''
+  const root = String(process.env.SystemRoot ?? process.env.windir ?? '').trim()
+  if (!root || !path.isAbsolute(root)) return ''
+  const p = path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  try { return fs.statSync(p).isFile() ? p : '' } catch { return '' }
 }
-const PWSH = resolvePwsh()
-const NO_PWSH = PWSH ? false : 'pwsh absent (reported, not silent) — case T6 holds the file open from a pwsh process'
+const WINPS = resolveWinPowerShell()
+const NO_WINPS = WINPS ? false : 'powershell.exe absent under SystemRoot (reported, not silent) — case T6 holds the file open from a Windows PowerShell process'
 const psq = (s) => `'${String(s).replace(/'/gu, "''")}'`
 
 // ======================================================================================================
@@ -1192,12 +1187,12 @@ T('T5 unparseable seed: probe skip is reported, run exits 0', () => ok(secT5().r
 // T6: an UNREADABLE line-based seed must not abort the run: an uncaught throw from the probe's read
 // of a locked seed would turn a successful placement into a non-zero exit. Windows-gated: the
 // exclusive-share lock that forces the read failure is mandatory there and advisory on POSIX (CI's
-// windows-latest runs it). Node cannot open a file with no sharing, so a pwsh child holds the lock
+// windows-latest runs it). Node cannot open a file with no sharing, so a Windows PowerShell child holds the lock
 // (FileShare.None) while init runs.
-const T6SKIP = WIN ? NO_PWSH : 'POSIX — FileShare.None is advisory there; windows-latest CI runs this case'
+const T6SKIP = WIN ? NO_WINPS : 'POSIX — FileShare.None is advisory there; windows-latest CI runs this case'
 function withExclusiveLock(file, fn) {
   const script = `$f = [IO.File]::Open(${psq(file)}, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None); [Console]::Out.WriteLine('locked'); [Console]::Out.Flush(); [void][Console]::In.ReadLine(); $f.Dispose()`
-  const child = spawn(PWSH, ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true })
+  const child = spawn(WINPS, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true })
   const ended = new Promise((resolve) => child.on('exit', resolve))
   return new Promise((resolve, reject) => {
     let buf = ''

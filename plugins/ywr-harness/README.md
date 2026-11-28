@@ -368,9 +368,9 @@ is the suite engine of both runners (ADR 0231) — import them, do not run them.
   workflow corpus gate `scripts/workflow-gates.mjs`. Absent `node`: those hooks cannot
   start on a member machine — the host reports a hook error and never a blocked call, since no
   hook can block; the selftest runner is itself a Node program, so it does not start without `node`.
-- `pwsh` (PowerShell 7+) — only a few of the plugin's own selftests, which a member never runs: they start a
-  pwsh fake or parse a generated PowerShell script. The selftest runners are Node programs (ADR 0231), and
-  no hook or skill script runs on pwsh, so the prerequisite check does not name it (ADR 0220).
+- `pwsh` (PowerShell 7+) — not needed. No hook, skill script or selftest starts it (ywr-harness ADR 0220,
+  ywr-harness ADR 0240), so the prerequisite check does not name it. On Windows the question-notify hook and two
+  Windows-only selftest cases start the OS Windows PowerShell 5.1 by its absolute path.
 - `python` — no script of the plugin runs it since 0.85.0 (ADR 0223). A repository that took an older scaffold keeps its
   `scripts/harness/*.py` files; `/ywr-harness:harness-init` names each one with a `retired:` line and never deletes it.
 
