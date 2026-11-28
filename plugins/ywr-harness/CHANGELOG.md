@@ -12,6 +12,15 @@
 > 일치할 것, 위 링크가 안내 훅이 인쇄하는 링크와 일치할 것. 정렬·날짜·불릿 형식은 검사되지
 > 않는 컨벤션이며, 깨지면 세션 시작 안내가 불릿 없는 형태로 조용히 저하됩니다.
 
+## v0.89.5 — 2026-11-28
+
+- `/ywr-harness:update` 안내가 `managed` 범위를 이름으로 적습니다. managed settings 가 플러그인을 강제 설치하므로 보통 모든 멤버에게 이 범위의 설치가 있습니다. 목록에 없으면 보이는 범위만 갱신합니다. 이 범위도 `-s managed` 로 같은 방식으로 갱신하며, 실패해도 다른 범위의 갱신은 막지 않습니다.
+- `/ywr-harness:artifact-publish` 가 선언된 Artifact 목록을 repo 에 복사된 `scripts/harness/harness_gates.mjs` 대신 플러그인의 같은 스크립트로 읽습니다. `slice-close` 와 `verify` 와 같은 방식입니다. 출력 형식은 설치된 플러그인 버전이 정합니다. republish 뒤 lockstep 확인 식도 Python 대신 Node `Buffer` 식으로 적습니다.
+- `docs/prompts/ready-report.md` 템플릿의 문구가 "열린 owner 질문은 모두 보고서에 적는다" 로 바뀌었습니다. 이미 이 파일이 있는 멤버 repo 는 그대로 두며, 새로 놓이는 파일에만 반영됩니다.
+- `docs/spec/README.md` 템플릿은 스펙을 쓴 뒤 ADR 의 `related_spec` 에 다시 등록하라는 안내를 뺐습니다. ADR 은 수락 뒤 고치지 않으며, 링크는 스펙의 `based_on_adr` 만 기록합니다. `harness-gates.yml` 템플릿은 주석만 바뀌어, 액션 핀 갱신은 정본의 스윕에서 하고 릴리스는 핀을 다시 보지 않는다고 적습니다. 이 두 파일이 바뀌어 업데이트 뒤 세션 시작 때 scaffold 갱신 안내가 뜰 수 있습니다. 다음 `/ywr-harness:harness-init` 재실행 때 함께 갱신되면 사라집니다.
+- 플러그인 README 의 `agent-model-warn` 설명은 모델 전체 id 예시를 자리표시 형식으로 바꿨습니다. 동작은 같습니다.
+- 하네스 자체 selftest 만 바뀐 내용입니다. 에이전트 정의 검사가 `mech` 와 `verifier` 도 `Agent` 도구를 막는지, `mech` 가 CLAUDE.md 없이 도는지 확인합니다.
+
 ## v0.89.4 — 2026-11-28
 
 - 플러그인 동작은 바뀌지 않았습니다. 플러그인 안의 테스트 두 개가 pwsh 7 대신 Windows에 기본으로 들어 있는 Windows PowerShell 5.1을 씁니다. 질문 알림 토스트 스크립트의 문법 검사와, `harness-init`의 잠긴 파일 처리 검사입니다. 이 두 검사는 Windows에서만 돕니다. 하네스는 이제 테스트에도 pwsh 7이 필요 없습니다 (ywr-harness ADR 0240).

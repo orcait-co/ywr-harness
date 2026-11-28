@@ -44,7 +44,7 @@ jobs:
     steps:
       # 모든 uses: 는 40-hex 커밋 SHA 고정 + `# vX.Y.Z` 주석이다 — 떠다니는 메이저 태그는 이 파일을
       # 리뷰한 적 없는 코드로 옮겨갈 수 있다(ywr-harness ADR 0087). 갱신은 정본이 손으로 한다
-      # (ywr-harness spec 0012 스윕·릴리스 준비), 소비 레포는 harness-init 재실행으로 받는다.
+      # (ywr-harness spec 0012 스윕, 릴리스는 핀을 다시 보지 않는다), 소비 레포는 harness-init 재실행으로 받는다.
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:

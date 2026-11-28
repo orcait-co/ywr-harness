@@ -17,10 +17,10 @@ Invoke: `/ywr-harness:artifact-publish`. One confirmation before anything leaves
 
 ## 1. List what is declared
 
-Run the emitter and read its `artifact:` lines (the vendored copy is the repo's own):
+Run the plugin's emitter and read its `artifact:` lines:
 
 ```
-node scripts/harness/harness_gates.mjs --all
+node "${CLAUDE_PLUGIN_ROOT}/scripts/harness_gates.mjs" --all
 ```
 
 - `artifact: ok — … · source <path> committed · check declared …` — a publishable item.
@@ -32,9 +32,7 @@ node scripts/harness/harness_gates.mjs --all
 - An ok line ending `no check declared — drift … is unenforced` may still be published, but say
   so in the confirmation: nothing proved the committed page matches its generator.
 - An ok line ending `no source declared — hand-published page (ywr-harness ADR 0032 shape); not publishable
-  via /ywr-harness:artifact-publish` — a url+title-only declaration. The repo's vendored emitter
-  decides the form. Plugins 0.42.0 to 0.71.0 print the same tail without the `ywr-harness ` prefix, and older
-  ones print no tail. Treat every form the same. When an ok line names no source, read the item in
+  via /ywr-harness:artifact-publish` — a url+title-only declaration. When an ok line names no source, read the item in
   `.harness.json`: an item with only `url` and `title` is this shape. The page was published by
   hand and no committed source exists to republish from. OUT of this skill's scope; republishing
   it is a hand act from the owning account. When EVERY declared item has this shape, report
@@ -143,8 +141,9 @@ source file. **The serve wrapper appends ONE trailing LF before `</body></html>`
 pre- and post-publish) — treat served-stripped ==
 committed + one trailing LF as identical. A raw hash mismatch of exactly that one-byte shape is
 lockstep, not drift; anything else is drift. In bytes, with `s` the saved copy and `c` the
-committed file: `body = s[s.index(b'<body>\n') + 7 : s.rindex(b'</body></html>')]`, lockstep iff
-`body == c or body == c + b'\n'`. State both hashes in the close. This is the release-checklist
+committed file, both read as Node `Buffer`s:
+`body = s.subarray(s.indexOf('<body>\n') + 7, s.lastIndexOf('</body></html>'))`, lockstep iff
+`body.equals(c)` or `body.equals(Buffer.concat([c, Buffer.from('\n')]))`. State both hashes in the close. This is the release-checklist
 item the gate layer cannot perform (it cannot see claude.ai — ywr-harness ADR 0032).
 
 The wrapper is the Artifact HOST's frame, the same for every repo's page. The slice points were

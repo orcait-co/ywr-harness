@@ -68,10 +68,16 @@ for (const n of Object.keys(pins)) {
   })
 }
 
-// A2: worker is the one delegate. It denies Agent, because fan-out belongs to the orchestrator.
+// A2: every agent denies Agent, because fan-out belongs to the orchestrator.
 // The retired worker-opus twin stays retired: no file, and no description routes to it (ADR 0109).
-test('A2 worker denies Agent', () => {
-  assert.equal(agents.worker?.fm.disallowedTools, 'Agent', `disallowedTools: ${agents.worker?.fm.disallowedTools}`)
+for (const n of Object.keys(pins)) {
+  test(`A2 ${n} denies Agent`, () => {
+    assert.equal(agents[n]?.fm.disallowedTools, 'Agent', `disallowedTools: ${agents[n]?.fm.disallowedTools}`)
+  })
+}
+// mech runs without the project's and the user's CLAUDE.md (ADR 0079).
+test('A2 mech omits CLAUDE.md (ADR 0079)', () => {
+  assert.equal(agents.mech?.fm.omitClaudeMd, 'true', `omitClaudeMd: ${agents.mech?.fm.omitClaudeMd}`)
 })
 test('A2 worker-opus.md is retired (ADR 0109)', () => {
   assert.ok(!existsSync(path.join(here, 'worker-opus.md')))

@@ -19,7 +19,10 @@ Run `claude plugin list --json` and read every object whose `id` starts with `yw
 text after `@` is the marketplace name. Record it with the object's `version`, **`scope`** and
 `enabled`. **Never assume the marketplace name or the scope** — read both from the object;
 hardcoding the name breaks any machine that registered the marketplace under another name, and a
-project- or local-scope install sits beside a user-scope one only as its own object.
+project- or local-scope install sits beside a user-scope one only as its own object. A member
+normally has a `managed` scope object, because managed settings force-install the plugin
+(ywr-harness ADR 0143). The list can show no `managed` object, for example while the owner's managed
+`false` is in force; then update only the scopes the list shows.
 
 - `claude` not on PATH → report that and stop; nothing here works without the CLI.
 - `--json` refused (a host older than the flag) → run the same command without it and read the
@@ -50,15 +53,19 @@ exactly the install the list named. `marketplace update` takes no scope flag. If
 more than one ywr-harness object, run the update once per listed scope. A `project` or `local`
 install belongs to one repo, so run its update from that repo's root. Which such installs the
 list shows from another directory is unmeasured. When the update of a `project` or `local` scope
-fails, quote it, name the scope, and still finish the other scopes.
+fails, quote it, name the scope, and still finish the other scopes. The `managed` scope is the
+install of the managed settings. Pass `-s managed` like any other scope; the `update --help` of
+host 2.1.332 lists it. Nobody measured what `claude plugin update -s managed` does, so judge its
+result line by `outcome` and its printed message, and never infer a version change from it.
 
 Run both, in that order. Whether `claude plugin update` refreshes the catalog by itself is not
 documented (neither subcommand's `--help` says — measured 2026-08-06), so refresh first: one
 extra command removes the dependency on unverified resolution behavior.
 Quote any failure verbatim — the result line's `message`, or the stderr text when no line came —
-and stop; do not retry blindly. The one exception is the `project` or `local` scope rule above:
-such an install may belong to another repo, so its failure, the command stop below included,
-does not block the remaining scopes. A failed marketplace refresh keeps the last good catalog
+and stop; do not retry blindly. The exceptions are the `project`, `local` and `managed` scopes:
+a `project` or `local` install may belong to another repo, and the `managed` update is unmeasured,
+so the failure of any of these, the command stop below included, does not block the remaining
+scopes. A failed marketplace refresh keeps the last good catalog
 cache rather than dropping the registration (the `CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE`
 guard, ywr-harness ADR 0023/0026); say that instead of treating it as a lost marketplace.
 

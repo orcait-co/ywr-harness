@@ -9,7 +9,7 @@ The `harness_gates.mjs --tree` run is the last step before the ready report. Che
   notification carries no usage line, the report says so. Every finding has a severity and a disposition. The
   report names each fix that went to an open item, or says `none`.
 - The report quotes the verify verdict, or the `verify_map.mjs` output when the verify skill did not run.
-- Each owner question (a cost) is listed in this report. The questions are asked with
+- Each open owner question is listed in this report. The questions are asked with
   AskUserQuestion after the report, never as plain text in it.
 - Each residual risk and each unverified point is a `node scripts/harness/slice_note.mjs add risk` note.
 - Do not write the handoff. Do not commit. The close does both.
