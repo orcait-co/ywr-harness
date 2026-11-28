@@ -196,7 +196,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/verify_map.mjs" [--range <a>..<b>]
   invoke the verify skill; quote the mapper's output verbatim as the verify verdict. "No registered
   verify script" is a scope statement, **not** a pass; a `REFUSED:` line is a coverage gap.
 - **A `run:` line** → invoke `/ywr-harness:verify <a>..<b>` (no argument when stage 1 had none) and
-  quote its verdict verbatim. Its "do not run the mapper yourself" rule governs only its own turn.
+  quote its verdict verbatim. The skill runs the mapper again before it spawns its agent
+  (ywr-harness ADR 0242).
 
 ## 4. Unmapped files
 
